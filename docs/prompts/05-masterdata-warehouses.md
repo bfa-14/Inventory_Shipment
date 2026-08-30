@@ -1,5 +1,7 @@
 # US-MD-002 — Warehouse Setup — SQL + VS Code prompts
 
+> **UI library note (added after the Mantine decision):** the frontend prompt of this story is implemented with **Mantine** (see `06-mantine-migration.md` and `Inventory_Shipment.Web\docs\frontend-conventions.md`): DataTable = mantine-datatable wrapper, forms = @mantine/form, confirmations = @mantine/modals, toasts = @mantine/notifications, icons = @tabler/icons-react. Where the prompt says 'copy the hand-made components', use the Mantine-based shared components instead; behaviour, endpoints, messages and verification stay the same.
+
 | Step | What | Who |
 |------|------|-----|
 | 1 | `Database\07_MasterData_Warehouses.sql` in SSMS on **Inventory_Shipment** (needs 06 applied) | you (or the assistant) |

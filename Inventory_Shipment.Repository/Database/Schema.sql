@@ -626,7 +626,6 @@ END
 ELSE
     PRINT 'security.Users.Role is already gone - nothing to do.';
 GO
-<<<<<<< HEAD
 
 -- ===== 06: Master Data - Branches =====
 
@@ -1490,5 +1489,3 @@ BEGIN
     END
 END
 GO
-=======
->>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a

@@ -4,7 +4,6 @@ using Microsoft.Data.SqlClient;
 namespace Inventory_Shipment.Repository.Database;
 
 /// <summary>
-<<<<<<< HEAD
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
 /// Each module owns a block: 50xxx security, 51xxx master data.
@@ -12,13 +11,6 @@ namespace Inventory_Shipment.Repository.Database;
 public static class SqlErrors
 {
     // ----- 50xxx: security -----
-=======
-/// Error numbers raised with THROW by the security stored procedures, and the translation from a
-/// <see cref="SqlException"/> into a <see cref="SecurityRuleException"/> the service layer understands.
-/// </summary>
-public static class SqlErrors
-{
->>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     public const int RoleNotFound = 50001;
     public const int SystemRolePermissions = 50002;
     public const int UserNotFound = 50003;
@@ -26,7 +18,6 @@ public static class SqlErrors
     public const int SystemRoleDelete = 50005;
     public const int RoleStillAssigned = 50006;
 
-<<<<<<< HEAD
     // ----- 51xxx: master data -----
     public const int Validation = 51000;
     public const int BranchDuplicateCode = 51001;
@@ -66,16 +57,6 @@ public static class SqlErrors
             : new BusinessRuleException(exception.Number, exception.Message, exception);
 
     /// <summary>Wraps a security-procedure SqlException (50001-50999).</summary>
-=======
-    private const int FirstUserDefined = 50001;
-    private const int LastUserDefined = 50999;
-
-    /// <summary>True when the exception is a deliberate business-rule THROW rather than a database failure.</summary>
-    public static bool IsBusinessRule(SqlException exception)
-        => exception.Number is >= FirstUserDefined and <= LastUserDefined;
-
-    /// <summary>Wraps a business-rule SqlException, keeping the message written in the procedure.</summary>
->>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     public static SecurityRuleException ToSecurityRuleException(SqlException exception)
         => new(exception.Number, exception.Message, exception);
 }

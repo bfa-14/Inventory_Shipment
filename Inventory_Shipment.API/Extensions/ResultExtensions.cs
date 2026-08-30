@@ -38,7 +38,6 @@ public static class ResultExtensions
             problem.Extensions["errors"] = result.Errors;
         }
 
-<<<<<<< HEAD
         if (!string.IsNullOrEmpty(result.Code))
         {
             problem.Extensions["code"] = result.Code;
@@ -49,8 +48,6 @@ public static class ResultExtensions
             problem.Extensions["data"] = result.Data;
         }
 
-=======
->>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
         return new ObjectResult(problem) { StatusCode = status };
     }
 }
