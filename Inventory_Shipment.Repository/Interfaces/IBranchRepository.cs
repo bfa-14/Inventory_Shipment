@@ -33,4 +33,12 @@ public interface IBranchRepository
 
     /// <summary>masterdata.usp_Branch_Delete - throws 51003 (referenced) / 51005 (main branch) / 51006.</summary>
     Task DeleteAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// masterdata.usp_Branch_Lookup - the branches a Branch / Site dropdown offers.
+    /// <paramref name="includeId"/> keeps one extra branch in the list even when it is inactive, so an
+    /// edit form can still show the branch the record currently points at.
+    /// </summary>
+    Task<IReadOnlyList<BranchLookup>> LookupAsync(
+        bool activeOnly, int? includeId, CancellationToken cancellationToken = default);
 }

@@ -143,6 +143,13 @@ public sealed class BranchService : IBranchService
         return Result.Success();
     }
 
+    public async Task<Result<IReadOnlyList<BranchLookupDto>>> LookupAsync(
+        bool activeOnly, int? includeId, CancellationToken cancellationToken = default)
+    {
+        var branches = await _branches.LookupAsync(activeOnly, includeId, cancellationToken);
+        return Result<IReadOnlyList<BranchLookupDto>>.Success(branches.Select(b => b.ToDto()).ToList());
+    }
+
     // ----- helpers -----
 
     private static Branch ToEntity(SaveBranchRequest request) => new()

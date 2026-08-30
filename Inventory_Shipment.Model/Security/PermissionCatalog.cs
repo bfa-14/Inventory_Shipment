@@ -31,6 +31,10 @@ public static class Permissions
         public const string BranchesCreate = "masterdata.branches.create";
         public const string BranchesEdit = "masterdata.branches.edit";
         public const string BranchesDelete = "masterdata.branches.delete";
+        public const string WarehousesView = "masterdata.warehouses.view";
+        public const string WarehousesCreate = "masterdata.warehouses.create";
+        public const string WarehousesEdit = "masterdata.warehouses.edit";
+        public const string WarehousesDelete = "masterdata.warehouses.delete";
     }
 
     private const string SecurityModule = "Security";
@@ -61,5 +65,14 @@ public static class Permissions
             "Change branch details and activate / deactivate them.", 120),
         new(MasterData.BranchesDelete, "Delete branches", MasterDataModule,
             "Delete branches that are not referenced by other records.", 130),
+
+        new(MasterData.WarehousesView, "View warehouses", MasterDataModule,
+            "See the Warehouses list.", 140),
+        new(MasterData.WarehousesCreate, "Create warehouses", MasterDataModule,
+            "Add new warehouses.", 150),
+        new(MasterData.WarehousesEdit, "Edit warehouses", MasterDataModule,
+            "Change warehouse details and activate / deactivate them.", 160),
+        new(MasterData.WarehousesDelete, "Delete warehouses", MasterDataModule,
+            "Delete warehouses that hold no inventory and are not referenced by other records.", 170),
     ];
 }

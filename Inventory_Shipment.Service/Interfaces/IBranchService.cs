@@ -19,4 +19,8 @@ public interface IBranchService
     Task<Result<BranchDto>> SetActiveAsync(int id, bool isActive, int userId, CancellationToken cancellationToken = default);
 
     Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>Branches for a Branch / Site dropdown; <paramref name="includeId"/> keeps one inactive branch visible.</summary>
+    Task<Result<IReadOnlyList<BranchLookupDto>>> LookupAsync(
+        bool activeOnly, int? includeId, CancellationToken cancellationToken = default);
 }

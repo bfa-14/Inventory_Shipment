@@ -27,6 +27,16 @@ public static class SqlErrors
     public const int BranchMainProtected = 51005;
     public const int BranchNotFound = 51006;
 
+    // ----- 52xxx: master data - warehouses -----
+    public const int WarehouseValidation = 52000;
+    public const int WarehouseDuplicateCode = 52001;
+    public const int WarehouseMainExists = 52002;
+    public const int WarehouseReferenced = 52003;
+    public const int WarehouseConcurrency = 52004;
+    public const int WarehouseMainProtected = 52005;
+    public const int WarehouseNotFound = 52006;
+    public const int WarehouseBranchInactive = 52007;
+
     private const int FirstBusinessRule = 50000;
     private const int LastBusinessRule = 59999;
 

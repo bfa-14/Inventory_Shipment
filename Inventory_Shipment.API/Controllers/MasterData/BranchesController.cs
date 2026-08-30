@@ -4,6 +4,7 @@ using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.MasterData;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Inventory_Shipment.API.Controllers.MasterData;
@@ -29,6 +30,20 @@ public sealed class BranchesController : ControllerBase
         [FromQuery] BranchQuery query, CancellationToken cancellationToken)
     {
         var result = await _branchService.SearchAsync(query, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Branches for a Branch / Site dropdown. Any signed-in user may read it: every master-data form with a
+    /// Branch / Site picker needs it, not only the users who administer branches.
+    /// </summary>
+    [HttpGet("lookup")]
+    [Authorize]
+    [ProducesResponseType<IReadOnlyList<BranchLookupDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<BranchLookupDto>>> Lookup(
+        [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null, CancellationToken cancellationToken = default)
+    {
+        var result = await _branchService.LookupAsync(activeOnly, includeId, cancellationToken);
         return result.ToActionResult(this);
     }
 

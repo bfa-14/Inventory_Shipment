@@ -27,6 +27,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPermissionService, PermissionService>();
         services.TryAddScoped<ILoginAuditService, LoginAuditService>();
         services.TryAddScoped<IBranchService, BranchService>();
+        services.TryAddScoped<IWarehouseService, WarehouseService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 
