@@ -1,0 +1,52 @@
+@Inventory_Shipment.API_HostAddress = https://localhost:7089
+
+### 1. Sign in (development seed: admin / Admin@12345)
+# @name login
+POST {{Inventory_Shipment.API_HostAddress}}/api/auth/login
+Content-Type: application/json
+
+{
+  "username": "admin",
+  "password": "Admin@12345"
+}
+
+### 2. Current user (uses the access token from the login response above)
+GET {{Inventory_Shipment.API_HostAddress}}/api/auth/me
+Authorization: Bearer {{login.response.body.$.accessToken}}
+
+### 3. Rotate the refresh token
+POST {{Inventory_Shipment.API_HostAddress}}/api/auth/refresh
+Content-Type: application/json
+
+{
+  "refreshToken": "{{login.response.body.$.refreshToken}}"
+}
+
+### 4. List users (Admin only)
+GET {{Inventory_Shipment.API_HostAddress}}/api/users
+Authorization: Bearer {{login.response.body.$.accessToken}}
+
+### 5. Create a user (Admin only)
+POST {{Inventory_Shipment.API_HostAddress}}/api/users
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.accessToken}}
+
+{
+  "username": "jdoe",
+  "email": "jdoe@example.com",
+  "fullName": "Jane Doe",
+  "password": "Warehouse#2026",
+  "role": "Manager"
+}
+
+### 6. Sign out (revokes the refresh token)
+POST {{Inventory_Shipment.API_HostAddress}}/api/auth/logout
+Content-Type: application/json
+Authorization: Bearer {{login.response.body.$.accessToken}}
+
+{
+  "refreshToken": "{{login.response.body.$.refreshToken}}"
+}
+
+### Health
+GET {{Inventory_Shipment.API_HostAddress}}/health

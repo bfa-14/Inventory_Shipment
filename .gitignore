@@ -1,0 +1,17 @@
+## .NET build output
+[Bb]in/
+[Oo]bj/
+[Dd]ebug/
+[Rr]elease/
+*.user
+
+## Visual Studio
+.vs/
+
+## Local secrets — never commit real keys/passwords
+appsettings.*.Local.json
+secrets.json
+
+## Frontend (Inventory_Shipment.Web)
+node_modules/
+dist/

@@ -1,0 +1,6 @@
+<Solution>
+  <Project Path="Inventory_Shipment.API/Inventory_Shipment.API.csproj" />
+  <Project Path="Inventory_Shipment.Model/Inventory_Shipment.Model.csproj" Id="dca56682-e1d7-43e0-85d0-7ade33679146" />
+  <Project Path="Inventory_Shipment.Repository/Inventory_Shipment.Repository.csproj" Id="6463ac56-f89e-4eeb-b107-843ec02a38fe" />
+  <Project Path="Inventory_Shipment.Service/Inventory_Shipment.Service.csproj" Id="d4cfb89c-5a4e-49e8-ad60-8df565a3b6ad" />
+</Solution>
