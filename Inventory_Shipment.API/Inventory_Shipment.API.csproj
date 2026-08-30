@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <UserSecretsId>inventory-shipment-api-2f4c9d1e</UserSecretsId>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.AspNetCore.Authentication.JwtBearer" Version="10.0.11" />
+    <PackageReference Include="Microsoft.AspNetCore.OpenApi" Version="10.0.11" />
+    <PackageReference Include="Scalar.AspNetCore" Version="2.16.10" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\Inventory_Shipment.Model\Inventory_Shipment.Model.csproj" />
+    <ProjectReference Include="..\Inventory_Shipment.Repository\Inventory_Shipment.Repository.csproj" />
+    <ProjectReference Include="..\Inventory_Shipment.Service\Inventory_Shipment.Service.csproj" />
+  </ItemGroup>
+
+</Project>
