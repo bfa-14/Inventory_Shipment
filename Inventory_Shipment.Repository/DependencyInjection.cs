@@ -23,8 +23,11 @@ public static class DependencyInjection
         services.TryAddScoped<ILoginAuditRepository, LoginAuditRepository>();
         services.TryAddScoped<IRoleRepository, RoleRepository>();
         services.TryAddScoped<IPermissionRepository, PermissionRepository>();
+<<<<<<< HEAD
         services.TryAddScoped<IBranchRepository, BranchRepository>();
         services.TryAddScoped<IWarehouseRepository, WarehouseRepository>();
+=======
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
 
         return services;
     }

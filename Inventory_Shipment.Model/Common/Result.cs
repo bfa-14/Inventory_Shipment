@@ -18,6 +18,7 @@ public enum ErrorType
 /// </summary>
 public class Result
 {
+<<<<<<< HEAD
     protected Result(
         bool isSuccess,
         ErrorType errorType,
@@ -25,13 +26,19 @@ public class Result
         IReadOnlyList<string>? errors,
         string? code = null,
         object? data = null)
+=======
+    protected Result(bool isSuccess, ErrorType errorType, string? error, IReadOnlyList<string>? errors)
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     {
         IsSuccess = isSuccess;
         ErrorType = errorType;
         Error = error;
         Errors = errors ?? [];
+<<<<<<< HEAD
         Code = code;
         Data = data;
+=======
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     }
 
     public bool IsSuccess { get; }
@@ -40,6 +47,7 @@ public class Result
     public string? Error { get; }
     public IReadOnlyList<string> Errors { get; }
 
+<<<<<<< HEAD
     /// <summary>
     /// Machine-readable reason for the failure, e.g. "DUPLICATE_CODE". The API surfaces it as the
     /// "code" extension of the problem details so the client can react without parsing the message.
@@ -52,17 +60,23 @@ public class Result
     /// </summary>
     public object? Data { get; }
 
+=======
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     public static Result Success() => new(true, ErrorType.None, null, null);
 
     public static Result Failure(ErrorType errorType, string error, IReadOnlyList<string>? errors = null)
         => new(false, errorType, error, errors);
+<<<<<<< HEAD
 
     public static Result Failure(ErrorType errorType, string error, string code, object? data = null)
         => new(false, errorType, error, null, code, data);
+=======
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
 }
 
 public sealed class Result<T> : Result
 {
+<<<<<<< HEAD
     private Result(
         bool isSuccess,
         T? value,
@@ -72,6 +86,10 @@ public sealed class Result<T> : Result
         string? code = null,
         object? data = null)
         : base(isSuccess, errorType, error, errors, code, data)
+=======
+    private Result(bool isSuccess, T? value, ErrorType errorType, string? error, IReadOnlyList<string>? errors)
+        : base(isSuccess, errorType, error, errors)
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     {
         Value = value;
     }
@@ -82,7 +100,10 @@ public sealed class Result<T> : Result
 
     public static new Result<T> Failure(ErrorType errorType, string error, IReadOnlyList<string>? errors = null)
         => new(false, default, errorType, error, errors);
+<<<<<<< HEAD
 
     public static new Result<T> Failure(ErrorType errorType, string error, string code, object? data = null)
         => new(false, default, errorType, error, null, code, data);
+=======
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
 }

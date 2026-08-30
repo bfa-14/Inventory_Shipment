@@ -25,6 +25,7 @@ public static class Permissions
         public const string AuditView = "security.audit.view";
     }
 
+<<<<<<< HEAD
     public static class MasterData
     {
         public const string BranchesView = "masterdata.branches.view";
@@ -39,6 +40,9 @@ public static class Permissions
 
     private const string SecurityModule = "Security";
     private const string MasterDataModule = "Master Data";
+=======
+    private const string SecurityModule = "Security";
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
 
     public static IReadOnlyList<PermissionDefinition> All { get; } =
     [
@@ -56,6 +60,7 @@ public static class Permissions
             "Browse the catalog of permissions defined by the application.", 60),
         new(Security.AuditView, "View login audit", SecurityModule,
             "Read the record of successful and failed sign-in attempts.", 70),
+<<<<<<< HEAD
 
         new(MasterData.BranchesView, "View branches", MasterDataModule,
             "See the Branches / Sites list.", 100),
@@ -74,5 +79,7 @@ public static class Permissions
             "Change warehouse details and activate / deactivate them.", 160),
         new(MasterData.WarehousesDelete, "Delete warehouses", MasterDataModule,
             "Delete warehouses that hold no inventory and are not referenced by other records.", 170),
+=======
+>>>>>>> b5d1b30fa9d8e07e232f3ce84e9d4b71191cf21a
     ];
 }
