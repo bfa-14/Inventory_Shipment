@@ -28,6 +28,9 @@ public static class DependencyInjection
         services.TryAddScoped<ILoginAuditService, LoginAuditService>();
         services.TryAddScoped<IBranchService, BranchService>();
         services.TryAddScoped<IWarehouseService, WarehouseService>();
+        services.TryAddScoped<ICurrencyService, CurrencyService>();
+        services.TryAddScoped<IExchangeRateService, ExchangeRateService>();
+        services.TryAddScoped<IItemFamilyService, ItemFamilyService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

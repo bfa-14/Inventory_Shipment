@@ -1489,3 +1489,1255 @@ BEGIN
     END
 END
 GO
+
+-- ===== 08: Master Data - Currencies & Exchange Rates =====
+
+/* =====================================================================================
+   Inventory_Shipment - 08: Master Data - Currencies & Exchange Rates
+
+   Schema:  masterdata (created if missing). One schema per module - nothing in dbo.
+   Tables:  masterdata.Currencies, masterdata.ExchangeRates
+   Procs:   masterdata.usp_Currency_Search / _Get / _GetBase / _Lookup / _Create / _Update /
+            _SetActive / _Delete,
+            masterdata.usp_ExchangeRate_Search / _Get / _GetLatest / _Create / _Update / _Delete
+   Func:    masterdata.fn_GetRate (latest rate on or before a date; 1 for the base currency)
+   Seeds:   permissions masterdata.currencies.* (sort 180-210) and masterdata.exchangerates.*
+            (sort 220-250), module "Master Data"; currencies USD (base) / EUR / INR / CDF when
+            the table is empty.
+
+   Conventions:
+     - Exactly one ACTIVE currency is the BASE currency (filtered unique index), same pattern
+       as the Main Branch. Amounts are stored and reported in the base currency.
+     - A rate means: 1 unit of the BASE currency = Rate units of the quoted currency
+       (e.g. base USD, CDF rate 2800.000000 -> 1 USD = 2,800 CDF).
+     - The base currency never has rate rows - its rate is 1 by definition.
+     - RateType: 1 = Official, 2 = NonOfficial (parallel), 3 = Market.
+     - One rate per (currency, type, date); a rate stays effective until a newer date exists
+       (fn_GetRate takes the latest RateDate <= the asked date).
+     - Future transactions must SNAPSHOT the rate they used into their own rows; deleting or
+       editing a rate here never rewrites history.
+
+   Business rules enforced here (error numbers are read by the API):
+     53000  validation (required field / invalid value / future date)
+     53001  Currency Code already exists
+     53002  another active currency is already the Base Currency (confirm: @ReplaceBaseCurrency = 1)
+     53003  currency is referenced by other records - cannot be deleted (deactivate instead)
+     53004  concurrency conflict (RowVersion changed)
+     53005  Base Currency protected (must stay active / cannot be demoted, deleted, or given rates)
+     53006  currency / exchange rate not found
+     53007  a rate for this currency, type and date already exists
+     53008  currency is inactive - rates cannot be added for it
+
+   Requires 01_Create_Schema.sql (security.Users) and 03_Security_RBAC.sql (security.Permissions).
+   Idempotent - safe to run repeatedly. SQL Server 2016 SP1+.
+   ===================================================================================== */
+
+
+IF OBJECT_ID(N'security.Users', N'U') IS NULL OR OBJECT_ID(N'security.Permissions', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run 01_Create_Schema.sql and 03_Security_RBAC.sql before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+IF SCHEMA_ID(N'masterdata') IS NULL
+    EXEC (N'CREATE SCHEMA [masterdata] AUTHORIZATION [dbo];');
+GO
+
+/* ------------------------------------------------------------------ 1. Tables */
+
+IF OBJECT_ID(N'masterdata.Currencies', N'U') IS NULL
+BEGIN
+    CREATE TABLE masterdata.Currencies
+    (
+        Id             INT IDENTITY(1,1) NOT NULL,
+        CurrencyCode   NVARCHAR(3)       NOT NULL,   -- ISO 4217, stored upper-case (USD, EUR, CDF...)
+        CurrencyName   NVARCHAR(100)     NOT NULL,
+        Symbol         NVARCHAR(10)      NULL,       -- $, EUR sign, FC ...
+        DecimalPlaces  TINYINT           NOT NULL CONSTRAINT DF_Currencies_DecimalPlaces DEFAULT (2),
+        IsBaseCurrency BIT               NOT NULL CONSTRAINT DF_Currencies_IsBaseCurrency DEFAULT (0),
+        IsActive       BIT               NOT NULL CONSTRAINT DF_Currencies_IsActive DEFAULT (1),
+        CreatedAtUtc   DATETIME2(3)      NOT NULL CONSTRAINT DF_Currencies_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy      INT               NULL,       -- security.Users.Id
+        UpdatedAtUtc   DATETIME2(3)      NULL,
+        UpdatedBy      INT               NULL,       -- security.Users.Id
+        RowVersion     ROWVERSION        NOT NULL,   -- optimistic concurrency
+        CONSTRAINT PK_Currencies PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_Currencies_CurrencyCode UNIQUE (CurrencyCode),
+        CONSTRAINT CK_Currencies_CurrencyCode_NotBlank CHECK (LEN(LTRIM(RTRIM(CurrencyCode))) > 0),
+        CONSTRAINT CK_Currencies_CurrencyName_NotBlank CHECK (LEN(LTRIM(RTRIM(CurrencyName))) > 0),
+        CONSTRAINT CK_Currencies_DecimalPlaces CHECK (DecimalPlaces <= 6),
+        CONSTRAINT CK_Currencies_BaseIsActive CHECK (IsBaseCurrency = 0 OR IsActive = 1),  -- the base currency is always active
+        CONSTRAINT FK_Currencies_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES security.Users (Id),
+        CONSTRAINT FK_Currencies_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES security.Users (Id)
+    );
+
+    -- Only one active currency can be the Base Currency (same pattern as the Main Branch).
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Currencies_ActiveBaseCurrency
+        ON masterdata.Currencies (IsBaseCurrency)
+        WHERE IsBaseCurrency = 1 AND IsActive = 1;
+
+    CREATE NONCLUSTERED INDEX IX_Currencies_CurrencyName ON masterdata.Currencies (CurrencyName);
+
+    PRINT 'Created masterdata.Currencies';
+END
+GO
+
+IF OBJECT_ID(N'masterdata.ExchangeRates', N'U') IS NULL
+BEGIN
+    CREATE TABLE masterdata.ExchangeRates
+    (
+        Id           INT IDENTITY(1,1) NOT NULL,
+        CurrencyId   INT               NOT NULL,     -- the quoted currency (never the base currency)
+        RateType     TINYINT           NOT NULL,     -- 1 = Official, 2 = NonOfficial, 3 = Market
+        RateDate     DATE              NOT NULL,     -- effective date (no future dates)
+        Rate         DECIMAL(18,6)     NOT NULL,     -- 1 base currency = Rate x this currency
+        Notes        NVARCHAR(300)     NULL,         -- e.g. the market source
+        CreatedAtUtc DATETIME2(3)      NOT NULL CONSTRAINT DF_ExchangeRates_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy    INT               NULL,
+        UpdatedAtUtc DATETIME2(3)      NULL,
+        UpdatedBy    INT               NULL,
+        RowVersion   ROWVERSION        NOT NULL,
+        CONSTRAINT PK_ExchangeRates PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT FK_ExchangeRates_Currency  FOREIGN KEY (CurrencyId) REFERENCES masterdata.Currencies (Id),
+        CONSTRAINT FK_ExchangeRates_CreatedBy FOREIGN KEY (CreatedBy)  REFERENCES security.Users (Id),
+        CONSTRAINT FK_ExchangeRates_UpdatedBy FOREIGN KEY (UpdatedBy)  REFERENCES security.Users (Id),
+        CONSTRAINT CK_ExchangeRates_RateType CHECK (RateType IN (1, 2, 3)),
+        CONSTRAINT CK_ExchangeRates_Rate     CHECK (Rate > 0)
+    );
+
+    -- One rate per currency + type + day; also the covering index for latest-rate lookups.
+    CREATE UNIQUE NONCLUSTERED INDEX UX_ExchangeRates_Currency_Type_Date
+        ON masterdata.ExchangeRates (CurrencyId, RateType, RateDate DESC)
+        INCLUDE (Rate);
+
+    CREATE NONCLUSTERED INDEX IX_ExchangeRates_RateDate ON masterdata.ExchangeRates (RateDate);
+
+    PRINT 'Created masterdata.ExchangeRates';
+END
+GO
+
+/* ------------------------------------------------------------------ 2. Function */
+
+-- The rate in force for a currency/type on a date: the latest RateDate <= @AsOfDate.
+-- Returns 1 for the base currency and NULL when no rate has been entered yet.
+CREATE OR ALTER FUNCTION masterdata.fn_GetRate
+(
+    @CurrencyId INT,
+    @RateType   TINYINT,       -- 1 Official | 2 NonOfficial | 3 Market
+    @AsOfDate   DATE
+)
+RETURNS DECIMAL(18,6)
+AS
+BEGIN
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1)
+        RETURN 1;
+
+    RETURN
+    (
+        SELECT TOP (1) Rate
+        FROM masterdata.ExchangeRates
+        WHERE CurrencyId = @CurrencyId AND RateType = @RateType AND RateDate <= @AsOfDate
+        ORDER BY RateDate DESC
+    );
+END
+GO
+
+/* ------------------------------------------------------------------ 3. Currency procedures */
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_Search
+    @Search         NVARCHAR(100) = NULL,          -- matches Currency Code or Currency Name (contains)
+    @IsActive       BIT           = NULL,          -- NULL = all
+    @IsBaseCurrency BIT           = NULL,          -- NULL = all
+    @SortColumn     NVARCHAR(30)  = N'CurrencyCode', -- CurrencyCode | CurrencyName | DecimalPlaces | IsBaseCurrency | IsActive | CreatedAtUtc
+    @SortDirection  NVARCHAR(4)   = N'ASC',
+    @PageNumber     INT           = 1,
+    @PageSize       INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'CurrencyCode', N'CurrencyName', N'DecimalPlaces', N'IsBaseCurrency', N'IsActive', N'CreatedAtUtc')
+        SET @SortColumn = N'CurrencyCode';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC')
+        SET @SortDirection = N'ASC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT c.Id, c.CurrencyCode, c.CurrencyName, c.Symbol, c.DecimalPlaces, c.IsBaseCurrency, c.IsActive,
+           c.CreatedAtUtc, c.CreatedBy, c.UpdatedAtUtc, c.UpdatedBy, c.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM masterdata.Currencies c
+    WHERE (@Search IS NULL OR c.CurrencyCode LIKE N'%' + @Search + N'%' OR c.CurrencyName LIKE N'%' + @Search + N'%')
+      AND (@IsActive IS NULL OR c.IsActive = @IsActive)
+      AND (@IsBaseCurrency IS NULL OR c.IsBaseCurrency = @IsBaseCurrency)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'CurrencyCode' THEN c.CurrencyCode WHEN N'CurrencyName' THEN c.CurrencyName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'CurrencyCode' THEN c.CurrencyCode WHEN N'CurrencyName' THEN c.CurrencyName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'DecimalPlaces' THEN CAST(c.DecimalPlaces AS INT)
+                             WHEN N'IsBaseCurrency' THEN CAST(c.IsBaseCurrency AS INT)
+                             WHEN N'IsActive' THEN CAST(c.IsActive AS INT) END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'DecimalPlaces' THEN CAST(c.DecimalPlaces AS INT)
+                             WHEN N'IsBaseCurrency' THEN CAST(c.IsBaseCurrency AS INT)
+                             WHEN N'IsActive' THEN CAST(c.IsActive AS INT) END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN c.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN c.CreatedAtUtc END DESC,
+        c.CurrencyCode ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, CurrencyCode, CurrencyName, Symbol, DecimalPlaces, IsBaseCurrency, IsActive,
+           CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
+    FROM masterdata.Currencies
+    WHERE Id = @Id;
+END
+GO
+
+-- The current active Base Currency (0 or 1 row).
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_GetBase
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT TOP (1) Id, CurrencyCode, CurrencyName, Symbol, DecimalPlaces, IsBaseCurrency, IsActive,
+           CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
+    FROM masterdata.Currencies
+    WHERE IsBaseCurrency = 1 AND IsActive = 1;
+END
+GO
+
+-- Dropdown data. @ActiveOnly = 1 hides inactive currencies; @IncludeId keeps one inactive row
+-- visible (the value already saved on the record being edited).
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_Lookup
+    @ActiveOnly BIT = 1,
+    @IncludeId  INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, CurrencyCode, CurrencyName, Symbol, DecimalPlaces, IsBaseCurrency, IsActive
+    FROM masterdata.Currencies
+    WHERE (@ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId)
+    ORDER BY IsBaseCurrency DESC, CurrencyCode;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_Create
+    @CurrencyCode        NVARCHAR(3),
+    @CurrencyName        NVARCHAR(100),
+    @Symbol              NVARCHAR(10) = NULL,
+    @DecimalPlaces       TINYINT      = 2,
+    @IsBaseCurrency      BIT          = 0,
+    @IsActive            BIT          = 1,
+    @ReplaceBaseCurrency BIT          = 0,    -- 1 = the caller confirmed replacing the current Base Currency
+    @UserId              INT          = NULL,
+    @NewId               INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @CurrencyCode  = UPPER(LTRIM(RTRIM(@CurrencyCode)));
+    SET @CurrencyName  = LTRIM(RTRIM(@CurrencyName));
+    SET @Symbol        = NULLIF(LTRIM(RTRIM(@Symbol)), N'');
+    SET @DecimalPlaces = ISNULL(@DecimalPlaces, 2);
+    SET @IsBaseCurrency = ISNULL(@IsBaseCurrency, 0);
+    SET @IsActive       = ISNULL(@IsActive, 1);
+
+    IF @CurrencyCode IS NULL OR @CurrencyCode = N''
+        THROW 53000, 'Currency Code is required.', 1;
+
+    IF LEN(@CurrencyCode) <> 3 OR @CurrencyCode LIKE N'%[^A-Z]%'
+        THROW 53000, 'Currency Code must be exactly 3 letters (ISO 4217, e.g. USD).', 1;
+
+    IF @CurrencyName IS NULL OR @CurrencyName = N''
+        THROW 53000, 'Currency Name is required.', 1;
+
+    IF @DecimalPlaces > 6
+        THROW 53000, 'Decimal Places must be between 0 and 6.', 1;
+
+    IF @IsBaseCurrency = 1 AND @IsActive = 0
+        THROW 53005, 'The Base Currency must be active.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE CurrencyCode = @CurrencyCode)
+        THROW 53001, 'A currency with this Currency Code already exists.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @IsBaseCurrency = 1
+        BEGIN
+            DECLARE @CurrentBaseId INT =
+                (SELECT TOP (1) Id FROM masterdata.Currencies WITH (UPDLOCK, HOLDLOCK) WHERE IsBaseCurrency = 1 AND IsActive = 1);
+
+            IF @CurrentBaseId IS NOT NULL
+            BEGIN
+                IF @ReplaceBaseCurrency = 0
+                    THROW 53002, 'Another active currency is already designated as the Base Currency. Confirm to replace it.', 1;
+
+                UPDATE masterdata.Currencies
+                SET IsBaseCurrency = 0, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+                WHERE Id = @CurrentBaseId;
+            END
+        END
+
+        INSERT INTO masterdata.Currencies (CurrencyCode, CurrencyName, Symbol, DecimalPlaces, IsBaseCurrency, IsActive, CreatedBy)
+        VALUES (@CurrencyCode, @CurrencyName, @Symbol, @DecimalPlaces, @IsBaseCurrency, @IsActive, @UserId);
+
+        SET @NewId = SCOPE_IDENTITY();
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_Update
+    @Id                  INT,
+    @CurrencyCode        NVARCHAR(3),
+    @CurrencyName        NVARCHAR(100),
+    @Symbol              NVARCHAR(10) = NULL,
+    @DecimalPlaces       TINYINT      = 2,
+    @IsBaseCurrency      BIT          = 0,
+    @IsActive            BIT          = 1,
+    @ReplaceBaseCurrency BIT          = 0,
+    @RowVersion          BINARY(8)    = NULL,   -- pass the value read earlier; NULL skips the concurrency check
+    @UserId              INT          = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @CurrencyCode  = UPPER(LTRIM(RTRIM(@CurrencyCode)));
+    SET @CurrencyName  = LTRIM(RTRIM(@CurrencyName));
+    SET @Symbol        = NULLIF(LTRIM(RTRIM(@Symbol)), N'');
+    SET @DecimalPlaces = ISNULL(@DecimalPlaces, 2);
+    SET @IsBaseCurrency = ISNULL(@IsBaseCurrency, 0);
+    SET @IsActive       = ISNULL(@IsActive, 1);
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id)
+        THROW 53006, 'Currency not found.', 1;
+
+    IF @CurrencyCode IS NULL OR @CurrencyCode = N''
+        THROW 53000, 'Currency Code is required.', 1;
+
+    IF LEN(@CurrencyCode) <> 3 OR @CurrencyCode LIKE N'%[^A-Z]%'
+        THROW 53000, 'Currency Code must be exactly 3 letters (ISO 4217, e.g. USD).', 1;
+
+    IF @CurrencyName IS NULL OR @CurrencyName = N''
+        THROW 53000, 'Currency Name is required.', 1;
+
+    IF @DecimalPlaces > 6
+        THROW 53000, 'Decimal Places must be between 0 and 6.', 1;
+
+    IF @IsBaseCurrency = 1 AND @IsActive = 0
+        THROW 53005, 'The Base Currency must be active.', 1;
+
+    -- The base currency cannot be demoted or deactivated from here; another currency must take
+    -- over the base flag first (or in the same call on that other currency with @ReplaceBaseCurrency = 1).
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id AND IsBaseCurrency = 1 AND IsActive = 1)
+       AND (@IsBaseCurrency = 0 OR @IsActive = 0)
+        THROW 53005, 'The Base Currency cannot be demoted or deactivated. Designate another currency as the Base Currency first.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE CurrencyCode = @CurrencyCode AND Id <> @Id)
+        THROW 53001, 'A currency with this Currency Code already exists.', 1;
+
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 53004, 'This currency was modified by another user. Reload the page and try again.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @IsBaseCurrency = 1
+        BEGIN
+            DECLARE @CurrentBaseId INT =
+                (SELECT TOP (1) Id FROM masterdata.Currencies WITH (UPDLOCK, HOLDLOCK)
+                 WHERE IsBaseCurrency = 1 AND IsActive = 1 AND Id <> @Id);
+
+            IF @CurrentBaseId IS NOT NULL
+            BEGIN
+                IF @ReplaceBaseCurrency = 0
+                    THROW 53002, 'Another active currency is already designated as the Base Currency. Confirm to replace it.', 1;
+
+                UPDATE masterdata.Currencies
+                SET IsBaseCurrency = 0, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+                WHERE Id = @CurrentBaseId;
+            END
+        END
+
+        UPDATE masterdata.Currencies
+        SET CurrencyCode   = @CurrencyCode,
+            CurrencyName   = @CurrencyName,
+            Symbol         = @Symbol,
+            DecimalPlaces  = @DecimalPlaces,
+            IsBaseCurrency = @IsBaseCurrency,
+            IsActive       = @IsActive,
+            UpdatedAtUtc   = SYSUTCDATETIME(),
+            UpdatedBy      = @UserId
+        WHERE Id = @Id;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_SetActive
+    @Id       INT,
+    @IsActive BIT,
+    @UserId   INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id)
+        THROW 53006, 'Currency not found.', 1;
+
+    IF @IsActive = 0 AND EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id AND IsBaseCurrency = 1)
+        THROW 53005, 'The Base Currency cannot be deactivated. Designate another currency as the Base Currency first.', 1;
+
+    UPDATE masterdata.Currencies
+    SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+-- Physical delete, allowed only when nothing references the currency. The check reads
+-- sys.foreign_keys, so exchange rates and every future table with a foreign key to
+-- masterdata.Currencies (prices, invoices, payments...) are covered automatically.
+CREATE OR ALTER PROCEDURE masterdata.usp_Currency_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id)
+        THROW 53006, 'Currency not found.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @Id AND IsBaseCurrency = 1)
+        THROW 53005, 'The Base Currency cannot be deleted. Designate another currency as the Base Currency first.', 1;
+
+    DECLARE @sql NVARCHAR(MAX) = N'';
+
+    SELECT @sql = @sql
+        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+    FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.Currencies');
+
+    DECLARE @Referenced BIT = 0;
+
+    IF @sql <> N''
+        EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+
+    IF @Referenced = 1
+        THROW 53003, 'This currency cannot be deleted because it is referenced by other records (e.g. exchange rates). You may deactivate the currency instead.', 1;
+
+    DELETE FROM masterdata.Currencies WHERE Id = @Id;
+END
+GO
+
+/* ------------------------------------------------------------------ 4. Exchange rate procedures */
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_Search
+    @CurrencyId    INT          = NULL,          -- NULL = all currencies
+    @RateType      TINYINT      = NULL,          -- NULL = all types (1 Official | 2 NonOfficial | 3 Market)
+    @DateFrom      DATE         = NULL,
+    @DateTo        DATE         = NULL,
+    @SortColumn    NVARCHAR(30) = N'RateDate',   -- RateDate | CurrencyCode | RateType | Rate | CreatedAtUtc
+    @SortDirection NVARCHAR(4)  = N'DESC',
+    @PageNumber    INT          = 1,
+    @PageSize      INT          = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'RateDate', N'CurrencyCode', N'RateType', N'Rate', N'CreatedAtUtc')
+        SET @SortColumn = N'RateDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC')
+        SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT er.Id, er.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol, c.DecimalPlaces,
+           er.RateType, er.RateDate, er.Rate, er.Notes,
+           er.CreatedAtUtc, er.CreatedBy, er.UpdatedAtUtc, er.UpdatedBy, er.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM masterdata.ExchangeRates er
+    INNER JOIN masterdata.Currencies c ON c.Id = er.CurrencyId
+    WHERE (@CurrencyId IS NULL OR er.CurrencyId = @CurrencyId)
+      AND (@RateType   IS NULL OR er.RateType = @RateType)
+      AND (@DateFrom   IS NULL OR er.RateDate >= @DateFrom)
+      AND (@DateTo     IS NULL OR er.RateDate <= @DateTo)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'RateDate' THEN er.RateDate END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'RateDate' THEN er.RateDate END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CurrencyCode' THEN c.CurrencyCode END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CurrencyCode' THEN c.CurrencyCode END DESC,
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'RateType' THEN CAST(er.RateType AS INT) END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'RateType' THEN CAST(er.RateType AS INT) END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Rate' THEN er.Rate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Rate' THEN er.Rate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN er.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN er.CreatedAtUtc END DESC,
+        er.RateDate DESC, c.CurrencyCode ASC, er.RateType ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT er.Id, er.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol, c.DecimalPlaces,
+           er.RateType, er.RateDate, er.Rate, er.Notes,
+           er.CreatedAtUtc, er.CreatedBy, er.UpdatedAtUtc, er.UpdatedBy, er.RowVersion
+    FROM masterdata.ExchangeRates er
+    INNER JOIN masterdata.Currencies c ON c.Id = er.CurrencyId
+    WHERE er.Id = @Id;
+END
+GO
+
+-- The rate in force per type (up to 3 rows: Official / NonOfficial / Market) for one currency,
+-- as of a date (default: today, UTC).
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_GetLatest
+    @CurrencyId INT,
+    @AsOfDate   DATE = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @AsOfDate IS NULL SET @AsOfDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    SELECT x.Id, x.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol, c.DecimalPlaces,
+           x.RateType, x.RateDate, x.Rate, x.Notes,
+           x.CreatedAtUtc, x.CreatedBy, x.UpdatedAtUtc, x.UpdatedBy, x.RowVersion
+    FROM
+    (
+        SELECT er.*, ROW_NUMBER() OVER (PARTITION BY er.RateType ORDER BY er.RateDate DESC) AS rn
+        FROM masterdata.ExchangeRates er
+        WHERE er.CurrencyId = @CurrencyId AND er.RateDate <= @AsOfDate
+    ) x
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE x.rn = 1
+    ORDER BY x.RateType;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_Create
+    @CurrencyId INT,
+    @RateType   TINYINT,               -- 1 Official | 2 NonOfficial | 3 Market
+    @RateDate   DATE,
+    @Rate       DECIMAL(18,6),
+    @Notes      NVARCHAR(300) = NULL,
+    @UserId     INT           = NULL,
+    @NewId      INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+
+    IF @CurrencyId IS NULL
+        THROW 53000, 'Currency is required.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId)
+        THROW 53006, 'Currency not found.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1)
+        THROW 53005, 'The Base Currency always has a rate of 1 - exchange rates are entered for the other currencies.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 53008, 'This currency is inactive. Activate it before adding exchange rates.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3)
+        THROW 53000, 'Rate Type must be Official, Non-official or Market.', 1;
+
+    IF @RateDate IS NULL
+        THROW 53000, 'Rate Date is required.', 1;
+
+    IF @RateDate > CAST(SYSUTCDATETIME() AS DATE)
+        THROW 53000, 'Rate Date cannot be in the future.', 1;
+
+    IF @Rate IS NULL OR @Rate <= 0
+        THROW 53000, 'Rate must be greater than zero.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.ExchangeRates
+               WHERE CurrencyId = @CurrencyId AND RateType = @RateType AND RateDate = @RateDate)
+        THROW 53007, 'A rate for this currency, rate type and date already exists. Edit that rate instead.', 1;
+
+    INSERT INTO masterdata.ExchangeRates (CurrencyId, RateType, RateDate, Rate, Notes, CreatedBy)
+    VALUES (@CurrencyId, @RateType, @RateDate, @Rate, @Notes, @UserId);
+
+    SET @NewId = SCOPE_IDENTITY();
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_Update
+    @Id         INT,
+    @CurrencyId INT,
+    @RateType   TINYINT,
+    @RateDate   DATE,
+    @Rate       DECIMAL(18,6),
+    @Notes      NVARCHAR(300) = NULL,
+    @RowVersion BINARY(8)     = NULL,   -- NULL skips the concurrency check
+    @UserId     INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ExchangeRates WHERE Id = @Id)
+        THROW 53006, 'Exchange rate not found.', 1;
+
+    IF @CurrencyId IS NULL
+        THROW 53000, 'Currency is required.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId)
+        THROW 53006, 'Currency not found.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1)
+        THROW 53005, 'The Base Currency always has a rate of 1 - exchange rates are entered for the other currencies.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3)
+        THROW 53000, 'Rate Type must be Official, Non-official or Market.', 1;
+
+    IF @RateDate IS NULL
+        THROW 53000, 'Rate Date is required.', 1;
+
+    IF @RateDate > CAST(SYSUTCDATETIME() AS DATE)
+        THROW 53000, 'Rate Date cannot be in the future.', 1;
+
+    IF @Rate IS NULL OR @Rate <= 0
+        THROW 53000, 'Rate must be greater than zero.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.ExchangeRates
+               WHERE CurrencyId = @CurrencyId AND RateType = @RateType AND RateDate = @RateDate AND Id <> @Id)
+        THROW 53007, 'A rate for this currency, rate type and date already exists. Edit that rate instead.', 1;
+
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.ExchangeRates WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 53004, 'This exchange rate was modified by another user. Reload the page and try again.', 1;
+
+    UPDATE masterdata.ExchangeRates
+    SET CurrencyId   = @CurrencyId,
+        RateType     = @RateType,
+        RateDate     = @RateDate,
+        Rate         = @Rate,
+        Notes        = @Notes,
+        UpdatedAtUtc = SYSUTCDATETIME(),
+        UpdatedBy    = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+-- Rates are reference data: transactions snapshot the rate they used, so deleting a wrongly
+-- entered rate is safe and allowed.
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ExchangeRates WHERE Id = @Id)
+        THROW 53006, 'Exchange rate not found.', 1;
+
+    DELETE FROM masterdata.ExchangeRates WHERE Id = @Id;
+END
+GO
+
+/* ------------------------------------------------------------------ 5. Permissions */
+
+MERGE security.Permissions AS target
+USING
+(
+    VALUES
+        (N'masterdata.currencies.view',      N'View currencies',       N'Master Data', N'See the Currencies list.',                                        180),
+        (N'masterdata.currencies.create',    N'Create currencies',     N'Master Data', N'Add new currencies.',                                             190),
+        (N'masterdata.currencies.edit',      N'Edit currencies',       N'Master Data', N'Change currency details, the base currency and active status.',   200),
+        (N'masterdata.currencies.delete',    N'Delete currencies',     N'Master Data', N'Delete currencies that are not referenced by other records.',     210),
+        (N'masterdata.exchangerates.view',   N'View exchange rates',   N'Master Data', N'See the Exchange Rates page and the latest rates.',               220),
+        (N'masterdata.exchangerates.create', N'Create exchange rates', N'Master Data', N'Enter official, non-official and market rates.',                  230),
+        (N'masterdata.exchangerates.edit',   N'Edit exchange rates',   N'Master Data', N'Correct entered rates.',                                          240),
+        (N'masterdata.exchangerates.delete', N'Delete exchange rates', N'Master Data', N'Remove wrongly entered rates.',                                   250)
+) AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN
+    UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Module, Description, SortOrder)
+    VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+-- System roles (Admin) hold every permission; Manager can view.
+INSERT INTO security.RolePermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM security.Roles r
+CROSS JOIN security.Permissions p
+WHERE (p.Code LIKE N'masterdata.currencies.%' OR p.Code LIKE N'masterdata.exchangerates.%')
+  AND (r.IsSystem = 1 OR (r.Name = N'Manager' AND p.Code IN (N'masterdata.currencies.view', N'masterdata.exchangerates.view')))
+  AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+GO
+
+/* ------------------------------------------------------------------ 6. Seed */
+
+IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies)
+BEGIN
+    INSERT INTO masterdata.Currencies (CurrencyCode, CurrencyName, Symbol, DecimalPlaces, IsBaseCurrency, IsActive)
+    VALUES (N'USD', N'US Dollar',        N'$',  2, 1, 1),
+           (N'EUR', N'Euro',             N'€',  2, 0, 1),
+           (N'INR', N'Indian Rupee',     N'₹',  2, 0, 1),
+           (N'CDF', N'Congolese Franc',  N'FC', 2, 0, 1);
+    PRINT 'Seeded currencies: USD (base), EUR, INR, CDF - deactivate the ones you do not use.';
+END
+GO
+
+-- ===== 09: Master Data - Item Families =====
+
+/* =====================================================================================
+   Inventory_Shipment - 09: Master Data - Item Families   (user story US-MD-004)
+
+   Schema:  masterdata (created if missing). One schema per module - nothing in dbo.
+   Table:   masterdata.ItemFamilies (self-referencing tree, UNLIMITED depth)
+   Procs:   masterdata.usp_ItemFamily_Tree / _Get / _Lookup / _NextChildCode / _Create /
+            _Update / _SetActive / _Delete
+   Func:    masterdata.fn_ItemFamily_Subtree (a family and every descendant; loop-based,
+            so there is NO recursion depth limit)
+   Seeds:   permissions masterdata.itemfamilies.view / create / edit / delete (sort 260-290,
+            module "Master Data"); a small starter tree when the table is empty.
+
+   Design decisions (agreed):
+     - ONE tree replaces the separate Sub Groups / Categories pages: a sub group is simply
+       a child family. Items (next story) may attach to a family at ANY level.
+     - Depth is UNLIMITED - all hierarchy operations are iterative (WHILE loops), never
+       recursive CTEs, so no MAXRECURSION ceiling applies.
+     - Codes are auto-SUGGESTED from the parent (FAM-002 child -> FAM-002-01) but freely
+       editable, globally unique, and NEVER renamed when a family is moved.
+     - A family can be active only when its parent is active. Deactivating a family
+       deactivates its whole subtree; activating touches only the family itself.
+     - Level (1 = root) is stored and recomputed by the procedures on create/move.
+
+   Business rules enforced here (error numbers are read by the API):
+     54000  validation (required field / invalid value)
+     54001  Family Code already exists
+     54002  a family with this name already exists under the same parent
+     54003  family is referenced by other records (items...) - cannot be deleted
+     54004  concurrency conflict (RowVersion changed)
+     54005  family has child families - cannot be deleted
+     54006  family / parent family not found
+     54007  circular hierarchy (the parent is the family itself or one of its descendants)
+     54008  parent family is inactive (cannot create/activate an active child under it)
+
+   Requires 01_Create_Schema.sql (security.Users) and 03_Security_RBAC.sql (security.Permissions).
+   Idempotent - safe to run repeatedly. SQL Server 2016 SP1+.
+   ===================================================================================== */
+
+IF OBJECT_ID(N'security.Users', N'U') IS NULL OR OBJECT_ID(N'security.Permissions', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run 01_Create_Schema.sql and 03_Security_RBAC.sql before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+IF SCHEMA_ID(N'masterdata') IS NULL
+    EXEC (N'CREATE SCHEMA [masterdata] AUTHORIZATION [dbo];');
+GO
+
+/* ------------------------------------------------------------------ 1. Table */
+
+IF OBJECT_ID(N'masterdata.ItemFamilies', N'U') IS NULL
+BEGIN
+    CREATE TABLE masterdata.ItemFamilies
+    (
+        Id           INT IDENTITY(1,1) NOT NULL,
+        ParentId     INT               NULL,        -- NULL = root family
+        FamilyCode   NVARCHAR(50)      NOT NULL,    -- unique, stable (not renamed on move)
+        FamilyName   NVARCHAR(150)     NOT NULL,
+        Description  NVARCHAR(500)     NULL,
+        [Level]      INT               NOT NULL CONSTRAINT DF_ItemFamilies_Level DEFAULT (1),  -- 1 = root, maintained by the procs
+        IsActive     BIT               NOT NULL CONSTRAINT DF_ItemFamilies_IsActive DEFAULT (1),
+        CreatedAtUtc DATETIME2(3)      NOT NULL CONSTRAINT DF_ItemFamilies_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy    INT               NULL,        -- security.Users.Id
+        UpdatedAtUtc DATETIME2(3)      NULL,
+        UpdatedBy    INT               NULL,
+        RowVersion   ROWVERSION        NOT NULL,
+        CONSTRAINT PK_ItemFamilies PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_ItemFamilies_FamilyCode UNIQUE (FamilyCode),
+        CONSTRAINT CK_ItemFamilies_FamilyCode_NotBlank CHECK (LEN(LTRIM(RTRIM(FamilyCode))) > 0),
+        CONSTRAINT CK_ItemFamilies_FamilyName_NotBlank CHECK (LEN(LTRIM(RTRIM(FamilyName))) > 0),
+        CONSTRAINT CK_ItemFamilies_Level CHECK ([Level] >= 1),
+        CONSTRAINT CK_ItemFamilies_NotOwnParent CHECK (ParentId IS NULL OR ParentId <> Id),
+        CONSTRAINT FK_ItemFamilies_Parent    FOREIGN KEY (ParentId)  REFERENCES masterdata.ItemFamilies (Id),
+        CONSTRAINT FK_ItemFamilies_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES security.Users (Id),
+        CONSTRAINT FK_ItemFamilies_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES security.Users (Id)
+    );
+
+    -- Sibling names must differ (NULL parents compare equal in a unique index, so root names are unique too).
+    CREATE UNIQUE NONCLUSTERED INDEX UX_ItemFamilies_Parent_FamilyName
+        ON masterdata.ItemFamilies (ParentId, FamilyName);
+
+    CREATE NONCLUSTERED INDEX IX_ItemFamilies_ParentId ON masterdata.ItemFamilies (ParentId);
+
+    PRINT 'Created masterdata.ItemFamilies';
+END
+GO
+
+/* ------------------------------------------------------------------ 2. Subtree function (loop-based, no depth limit) */
+
+-- A family plus every descendant. Iterative, so it works at ANY depth.
+CREATE OR ALTER FUNCTION masterdata.fn_ItemFamily_Subtree (@Id INT)
+RETURNS @Result TABLE (Id INT PRIMARY KEY, ParentId INT NULL, [Level] INT NOT NULL)
+AS
+BEGIN
+    INSERT INTO @Result (Id, ParentId, [Level])
+    SELECT Id, ParentId, [Level] FROM masterdata.ItemFamilies WHERE Id = @Id;
+
+    WHILE @@ROWCOUNT > 0
+    BEGIN
+        INSERT INTO @Result (Id, ParentId, [Level])
+        SELECT f.Id, f.ParentId, f.[Level]
+        FROM masterdata.ItemFamilies f
+        INNER JOIN @Result r ON r.Id = f.ParentId
+        WHERE NOT EXISTS (SELECT 1 FROM @Result x WHERE x.Id = f.Id);
+    END
+
+    RETURN;
+END
+GO
+
+/* ------------------------------------------------------------------ 3. Procedures */
+
+-- The WHOLE tree in one flat result set (the page builds the hierarchy client-side; the
+-- table is small, so there is no server paging on purpose - paging cannot work on a tree).
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_Tree
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT f.Id, f.ParentId, f.FamilyCode, f.FamilyName, f.Description, f.[Level], f.IsActive,
+           f.CreatedAtUtc, f.CreatedBy, f.UpdatedAtUtc, f.UpdatedBy, f.RowVersion,
+           ChildCount = (SELECT COUNT(*) FROM masterdata.ItemFamilies c WHERE c.ParentId = f.Id)
+    FROM masterdata.ItemFamilies f
+    ORDER BY f.[Level], f.FamilyCode;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT f.Id, f.ParentId, f.FamilyCode, f.FamilyName, f.Description, f.[Level], f.IsActive,
+           f.CreatedAtUtc, f.CreatedBy, f.UpdatedAtUtc, f.UpdatedBy, f.RowVersion,
+           ChildCount = (SELECT COUNT(*) FROM masterdata.ItemFamilies c WHERE c.ParentId = f.Id)
+    FROM masterdata.ItemFamilies f
+    WHERE f.Id = @Id;
+END
+GO
+
+-- Dropdown data for other pages (e.g. the item definition later). Flat list; the client
+-- indents by Level / builds paths from ParentId. @ActiveOnly = 1 hides inactive families;
+-- @IncludeId keeps one inactive row visible (the value already saved on the record being edited).
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_Lookup
+    @ActiveOnly BIT = 1,
+    @IncludeId  INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, ParentId, FamilyCode, FamilyName, [Level], IsActive
+    FROM masterdata.ItemFamilies
+    WHERE (@ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId)
+    ORDER BY [Level], FamilyCode;
+END
+GO
+
+-- Suggested code for a new family: parent's code + '-' + 2-digit sequence (FAM-002 -> FAM-002-01);
+-- roots get FAM-### . Only a suggestion - the user may edit it; uniqueness is enforced on save.
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_NextChildCode
+    @ParentId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Prefix NVARCHAR(60), @Seq INT = 1, @Digits INT, @Code NVARCHAR(60);
+
+    IF @ParentId IS NULL
+    BEGIN
+        SET @Prefix = N'FAM-';
+        SET @Digits = 3;
+    END
+    ELSE
+    BEGIN
+        SELECT @Prefix = FamilyCode + N'-' FROM masterdata.ItemFamilies WHERE Id = @ParentId;
+        IF @Prefix IS NULL
+            THROW 54006, 'Parent family not found.', 1;
+        SET @Digits = 2;
+    END
+
+    SET @Code = @Prefix + RIGHT(REPLICATE(N'0', @Digits) + CAST(@Seq AS NVARCHAR(10)), @Digits);
+    WHILE EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE FamilyCode = @Code) AND @Seq < 100000
+    BEGIN
+        SET @Seq += 1;
+        SET @Code = @Prefix + RIGHT(REPLICATE(N'0', @Digits) + CAST(@Seq AS NVARCHAR(10)), @Digits);
+    END
+
+    SELECT SuggestedCode = LEFT(@Code, 50);
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_Create
+    @FamilyCode  NVARCHAR(50),
+    @FamilyName  NVARCHAR(150),
+    @ParentId    INT           = NULL,
+    @Description NVARCHAR(500) = NULL,
+    @IsActive    BIT           = 1,
+    @UserId      INT           = NULL,
+    @NewId       INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @FamilyCode  = LTRIM(RTRIM(@FamilyCode));
+    SET @FamilyName  = LTRIM(RTRIM(@FamilyName));
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @IsActive    = ISNULL(@IsActive, 1);
+
+    IF @FamilyCode IS NULL OR @FamilyCode = N''
+        THROW 54000, 'Family Code is required.', 1;
+
+    IF @FamilyName IS NULL OR @FamilyName = N''
+        THROW 54000, 'Family Name is required.', 1;
+
+    DECLARE @ParentLevel INT = 0, @ParentActive BIT = 1;
+
+    IF @ParentId IS NOT NULL
+    BEGIN
+        SELECT @ParentLevel = [Level], @ParentActive = IsActive
+        FROM masterdata.ItemFamilies WHERE Id = @ParentId;
+
+        IF @ParentLevel IS NULL OR @ParentLevel = 0
+            THROW 54006, 'Parent family not found.', 1;
+
+        IF @IsActive = 1 AND @ParentActive = 0
+            THROW 54008, 'The parent family is inactive. Activate it first, or create this family as inactive.', 1;
+    END
+
+    IF EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE FamilyCode = @FamilyCode)
+        THROW 54001, 'A family with this Family Code already exists.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.ItemFamilies
+               WHERE FamilyName = @FamilyName
+                 AND ((ParentId IS NULL AND @ParentId IS NULL) OR ParentId = @ParentId))
+        THROW 54002, 'A family with this name already exists under the same parent.', 1;
+
+    INSERT INTO masterdata.ItemFamilies (ParentId, FamilyCode, FamilyName, Description, [Level], IsActive, CreatedBy)
+    VALUES (@ParentId, @FamilyCode, @FamilyName, @Description, @ParentLevel + 1, @IsActive, @UserId);
+
+    SET @NewId = SCOPE_IDENTITY();
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_Update
+    @Id          INT,
+    @FamilyCode  NVARCHAR(50),
+    @FamilyName  NVARCHAR(150),
+    @ParentId    INT           = NULL,
+    @Description NVARCHAR(500) = NULL,
+    @IsActive    BIT           = 1,
+    @RowVersion  BINARY(8)     = NULL,   -- NULL skips the concurrency check
+    @UserId      INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @FamilyCode  = LTRIM(RTRIM(@FamilyCode));
+    SET @FamilyName  = LTRIM(RTRIM(@FamilyName));
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @IsActive    = ISNULL(@IsActive, 1);
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE Id = @Id)
+        THROW 54006, 'Item family not found.', 1;
+
+    IF @FamilyCode IS NULL OR @FamilyCode = N''
+        THROW 54000, 'Family Code is required.', 1;
+
+    IF @FamilyName IS NULL OR @FamilyName = N''
+        THROW 54000, 'Family Name is required.', 1;
+
+    IF @ParentId = @Id
+        THROW 54007, 'A family cannot be its own parent.', 1;
+
+    DECLARE @ParentLevel INT = 0, @ParentActive BIT = 1;
+
+    IF @ParentId IS NOT NULL
+    BEGIN
+        SELECT @ParentLevel = [Level], @ParentActive = IsActive
+        FROM masterdata.ItemFamilies WHERE Id = @ParentId;
+
+        IF @ParentLevel IS NULL OR @ParentLevel = 0
+            THROW 54006, 'Parent family not found.', 1;
+
+        -- Circular check: climb from the new parent to the root; meeting @Id means the new
+        -- parent is a descendant of the family being moved. Iterative - no depth limit.
+        DECLARE @Cursor INT = @ParentId;
+        WHILE @Cursor IS NOT NULL
+        BEGIN
+            IF @Cursor = @Id
+                THROW 54007, 'This would create a circular hierarchy: the selected parent is a descendant of this family.', 1;
+            SELECT @Cursor = ParentId FROM masterdata.ItemFamilies WHERE Id = @Cursor;
+        END
+
+        IF @IsActive = 1 AND @ParentActive = 0
+            THROW 54008, 'The parent family is inactive. Activate it first, or make this family inactive.', 1;
+    END
+
+    IF EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE FamilyCode = @FamilyCode AND Id <> @Id)
+        THROW 54001, 'A family with this Family Code already exists.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.ItemFamilies
+               WHERE FamilyName = @FamilyName AND Id <> @Id
+                 AND ((ParentId IS NULL AND @ParentId IS NULL) OR ParentId = @ParentId))
+        THROW 54002, 'A family with this name already exists under the same parent.', 1;
+
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 54004, 'This family was modified by another user. Reload the page and try again.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        UPDATE masterdata.ItemFamilies
+        SET FamilyCode   = @FamilyCode,
+            FamilyName   = @FamilyName,
+            ParentId     = @ParentId,
+            Description  = @Description,
+            [Level]      = @ParentLevel + 1,
+            IsActive     = @IsActive,
+            UpdatedAtUtc = SYSUTCDATETIME(),
+            UpdatedBy    = @UserId
+        WHERE Id = @Id;
+
+        -- Re-level the whole subtree after a possible move (iterative, level by level).
+        DECLARE @Frontier TABLE (Id INT PRIMARY KEY);
+        DECLARE @Next     TABLE (Id INT PRIMARY KEY);
+        DECLARE @ChildLevel INT = @ParentLevel + 2;
+
+        INSERT INTO @Frontier (Id) SELECT Id FROM masterdata.ItemFamilies WHERE ParentId = @Id;
+
+        WHILE EXISTS (SELECT 1 FROM @Frontier)
+        BEGIN
+            UPDATE f SET [Level] = @ChildLevel
+            FROM masterdata.ItemFamilies f
+            INNER JOIN @Frontier fr ON fr.Id = f.Id;
+
+            DELETE FROM @Next;
+            INSERT INTO @Next (Id)
+            SELECT c.Id FROM masterdata.ItemFamilies c INNER JOIN @Frontier fr ON fr.Id = c.ParentId;
+
+            DELETE FROM @Frontier;
+            INSERT INTO @Frontier (Id) SELECT Id FROM @Next;
+            SET @ChildLevel += 1;
+        END
+
+        -- Deactivating cascades to the whole subtree (children may not outlive an inactive parent).
+        IF @IsActive = 0
+        BEGIN
+            UPDATE f
+            SET IsActive = 0, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            FROM masterdata.ItemFamilies f
+            INNER JOIN masterdata.fn_ItemFamily_Subtree(@Id) s ON s.Id = f.Id
+            WHERE f.IsActive = 1 AND f.Id <> @Id;
+        END
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_SetActive
+    @Id       INT,
+    @IsActive BIT,
+    @UserId   INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE Id = @Id)
+        THROW 54006, 'Item family not found.', 1;
+
+    IF @IsActive = 1 AND EXISTS (SELECT 1 FROM masterdata.ItemFamilies c
+                                 INNER JOIN masterdata.ItemFamilies p ON p.Id = c.ParentId
+                                 WHERE c.Id = @Id AND p.IsActive = 0)
+        THROW 54008, 'The parent family is inactive. Activate the parent first.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @IsActive = 1
+        BEGIN
+            UPDATE masterdata.ItemFamilies
+            SET IsActive = 1, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id AND IsActive = 0;
+        END
+        ELSE
+        BEGIN
+            -- Deactivate the family AND its whole subtree.
+            UPDATE f
+            SET IsActive = 0, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            FROM masterdata.ItemFamilies f
+            INNER JOIN masterdata.fn_ItemFamily_Subtree(@Id) s ON s.Id = f.Id
+            WHERE f.IsActive = 1;
+        END
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Physical delete: only leaves (no children) that nothing references. The reference check
+-- reads sys.foreign_keys EXCLUDING the tree's own self-reference (children are reported as
+-- 54005 with their own message), so future tables (items...) are covered automatically.
+CREATE OR ALTER PROCEDURE masterdata.usp_ItemFamily_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE Id = @Id)
+        THROW 54006, 'Item family not found.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE ParentId = @Id)
+        THROW 54005, 'This family cannot be deleted because it contains child families. Delete or move the children first, or deactivate the family instead.', 1;
+
+    DECLARE @sql NVARCHAR(MAX) = N'';
+
+    SELECT @sql = @sql
+        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+    FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.ItemFamilies')
+      AND fk.parent_object_id   <> OBJECT_ID(N'masterdata.ItemFamilies');
+
+    DECLARE @Referenced BIT = 0;
+
+    IF @sql <> N''
+        EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+
+    IF @Referenced = 1
+        THROW 54003, 'This family cannot be deleted because it is assigned to existing items or other records. You may deactivate it instead.', 1;
+
+    DELETE FROM masterdata.ItemFamilies WHERE Id = @Id;
+END
+GO
+
+/* ------------------------------------------------------------------ 4. Permissions */
+
+MERGE security.Permissions AS target
+USING
+(
+    VALUES
+        (N'masterdata.itemfamilies.view',   N'View item families',   N'Master Data', N'See the Item Families tree.',                                          260),
+        (N'masterdata.itemfamilies.create', N'Create item families', N'Master Data', N'Add root and child families.',                                         270),
+        (N'masterdata.itemfamilies.edit',   N'Edit item families',   N'Master Data', N'Change family details, move families and activate / deactivate them.', 280),
+        (N'masterdata.itemfamilies.delete', N'Delete item families', N'Master Data', N'Delete families without children that are not assigned to items.',     290)
+) AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN
+    UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Module, Description, SortOrder)
+    VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+-- System roles (Admin) hold every permission; Manager can view.
+INSERT INTO security.RolePermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM security.Roles r
+CROSS JOIN security.Permissions p
+WHERE p.Code LIKE N'masterdata.itemfamilies.%'
+  AND (r.IsSystem = 1 OR (r.Name = N'Manager' AND p.Code = N'masterdata.itemfamilies.view'))
+  AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+GO
+
+/* ------------------------------------------------------------------ 5. Seed (starter tree, only when empty) */
+
+IF NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies)
+BEGIN
+    DECLARE @Moto INT, @Elec INT;
+
+    INSERT INTO masterdata.ItemFamilies (ParentId, FamilyCode, FamilyName, Description, [Level], IsActive)
+    VALUES (NULL, N'FAM-001', N'Motorcycles', N'All motorcycle related items and parts', 1, 1);
+    SET @Moto = SCOPE_IDENTITY();
+
+    INSERT INTO masterdata.ItemFamilies (ParentId, FamilyCode, FamilyName, Description, [Level], IsActive)
+    VALUES (@Moto, N'FAM-001-01', N'Engine Parts',       N'Engine and its related components',      2, 1),
+           (@Moto, N'FAM-001-02', N'Transmission Parts', N'Transmission and clutch components',     2, 1);
+
+    INSERT INTO masterdata.ItemFamilies (ParentId, FamilyCode, FamilyName, Description, [Level], IsActive)
+    VALUES (@Moto, N'FAM-001-03', N'Electricals', N'Electrical and electronic parts', 2, 1);
+    SET @Elec = SCOPE_IDENTITY();
+
+    INSERT INTO masterdata.ItemFamilies (ParentId, FamilyCode, FamilyName, Description, [Level], IsActive)
+    VALUES (@Elec, N'FAM-001-03-01', N'Battery',  N'All types of batteries',   3, 1),
+           (@Elec, N'FAM-001-03-02', N'Lighting', N'Lighting and indicators',  3, 1);
+
+    INSERT INTO masterdata.ItemFamilies (ParentId, FamilyCode, FamilyName, Description, [Level], IsActive)
+    VALUES (NULL, N'FAM-002', N'Scooters',          N'All scooter related items and parts',      1, 1),
+           (NULL, N'FAM-003', N'Maintenance Items', N'Oils, lubricants and maintenance items',   1, 1),
+           (NULL, N'FAM-004', N'Accessories',       N'Vehicle accessories and add-ons',          1, 1);
+
+    PRINT 'Seeded a starter item family tree (edit or delete it freely).';
+END
+GO

@@ -1,0 +1,132 @@
+﻿<?xml version="1.0" encoding="utf-8"?>
+<Project DefaultTargets="Build" xmlns="http://schemas.microsoft.com/developer/msbuild/2003" ToolsVersion="4.0">
+  <PropertyGroup>
+    <Configuration Condition=" '$(Configuration)' == '' ">Debug</Configuration>
+    <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
+    <Name>DatabaseProject</Name>
+    <SchemaVersion>2.0</SchemaVersion>
+    <ProjectVersion>4.1</ProjectVersion>
+    <ProjectGuid>{47eb7cfd-16b7-4eb5-a70d-a66f18d06f98}</ProjectGuid>
+    <DSP>Microsoft.Data.Tools.Schema.Sql.Sql170DatabaseSchemaProvider</DSP>
+    <OutputType>Database</OutputType>
+    <RootPath>
+    </RootPath>
+    <RootNamespace>DatabaseProject</RootNamespace>
+    <AssemblyName>DatabaseProject</AssemblyName>
+    <ModelCollation>1033, CI</ModelCollation>
+    <DefaultFileStructure>BySchemaAndSchemaType</DefaultFileStructure>
+    <DeployToDatabase>True</DeployToDatabase>
+    <TargetFrameworkVersion>v4.7.2</TargetFrameworkVersion>
+    <TargetLanguage>CS</TargetLanguage>
+    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <SqlServerVerification>False</SqlServerVerification>
+    <IncludeCompositeObjects>True</IncludeCompositeObjects>
+    <TargetDatabaseSet>True</TargetDatabaseSet>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Release|AnyCPU' ">
+    <OutputPath>bin\Release\</OutputPath>
+    <BuildScriptName>$(MSBuildProjectName).sql</BuildScriptName>
+    <TreatWarningsAsErrors>False</TreatWarningsAsErrors>
+    <DebugType>pdbonly</DebugType>
+    <Optimize>true</Optimize>
+    <DefineDebug>false</DefineDebug>
+    <DefineTrace>true</DefineTrace>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup Condition=" '$(Configuration)|$(Platform)' == 'Debug|AnyCPU' ">
+    <OutputPath>bin\Debug\</OutputPath>
+    <BuildScriptName>$(MSBuildProjectName).sql</BuildScriptName>
+    <TreatWarningsAsErrors>false</TreatWarningsAsErrors>
+    <DebugSymbols>true</DebugSymbols>
+    <DebugType>full</DebugType>
+    <Optimize>false</Optimize>
+    <DefineDebug>true</DefineDebug>
+    <DefineTrace>true</DefineTrace>
+    <ErrorReport>prompt</ErrorReport>
+    <WarningLevel>4</WarningLevel>
+  </PropertyGroup>
+  <PropertyGroup>
+    <VisualStudioVersion Condition="'$(VisualStudioVersion)' == ''">11.0</VisualStudioVersion>
+    <!-- Default to the v11.0 targets path if the targets file for the current VS version is not found -->
+    <SSDTExists Condition="Exists('$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets')">True</SSDTExists>
+    <VisualStudioVersion Condition="'$(SSDTExists)' == ''">11.0</VisualStudioVersion>
+  </PropertyGroup>
+  <Import Condition="'$(SQLDBExtensionsRefPath)' != ''" Project="$(SQLDBExtensionsRefPath)\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
+  <Import Condition="'$(SQLDBExtensionsRefPath)' == ''" Project="$(MSBuildExtensionsPath)\Microsoft\VisualStudio\v$(VisualStudioVersion)\SSDT\Microsoft.Data.Tools.Schema.SqlTasks.targets" />
+  <ItemGroup>
+    <Folder Include="Properties" />
+    <Folder Include="security\" />
+    <Folder Include="security\Tables\" />
+    <Folder Include="masterdata\" />
+    <Folder Include="masterdata\Tables\" />
+    <Folder Include="security\Functions\" />
+    <Folder Include="masterdata\Functions\" />
+    <Folder Include="security\Stored Procedures\" />
+    <Folder Include="masterdata\Stored Procedures\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Build Include="security\Tables\UserRoles.sql" />
+    <Build Include="security\Tables\RolePermissions.sql" />
+    <Build Include="security\Tables\Permissions.sql" />
+    <Build Include="security\Tables\Roles.sql" />
+    <Build Include="security\Tables\LoginAudit.sql" />
+    <Build Include="security\Tables\RefreshTokens.sql" />
+    <Build Include="security\Tables\Users.sql" />
+    <Build Include="masterdata\Tables\ExchangeRates.sql" />
+    <Build Include="masterdata\Tables\Currencies.sql" />
+    <Build Include="masterdata\Tables\Warehouses.sql" />
+    <Build Include="masterdata\Tables\Branches.sql" />
+    <Build Include="security\Functions\fn_UserHasPermission.sql" />
+    <Build Include="masterdata\Functions\fn_GetRate.sql" />
+    <Build Include="security\Functions\fn_UserPermissions.sql" />
+    <Build Include="security\Functions\fn_UserRoles.sql" />
+    <Build Include="security\Stored Procedures\usp_Role_Delete.sql" />
+    <Build Include="security\Stored Procedures\usp_Role_SetPermissions.sql" />
+    <Build Include="security\Stored Procedures\usp_User_SetRoles.sql" />
+    <Build Include="security\Stored Procedures\usp_User_GetAccess.sql" />
+    <Build Include="security\Stored Procedures\usp_Permission_SyncCatalog.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_Delete.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_Update.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_Create.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_GetLatest.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_Get.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_Search.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_Delete.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_SetActive.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_Update.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_Create.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_Lookup.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_GetBase.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_Get.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Currency_Search.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_Delete.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_SetActive.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_Update.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_Create.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_GetMain.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_Get.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_Search.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Warehouse_Lookup.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_Lookup.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_Delete.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_SetActive.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_Update.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_Create.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_GetMain.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_Get.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Branch_Search.sql" />
+    <Build Include="security\security.sql" />
+    <Build Include="security\masterdata.sql" />
+    <Build Include="masterdata\Tables\ItemFamilies.sql" />
+    <Build Include="masterdata\Functions\fn_ItemFamily_Subtree.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Update.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Tree.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_SetActive.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_NextChildCode.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Lookup.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Get.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Delete.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Create.sql" />
+  </ItemGroup>
+</Project>

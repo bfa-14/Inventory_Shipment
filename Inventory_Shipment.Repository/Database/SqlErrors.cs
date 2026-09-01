@@ -6,7 +6,7 @@ namespace Inventory_Shipment.Repository.Database;
 /// <summary>
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
-/// Each module owns a block: 50xxx security, 51xxx master data.
+/// Each module owns a block: 50xxx security, 51xxx-54xxx master data.
 /// </summary>
 public static class SqlErrors
 {
@@ -36,6 +36,28 @@ public static class SqlErrors
     public const int WarehouseMainProtected = 52005;
     public const int WarehouseNotFound = 52006;
     public const int WarehouseBranchInactive = 52007;
+
+    // ----- 53xxx: master data - currencies and exchange rates -----
+    public const int CurrencyValidation = 53000;
+    public const int CurrencyDuplicateCode = 53001;
+    public const int CurrencyBaseExists = 53002;
+    public const int CurrencyReferenced = 53003;
+    public const int CurrencyConcurrency = 53004;
+    public const int CurrencyBaseProtected = 53005;
+    public const int CurrencyNotFound = 53006;
+    public const int ExchangeRateDuplicate = 53007;
+    public const int CurrencyInactive = 53008;
+
+    // ----- 54xxx: master data - item families (self-referencing tree) -----
+    public const int ItemFamilyValidation = 54000;
+    public const int ItemFamilyDuplicateCode = 54001;
+    public const int ItemFamilyDuplicateName = 54002;
+    public const int ItemFamilyReferenced = 54003;
+    public const int ItemFamilyConcurrency = 54004;
+    public const int ItemFamilyHasChildren = 54005;
+    public const int ItemFamilyNotFound = 54006;
+    public const int ItemFamilyCircularHierarchy = 54007;
+    public const int ItemFamilyParentInactive = 54008;
 
     private const int FirstBusinessRule = 50000;
     private const int LastBusinessRule = 59999;

@@ -35,6 +35,18 @@ public static class Permissions
         public const string WarehousesCreate = "masterdata.warehouses.create";
         public const string WarehousesEdit = "masterdata.warehouses.edit";
         public const string WarehousesDelete = "masterdata.warehouses.delete";
+        public const string CurrenciesView = "masterdata.currencies.view";
+        public const string CurrenciesCreate = "masterdata.currencies.create";
+        public const string CurrenciesEdit = "masterdata.currencies.edit";
+        public const string CurrenciesDelete = "masterdata.currencies.delete";
+        public const string ExchangeRatesView = "masterdata.exchangerates.view";
+        public const string ExchangeRatesCreate = "masterdata.exchangerates.create";
+        public const string ExchangeRatesEdit = "masterdata.exchangerates.edit";
+        public const string ExchangeRatesDelete = "masterdata.exchangerates.delete";
+        public const string ItemFamiliesView = "masterdata.itemfamilies.view";
+        public const string ItemFamiliesCreate = "masterdata.itemfamilies.create";
+        public const string ItemFamiliesEdit = "masterdata.itemfamilies.edit";
+        public const string ItemFamiliesDelete = "masterdata.itemfamilies.delete";
     }
 
     private const string SecurityModule = "Security";
@@ -74,5 +86,32 @@ public static class Permissions
             "Change warehouse details and activate / deactivate them.", 160),
         new(MasterData.WarehousesDelete, "Delete warehouses", MasterDataModule,
             "Delete warehouses that hold no inventory and are not referenced by other records.", 170),
+
+        new(MasterData.CurrenciesView, "View currencies", MasterDataModule,
+            "See the Currencies list.", 180),
+        new(MasterData.CurrenciesCreate, "Create currencies", MasterDataModule,
+            "Add new currencies.", 190),
+        new(MasterData.CurrenciesEdit, "Edit currencies", MasterDataModule,
+            "Change currency details, the base currency and active status.", 200),
+        new(MasterData.CurrenciesDelete, "Delete currencies", MasterDataModule,
+            "Delete currencies that are not referenced by other records.", 210),
+
+        new(MasterData.ExchangeRatesView, "View exchange rates", MasterDataModule,
+            "See the Exchange Rates page and the latest rates.", 220),
+        new(MasterData.ExchangeRatesCreate, "Create exchange rates", MasterDataModule,
+            "Enter official, non-official and market rates.", 230),
+        new(MasterData.ExchangeRatesEdit, "Edit exchange rates", MasterDataModule,
+            "Correct entered rates.", 240),
+        new(MasterData.ExchangeRatesDelete, "Delete exchange rates", MasterDataModule,
+            "Remove wrongly entered rates.", 250),
+
+        new(MasterData.ItemFamiliesView, "View item families", MasterDataModule,
+            "See the Item Families tree.", 260),
+        new(MasterData.ItemFamiliesCreate, "Create item families", MasterDataModule,
+            "Add root and child families.", 270),
+        new(MasterData.ItemFamiliesEdit, "Edit item families", MasterDataModule,
+            "Change family details, move families and activate / deactivate them.", 280),
+        new(MasterData.ItemFamiliesDelete, "Delete item families", MasterDataModule,
+            "Delete families without children that are not assigned to items.", 290),
     ];
 }
