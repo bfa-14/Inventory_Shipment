@@ -15,3 +15,9 @@ secrets.json
 ## Frontend (Inventory_Shipment.Web)
 node_modules/
 dist/
+
+*.dbmdl
+*.jfm
+
+*.dbmdl
+*.jfm

@@ -31,6 +31,9 @@ public static class DependencyInjection
         services.TryAddScoped<ICurrencyService, CurrencyService>();
         services.TryAddScoped<IExchangeRateService, ExchangeRateService>();
         services.TryAddScoped<IItemFamilyService, ItemFamilyService>();
+        services.TryAddScoped<IBrandService, BrandService>();
+        services.TryAddScoped<IUnitTypeService, UnitTypeService>();
+        services.TryAddScoped<IItemService, ItemService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

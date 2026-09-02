@@ -2741,3 +2741,1237 @@ BEGIN
     PRINT 'Seeded a starter item family tree (edit or delete it freely).';
 END
 GO
+
+-- ===== 10: Master Data - Brands =====
+
+/* =====================================================================================
+   Inventory_Shipment - 10: Master Data - Brands
+
+   Schema:  masterdata. Table: masterdata.Brands (flat lookup, Branch pattern - no "main").
+   Procs:   masterdata.usp_Brand_Search / _Get / _Lookup / _Create / _Update / _SetActive / _Delete
+   Seeds:   permissions masterdata.brands.view / create / edit / delete (sort 300-330,
+            module "Master Data"); brand BRD-001 TVS when the table is empty.
+   Used by: the Items page dropdown (usp_Brand_Lookup).
+
+   Business rules (error numbers read by the API):
+     55000 validation   55001 Brand Code already exists   55003 referenced - cannot delete
+     55004 concurrency (RowVersion)   55006 brand not found
+
+   Requires 01 + 03. Idempotent. SQL Server 2016 SP1+.
+   ===================================================================================== */
+
+IF OBJECT_ID(N'security.Users', N'U') IS NULL OR OBJECT_ID(N'security.Permissions', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run 01_Create_Schema.sql and 03_Security_RBAC.sql before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+IF SCHEMA_ID(N'masterdata') IS NULL
+    EXEC (N'CREATE SCHEMA [masterdata] AUTHORIZATION [dbo];');
+GO
+
+/* ------------------------------------------------------------------ 1. Table */
+
+IF OBJECT_ID(N'masterdata.Brands', N'U') IS NULL
+BEGIN
+    CREATE TABLE masterdata.Brands
+    (
+        Id           INT IDENTITY(1,1) NOT NULL,
+        BrandCode    NVARCHAR(20)      NOT NULL,
+        BrandName    NVARCHAR(150)     NOT NULL,
+        Description  NVARCHAR(500)     NULL,
+        IsActive     BIT               NOT NULL CONSTRAINT DF_Brands_IsActive DEFAULT (1),
+        CreatedAtUtc DATETIME2(3)      NOT NULL CONSTRAINT DF_Brands_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy    INT               NULL,
+        UpdatedAtUtc DATETIME2(3)      NULL,
+        UpdatedBy    INT               NULL,
+        RowVersion   ROWVERSION        NOT NULL,
+        CONSTRAINT PK_Brands PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_Brands_BrandCode UNIQUE (BrandCode),
+        CONSTRAINT CK_Brands_BrandCode_NotBlank CHECK (LEN(LTRIM(RTRIM(BrandCode))) > 0),
+        CONSTRAINT CK_Brands_BrandName_NotBlank CHECK (LEN(LTRIM(RTRIM(BrandName))) > 0),
+        CONSTRAINT FK_Brands_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES security.Users (Id),
+        CONSTRAINT FK_Brands_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES security.Users (Id)
+    );
+
+    CREATE NONCLUSTERED INDEX IX_Brands_BrandName ON masterdata.Brands (BrandName);
+
+    PRINT 'Created masterdata.Brands';
+END
+GO
+
+/* ------------------------------------------------------------------ 2. Procedures */
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_Search
+    @Search        NVARCHAR(150) = NULL,        -- matches Brand Code or Brand Name (contains)
+    @IsActive      BIT           = NULL,
+    @SortColumn    NVARCHAR(30)  = N'BrandCode', -- BrandCode | BrandName | IsActive | CreatedAtUtc
+    @SortDirection NVARCHAR(4)   = N'ASC',
+    @PageNumber    INT           = 1,
+    @PageSize      INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'BrandCode', N'BrandName', N'IsActive', N'CreatedAtUtc')
+        SET @SortColumn = N'BrandCode';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC')
+        SET @SortDirection = N'ASC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT b.Id, b.BrandCode, b.BrandName, b.Description, b.IsActive,
+           b.CreatedAtUtc, b.CreatedBy, b.UpdatedAtUtc, b.UpdatedBy, b.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM masterdata.Brands b
+    WHERE (@Search IS NULL OR b.BrandCode LIKE N'%' + @Search + N'%' OR b.BrandName LIKE N'%' + @Search + N'%')
+      AND (@IsActive IS NULL OR b.IsActive = @IsActive)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'BrandCode' THEN b.BrandCode WHEN N'BrandName' THEN b.BrandName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'BrandCode' THEN b.BrandCode WHEN N'BrandName' THEN b.BrandName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(b.IsActive AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(b.IsActive AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN b.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN b.CreatedAtUtc END DESC,
+        b.BrandCode ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS
+    FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, BrandCode, BrandName, Description, IsActive,
+           CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
+    FROM masterdata.Brands
+    WHERE Id = @Id;
+END
+GO
+
+-- Dropdown data for the Items page. @IncludeId keeps an inactive saved value visible when editing.
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_Lookup
+    @ActiveOnly BIT = 1,
+    @IncludeId  INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, BrandCode, BrandName, IsActive
+    FROM masterdata.Brands
+    WHERE (@ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId)
+    ORDER BY BrandName;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_Create
+    @BrandCode   NVARCHAR(20),
+    @BrandName   NVARCHAR(150),
+    @Description NVARCHAR(500) = NULL,
+    @IsActive    BIT           = 1,
+    @UserId      INT           = NULL,
+    @NewId       INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @BrandCode   = LTRIM(RTRIM(@BrandCode));
+    SET @BrandName   = LTRIM(RTRIM(@BrandName));
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @IsActive    = ISNULL(@IsActive, 1);
+
+    IF @BrandCode IS NULL OR @BrandCode = N''
+        THROW 55000, 'Brand Code is required.', 1;
+
+    IF @BrandName IS NULL OR @BrandName = N''
+        THROW 55000, 'Brand Name is required.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Brands WHERE BrandCode = @BrandCode)
+        THROW 55001, 'A brand with this Brand Code already exists.', 1;
+
+    INSERT INTO masterdata.Brands (BrandCode, BrandName, Description, IsActive, CreatedBy)
+    VALUES (@BrandCode, @BrandName, @Description, @IsActive, @UserId);
+
+    SET @NewId = SCOPE_IDENTITY();
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_Update
+    @Id          INT,
+    @BrandCode   NVARCHAR(20),
+    @BrandName   NVARCHAR(150),
+    @Description NVARCHAR(500) = NULL,
+    @IsActive    BIT           = 1,
+    @RowVersion  BINARY(8)     = NULL,
+    @UserId      INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @BrandCode   = LTRIM(RTRIM(@BrandCode));
+    SET @BrandName   = LTRIM(RTRIM(@BrandName));
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @IsActive    = ISNULL(@IsActive, 1);
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Brands WHERE Id = @Id)
+        THROW 55006, 'Brand not found.', 1;
+
+    IF @BrandCode IS NULL OR @BrandCode = N''
+        THROW 55000, 'Brand Code is required.', 1;
+
+    IF @BrandName IS NULL OR @BrandName = N''
+        THROW 55000, 'Brand Name is required.', 1;
+
+    IF EXISTS (SELECT 1 FROM masterdata.Brands WHERE BrandCode = @BrandCode AND Id <> @Id)
+        THROW 55001, 'A brand with this Brand Code already exists.', 1;
+
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Brands WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 55004, 'This brand was modified by another user. Reload the page and try again.', 1;
+
+    UPDATE masterdata.Brands
+    SET BrandCode    = @BrandCode,
+        BrandName    = @BrandName,
+        Description  = @Description,
+        IsActive     = @IsActive,
+        UpdatedAtUtc = SYSUTCDATETIME(),
+        UpdatedBy    = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_SetActive
+    @Id       INT,
+    @IsActive BIT,
+    @UserId   INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Brands WHERE Id = @Id)
+        THROW 55006, 'Brand not found.', 1;
+
+    UPDATE masterdata.Brands
+    SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+-- Physical delete only when nothing references the brand (sys.foreign_keys covers future tables, e.g. items).
+CREATE OR ALTER PROCEDURE masterdata.usp_Brand_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Brands WHERE Id = @Id)
+        THROW 55006, 'Brand not found.', 1;
+
+    DECLARE @sql NVARCHAR(MAX) = N'';
+
+    SELECT @sql = @sql
+        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+    FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.Brands');
+
+    DECLARE @Referenced BIT = 0;
+
+    IF @sql <> N''
+        EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+
+    IF @Referenced = 1
+        THROW 55003, 'This brand cannot be deleted because it is assigned to existing items or other records. You may deactivate it instead.', 1;
+
+    DELETE FROM masterdata.Brands WHERE Id = @Id;
+END
+GO
+
+/* ------------------------------------------------------------------ 3. Permissions */
+
+MERGE security.Permissions AS target
+USING
+(
+    VALUES
+        (N'masterdata.brands.view',   N'View brands',   N'Master Data', N'See the Brands list.',                                    300),
+        (N'masterdata.brands.create', N'Create brands', N'Master Data', N'Add new brands.',                                         310),
+        (N'masterdata.brands.edit',   N'Edit brands',   N'Master Data', N'Change brand details and activate / deactivate them.',    320),
+        (N'masterdata.brands.delete', N'Delete brands', N'Master Data', N'Delete brands that are not assigned to items.',           330)
+) AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN
+    UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Module, Description, SortOrder)
+    VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+INSERT INTO security.RolePermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM security.Roles r
+CROSS JOIN security.Permissions p
+WHERE p.Code LIKE N'masterdata.brands.%'
+  AND (r.IsSystem = 1 OR (r.Name = N'Manager' AND p.Code = N'masterdata.brands.view'))
+  AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+GO
+
+/* ------------------------------------------------------------------ 4. Seed */
+
+IF NOT EXISTS (SELECT 1 FROM masterdata.Brands)
+BEGIN
+    INSERT INTO masterdata.Brands (BrandCode, BrandName, Description, IsActive)
+    VALUES (N'BRD-001', N'TVS', N'TVS Motor Company', 1);
+    PRINT 'Seeded brand BRD-001 TVS';
+END
+GO
+
+-- ===== 11: Unit Types + Item Definition =====
+
+/* =====================================================================================
+   Inventory_Shipment - 11: Unit Types (masterdata) + Item Definition (inventory)
+   US-INV-001 / US-INV-002
+
+   New schema: inventory (Items, ItemUnits, ItemFiles). Unit Types are an editable master
+   list (masterdata.UnitTypes) seeded with PC / Box / Pallet / Container as dummy data.
+
+   Conventions:
+     - Quantities are whole pieces (INT). Packing Formula = how many BASE units one unit
+       holds (base unit formula = 1). Exactly ONE base unit per item (filtered unique index).
+     - Barcode is unique across the whole system (nullable); SKU is required and unique
+       within the item.
+     - BIVAC is a yes/no flag on the item only (documents come later in the shipment module).
+     - On Hand / costs are placeholders (0 / NULL) until the stock & purchase modules exist.
+     - Item image + attachments are stored in the database (inventory.ItemFiles); the API
+       caps upload size.
+
+   Error numbers (read by the API):
+     Unit Types: 57000 validation, 57001 duplicate name, 57003 referenced, 57004 concurrency,
+                 57006 not found
+     Items:      56000 validation, 56001 duplicate Item Code, 56002 duplicate Barcode,
+                 56003 referenced (delete), 56004 concurrency, 56005 base-unit rule,
+                 56006 not found, 56007 duplicate SKU within the item,
+                 56008 related master data missing/inactive (brand, family, warehouse, unit type)
+
+   Requires 01 + 03 + 06 (Branches) + 07 (Warehouses) + 09 (Item Families) + 10 (Brands).
+   Idempotent - safe to run repeatedly. SQL Server 2016 SP1+.
+   ===================================================================================== */
+
+IF OBJECT_ID(N'security.Users', N'U') IS NULL OR OBJECT_ID(N'security.Permissions', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.ItemFamilies', N'U') IS NULL OR OBJECT_ID(N'masterdata.Brands', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.Warehouses', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 01, 03, 06, 07, 09 and 10 before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+IF SCHEMA_ID(N'inventory') IS NULL
+    EXEC (N'CREATE SCHEMA [inventory] AUTHORIZATION [dbo];');
+GO
+
+/* ================================================================== A. UNIT TYPES (masterdata) */
+
+IF OBJECT_ID(N'masterdata.UnitTypes', N'U') IS NULL
+BEGIN
+    CREATE TABLE masterdata.UnitTypes
+    (
+        Id           INT IDENTITY(1,1) NOT NULL,
+        UnitTypeName NVARCHAR(50)      NOT NULL,
+        IsActive     BIT               NOT NULL CONSTRAINT DF_UnitTypes_IsActive DEFAULT (1),
+        CreatedAtUtc DATETIME2(3)      NOT NULL CONSTRAINT DF_UnitTypes_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy    INT               NULL,
+        UpdatedAtUtc DATETIME2(3)      NULL,
+        UpdatedBy    INT               NULL,
+        RowVersion   ROWVERSION        NOT NULL,
+        CONSTRAINT PK_UnitTypes PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_UnitTypes_UnitTypeName UNIQUE (UnitTypeName),
+        CONSTRAINT CK_UnitTypes_Name_NotBlank CHECK (LEN(LTRIM(RTRIM(UnitTypeName))) > 0),
+        CONSTRAINT FK_UnitTypes_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES security.Users (Id),
+        CONSTRAINT FK_UnitTypes_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES security.Users (Id)
+    );
+    PRINT 'Created masterdata.UnitTypes';
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_Search
+    @Search        NVARCHAR(50) = NULL,
+    @IsActive      BIT          = NULL,
+    @SortColumn    NVARCHAR(30) = N'UnitTypeName',  -- UnitTypeName | IsActive | CreatedAtUtc
+    @SortDirection NVARCHAR(4)  = N'ASC',
+    @PageNumber    INT          = 1,
+    @PageSize      INT          = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'UnitTypeName', N'IsActive', N'CreatedAtUtc') SET @SortColumn = N'UnitTypeName';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT u.Id, u.UnitTypeName, u.IsActive, u.CreatedAtUtc, u.CreatedBy, u.UpdatedAtUtc, u.UpdatedBy, u.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM masterdata.UnitTypes u
+    WHERE (@Search IS NULL OR u.UnitTypeName LIKE N'%' + @Search + N'%')
+      AND (@IsActive IS NULL OR u.IsActive = @IsActive)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'UnitTypeName' THEN u.UnitTypeName END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'UnitTypeName' THEN u.UnitTypeName END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(u.IsActive AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(u.IsActive AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN u.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN u.CreatedAtUtc END DESC,
+        u.UnitTypeName ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, UnitTypeName, IsActive, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
+    FROM masterdata.UnitTypes WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_Lookup
+    @ActiveOnly BIT = 1,
+    @IncludeId  INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, UnitTypeName, IsActive
+    FROM masterdata.UnitTypes
+    WHERE (@ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId)
+    ORDER BY UnitTypeName;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_Create
+    @UnitTypeName NVARCHAR(50),
+    @IsActive     BIT = 1,
+    @UserId       INT = NULL,
+    @NewId        INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @UnitTypeName = LTRIM(RTRIM(@UnitTypeName));
+    SET @IsActive = ISNULL(@IsActive, 1);
+
+    IF @UnitTypeName IS NULL OR @UnitTypeName = N''
+        THROW 57000, 'Unit Type name is required.', 1;
+    IF EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE UnitTypeName = @UnitTypeName)
+        THROW 57001, 'A unit type with this name already exists.', 1;
+
+    INSERT INTO masterdata.UnitTypes (UnitTypeName, IsActive, CreatedBy) VALUES (@UnitTypeName, @IsActive, @UserId);
+    SET @NewId = SCOPE_IDENTITY();
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_Update
+    @Id           INT,
+    @UnitTypeName NVARCHAR(50),
+    @IsActive     BIT       = 1,
+    @RowVersion   BINARY(8) = NULL,
+    @UserId       INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @UnitTypeName = LTRIM(RTRIM(@UnitTypeName));
+    SET @IsActive = ISNULL(@IsActive, 1);
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE Id = @Id)
+        THROW 57006, 'Unit type not found.', 1;
+    IF @UnitTypeName IS NULL OR @UnitTypeName = N''
+        THROW 57000, 'Unit Type name is required.', 1;
+    IF EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE UnitTypeName = @UnitTypeName AND Id <> @Id)
+        THROW 57001, 'A unit type with this name already exists.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 57004, 'This unit type was modified by another user. Reload the page and try again.', 1;
+
+    UPDATE masterdata.UnitTypes
+    SET UnitTypeName = @UnitTypeName, IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_SetActive
+    @Id INT, @IsActive BIT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE Id = @Id)
+        THROW 57006, 'Unit type not found.', 1;
+    UPDATE masterdata.UnitTypes SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_UnitType_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE Id = @Id)
+        THROW 57006, 'Unit type not found.', 1;
+
+    DECLARE @sql NVARCHAR(MAX) = N'';
+    SELECT @sql = @sql
+        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+    FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.UnitTypes');
+
+    DECLARE @Referenced BIT = 0;
+    IF @sql <> N'' EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+    IF @Referenced = 1
+        THROW 57003, 'This unit type cannot be deleted because it is used by item units. You may deactivate it instead.', 1;
+
+    DELETE FROM masterdata.UnitTypes WHERE Id = @Id;
+END
+GO
+
+/* ================================================================== B. ITEMS (inventory) */
+
+IF OBJECT_ID(N'inventory.Items', N'U') IS NULL
+BEGIN
+    CREATE TABLE inventory.Items
+    (
+        Id                 INT IDENTITY(1,1) NOT NULL,
+        ItemCode           NVARCHAR(30)      NOT NULL,
+        ItemName           NVARCHAR(200)     NOT NULL,
+        BrandId            INT               NOT NULL,
+        Model              NVARCHAR(100)     NULL,
+        ItemFamilyId       INT               NOT NULL,
+        CountryOfOrigin    NVARCHAR(2)       NOT NULL,   -- ISO 3166-1 alpha-2 (e.g. IN)
+        DefaultWarehouseId INT               NOT NULL,
+        Description        NVARCHAR(1000)    NULL,
+        WarrantyMonths     INT               NULL,
+        MinQuantity        INT               NOT NULL CONSTRAINT DF_Items_MinQuantity DEFAULT (0),
+        MaxQuantity        INT               NULL,
+        IsBivac            BIT               NOT NULL CONSTRAINT DF_Items_IsBivac DEFAULT (0),
+        IsActive           BIT               NOT NULL CONSTRAINT DF_Items_IsActive DEFAULT (1),
+        CreatedAtUtc       DATETIME2(3)      NOT NULL CONSTRAINT DF_Items_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy          INT               NULL,
+        UpdatedAtUtc       DATETIME2(3)      NULL,
+        UpdatedBy          INT               NULL,
+        RowVersion         ROWVERSION        NOT NULL,
+        CONSTRAINT PK_Items PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_Items_ItemCode UNIQUE (ItemCode),
+        CONSTRAINT CK_Items_ItemCode_NotBlank CHECK (LEN(LTRIM(RTRIM(ItemCode))) > 0),
+        CONSTRAINT CK_Items_ItemName_NotBlank CHECK (LEN(LTRIM(RTRIM(ItemName))) > 0),
+        CONSTRAINT CK_Items_Warranty CHECK (WarrantyMonths IS NULL OR WarrantyMonths >= 0),
+        CONSTRAINT CK_Items_MinQuantity CHECK (MinQuantity >= 0),
+        CONSTRAINT CK_Items_MaxQuantity CHECK (MaxQuantity IS NULL OR MaxQuantity >= 0),
+        CONSTRAINT CK_Items_MinMax CHECK (MaxQuantity IS NULL OR MinQuantity <= MaxQuantity),
+        CONSTRAINT FK_Items_Brand     FOREIGN KEY (BrandId)            REFERENCES masterdata.Brands (Id),
+        CONSTRAINT FK_Items_Family    FOREIGN KEY (ItemFamilyId)       REFERENCES masterdata.ItemFamilies (Id),
+        CONSTRAINT FK_Items_Warehouse FOREIGN KEY (DefaultWarehouseId) REFERENCES masterdata.Warehouses (Id),
+        CONSTRAINT FK_Items_CreatedBy FOREIGN KEY (CreatedBy)          REFERENCES security.Users (Id),
+        CONSTRAINT FK_Items_UpdatedBy FOREIGN KEY (UpdatedBy)          REFERENCES security.Users (Id)
+    );
+
+    CREATE NONCLUSTERED INDEX IX_Items_ItemName  ON inventory.Items (ItemName);
+    CREATE NONCLUSTERED INDEX IX_Items_Family    ON inventory.Items (ItemFamilyId);
+    CREATE NONCLUSTERED INDEX IX_Items_Brand     ON inventory.Items (BrandId);
+    CREATE NONCLUSTERED INDEX IX_Items_Warehouse ON inventory.Items (DefaultWarehouseId);
+
+    PRINT 'Created inventory.Items';
+END
+GO
+
+IF OBJECT_ID(N'inventory.ItemUnits', N'U') IS NULL
+BEGIN
+    CREATE TABLE inventory.ItemUnits
+    (
+        Id             INT IDENTITY(1,1) NOT NULL,
+        ItemId         INT               NOT NULL,
+        UnitTypeId     INT               NOT NULL,
+        PackingFormula INT               NOT NULL,    -- how many BASE units this unit holds (base = 1)
+        SkuCode        NVARCHAR(50)      NOT NULL,
+        Barcode        NVARCHAR(50)      NULL,        -- unique across the whole system
+        IsSalesUnit    BIT               NOT NULL CONSTRAINT DF_ItemUnits_IsSalesUnit DEFAULT (0),
+        IsPurchaseUnit BIT               NOT NULL CONSTRAINT DF_ItemUnits_IsPurchaseUnit DEFAULT (0),
+        IsBaseUnit     BIT               NOT NULL CONSTRAINT DF_ItemUnits_IsBaseUnit DEFAULT (0),
+        CreatedAtUtc   DATETIME2(3)      NOT NULL CONSTRAINT DF_ItemUnits_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy      INT               NULL,
+        UpdatedAtUtc   DATETIME2(3)      NULL,
+        UpdatedBy      INT               NULL,
+        RowVersion     ROWVERSION        NOT NULL,
+        CONSTRAINT PK_ItemUnits PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_ItemUnits_Item_UnitType UNIQUE (ItemId, UnitTypeId),
+        CONSTRAINT UQ_ItemUnits_Item_Sku UNIQUE (ItemId, SkuCode),
+        CONSTRAINT CK_ItemUnits_Formula CHECK (PackingFormula >= 1),
+        CONSTRAINT CK_ItemUnits_BaseFormula CHECK (IsBaseUnit = 0 OR PackingFormula = 1),
+        CONSTRAINT CK_ItemUnits_Sku_NotBlank CHECK (LEN(LTRIM(RTRIM(SkuCode))) > 0),
+        CONSTRAINT FK_ItemUnits_Item     FOREIGN KEY (ItemId)     REFERENCES inventory.Items (Id),
+        CONSTRAINT FK_ItemUnits_UnitType FOREIGN KEY (UnitTypeId) REFERENCES masterdata.UnitTypes (Id),
+        CONSTRAINT FK_ItemUnits_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES security.Users (Id),
+        CONSTRAINT FK_ItemUnits_UpdatedBy FOREIGN KEY (UpdatedBy) REFERENCES security.Users (Id)
+    );
+
+    -- Exactly one base unit per item (at most one here; "at least one" is enforced by the procedures).
+    CREATE UNIQUE NONCLUSTERED INDEX UX_ItemUnits_BaseUnit ON inventory.ItemUnits (ItemId) WHERE IsBaseUnit = 1;
+    -- Barcode unique across the system (scanners resolve a barcode alone).
+    CREATE UNIQUE NONCLUSTERED INDEX UX_ItemUnits_Barcode ON inventory.ItemUnits (Barcode) WHERE Barcode IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_ItemUnits_Item ON inventory.ItemUnits (ItemId);
+
+    PRINT 'Created inventory.ItemUnits';
+END
+GO
+
+IF OBJECT_ID(N'inventory.ItemFiles', N'U') IS NULL
+BEGIN
+    CREATE TABLE inventory.ItemFiles
+    (
+        Id           INT IDENTITY(1,1) NOT NULL,
+        ItemId       INT               NOT NULL,
+        FileName     NVARCHAR(255)     NOT NULL,
+        ContentType  NVARCHAR(100)     NOT NULL,
+        SizeBytes    INT               NOT NULL,
+        IsItemImage  BIT               NOT NULL CONSTRAINT DF_ItemFiles_IsItemImage DEFAULT (0),
+        Content      VARBINARY(MAX)    NOT NULL,
+        CreatedAtUtc DATETIME2(3)      NOT NULL CONSTRAINT DF_ItemFiles_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy    INT               NULL,
+        CONSTRAINT PK_ItemFiles PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_ItemFiles_Size CHECK (SizeBytes > 0),
+        CONSTRAINT FK_ItemFiles_Item FOREIGN KEY (ItemId) REFERENCES inventory.Items (Id),
+        CONSTRAINT FK_ItemFiles_CreatedBy FOREIGN KEY (CreatedBy) REFERENCES security.Users (Id)
+    );
+
+    -- One item image per item; other rows are ordinary attachments.
+    CREATE UNIQUE NONCLUSTERED INDEX UX_ItemFiles_ItemImage ON inventory.ItemFiles (ItemId) WHERE IsItemImage = 1;
+    CREATE NONCLUSTERED INDEX IX_ItemFiles_Item ON inventory.ItemFiles (ItemId);
+
+    PRINT 'Created inventory.ItemFiles';
+END
+GO
+
+/* ------------------------------------------------------------------ Item procedures */
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Search
+    @Search             NVARCHAR(200) = NULL,   -- Item Code, Item Name, or any unit SKU / Barcode
+    @ItemFamilyId       INT           = NULL,   -- filters the family AND its whole subtree
+    @BrandId            INT           = NULL,
+    @DefaultWarehouseId INT           = NULL,
+    @IsActive           BIT           = NULL,
+    @IsBivac            BIT           = NULL,
+    @SortColumn         NVARCHAR(30)  = N'ItemCode', -- ItemCode | ItemName | BrandName | FamilyName | WarehouseName | IsActive | CreatedAtUtc
+    @SortDirection      NVARCHAR(4)   = N'ASC',
+    @PageNumber         INT           = 1,
+    @PageSize           INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ItemCode', N'ItemName', N'BrandName', N'FamilyName', N'WarehouseName', N'IsActive', N'CreatedAtUtc')
+        SET @SortColumn = N'ItemCode';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT i.Id, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.Model,
+           i.ItemFamilyId, f.FamilyCode, f.FamilyName, i.CountryOfOrigin,
+           i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName,
+           i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
+           bu.SkuCode AS BaseUnitSku, ut.UnitTypeName AS BaseUnitName,
+           CAST(0 AS INT) AS OnHand,                                   -- placeholder until the stock module
+           i.CreatedAtUtc, i.CreatedBy, i.UpdatedAtUtc, i.UpdatedBy, i.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM inventory.Items i
+    INNER JOIN masterdata.Brands b        ON b.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f  ON f.Id = i.ItemFamilyId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = i.DefaultWarehouseId
+    LEFT  JOIN inventory.ItemUnits bu     ON bu.ItemId = i.Id AND bu.IsBaseUnit = 1
+    LEFT  JOIN masterdata.UnitTypes ut    ON ut.Id = bu.UnitTypeId
+    WHERE (@Search IS NULL
+           OR i.ItemCode LIKE N'%' + @Search + N'%'
+           OR i.ItemName LIKE N'%' + @Search + N'%'
+           OR EXISTS (SELECT 1 FROM inventory.ItemUnits u
+                      WHERE u.ItemId = i.Id
+                        AND (u.SkuCode LIKE N'%' + @Search + N'%' OR u.Barcode LIKE N'%' + @Search + N'%')))
+      AND (@ItemFamilyId IS NULL OR i.ItemFamilyId IN (SELECT Id FROM masterdata.fn_ItemFamily_Subtree(@ItemFamilyId)))
+      AND (@BrandId IS NULL OR i.BrandId = @BrandId)
+      AND (@DefaultWarehouseId IS NULL OR i.DefaultWarehouseId = @DefaultWarehouseId)
+      AND (@IsActive IS NULL OR i.IsActive = @IsActive)
+      AND (@IsBivac IS NULL OR i.IsBivac = @IsBivac)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName
+                             WHEN N'BrandName' THEN b.BrandName WHEN N'FamilyName' THEN f.FamilyName
+                             WHEN N'WarehouseName' THEN w.WarehouseName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName
+                             WHEN N'BrandName' THEN b.BrandName WHEN N'FamilyName' THEN f.FamilyName
+                             WHEN N'WarehouseName' THEN w.WarehouseName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(i.IsActive AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(i.IsActive AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN i.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN i.CreatedAtUtc END DESC,
+        i.ItemCode ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+-- Three result sets: the item (joined names + placeholders), its units, its file metadata (no content).
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT i.Id, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.Model,
+           i.ItemFamilyId, f.FamilyCode, f.FamilyName, i.CountryOfOrigin,
+           i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName, i.Description,
+           i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
+           CAST(0 AS INT) AS OnHand,
+           CAST(NULL AS DECIMAL(18,2)) AS LastCost,
+           CAST(NULL AS DECIMAL(18,2)) AS AverageCost,
+           CAST(NULL AS DECIMAL(18,2)) AS LastPurchaseCost,               -- placeholders until stock/purchasing
+           i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
+           i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
+    FROM inventory.Items i
+    INNER JOIN masterdata.Brands b       ON b.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f ON f.Id = i.ItemFamilyId
+    INNER JOIN masterdata.Warehouses w   ON w.Id = i.DefaultWarehouseId
+    LEFT  JOIN security.Users cu ON cu.Id = i.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = i.UpdatedBy
+    WHERE i.Id = @Id;
+
+    SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,
+           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, u.RowVersion
+    FROM inventory.ItemUnits u
+    INNER JOIN masterdata.UnitTypes ut ON ut.Id = u.UnitTypeId
+    WHERE u.ItemId = @Id
+    ORDER BY u.IsBaseUnit DESC, u.PackingFormula, ut.UnitTypeName;
+
+    SELECT fl.Id, fl.ItemId, fl.FileName, fl.ContentType, fl.SizeBytes, fl.IsItemImage, fl.CreatedAtUtc
+    FROM inventory.ItemFiles fl
+    WHERE fl.ItemId = @Id
+    ORDER BY fl.IsItemImage DESC, fl.CreatedAtUtc DESC;
+END
+GO
+
+-- Items for a future Item picker: the item plus the SKU of its base unit.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Lookup
+    @ActiveOnly BIT = 1,
+    @IncludeId  INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT i.Id, i.ItemCode, i.ItemName, bu.SkuCode AS BaseUnitSku, i.IsActive
+    FROM inventory.Items i
+    LEFT JOIN inventory.ItemUnits bu ON bu.ItemId = i.Id AND bu.IsBaseUnit = 1
+    WHERE (@ActiveOnly = 0 OR i.IsActive = 1 OR i.Id = @IncludeId)
+    ORDER BY i.ItemCode;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Create
+    @ItemCode           NVARCHAR(30),
+    @ItemName           NVARCHAR(200),
+    @BrandId            INT,
+    @Model              NVARCHAR(100)  = NULL,
+    @ItemFamilyId       INT,
+    @CountryOfOrigin    NVARCHAR(2),
+    @DefaultWarehouseId INT,
+    @Description        NVARCHAR(1000) = NULL,
+    @WarrantyMonths     INT            = NULL,
+    @MinQuantity        INT            = 0,
+    @MaxQuantity        INT            = NULL,
+    @IsBivac            BIT            = 0,
+    @IsActive           BIT            = 1,
+    @UserId             INT            = NULL,
+    @NewId              INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @ItemCode        = LTRIM(RTRIM(@ItemCode));
+    SET @ItemName        = LTRIM(RTRIM(@ItemName));
+    SET @Model           = NULLIF(LTRIM(RTRIM(@Model)), N'');
+    SET @CountryOfOrigin = UPPER(LTRIM(RTRIM(@CountryOfOrigin)));
+    SET @Description     = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @MinQuantity     = ISNULL(@MinQuantity, 0);
+    SET @IsBivac         = ISNULL(@IsBivac, 0);
+    SET @IsActive        = ISNULL(@IsActive, 1);
+
+    IF @ItemCode IS NULL OR @ItemCode = N'' THROW 56000, 'Item Code is required.', 1;
+    IF @ItemName IS NULL OR @ItemName = N'' THROW 56000, 'Item Name is required.', 1;
+    IF @CountryOfOrigin IS NULL OR LEN(@CountryOfOrigin) <> 2 OR @CountryOfOrigin LIKE N'%[^A-Z]%'
+        THROW 56000, 'Country of Origin is required (2-letter ISO code).', 1;
+    IF @WarrantyMonths IS NOT NULL AND @WarrantyMonths < 0 THROW 56000, 'Warranty cannot be negative.', 1;
+    IF @MinQuantity < 0 THROW 56000, 'Minimum Quantity cannot be negative.', 1;
+    IF @MaxQuantity IS NOT NULL AND @MaxQuantity < @MinQuantity
+        THROW 56000, 'Minimum Quantity cannot exceed Maximum Quantity.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Brands WHERE Id = @BrandId AND IsActive = 1)
+        THROW 56008, 'Brand not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE Id = @ItemFamilyId AND IsActive = 1)
+        THROW 56008, 'Item Family not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1)
+        THROW 56008, 'Default Warehouse not found or inactive.', 1;
+
+    IF EXISTS (SELECT 1 FROM inventory.Items WHERE ItemCode = @ItemCode)
+        THROW 56001, 'An item with this Item Code already exists.', 1;
+
+    INSERT INTO inventory.Items (ItemCode, ItemName, BrandId, Model, ItemFamilyId, CountryOfOrigin,
+                                 DefaultWarehouseId, Description, WarrantyMonths, MinQuantity, MaxQuantity,
+                                 IsBivac, IsActive, CreatedBy)
+    VALUES (@ItemCode, @ItemName, @BrandId, @Model, @ItemFamilyId, @CountryOfOrigin,
+            @DefaultWarehouseId, @Description, @WarrantyMonths, @MinQuantity, @MaxQuantity,
+            @IsBivac, @IsActive, @UserId);
+
+    SET @NewId = SCOPE_IDENTITY();
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Update
+    @Id                 INT,
+    @ItemCode           NVARCHAR(30),
+    @ItemName           NVARCHAR(200),
+    @BrandId            INT,
+    @Model              NVARCHAR(100)  = NULL,
+    @ItemFamilyId       INT,
+    @CountryOfOrigin    NVARCHAR(2),
+    @DefaultWarehouseId INT,
+    @Description        NVARCHAR(1000) = NULL,
+    @WarrantyMonths     INT            = NULL,
+    @MinQuantity        INT            = 0,
+    @MaxQuantity        INT            = NULL,
+    @IsBivac            BIT            = 0,
+    @IsActive           BIT            = 1,
+    @RowVersion         BINARY(8)      = NULL,
+    @UserId             INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SET @ItemCode        = LTRIM(RTRIM(@ItemCode));
+    SET @ItemName        = LTRIM(RTRIM(@ItemName));
+    SET @Model           = NULLIF(LTRIM(RTRIM(@Model)), N'');
+    SET @CountryOfOrigin = UPPER(LTRIM(RTRIM(@CountryOfOrigin)));
+    SET @Description     = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @MinQuantity     = ISNULL(@MinQuantity, 0);
+    SET @IsBivac         = ISNULL(@IsBivac, 0);
+    SET @IsActive        = ISNULL(@IsActive, 1);
+
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @Id)
+        THROW 56006, 'Item not found.', 1;
+    IF @ItemCode IS NULL OR @ItemCode = N'' THROW 56000, 'Item Code is required.', 1;
+    IF @ItemName IS NULL OR @ItemName = N'' THROW 56000, 'Item Name is required.', 1;
+    IF @CountryOfOrigin IS NULL OR LEN(@CountryOfOrigin) <> 2 OR @CountryOfOrigin LIKE N'%[^A-Z]%'
+        THROW 56000, 'Country of Origin is required (2-letter ISO code).', 1;
+    IF @WarrantyMonths IS NOT NULL AND @WarrantyMonths < 0 THROW 56000, 'Warranty cannot be negative.', 1;
+    IF @MinQuantity < 0 THROW 56000, 'Minimum Quantity cannot be negative.', 1;
+    IF @MaxQuantity IS NOT NULL AND @MaxQuantity < @MinQuantity
+        THROW 56000, 'Minimum Quantity cannot exceed Maximum Quantity.', 1;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Brands WHERE Id = @BrandId AND IsActive = 1)
+        THROW 56008, 'Brand not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ItemFamilies WHERE Id = @ItemFamilyId AND IsActive = 1)
+        THROW 56008, 'Item Family not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1)
+        THROW 56008, 'Default Warehouse not found or inactive.', 1;
+
+    IF EXISTS (SELECT 1 FROM inventory.Items WHERE ItemCode = @ItemCode AND Id <> @Id)
+        THROW 56001, 'An item with this Item Code already exists.', 1;
+
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 56004, 'This item was modified by another user. Reload the page and try again.', 1;
+
+    UPDATE inventory.Items
+    SET ItemCode = @ItemCode, ItemName = @ItemName, BrandId = @BrandId, Model = @Model,
+        ItemFamilyId = @ItemFamilyId, CountryOfOrigin = @CountryOfOrigin,
+        DefaultWarehouseId = @DefaultWarehouseId, Description = @Description,
+        WarrantyMonths = @WarrantyMonths, MinQuantity = @MinQuantity, MaxQuantity = @MaxQuantity,
+        IsBivac = @IsBivac, IsActive = @IsActive,
+        UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_SetActive
+    @Id INT, @IsActive BIT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @Id)
+        THROW 56006, 'Item not found.', 1;
+    UPDATE inventory.Items SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
+END
+GO
+
+-- Deletes the item with its units and files, but only when no OTHER table references the item
+-- or any of its units (future stock/purchase/invoice lines). sys.foreign_keys covers new tables automatically.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @Id)
+        THROW 56006, 'Item not found.', 1;
+
+    DECLARE @Referenced BIT = 0, @sql NVARCHAR(MAX) = N'';
+
+    -- References to the item itself (excluding its own child tables).
+    SELECT @sql = @sql
+        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+    FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+    WHERE fk.referenced_object_id = OBJECT_ID(N'inventory.Items')
+      AND fk.parent_object_id NOT IN (OBJECT_ID(N'inventory.ItemUnits'), OBJECT_ID(N'inventory.ItemFiles'));
+
+    IF @sql <> N'' EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+
+    -- References to any of the item's units (e.g. future transaction lines storing ItemUnitId).
+    IF @Referenced = 0
+    BEGIN
+        SET @sql = N'';
+        SELECT @sql = @sql
+            + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name) + N' x'
+            + N' INNER JOIN inventory.ItemUnits iu ON iu.Id = x.' + QUOTENAME(c.name)
+            + N' WHERE iu.ItemId = @Id) SET @Referenced = 1;' + NCHAR(10)
+        FROM sys.foreign_keys fk
+        INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+        INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+        INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+        WHERE fk.referenced_object_id = OBJECT_ID(N'inventory.ItemUnits');
+
+        IF @sql <> N'' EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+    END
+
+    IF @Referenced = 1
+        THROW 56003, 'This item cannot be deleted because it is referenced by inventory or transactions. You may deactivate it instead.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE FROM inventory.ItemFiles WHERE ItemId = @Id;
+        DELETE FROM inventory.ItemUnits WHERE ItemId = @Id;
+        DELETE FROM inventory.Items WHERE Id = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ------------------------------------------------------------------ Item unit procedures */
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemUnit_Create
+    @ItemId         INT,
+    @UnitTypeId     INT,
+    @PackingFormula INT,
+    @SkuCode        NVARCHAR(50),
+    @Barcode        NVARCHAR(50) = NULL,
+    @IsSalesUnit    BIT          = 0,
+    @IsPurchaseUnit BIT          = 0,
+    @IsBaseUnit     BIT          = 0,
+    @UserId         INT          = NULL,
+    @NewId          INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @SkuCode = LTRIM(RTRIM(@SkuCode));
+    SET @Barcode = NULLIF(LTRIM(RTRIM(@Barcode)), N'');
+    SET @IsSalesUnit = ISNULL(@IsSalesUnit, 0);
+    SET @IsPurchaseUnit = ISNULL(@IsPurchaseUnit, 0);
+    SET @IsBaseUnit = ISNULL(@IsBaseUnit, 0);
+
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @ItemId)
+        THROW 56006, 'Item not found.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE Id = @UnitTypeId AND IsActive = 1)
+        THROW 56008, 'Unit Type not found or inactive.', 1;
+    IF @SkuCode IS NULL OR @SkuCode = N'' THROW 56000, 'SKU Code is required.', 1;
+    IF @PackingFormula IS NULL OR @PackingFormula < 1
+        THROW 56000, 'Packing Formula must be a whole number of at least 1.', 1;
+
+    DECLARE @HasBase BIT = CASE WHEN EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE ItemId = @ItemId AND IsBaseUnit = 1) THEN 1 ELSE 0 END;
+
+    IF @HasBase = 0 AND @IsBaseUnit = 0
+        THROW 56005, 'The first unit of an item must be the Base Unit.', 1;
+    IF @HasBase = 1 AND @IsBaseUnit = 1
+        THROW 56005, 'This item already has a Base Unit. Edit the existing units to change which one is the base.', 1;
+    IF @IsBaseUnit = 1 AND @PackingFormula <> 1
+        THROW 56005, 'The Base Unit must have a Packing Formula of 1.', 1;
+
+    IF EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE ItemId = @ItemId AND UnitTypeId = @UnitTypeId)
+        THROW 56000, 'This item already has a unit of this Unit Type.', 1;
+    IF EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE ItemId = @ItemId AND SkuCode = @SkuCode)
+        THROW 56007, 'This SKU Code is already used by another unit of this item.', 1;
+    IF @Barcode IS NOT NULL AND EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE Barcode = @Barcode)
+        THROW 56002, 'This Barcode is already used by another unit in the system.', 1;
+
+    INSERT INTO inventory.ItemUnits (ItemId, UnitTypeId, PackingFormula, SkuCode, Barcode,
+                                     IsSalesUnit, IsPurchaseUnit, IsBaseUnit, CreatedBy)
+    VALUES (@ItemId, @UnitTypeId, @PackingFormula, @SkuCode, @Barcode,
+            @IsSalesUnit, @IsPurchaseUnit, @IsBaseUnit, @UserId);
+
+    SET @NewId = SCOPE_IDENTITY();
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemUnit_Update
+    @Id             INT,
+    @UnitTypeId     INT,
+    @PackingFormula INT,
+    @SkuCode        NVARCHAR(50),
+    @Barcode        NVARCHAR(50) = NULL,
+    @IsSalesUnit    BIT          = 0,
+    @IsPurchaseUnit BIT          = 0,
+    @IsBaseUnit     BIT          = 0,
+    @RowVersion     BINARY(8)    = NULL,
+    @UserId         INT          = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @SkuCode = LTRIM(RTRIM(@SkuCode));
+    SET @Barcode = NULLIF(LTRIM(RTRIM(@Barcode)), N'');
+    SET @IsSalesUnit = ISNULL(@IsSalesUnit, 0);
+    SET @IsPurchaseUnit = ISNULL(@IsPurchaseUnit, 0);
+    SET @IsBaseUnit = ISNULL(@IsBaseUnit, 0);
+
+    DECLARE @ItemId INT, @WasBase BIT;
+    SELECT @ItemId = ItemId, @WasBase = IsBaseUnit FROM inventory.ItemUnits WHERE Id = @Id;
+
+    IF @ItemId IS NULL
+        THROW 56006, 'Item unit not found.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes WHERE Id = @UnitTypeId AND IsActive = 1)
+        THROW 56008, 'Unit Type not found or inactive.', 1;
+    IF @SkuCode IS NULL OR @SkuCode = N'' THROW 56000, 'SKU Code is required.', 1;
+    IF @PackingFormula IS NULL OR @PackingFormula < 1
+        THROW 56000, 'Packing Formula must be a whole number of at least 1.', 1;
+    IF @WasBase = 1 AND @IsBaseUnit = 0
+        THROW 56005, 'Every item needs a Base Unit. Mark another unit as the base instead (that switches automatically).', 1;
+    IF @IsBaseUnit = 1 AND @PackingFormula <> 1
+        THROW 56005, 'The Base Unit must have a Packing Formula of 1.', 1;
+
+    IF EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE ItemId = @ItemId AND UnitTypeId = @UnitTypeId AND Id <> @Id)
+        THROW 56000, 'This item already has a unit of this Unit Type.', 1;
+    IF EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE ItemId = @ItemId AND SkuCode = @SkuCode AND Id <> @Id)
+        THROW 56007, 'This SKU Code is already used by another unit of this item.', 1;
+    IF @Barcode IS NOT NULL AND EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE Barcode = @Barcode AND Id <> @Id)
+        THROW 56002, 'This Barcode is already used by another unit in the system.', 1;
+
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 56004, 'This unit was modified by another user. Reload the page and try again.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- Becoming the base demotes the current base (single-base invariant).
+        IF @IsBaseUnit = 1 AND @WasBase = 0
+        BEGIN
+            UPDATE inventory.ItemUnits
+            SET IsBaseUnit = 0, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE ItemId = @ItemId AND IsBaseUnit = 1;
+        END
+
+        UPDATE inventory.ItemUnits
+        SET UnitTypeId = @UnitTypeId, PackingFormula = @PackingFormula, SkuCode = @SkuCode, Barcode = @Barcode,
+            IsSalesUnit = @IsSalesUnit, IsPurchaseUnit = @IsPurchaseUnit, IsBaseUnit = @IsBaseUnit,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemUnit_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @IsBase BIT = (SELECT IsBaseUnit FROM inventory.ItemUnits WHERE Id = @Id);
+    IF @IsBase IS NULL
+        THROW 56006, 'Item unit not found.', 1;
+    IF @IsBase = 1
+        THROW 56005, 'The Base Unit cannot be deleted. Mark another unit as the base first.', 1;
+
+    DECLARE @sql NVARCHAR(MAX) = N'';
+    SELECT @sql = @sql
+        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+    FROM sys.foreign_keys fk
+    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
+    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
+    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
+    WHERE fk.referenced_object_id = OBJECT_ID(N'inventory.ItemUnits');
+
+    DECLARE @Referenced BIT = 0;
+    IF @sql <> N'' EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+    IF @Referenced = 1
+        THROW 56003, 'This unit cannot be deleted because it is referenced by transactions.', 1;
+
+    DELETE FROM inventory.ItemUnits WHERE Id = @Id;
+END
+GO
+
+/* ------------------------------------------------------------------ Item file procedures */
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_Add
+    @ItemId      INT,
+    @FileName    NVARCHAR(255),
+    @ContentType NVARCHAR(100),
+    @SizeBytes   INT,
+    @IsItemImage BIT,
+    @Content     VARBINARY(MAX),
+    @UserId      INT = NULL,
+    @NewId       INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @ItemId)
+        THROW 56006, 'Item not found.', 1;
+    IF @FileName IS NULL OR LTRIM(RTRIM(@FileName)) = N'' THROW 56000, 'File name is required.', 1;
+    IF @Content IS NULL OR @SizeBytes IS NULL OR @SizeBytes <= 0 THROW 56000, 'The file is empty.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @IsItemImage = 1
+            DELETE FROM inventory.ItemFiles WHERE ItemId = @ItemId AND IsItemImage = 1;  -- replace the image
+
+        INSERT INTO inventory.ItemFiles (ItemId, FileName, ContentType, SizeBytes, IsItemImage, Content, CreatedBy)
+        VALUES (@ItemId, LTRIM(RTRIM(@FileName)), @ContentType, @SizeBytes, ISNULL(@IsItemImage, 0), @Content, @UserId);
+
+        SET @NewId = SCOPE_IDENTITY();
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, ItemId, FileName, ContentType, SizeBytes, IsItemImage, Content, CreatedAtUtc
+    FROM inventory.ItemFiles WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_Delete
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM inventory.ItemFiles WHERE Id = @Id)
+        THROW 56006, 'File not found.', 1;
+    DELETE FROM inventory.ItemFiles WHERE Id = @Id;
+END
+GO
+
+/* ------------------------------------------------------------------ Permissions */
+
+MERGE security.Permissions AS target
+USING
+(
+    VALUES
+        (N'masterdata.unittypes.view',   N'View unit types',   N'Master Data', N'See the Unit Types list.',                              340),
+        (N'masterdata.unittypes.create', N'Create unit types', N'Master Data', N'Add new unit types.',                                   350),
+        (N'masterdata.unittypes.edit',   N'Edit unit types',   N'Master Data', N'Change unit types and activate / deactivate them.',     360),
+        (N'masterdata.unittypes.delete', N'Delete unit types', N'Master Data', N'Delete unit types not used by items.',                  370),
+        (N'inventory.items.view',        N'View items',        N'Inventory',   N'See the Item Definition list and item details.',        400),
+        (N'inventory.items.create',      N'Create items',      N'Inventory',   N'Add new items with units and attachments.',             410),
+        (N'inventory.items.edit',        N'Edit items',        N'Inventory',   N'Change items, units, attachments and status.',          420),
+        (N'inventory.items.delete',      N'Delete items',      N'Inventory',   N'Delete items not referenced by transactions.',          430)
+) AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN
+    UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Module, Description, SortOrder)
+    VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+INSERT INTO security.RolePermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM security.Roles r
+CROSS JOIN security.Permissions p
+WHERE (p.Code LIKE N'masterdata.unittypes.%' OR p.Code LIKE N'inventory.items.%')
+  AND (r.IsSystem = 1 OR (r.Name = N'Manager' AND p.Code IN (N'masterdata.unittypes.view', N'inventory.items.view')))
+  AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+GO
+
+/* ------------------------------------------------------------------ Seeds */
+
+IF NOT EXISTS (SELECT 1 FROM masterdata.UnitTypes)
+BEGIN
+    INSERT INTO masterdata.UnitTypes (UnitTypeName, IsActive)
+    VALUES (N'PC', 1), (N'Box', 1), (N'Pallet', 1), (N'Container', 1);
+    PRINT 'Seeded unit types: PC, Box, Pallet, Container (dummy data - edit freely).';
+END
+GO
+
+-- One demo item, only when every prerequisite seed is present and Items is empty.
+IF NOT EXISTS (SELECT 1 FROM inventory.Items)
+BEGIN
+    DECLARE @BrandId INT      = (SELECT TOP (1) Id FROM masterdata.Brands       WHERE BrandName  = N'TVS' AND IsActive = 1);
+    DECLARE @FamilyId INT     = (SELECT TOP (1) Id FROM masterdata.ItemFamilies WHERE FamilyName = N'Motorcycles' AND IsActive = 1);
+    DECLARE @WarehouseId INT  = (SELECT TOP (1) Id FROM masterdata.Warehouses   WHERE IsMainWarehouse = 1 AND IsActive = 1);
+    DECLARE @PcId INT         = (SELECT TOP (1) Id FROM masterdata.UnitTypes    WHERE UnitTypeName = N'PC');
+
+    IF @BrandId IS NOT NULL AND @FamilyId IS NOT NULL AND @WarehouseId IS NOT NULL AND @PcId IS NOT NULL
+    BEGIN
+        DECLARE @ItemId INT;
+
+        INSERT INTO inventory.Items (ItemCode, ItemName, BrandId, Model, ItemFamilyId, CountryOfOrigin,
+                                     DefaultWarehouseId, Description, WarrantyMonths, MinQuantity, MaxQuantity, IsBivac, IsActive)
+        VALUES (N'TVS-AP160', N'TVS Apache RTR 160 4V', @BrandId, N'Apache RTR 160 4V', @FamilyId, N'IN',
+                @WarehouseId, N'High performance 160cc motorcycle.', 24, 1, 99999, 0, 1);
+        SET @ItemId = SCOPE_IDENTITY();
+
+        INSERT INTO inventory.ItemUnits (ItemId, UnitTypeId, PackingFormula, SkuCode, Barcode, IsSalesUnit, IsPurchaseUnit, IsBaseUnit)
+        VALUES (@ItemId, @PcId, 1, N'AP160-PC', NULL, 1, 1, 1);
+
+        PRINT 'Seeded demo item TVS-AP160 with its PC base unit.';
+    END
+END
+GO
+

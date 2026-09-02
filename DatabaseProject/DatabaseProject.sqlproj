@@ -128,5 +128,13 @@
     <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Get.sql" />
     <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Delete.sql" />
     <Build Include="masterdata\Stored Procedures\usp_ItemFamily_Create.sql" />
+    <Build Include="masterdata\Tables\Brands.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_Update.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_Search.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_SetActive.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_Lookup.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_Get.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_Delete.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_Brand_Create.sql" />
   </ItemGroup>
 </Project>

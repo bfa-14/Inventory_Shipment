@@ -47,10 +47,27 @@ public static class Permissions
         public const string ItemFamiliesCreate = "masterdata.itemfamilies.create";
         public const string ItemFamiliesEdit = "masterdata.itemfamilies.edit";
         public const string ItemFamiliesDelete = "masterdata.itemfamilies.delete";
+        public const string BrandsView = "masterdata.brands.view";
+        public const string BrandsCreate = "masterdata.brands.create";
+        public const string BrandsEdit = "masterdata.brands.edit";
+        public const string BrandsDelete = "masterdata.brands.delete";
+        public const string UnitTypesView = "masterdata.unittypes.view";
+        public const string UnitTypesCreate = "masterdata.unittypes.create";
+        public const string UnitTypesEdit = "masterdata.unittypes.edit";
+        public const string UnitTypesDelete = "masterdata.unittypes.delete";
+    }
+
+    public static class Inventory
+    {
+        public const string ItemsView = "inventory.items.view";
+        public const string ItemsCreate = "inventory.items.create";
+        public const string ItemsEdit = "inventory.items.edit";
+        public const string ItemsDelete = "inventory.items.delete";
     }
 
     private const string SecurityModule = "Security";
     private const string MasterDataModule = "Master Data";
+    private const string InventoryModule = "Inventory";
 
     public static IReadOnlyList<PermissionDefinition> All { get; } =
     [
@@ -113,5 +130,32 @@ public static class Permissions
             "Change family details, move families and activate / deactivate them.", 280),
         new(MasterData.ItemFamiliesDelete, "Delete item families", MasterDataModule,
             "Delete families without children that are not assigned to items.", 290),
+
+        new(MasterData.BrandsView, "View brands", MasterDataModule,
+            "See the Brands list.", 300),
+        new(MasterData.BrandsCreate, "Create brands", MasterDataModule,
+            "Add new brands.", 310),
+        new(MasterData.BrandsEdit, "Edit brands", MasterDataModule,
+            "Change brand details and activate / deactivate them.", 320),
+        new(MasterData.BrandsDelete, "Delete brands", MasterDataModule,
+            "Delete brands that are not assigned to items.", 330),
+
+        new(MasterData.UnitTypesView, "View unit types", MasterDataModule,
+            "See the Unit Types list.", 340),
+        new(MasterData.UnitTypesCreate, "Create unit types", MasterDataModule,
+            "Add new unit types.", 350),
+        new(MasterData.UnitTypesEdit, "Edit unit types", MasterDataModule,
+            "Change unit types and activate / deactivate them.", 360),
+        new(MasterData.UnitTypesDelete, "Delete unit types", MasterDataModule,
+            "Delete unit types not used by items.", 370),
+
+        new(Inventory.ItemsView, "View items", InventoryModule,
+            "See the Item Definition list and item details.", 400),
+        new(Inventory.ItemsCreate, "Create items", InventoryModule,
+            "Add new items with units and attachments.", 410),
+        new(Inventory.ItemsEdit, "Edit items", InventoryModule,
+            "Change items, units, attachments and status.", 420),
+        new(Inventory.ItemsDelete, "Delete items", InventoryModule,
+            "Delete items not referenced by transactions.", 430),
     ];
 }

@@ -6,7 +6,7 @@ namespace Inventory_Shipment.Repository.Database;
 /// <summary>
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
-/// Each module owns a block: 50xxx security, 51xxx-54xxx master data.
+/// Each module owns a block: 50xxx security, 51xxx-55xxx + 57xxx master data, 56xxx inventory.
 /// </summary>
 public static class SqlErrors
 {
@@ -58,6 +58,31 @@ public static class SqlErrors
     public const int ItemFamilyNotFound = 54006;
     public const int ItemFamilyCircularHierarchy = 54007;
     public const int ItemFamilyParentInactive = 54008;
+
+    // ----- 55xxx: master data - brands -----
+    public const int BrandValidation = 55000;
+    public const int BrandDuplicateCode = 55001;
+    public const int BrandReferenced = 55003;
+    public const int BrandConcurrency = 55004;
+    public const int BrandNotFound = 55006;
+
+    // ----- 56xxx: inventory - item definition (items, units, files) -----
+    public const int ItemValidation = 56000;
+    public const int ItemDuplicateCode = 56001;
+    public const int ItemDuplicateBarcode = 56002;
+    public const int ItemReferenced = 56003;
+    public const int ItemConcurrency = 56004;
+    public const int ItemBaseUnitRule = 56005;
+    public const int ItemNotFound = 56006;
+    public const int ItemDuplicateSku = 56007;
+    public const int ItemMasterInactive = 56008;
+
+    // ----- 57xxx: master data - unit types -----
+    public const int UnitTypeValidation = 57000;
+    public const int UnitTypeDuplicateName = 57001;
+    public const int UnitTypeReferenced = 57003;
+    public const int UnitTypeConcurrency = 57004;
+    public const int UnitTypeNotFound = 57006;
 
     private const int FirstBusinessRule = 50000;
     private const int LastBusinessRule = 59999;
