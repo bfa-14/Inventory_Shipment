@@ -33,6 +33,8 @@ public static class DependencyInjection
         services.TryAddScoped<IItemFamilyService, ItemFamilyService>();
         services.TryAddScoped<IBrandService, BrandService>();
         services.TryAddScoped<IUnitTypeService, UnitTypeService>();
+        services.TryAddScoped<IPriceListService, PriceListService>();
+        services.TryAddScoped<IPartyService, PartyService>();
         services.TryAddScoped<IItemService, ItemService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();

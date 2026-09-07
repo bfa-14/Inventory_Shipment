@@ -21,3 +21,15 @@ public class User
 
     public bool IsLockedOut(DateTime utcNow) => LockoutEndUtc.HasValue && LockoutEndUtc.Value > utcNow;
 }
+
+/// <summary>
+/// The smallest projection of security.Users - what a "pick a user" dropdown needs. Deliberately
+/// carries no password hash, e-mail, roles or sign-in history, because any signed-in user may read it.
+/// </summary>
+public sealed class UserLookup
+{
+    public int Id { get; set; }
+    public string Username { get; set; } = string.Empty;
+    public string FullName { get; set; } = string.Empty;
+    public bool IsActive { get; set; }
+}

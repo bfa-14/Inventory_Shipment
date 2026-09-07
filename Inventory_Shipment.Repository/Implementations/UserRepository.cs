@@ -81,6 +81,35 @@ public sealed class UserRepository : IUserRepository
         return users.AsList();
     }
 
+    public async Task<IReadOnlyList<UserLookup>> LookupAsync(
+        string? search, bool activeOnly, int? includeId, int top, CancellationToken cancellationToken = default)
+    {
+        const string sql = """
+            SELECT TOP (@Top) Id, Username, FullName, IsActive
+            FROM security.Users
+            WHERE (@ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId)
+              AND (@Search IS NULL
+                   OR Username LIKE N'%' + @Search + N'%'
+                   OR FullName LIKE N'%' + @Search + N'%'
+                   OR Email LIKE N'%' + @Search + N'%'
+                   OR Id = @IncludeId)
+            ORDER BY CASE WHEN IsActive = 1 THEN 0 ELSE 1 END, FullName, Username;
+            """;
+
+        var parameters = new
+        {
+            Search = string.IsNullOrWhiteSpace(search) ? null : search.Trim(),
+            ActiveOnly = activeOnly,
+            IncludeId = includeId,
+            Top = Math.Clamp(top, 1, 500)
+        };
+
+        await using var connection = _connectionFactory.Create();
+        var users = await connection.QueryAsync<UserLookup>(
+            new CommandDefinition(sql, parameters, cancellationToken: cancellationToken));
+        return users.AsList();
+    }
+
     public async Task<int> CreateAsync(User user, CancellationToken cancellationToken = default)
     {
         const string sql = """

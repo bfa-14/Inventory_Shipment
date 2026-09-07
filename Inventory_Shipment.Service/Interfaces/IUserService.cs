@@ -9,6 +9,13 @@ public interface IUserService
 
     Task<Result<UserDto>> GetByIdAsync(int id, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Users for a "pick a user" dropdown. Any signed-in user may read it, so the projection carries
+    /// no e-mail, roles or sign-in history. <paramref name="includeId"/> keeps one inactive user visible.
+    /// </summary>
+    Task<Result<IReadOnlyList<UserLookupDto>>> LookupAsync(
+        string? search, bool activeOnly, int? includeId, int top, CancellationToken cancellationToken = default);
+
     Task<Result<UserDto>> CreateAsync(CreateUserRequest request, int actingUserId, CancellationToken cancellationToken = default);
 
     /// <summary>Updates the user's profile (full name and e-mail).</summary>

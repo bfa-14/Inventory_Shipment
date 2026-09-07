@@ -27,6 +27,15 @@ public static class UserMapper
         CreatedAtUtc = user.CreatedAtUtc.AsUtc()
     };
 
+    /// <summary>The dropdown projection - no e-mail, roles or sign-in history.</summary>
+    public static UserLookupDto ToDto(this UserLookup user) => new()
+    {
+        Id = user.Id,
+        Username = user.Username,
+        FullName = user.FullName,
+        IsActive = user.IsActive
+    };
+
     /// <summary>Copy of a mapped user with the roles supplied separately (users list).</summary>
     public static UserDto WithRoles(this UserDto dto, IReadOnlyList<(int Id, string Name)> roles) => new()
     {

@@ -21,6 +21,14 @@ public interface IUserRepository
 
     Task<IReadOnlyList<User>> GetAllAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Users for a "pick a user" dropdown, matched on username, full name or e-mail. Active users
+    /// first, then by full name. <paramref name="includeId"/> keeps one extra user in the list even
+    /// when it is inactive, so an edit form can still show the user the record currently points at.
+    /// </summary>
+    Task<IReadOnlyList<UserLookup>> LookupAsync(
+        string? search, bool activeOnly, int? includeId, int top, CancellationToken cancellationToken = default);
+
     /// <summary>Inserts the user and returns the generated Id (also set on <paramref name="user"/>).</summary>
     Task<int> CreateAsync(User user, CancellationToken cancellationToken = default);
 

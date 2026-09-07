@@ -6,7 +6,7 @@ namespace Inventory_Shipment.Repository.Database;
 /// <summary>
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
-/// Each module owns a block: 50xxx security, 51xxx-55xxx + 57xxx master data, 56xxx inventory.
+/// Each module owns a block: 50xxx security, 56xxx inventory, and 51xxx-55xxx + 57xxx-60xxx master data.
 /// </summary>
 public static class SqlErrors
 {
@@ -84,8 +84,27 @@ public static class SqlErrors
     public const int UnitTypeConcurrency = 57004;
     public const int UnitTypeNotFound = 57006;
 
+    // ----- 58xxx: master data - price lists -----
+    public const int PriceListValidation = 58000;
+    public const int PriceListDuplicateCode = 58001;
+    public const int PriceListReferenced = 58003;
+    public const int PriceListConcurrency = 58004;
+    public const int PriceListNotFound = 58006;
+    public const int PriceListCurrencyInactive = 58008;
+    public const int PriceListCurrencyLocked = 58009;
+
+    // ----- 60xxx: master data - parties (suppliers / clients / salesmen / employees) -----
+    public const int PartyValidation = 60000;
+    public const int PartyDuplicateCode = 60001;
+    public const int PartyUserAlreadyLinked = 60002;
+    public const int PartyReferenced = 60003;
+    public const int PartyConcurrency = 60004;
+    public const int PartyTypeInUse = 60005;
+    public const int PartyNotFound = 60006;
+    public const int PartyMasterInactive = 60008;
+
     private const int FirstBusinessRule = 50000;
-    private const int LastBusinessRule = 59999;
+    private const int LastBusinessRule = 60999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

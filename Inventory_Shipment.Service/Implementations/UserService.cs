@@ -67,6 +67,13 @@ public sealed class UserService : IUserService
         return Result<UserDto>.Success(user.ToDto(access));
     }
 
+    public async Task<Result<IReadOnlyList<UserLookupDto>>> LookupAsync(
+        string? search, bool activeOnly, int? includeId, int top, CancellationToken cancellationToken = default)
+    {
+        var users = await _users.LookupAsync(search, activeOnly, includeId, top, cancellationToken);
+        return Result<IReadOnlyList<UserLookupDto>>.Success(users.Select(u => u.ToDto()).ToList());
+    }
+
     public async Task<Result<UserDto>> CreateAsync(CreateUserRequest request, int actingUserId, CancellationToken cancellationToken = default)
     {
         var errors = _passwordPolicy.Validate(request.Password);

@@ -55,6 +55,14 @@ public static class Permissions
         public const string UnitTypesCreate = "masterdata.unittypes.create";
         public const string UnitTypesEdit = "masterdata.unittypes.edit";
         public const string UnitTypesDelete = "masterdata.unittypes.delete";
+        public const string PriceListsView = "masterdata.pricelists.view";
+        public const string PriceListsCreate = "masterdata.pricelists.create";
+        public const string PriceListsEdit = "masterdata.pricelists.edit";
+        public const string PriceListsDelete = "masterdata.pricelists.delete";
+        public const string PartiesView = "masterdata.parties.view";
+        public const string PartiesCreate = "masterdata.parties.create";
+        public const string PartiesEdit = "masterdata.parties.edit";
+        public const string PartiesDelete = "masterdata.parties.delete";
     }
 
     public static class Inventory
@@ -148,6 +156,24 @@ public static class Permissions
             "Change unit types and activate / deactivate them.", 360),
         new(MasterData.UnitTypesDelete, "Delete unit types", MasterDataModule,
             "Delete unit types not used by items.", 370),
+
+        new(MasterData.PriceListsView, "View price lists", MasterDataModule,
+            "See the Price Lists page.", 440),
+        new(MasterData.PriceListsCreate, "Create price lists", MasterDataModule,
+            "Add new price lists.", 450),
+        new(MasterData.PriceListsEdit, "Edit price lists", MasterDataModule,
+            "Change price lists and activate / deactivate them.", 460),
+        new(MasterData.PriceListsDelete, "Delete price lists", MasterDataModule,
+            "Delete empty price lists.", 470),
+
+        new(MasterData.PartiesView, "View parties", MasterDataModule,
+            "See the Parties list (suppliers, clients, salesmen, employees).", 520),
+        new(MasterData.PartiesCreate, "Create parties", MasterDataModule,
+            "Add new parties.", 530),
+        new(MasterData.PartiesEdit, "Edit parties", MasterDataModule,
+            "Change parties and activate / deactivate them.", 540),
+        new(MasterData.PartiesDelete, "Delete parties", MasterDataModule,
+            "Delete parties never referenced by transactions.", 550),
 
         new(Inventory.ItemsView, "View items", InventoryModule,
             "See the Item Definition list and item details.", 400),
