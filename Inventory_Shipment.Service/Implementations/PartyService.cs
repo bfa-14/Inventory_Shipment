@@ -200,8 +200,7 @@ public sealed class PartyService : IPartyService
         TaxRegistrationNo = Clean(request.TaxRegistrationNo),
         Notes = Clean(request.Notes),
         UserId = request.UserId,
-        ClientPriceListId = request.ClientPriceListId,
-        SalesmanPriceListId = request.SalesmanPriceListId,
+        DefaultPriceListId = request.DefaultPriceListId,
         DefaultCurrencyId = request.DefaultCurrencyId,
         IsActive = request.IsActive
     };

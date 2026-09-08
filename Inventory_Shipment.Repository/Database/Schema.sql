@@ -4820,9 +4820,9 @@ GO
      - Party Code is auto-SUGGESTED from the first checked type (SUP-/CLI-/SAL-/EMP- + 4 digits),
        editable, unique, never renamed later.
      - Optional links: BranchId (active branch), UserId (security.Users - one party per user, for
-       "current user is salesman X"), DefaultCurrencyId (suppliers), and ONE PRICE LIST PER ROLE:
-       ClientPriceListId (the list this party gets when it buys) and SalesmanPriceListId (the list this
-       person sells with). Sales resolution order: client's list -> salesman's list -> company default.
+       "current user is salesman X"), DefaultCurrencyId (suppliers), DefaultPriceListId (any party,
+       whatever its types): the price list PRE-FILLED on invoices for this party, changeable there.
+       Resolution on a sales document: party's default list -> company default (Retail USD).
      - Email format validated when entered; phone/mobile free text; no uniqueness on contacts.
      - A type cannot be REMOVED while the party is referenced in that role. Convention for future
        tables: name the FK column after the role - SupplierId / ClientId / SalesmanId / EmployeeId
@@ -4870,8 +4870,7 @@ BEGIN
         TaxRegistrationNo  NVARCHAR(50)      NULL,
         Notes              NVARCHAR(1000)    NULL,
         UserId             INT               NULL,        -- linked application user (salesman / employee)
-        ClientPriceListId   INT              NULL,        -- clients: price list applied when this party buys
-        SalesmanPriceListId INT              NULL,        -- salesmen: price list this person sells with
+        DefaultPriceListId INT               NULL,        -- pre-filled on invoices, editable there
         DefaultCurrencyId  INT               NULL,        -- suppliers: currency used by default on purchases
         IsActive           BIT               NOT NULL CONSTRAINT DF_Parties_IsActive DEFAULT (1),
         CreatedAtUtc       DATETIME2(3)      NOT NULL CONSTRAINT DF_Parties_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
@@ -4886,8 +4885,7 @@ BEGIN
         CONSTRAINT CK_Parties_AtLeastOneType CHECK (IsSupplier = 1 OR IsClient = 1 OR IsSalesman = 1 OR IsEmployee = 1),
         CONSTRAINT FK_Parties_Branch        FOREIGN KEY (BranchId)           REFERENCES masterdata.Branches (Id),
         CONSTRAINT FK_Parties_User          FOREIGN KEY (UserId)             REFERENCES security.Users (Id),
-        CONSTRAINT FK_Parties_ClientPriceList   FOREIGN KEY (ClientPriceListId)   REFERENCES masterdata.PriceLists (Id),
-        CONSTRAINT FK_Parties_SalesmanPriceList FOREIGN KEY (SalesmanPriceListId) REFERENCES masterdata.PriceLists (Id),
+        CONSTRAINT FK_Parties_PriceList     FOREIGN KEY (DefaultPriceListId) REFERENCES masterdata.PriceLists (Id),
         CONSTRAINT FK_Parties_Currency      FOREIGN KEY (DefaultCurrencyId)  REFERENCES masterdata.Currencies (Id),
         CONSTRAINT FK_Parties_CreatedBy     FOREIGN KEY (CreatedBy)          REFERENCES security.Users (Id),
         CONSTRAINT FK_Parties_UpdatedBy     FOREIGN KEY (UpdatedBy)          REFERENCES security.Users (Id)
@@ -4903,21 +4901,22 @@ BEGIN
 END
 GO
 
--- Upgrade for databases created with the first version of this script (single DefaultPriceListId).
-IF COL_LENGTH(N'masterdata.Parties', N'DefaultPriceListId') IS NOT NULL
+-- Upgrade for databases created with the interim per-role version (ClientPriceListId / SalesmanPriceListId).
+IF COL_LENGTH(N'masterdata.Parties', N'ClientPriceListId') IS NOT NULL
 BEGIN
-    EXEC sp_rename N'masterdata.Parties.DefaultPriceListId', N'ClientPriceListId', N'COLUMN';
-    IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_Parties_PriceList')
-        EXEC sp_rename N'masterdata.FK_Parties_PriceList', N'FK_Parties_ClientPriceList', N'OBJECT';
-    PRINT 'Renamed DefaultPriceListId -> ClientPriceListId';
+    EXEC sp_rename N'masterdata.Parties.ClientPriceListId', N'DefaultPriceListId', N'COLUMN';
+    IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_Parties_ClientPriceList')
+        EXEC sp_rename N'masterdata.FK_Parties_ClientPriceList', N'FK_Parties_PriceList', N'OBJECT';
+    PRINT 'Renamed ClientPriceListId -> DefaultPriceListId';
 END
 GO
 
-IF COL_LENGTH(N'masterdata.Parties', N'SalesmanPriceListId') IS NULL
+IF COL_LENGTH(N'masterdata.Parties', N'SalesmanPriceListId') IS NOT NULL
 BEGIN
-    ALTER TABLE masterdata.Parties ADD SalesmanPriceListId INT NULL
-        CONSTRAINT FK_Parties_SalesmanPriceList FOREIGN KEY REFERENCES masterdata.PriceLists (Id);
-    PRINT 'Added SalesmanPriceListId';
+    IF EXISTS (SELECT 1 FROM sys.foreign_keys WHERE name = N'FK_Parties_SalesmanPriceList')
+        ALTER TABLE masterdata.Parties DROP CONSTRAINT FK_Parties_SalesmanPriceList;
+    ALTER TABLE masterdata.Parties DROP COLUMN SalesmanPriceListId;
+    PRINT 'Dropped SalesmanPriceListId (single default price list per party)';
 END
 GO
 
@@ -4949,17 +4948,15 @@ BEGIN
            p.BranchId, b.BranchCode, b.BranchName, p.ContactPerson, p.Phone, p.Mobile, p.Email,
            p.Address, p.Country, p.TaxRegistrationNo, p.Notes,
            p.UserId, u.Username AS UserName, u.FullName AS UserFullName,
-           p.ClientPriceListId, cpl.PriceListName AS ClientPriceListName,
-           p.SalesmanPriceListId, spl.PriceListName AS SalesmanPriceListName,
+           p.DefaultPriceListId, pl.PriceListName AS DefaultPriceListName,
            p.DefaultCurrencyId, c.CurrencyCode AS DefaultCurrencyCode,
            p.IsActive, p.CreatedAtUtc, p.CreatedBy, p.UpdatedAtUtc, p.UpdatedBy, p.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM masterdata.Parties p
     LEFT JOIN masterdata.Branches b    ON b.Id  = p.BranchId
     LEFT JOIN security.Users u         ON u.Id  = p.UserId
-    LEFT JOIN masterdata.PriceLists cpl ON cpl.Id = p.ClientPriceListId
-    LEFT JOIN masterdata.PriceLists spl ON spl.Id = p.SalesmanPriceListId
-    LEFT JOIN masterdata.Currencies c   ON c.Id   = p.DefaultCurrencyId
+    LEFT JOIN masterdata.PriceLists pl ON pl.Id = p.DefaultPriceListId
+    LEFT JOIN masterdata.Currencies c  ON c.Id  = p.DefaultCurrencyId
     WHERE (@Search IS NULL OR p.PartyCode LIKE N'%' + @Search + N'%' OR p.PartyName LIKE N'%' + @Search + N'%'
            OR p.Phone LIKE N'%' + @Search + N'%' OR p.Mobile LIKE N'%' + @Search + N'%' OR p.Email LIKE N'%' + @Search + N'%')
       AND (@PartyType IS NULL
@@ -4996,16 +4993,14 @@ BEGIN
            p.BranchId, b.BranchCode, b.BranchName, p.ContactPerson, p.Phone, p.Mobile, p.Email,
            p.Address, p.Country, p.TaxRegistrationNo, p.Notes,
            p.UserId, u.Username AS UserName, u.FullName AS UserFullName,
-           p.ClientPriceListId, cpl.PriceListName AS ClientPriceListName,
-           p.SalesmanPriceListId, spl.PriceListName AS SalesmanPriceListName,
+           p.DefaultPriceListId, pl.PriceListName AS DefaultPriceListName,
            p.DefaultCurrencyId, c.CurrencyCode AS DefaultCurrencyCode,
            p.IsActive, p.CreatedAtUtc, p.CreatedBy, p.UpdatedAtUtc, p.UpdatedBy, p.RowVersion
     FROM masterdata.Parties p
     LEFT JOIN masterdata.Branches b    ON b.Id  = p.BranchId
     LEFT JOIN security.Users u         ON u.Id  = p.UserId
-    LEFT JOIN masterdata.PriceLists cpl ON cpl.Id = p.ClientPriceListId
-    LEFT JOIN masterdata.PriceLists spl ON spl.Id = p.SalesmanPriceListId
-    LEFT JOIN masterdata.Currencies c   ON c.Id   = p.DefaultCurrencyId
+    LEFT JOIN masterdata.PriceLists pl ON pl.Id = p.DefaultPriceListId
+    LEFT JOIN masterdata.Currencies c  ON c.Id  = p.DefaultCurrencyId
     WHERE p.Id = @Id;
 END
 GO
@@ -5026,7 +5021,7 @@ BEGIN
     IF @Top > 500 SET @Top = 500;
 
     SELECT TOP (@Top) p.Id, p.PartyCode, p.PartyName, p.IsSupplier, p.IsClient, p.IsSalesman, p.IsEmployee,
-           p.BranchId, p.ClientPriceListId, p.SalesmanPriceListId, p.DefaultCurrencyId, p.UserId, p.IsActive
+           p.BranchId, p.DefaultPriceListId, p.DefaultCurrencyId, p.UserId, p.IsActive
     FROM masterdata.Parties p
     WHERE (@ActiveOnly = 0 OR p.IsActive = 1 OR p.Id = @IncludeId)
       AND (@PartyType IS NULL
@@ -5073,10 +5068,9 @@ CREATE OR ALTER PROCEDURE masterdata.usp_Party_Validate
     @IsSupplier         BIT, @IsClient BIT, @IsSalesman BIT, @IsEmployee BIT,
     @BranchId           INT,
     @Email              NVARCHAR(150),
-    @UserId              INT,
-    @ClientPriceListId   INT,
-    @SalesmanPriceListId INT,
-    @DefaultCurrencyId   INT
+    @UserId             INT,
+    @DefaultPriceListId INT,
+    @DefaultCurrencyId  INT
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -5090,14 +5084,8 @@ BEGIN
 
     IF @BranchId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 60008, 'Branch not found or inactive.', 1;
-    IF @ClientPriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @ClientPriceListId AND IsActive = 1)
-        THROW 60008, 'Client price list not found or inactive.', 1;
-    IF @SalesmanPriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @SalesmanPriceListId AND IsActive = 1)
-        THROW 60008, 'Salesman price list not found or inactive.', 1;
-    IF @ClientPriceListId IS NOT NULL AND ISNULL(@IsClient, 0) = 0
-        THROW 60000, 'A client price list can only be set when the Client type is selected.', 1;
-    IF @SalesmanPriceListId IS NOT NULL AND ISNULL(@IsSalesman, 0) = 0
-        THROW 60000, 'A salesman price list can only be set when the Salesman type is selected.', 1;
+    IF @DefaultPriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @DefaultPriceListId AND IsActive = 1)
+        THROW 60008, 'Default price list not found or inactive.', 1;
     IF @DefaultCurrencyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @DefaultCurrencyId AND IsActive = 1)
         THROW 60008, 'Default currency not found or inactive.', 1;
     IF @UserId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM security.Users WHERE Id = @UserId)
@@ -5126,10 +5114,9 @@ CREATE OR ALTER PROCEDURE masterdata.usp_Party_Create
     @Country            NVARCHAR(2)    = NULL,
     @TaxRegistrationNo  NVARCHAR(50)   = NULL,
     @Notes              NVARCHAR(1000) = NULL,
-    @UserId              INT           = NULL,
-    @ClientPriceListId   INT           = NULL,
-    @SalesmanPriceListId INT           = NULL,
-    @DefaultCurrencyId   INT           = NULL,
+    @UserId             INT            = NULL,
+    @DefaultPriceListId INT            = NULL,
+    @DefaultCurrencyId  INT            = NULL,
     @IsActive           BIT            = 1,
     @ActorUserId        INT            = NULL,   -- who is saving (CreatedBy)
     @NewId              INT OUTPUT
@@ -5149,14 +5136,14 @@ BEGIN
     SET @IsActive = ISNULL(@IsActive, 1);
 
     EXEC masterdata.usp_Party_Validate NULL, @PartyCode, @PartyName, @IsSupplier, @IsClient, @IsSalesman, @IsEmployee,
-         @BranchId, @Email, @UserId, @ClientPriceListId, @SalesmanPriceListId, @DefaultCurrencyId;
+         @BranchId, @Email, @UserId, @DefaultPriceListId, @DefaultCurrencyId;
 
     INSERT INTO masterdata.Parties (PartyCode, PartyName, IsSupplier, IsClient, IsSalesman, IsEmployee, BranchId,
                                     ContactPerson, Phone, Mobile, Email, Address, Country, TaxRegistrationNo, Notes,
-                                    UserId, ClientPriceListId, SalesmanPriceListId, DefaultCurrencyId, IsActive, CreatedBy)
+                                    UserId, DefaultPriceListId, DefaultCurrencyId, IsActive, CreatedBy)
     VALUES (@PartyCode, @PartyName, @IsSupplier, @IsClient, @IsSalesman, @IsEmployee, @BranchId,
             @ContactPerson, @Phone, @Mobile, @Email, @Address, @Country, @TaxRegistrationNo, @Notes,
-            @UserId, @ClientPriceListId, @SalesmanPriceListId, @DefaultCurrencyId, @IsActive, @ActorUserId);
+            @UserId, @DefaultPriceListId, @DefaultCurrencyId, @IsActive, @ActorUserId);
 
     SET @NewId = SCOPE_IDENTITY();
 END
@@ -5206,10 +5193,9 @@ CREATE OR ALTER PROCEDURE masterdata.usp_Party_Update
     @Country            NVARCHAR(2)    = NULL,
     @TaxRegistrationNo  NVARCHAR(50)   = NULL,
     @Notes              NVARCHAR(1000) = NULL,
-    @UserId              INT           = NULL,
-    @ClientPriceListId   INT           = NULL,
-    @SalesmanPriceListId INT           = NULL,
-    @DefaultCurrencyId   INT           = NULL,
+    @UserId             INT            = NULL,
+    @DefaultPriceListId INT            = NULL,
+    @DefaultCurrencyId  INT            = NULL,
     @IsActive           BIT            = 1,
     @RowVersion         BINARY(8)      = NULL,
     @ActorUserId        INT            = NULL
@@ -5235,7 +5221,7 @@ BEGIN
         THROW 60006, 'Party not found.', 1;
 
     EXEC masterdata.usp_Party_Validate @Id, @PartyCode, @PartyName, @IsSupplier, @IsClient, @IsSalesman, @IsEmployee,
-         @BranchId, @Email, @UserId, @ClientPriceListId, @SalesmanPriceListId, @DefaultCurrencyId;
+         @BranchId, @Email, @UserId, @DefaultPriceListId, @DefaultCurrencyId;
 
     -- A type cannot be removed while the party is referenced in that role.
     DECLARE @Ref BIT;
@@ -5268,8 +5254,7 @@ BEGIN
         IsSupplier = @IsSupplier, IsClient = @IsClient, IsSalesman = @IsSalesman, IsEmployee = @IsEmployee,
         BranchId = @BranchId, ContactPerson = @ContactPerson, Phone = @Phone, Mobile = @Mobile, Email = @Email,
         Address = @Address, Country = @Country, TaxRegistrationNo = @TaxRegistrationNo, Notes = @Notes,
-        UserId = @UserId, ClientPriceListId = @ClientPriceListId, SalesmanPriceListId = @SalesmanPriceListId,
-        DefaultCurrencyId = @DefaultCurrencyId,
+        UserId = @UserId, DefaultPriceListId = @DefaultPriceListId, DefaultCurrencyId = @DefaultCurrencyId,
         IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @ActorUserId
     WHERE Id = @Id;
 END

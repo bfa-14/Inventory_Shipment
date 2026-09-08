@@ -1,5 +1,4 @@
-﻿-- Dropdown data for the Items page. @IncludeId keeps an inactive saved value visible when editing.
-CREATE   PROCEDURE masterdata.usp_Brand_Lookup
+﻿CREATE   PROCEDURE masterdata.usp_Brand_Lookup
     @ActiveOnly BIT = 1,
     @IncludeId  INT = NULL
 AS

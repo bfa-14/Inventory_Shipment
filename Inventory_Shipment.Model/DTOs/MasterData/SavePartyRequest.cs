@@ -60,16 +60,10 @@ public sealed class SavePartyRequest
     public int? UserId { get; init; }
 
     /// <summary>
-    /// Clients: the price list applied when this party buys. Must be an active price list, and only
-    /// accepted when <see cref="IsClient"/> is set.
+    /// The price list pre-filled on this party's invoices, where it stays editable. Optional for
+    /// every party type; must be an active price list when supplied.
     /// </summary>
-    public int? ClientPriceListId { get; init; }
-
-    /// <summary>
-    /// Salesmen: the price list this person sells with. Must be an active price list, and only
-    /// accepted when <see cref="IsSalesman"/> is set.
-    /// </summary>
-    public int? SalesmanPriceListId { get; init; }
+    public int? DefaultPriceListId { get; init; }
 
     /// <summary>Suppliers: the currency purchases default to. Must be an active currency when supplied.</summary>
     public int? DefaultCurrencyId { get; init; }

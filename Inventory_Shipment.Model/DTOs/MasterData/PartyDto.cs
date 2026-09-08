@@ -41,17 +41,11 @@ public sealed class PartyDto
     /// <summary>Read-only, joined from the linked user.</summary>
     public string? UserFullName { get; init; }
 
-    /// <summary>Clients: the price list applied when this party buys.</summary>
-    public int? ClientPriceListId { get; init; }
+    /// <summary>The price list pre-filled on this party's invoices; editable there.</summary>
+    public int? DefaultPriceListId { get; init; }
 
-    /// <summary>Read-only, joined from the client price list.</summary>
-    public string? ClientPriceListName { get; init; }
-
-    /// <summary>Salesmen: the price list this person sells with.</summary>
-    public int? SalesmanPriceListId { get; init; }
-
-    /// <summary>Read-only, joined from the salesman price list.</summary>
-    public string? SalesmanPriceListName { get; init; }
+    /// <summary>Read-only, joined from the default price list.</summary>
+    public string? DefaultPriceListName { get; init; }
 
     public int? DefaultCurrencyId { get; init; }
 
@@ -77,8 +71,7 @@ public sealed class PartyLookupDto
     public bool IsSalesman { get; init; }
     public bool IsEmployee { get; init; }
     public int? BranchId { get; init; }
-    public int? ClientPriceListId { get; init; }
-    public int? SalesmanPriceListId { get; init; }
+    public int? DefaultPriceListId { get; init; }
     public int? DefaultCurrencyId { get; init; }
     public int? UserId { get; init; }
     public bool IsActive { get; init; }

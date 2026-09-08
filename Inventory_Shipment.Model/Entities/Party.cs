@@ -53,20 +53,14 @@ public class Party
     /// <summary>Joined from security.Users - read-only.</summary>
     public string? UserFullName { get; set; }
 
-    /// <summary>Clients: the price list applied when this party BUYS. Only valid with the Client type.</summary>
-    public int? ClientPriceListId { get; set; }
-
-    /// <summary>Joined from masterdata.PriceLists - read-only.</summary>
-    public string? ClientPriceListName { get; set; }
-
     /// <summary>
-    /// Salesmen: the price list this person SELLS with. Only valid with the Salesman type. On a sale the
-    /// client's own list wins over it, and the company default is the last resort.
+    /// The price list pre-filled on this party's invoices; it stays editable there. Optional and
+    /// independent of the type flags - a supplier, a client or a salesman may each carry one.
     /// </summary>
-    public int? SalesmanPriceListId { get; set; }
+    public int? DefaultPriceListId { get; set; }
 
     /// <summary>Joined from masterdata.PriceLists - read-only.</summary>
-    public string? SalesmanPriceListName { get; set; }
+    public string? DefaultPriceListName { get; set; }
 
     /// <summary>Suppliers: the currency purchases default to.</summary>
     public int? DefaultCurrencyId { get; set; }
@@ -98,8 +92,7 @@ public sealed class PartyLookup
     public bool IsSalesman { get; set; }
     public bool IsEmployee { get; set; }
     public int? BranchId { get; set; }
-    public int? ClientPriceListId { get; set; }
-    public int? SalesmanPriceListId { get; set; }
+    public int? DefaultPriceListId { get; set; }
     public int? DefaultCurrencyId { get; set; }
     public int? UserId { get; set; }
     public bool IsActive { get; set; }

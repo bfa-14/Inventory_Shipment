@@ -46,10 +46,8 @@ public sealed class PartyRepository : IPartyRepository
         public int? UserId { get; init; }
         public string? UserName { get; init; }
         public string? UserFullName { get; init; }
-        public int? ClientPriceListId { get; init; }
-        public string? ClientPriceListName { get; init; }
-        public int? SalesmanPriceListId { get; init; }
-        public string? SalesmanPriceListName { get; init; }
+        public int? DefaultPriceListId { get; init; }
+        public string? DefaultPriceListName { get; init; }
         public int? DefaultCurrencyId { get; init; }
         public string? DefaultCurrencyCode { get; init; }
         public bool IsActive { get; init; }
@@ -83,10 +81,8 @@ public sealed class PartyRepository : IPartyRepository
             UserId = UserId,
             UserName = UserName,
             UserFullName = UserFullName,
-            ClientPriceListId = ClientPriceListId,
-            ClientPriceListName = ClientPriceListName,
-            SalesmanPriceListId = SalesmanPriceListId,
-            SalesmanPriceListName = SalesmanPriceListName,
+            DefaultPriceListId = DefaultPriceListId,
+            DefaultPriceListName = DefaultPriceListName,
             DefaultCurrencyId = DefaultCurrencyId,
             DefaultCurrencyCode = DefaultCurrencyCode,
             IsActive = IsActive,
@@ -289,8 +285,7 @@ public sealed class PartyRepository : IPartyRepository
         parameters.Add("@TaxRegistrationNo", party.TaxRegistrationNo, DbType.String, size: 50);
         parameters.Add("@Notes", party.Notes, DbType.String, size: 1000);
         parameters.Add("@UserId", party.UserId, DbType.Int32);
-        parameters.Add("@ClientPriceListId", party.ClientPriceListId, DbType.Int32);
-        parameters.Add("@SalesmanPriceListId", party.SalesmanPriceListId, DbType.Int32);
+        parameters.Add("@DefaultPriceListId", party.DefaultPriceListId, DbType.Int32);
         parameters.Add("@DefaultCurrencyId", party.DefaultCurrencyId, DbType.Int32);
         parameters.Add("@IsActive", party.IsActive, DbType.Boolean);
         return parameters;

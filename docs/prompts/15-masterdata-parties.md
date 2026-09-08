@@ -3,7 +3,7 @@
 Run order: `Database\13_MasterData_Parties.sql` in SSMS (needs 12) → Prompt A → Prompt B.
 One party master with four type flags; code auto-suggested from the first checked type
 (SUP-/CLI-/SAL-/EMP-0001); optional links: branch, application user (one party per user),
-one price list per role (client price list = list applied when the party buys; salesman price list = list the person sells with; sales resolution: client's → salesman's → company default), supplier default currency; a type cannot be removed while the party
+one optional default price list per party (any types) that is pre-filled on invoices and changeable there, supplier default currency; a type cannot be removed while the party
 is used in that role; delete only when unreferenced.
 
 Errors 60xxx: 60000 `VALIDATION`, 60001 `DUPLICATE_CODE`, 60002 `USER_ALREADY_LINKED`,
@@ -23,10 +23,9 @@ D:\VSProjects\Inventory_Shipment\Database\13_MasterData_Parties.sql (read its he
 Table masterdata.Parties: Id, PartyCode NVARCHAR(20) unique, PartyName NVARCHAR(200), IsSupplier, IsClient,
 IsSalesman, IsEmployee (at least one), BranchId?, ContactPerson NVARCHAR(150)?, Phone NVARCHAR(50)?, Mobile?,
 Email NVARCHAR(150)?, Address NVARCHAR(500)?, Country NVARCHAR(2)?, TaxRegistrationNo NVARCHAR(50)?,
-Notes NVARCHAR(1000)?, UserId? (security.Users, unique), ClientPriceListId?, SalesmanPriceListId?,
-DefaultCurrencyId?, IsActive, audit, RowVersion. Joined read-only: BranchCode/Name, UserName, UserFullName,
-ClientPriceListName, SalesmanPriceListName, DefaultCurrencyCode. The procs reject a client price list when
-IsClient = 0 and a salesman price list when IsSalesman = 0 (60000).
+Notes NVARCHAR(1000)?, UserId? (security.Users, unique), DefaultPriceListId? (any party type - the list
+pre-filled on invoices, editable there), DefaultCurrencyId?, IsActive, audit, RowVersion. Joined read-only:
+BranchCode/Name, UserName, UserFullName, DefaultPriceListName, DefaultCurrencyCode.
 Procedures: masterdata.usp_Party_Search(@Search code/name/phone/mobile/email, @PartyType Supplier|Client|
 Salesman|Employee|NULL, @BranchId, @IsActive, @SortColumn PartyCode|PartyName|BranchName|Email|Phone|IsActive|
 CreatedAtUtc, @SortDirection, @PageNumber, @PageSize) -> rows + TotalCount; usp_Party_Get;
@@ -47,12 +46,10 @@ TASK
    (service validates at least one -> Validation), BranchId?, ContactPerson [StringLength(150)], Phone/Mobile
    [StringLength(50)], Email [EmailAddress, StringLength(150)], Address [StringLength(500)], Country
    [RegularExpression "^[A-Za-z]{2}$"]?, TaxRegistrationNo [StringLength(50)], Notes [StringLength(1000)],
-   UserId?, ClientPriceListId?, SalesmanPriceListId?, DefaultCurrencyId?, IsActive = true, RowVersion?),
-   SetPartyStatusRequest,
+   UserId?, DefaultPriceListId?, DefaultCurrencyId?, IsActive = true, RowVersion?), SetPartyStatusRequest,
    PartyQuery (Search, PartyType? (enum Supplier|Client|Salesman|Employee as string), BranchId?, IsActive?,
    SortBy = PartyCode, SortDir, Page, PageSize), PartyLookupDto (id, partyCode, partyName, the 4 flags,
-   branchId, clientPriceListId, salesmanPriceListId, defaultCurrencyId, userId, isActive), NextCodeDto;
-   PermissionCatalog entries.
+   branchId, defaultPriceListId, defaultCurrencyId, userId, isActive), NextCodeDto; PermissionCatalog entries.
 3. Repository IPartyRepository / PartyRepository; Service IPartyService / PartyService (+ mapper); register.
 4. API PartiesController route api/masterdata/parties:
      GET ?query [view]; GET {id} [view]; GET lookup?partyType=&search=&activeOnly=&includeId=&top= [Authorize];
@@ -92,17 +89,22 @@ TASK: Parties page (US-MD-007).
    "Party details" (VIEW = same modal, every control read-only, only a Close button):
    - Party Code* (auto-suggested from GET next-code?partyType=<first checked type> when creating and the user
      has not typed a code; re-suggest when the first checked type changes; editable), Party Name*.
+     UNIQUENESS: the code is unique system-wide. Saving NEVER updates an existing party with the same code -
+     the API answers 409 DUPLICATE_CODE and the modal shows "This Party Code already exists. Party codes must
+     be unique." under the field, keeping the user's input. Also pre-check on blur: call GET lookup?search=<code>
+     &activeOnly=false and, if a party with exactly that code exists (other than the one being edited), show
+     the same warning immediately and disable Save until the code changes.
    - Party Type* as Checkbox.Group with the four types in one row (wraps on mobile); inline error "Select at
      least one party type" if none.
    - Branch (Select, active branches, clearable), Contact Person, Phone, Mobile, Email (validated on blur),
      Address (Textarea autosize), Country (searchable Select from src/data/countries.ts, clearable),
      Tax / Registration No., Notes (Textarea).
-   - CONDITIONAL fields (shown only when the related type is checked, cleared when unchecked):
-     Client price list (Client) - Select from active price lists showing "Name (USD)", helper "Applied when
-     this party buys"; Salesman price list (Salesman) - same Select, helper "Used when this person sells;
-     a client's own list takes precedence"; Default Currency (Supplier) - Select from active currencies;
-     Linked user (Salesman or Employee) - searchable Select from users lookup showing "Full name (username)",
-     clearable, helper "Lets the system recognise this person when they sign in".
+   - Default Price List (ALWAYS visible, optional, any party type) - Select from active price lists showing
+     "Name (USD)", clearable, helper "Pre-filled on invoices for this party; can be changed on the invoice".
+   - CONDITIONAL fields (shown only when the related type is checked, cleared when unchecked): Default
+     Currency (Supplier) - Select from active currencies; Linked user (Salesman or Employee) - searchable
+     Select from users lookup showing "Full name (username)", clearable, helper "Lets the system recognise
+     this person when they sign in".
    - Active switch "Yes, this party is active" (default on). Buttons Cancel / Save Party.
    - Errors: DUPLICATE_CODE under Code; USER_ALREADY_LINKED under Linked user; TYPE_IN_USE under Party Type
      with the API message; MASTER_INACTIVE notify; CONCURRENCY notify + refresh; API validation via
