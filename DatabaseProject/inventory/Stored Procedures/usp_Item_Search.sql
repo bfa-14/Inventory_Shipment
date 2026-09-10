@@ -1,13 +1,13 @@
-﻿/* ------------------------------------------------------------------ Item procedures */
+﻿/* ================================================================== 5. Items: real On Hand / costs from the ledger */
 
 CREATE   PROCEDURE inventory.usp_Item_Search
-    @Search             NVARCHAR(200) = NULL,   -- Item Code, Item Name, or any unit SKU / Barcode
-    @ItemFamilyId       INT           = NULL,   -- filters the family AND its whole subtree
+    @Search             NVARCHAR(200) = NULL,
+    @ItemFamilyId       INT           = NULL,
     @BrandId            INT           = NULL,
     @DefaultWarehouseId INT           = NULL,
     @IsActive           BIT           = NULL,
     @IsBivac            BIT           = NULL,
-    @SortColumn         NVARCHAR(30)  = N'ItemCode', -- ItemCode | ItemName | BrandName | FamilyName | WarehouseName | IsActive | CreatedAtUtc
+    @SortColumn         NVARCHAR(30)  = N'ItemCode',
     @SortDirection      NVARCHAR(4)   = N'ASC',
     @PageNumber         INT           = 1,
     @PageSize           INT           = 10
@@ -18,7 +18,7 @@ BEGIN
     IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
     IF @PageSize > 200 SET @PageSize = 200;
     SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
-    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ItemCode', N'ItemName', N'BrandName', N'FamilyName', N'WarehouseName', N'IsActive', N'CreatedAtUtc')
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ItemCode', N'ItemName', N'BrandName', N'FamilyName', N'WarehouseName', N'IsActive', N'CreatedAtUtc', N'OnHand')
         SET @SortColumn = N'ItemCode';
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
     SET @SortDirection = UPPER(@SortDirection);
@@ -28,7 +28,7 @@ BEGIN
            i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName,
            i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
            bu.SkuCode AS BaseUnitSku, ut.UnitTypeName AS BaseUnitName,
-           CAST(0 AS INT) AS OnHand,                                   -- placeholder until the stock module
+           OnHand = inventory.fn_StockOnHand(i.Id, NULL),
            i.CreatedAtUtc, i.CreatedBy, i.UpdatedAtUtc, i.UpdatedBy, i.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM inventory.Items i
@@ -41,8 +41,7 @@ BEGIN
            OR i.ItemCode LIKE N'%' + @Search + N'%'
            OR i.ItemName LIKE N'%' + @Search + N'%'
            OR EXISTS (SELECT 1 FROM inventory.ItemUnits u
-                      WHERE u.ItemId = i.Id
-                        AND (u.SkuCode LIKE N'%' + @Search + N'%' OR u.Barcode LIKE N'%' + @Search + N'%')))
+                      WHERE u.ItemId = i.Id AND (u.SkuCode LIKE N'%' + @Search + N'%' OR u.Barcode LIKE N'%' + @Search + N'%')))
       AND (@ItemFamilyId IS NULL OR i.ItemFamilyId IN (SELECT Id FROM masterdata.fn_ItemFamily_Subtree(@ItemFamilyId)))
       AND (@BrandId IS NULL OR i.BrandId = @BrandId)
       AND (@DefaultWarehouseId IS NULL OR i.DefaultWarehouseId = @DefaultWarehouseId)
@@ -50,15 +49,15 @@ BEGIN
       AND (@IsBivac IS NULL OR i.IsBivac = @IsBivac)
     ORDER BY
         CASE WHEN @SortDirection = N'ASC' THEN
-            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName
-                             WHEN N'BrandName' THEN b.BrandName WHEN N'FamilyName' THEN f.FamilyName
-                             WHEN N'WarehouseName' THEN w.WarehouseName END
+            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName WHEN N'BrandName' THEN b.BrandName
+                             WHEN N'FamilyName' THEN f.FamilyName WHEN N'WarehouseName' THEN w.WarehouseName END
         END ASC,
         CASE WHEN @SortDirection = N'DESC' THEN
-            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName
-                             WHEN N'BrandName' THEN b.BrandName WHEN N'FamilyName' THEN f.FamilyName
-                             WHEN N'WarehouseName' THEN w.WarehouseName END
+            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName WHEN N'BrandName' THEN b.BrandName
+                             WHEN N'FamilyName' THEN f.FamilyName WHEN N'WarehouseName' THEN w.WarehouseName END
         END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'OnHand' THEN inventory.fn_StockOnHand(i.Id, NULL) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'OnHand' THEN inventory.fn_StockOnHand(i.Id, NULL) END DESC,
         CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(i.IsActive AS INT) END ASC,
         CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(i.IsActive AS INT) END DESC,
         CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN i.CreatedAtUtc END ASC,

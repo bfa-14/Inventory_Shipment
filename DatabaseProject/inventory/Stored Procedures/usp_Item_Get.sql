@@ -8,10 +8,13 @@ BEGIN
            i.ItemFamilyId, f.FamilyCode, f.FamilyName, i.CountryOfOrigin,
            i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName, i.Description,
            i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
-           CAST(0 AS INT) AS OnHand,
-           CAST(NULL AS DECIMAL(18,2)) AS LastCost,
-           CAST(NULL AS DECIMAL(18,2)) AS AverageCost,
-           CAST(NULL AS DECIMAL(18,2)) AS LastPurchaseCost,               -- placeholders until stock/purchasing
+           OnHand = inventory.fn_StockOnHand(i.Id, NULL),
+           LastCost = (SELECT TOP (1) CAST(m.UnitCostBase AS DECIMAL(18,2)) FROM inventory.StockMovements m
+                       WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0 ORDER BY m.MovementDate DESC, m.Id DESC),
+           AverageCost = CAST(inventory.fn_AverageCost(i.Id) AS DECIMAL(18,2)),
+           LastPurchaseCost = (SELECT TOP (1) CAST(m.UnitCostBase AS DECIMAL(18,2)) FROM inventory.StockMovements m
+                               WHERE m.ItemId = i.Id AND m.DocumentFamily = N'Purchase' AND m.QuantityBase > 0 AND m.IsReversal = 0
+                               ORDER BY m.MovementDate DESC, m.Id DESC),
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
            i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
     FROM inventory.Items i

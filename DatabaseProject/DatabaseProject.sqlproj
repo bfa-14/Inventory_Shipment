@@ -67,6 +67,13 @@
     <Folder Include="inventory\" />
     <Folder Include="inventory\Tables\" />
     <Folder Include="inventory\Stored Procedures\" />
+    <Folder Include="sales\" />
+    <Folder Include="sales\Tables\" />
+    <Folder Include="inventory\Views\" />
+    <Folder Include="inventory\Functions\" />
+    <Folder Include="sales\Stored Procedures\" />
+    <Folder Include="inventory\User Defined Types\" />
+    <Folder Include="sales\User Defined Types\" />
   </ItemGroup>
   <ItemGroup>
     <Build Include="security\Tables\UserRoles.sql" />
@@ -196,5 +203,39 @@
     <Build Include="inventory\Stored Procedures\usp_Item_Create.sql" />
     <Build Include="inventory\Stored Procedures\usp_Item_Search.sql" />
     <Build Include="security\inventory.sql" />
+    <Build Include="inventory\Tables\StockReasons.sql" />
+    <Build Include="inventory\Tables\StockMovements.sql" />
+    <Build Include="inventory\Tables\StockDocuments.sql" />
+    <Build Include="inventory\Tables\StockDocumentLines.sql" />
+    <Build Include="inventory\Tables\StockDocumentFiles.sql" />
+    <Build Include="inventory\Tables\StockDocumentAudit.sql" />
+    <Build Include="inventory\Tables\ItemImportLogs.sql" />
+    <Build Include="inventory\Tables\DocumentTypes.sql" />
+    <Build Include="sales\Tables\InvoiceImportLogs.sql" />
+    <Build Include="inventory\Views\vw_StockBalance.sql" />
+    <Build Include="inventory\Functions\fn_StockOnHand.sql" />
+    <Build Include="inventory\Functions\fn_AverageCost.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockReason_Lookup.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocumentFile_Get.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocumentFile_Delete.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocumentFile_Add.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_ValidateInput.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_Search.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_Save.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_Post.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_Get.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_Delete.sql" />
+    <Build Include="inventory\Stored Procedures\usp_StockDocument_Cancel.sql" />
+    <Build Include="inventory\Stored Procedures\usp_ItemImport_Validate.sql" />
+    <Build Include="inventory\Stored Procedures\usp_ItemImport_Commit.sql" />
+    <Build Include="inventory\Stored Procedures\usp_DocumentType_NextNumber.sql" />
+    <Build Include="inventory\Stored Procedures\usp_DocumentType_List.sql" />
+    <Build Include="sales\Stored Procedures\usp_InvoiceImport_AttachInvoice.sql" />
+    <Build Include="sales\Stored Procedures\usp_InvoiceImport_Log.sql" />
+    <Build Include="sales\Stored Procedures\usp_InvoiceImport_Validate.sql" />
+    <Build Include="inventory\User Defined Types\tvp_StockDocumentLine.sql" />
+    <Build Include="inventory\User Defined Types\tvp_ItemImportRow.sql" />
+    <Build Include="sales\User Defined Types\tvp_InvoiceImportRow.sql" />
+    <Build Include="security\sales.sql" />
   </ItemGroup>
 </Project>
