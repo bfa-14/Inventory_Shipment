@@ -6,7 +6,8 @@ namespace Inventory_Shipment.Repository.Database;
 /// <summary>
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
-/// Each module owns a block: 50xxx security, 56xxx inventory, and 51xxx-55xxx + 57xxx-60xxx master data.
+/// Each module owns a block: 50xxx security, 56xxx inventory, 51xxx-55xxx + 57xxx-60xxx master data,
+/// 61xxx sales, and 62xxx inventory documents.
 /// </summary>
 public static class SqlErrors
 {
@@ -103,8 +104,35 @@ public static class SqlErrors
     public const int PartyNotFound = 60006;
     public const int PartyMasterInactive = 60008;
 
+    // ----- 61xxx: sales - invoice import -----
+    public const int InvoiceImportValidation = 61000;
+
+    /// <summary>Branch, default warehouse or price list missing or inactive, or the warehouse is not in the branch.</summary>
+    public const int InvoiceImportMasterInactive = 61008;
+
+    // ----- 62xxx: inventory - stock documents and the ledger -----
+    public const int StockDocumentValidation = 62000;
+    public const int StockDocumentConcurrency = 62004;
+
+    /// <summary>The document is not a draft, so it cannot be edited or deleted.</summary>
+    public const int StockDocumentNotDraft = 62005;
+
+    public const int StockDocumentNotFound = 62006;
+
+    /// <summary>Posting or cancelling would take stock below zero. The message names the item, the warehouse and both figures.</summary>
+    public const int StockDocumentInsufficientStock = 62007;
+
+    public const int StockDocumentMasterInactive = 62008;
+    public const int StockDocumentNoLines = 62009;
+
+    /// <summary>The lifecycle forbids the move — posting something already posted, cancelling a draft.</summary>
+    public const int StockDocumentInvalidStatus = 62010;
+
     private const int FirstBusinessRule = 50000;
-    private const int LastBusinessRule = 60999;
+
+    // 61999 rather than 60999: the sales block starts at 61000, and a ceiling left behind its own
+    // module is how a deliberate THROW reaches the API as an unhandled database failure.
+    private const int LastBusinessRule = 62999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

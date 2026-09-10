@@ -25,6 +25,9 @@ builder.Services.AddOptions<SecurityOptions>()
 builder.Services.AddOptions<SeedOptions>()
     .Bind(builder.Configuration.GetSection(SeedOptions.SectionName));
 
+builder.Services.AddOptions<SalesOptions>()
+    .Bind(builder.Configuration.GetSection(SalesOptions.SectionName));
+
 // ----- Layers -----
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is missing from configuration.");

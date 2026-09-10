@@ -1,3 +1,4 @@
+using Inventory_Shipment.Service.Excel;
 using Inventory_Shipment.Service.Implementations;
 using Inventory_Shipment.Service.Interfaces;
 using Inventory_Shipment.Service.Security;
@@ -36,6 +37,13 @@ public static class DependencyInjection
         services.TryAddScoped<IPriceListService, PriceListService>();
         services.TryAddScoped<IPartyService, PartyService>();
         services.TryAddScoped<IItemService, ItemService>();
+
+        // Singletons: both are stateless workbook readers/writers holding nothing per request, and a
+        // new one per import would be an allocation for nothing.
+        services.TryAddSingleton<InvoiceImportParser>();
+        services.TryAddSingleton<InvoiceImportWorkbooks>();
+        services.TryAddScoped<IInvoiceImportService, InvoiceImportService>();
+        services.TryAddScoped<IStockDocumentService, StockDocumentService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

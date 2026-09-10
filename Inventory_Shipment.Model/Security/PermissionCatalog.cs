@@ -25,6 +25,30 @@ public static class Permissions
         public const string AuditView = "security.audit.view";
     }
 
+    /// <summary>
+    /// Selling: invoices and what may be done to their lines.
+    ///
+    /// PRICE OVERRIDE IS A SEPARATE PERMISSION, not part of importing. Anybody who takes invoices may
+    /// import lines; deciding that a line is worth a different price than the price list says is a
+    /// commercial decision, and it is the one thing in an import file that changes what the customer
+    /// is charged. Someone holding only the first gets the system price and a warning saying so.
+    /// </summary>
+    /// <summary>
+    /// Configuration a business owner changes once and then leaves alone — numbering, document
+    /// behaviour. Kept out of the Inventory module deliberately: the people who post stock are not
+    /// the people who decide what a document number looks like.
+    /// </summary>
+    public static class Configuration
+    {
+        public const string DocumentTypesManage = "inventory.documenttypes.manage";
+    }
+
+    public static class Sales
+    {
+        public const string InvoicesImport = "sales.invoices.import";
+        public const string InvoicesPriceOverride = "sales.invoices.priceoverride";
+    }
+
     public static class MasterData
     {
         public const string BranchesView = "masterdata.branches.view";
@@ -71,9 +95,27 @@ public static class Permissions
         public const string ItemsCreate = "inventory.items.create";
         public const string ItemsEdit = "inventory.items.edit";
         public const string ItemsDelete = "inventory.items.delete";
+
+        /* THE FIVE VERBS OF A DOCUMENT, and they are five permissions rather than one because they
+           are five different jobs. A storekeeper writes drafts; a supervisor posts them, which is the
+           moment stock actually moves; cancelling reverses a posted document and is rarer still. In
+           and Out are separate sets for the same reason a shop separates receiving from issuing. */
+        public const string StockInView = "inventory.stockin.view";
+        public const string StockInCreate = "inventory.stockin.create";
+        public const string StockInPost = "inventory.stockin.post";
+        public const string StockInCancel = "inventory.stockin.cancel";
+        public const string StockInDelete = "inventory.stockin.delete";
+
+        public const string StockOutView = "inventory.stockout.view";
+        public const string StockOutCreate = "inventory.stockout.create";
+        public const string StockOutPost = "inventory.stockout.post";
+        public const string StockOutCancel = "inventory.stockout.cancel";
+        public const string StockOutDelete = "inventory.stockout.delete";
     }
 
     private const string SecurityModule = "Security";
+    private const string SalesModule = "Sales";
+    private const string ConfigurationModule = "Configuration";
     private const string MasterDataModule = "Master Data";
     private const string InventoryModule = "Inventory";
 
@@ -183,5 +225,35 @@ public static class Permissions
             "Change items, units, attachments and status.", 420),
         new(Inventory.ItemsDelete, "Delete items", InventoryModule,
             "Delete items not referenced by transactions.", 430),
+
+        new(Inventory.StockInView, "View Inventory In", InventoryModule,
+            "See Inventory In documents.", 700),
+        new(Inventory.StockInCreate, "Create Inventory In", InventoryModule,
+            "Create and edit draft Inventory In documents.", 710),
+        new(Inventory.StockInPost, "Post Inventory In", InventoryModule,
+            "Post Inventory In documents (adds stock).", 720),
+        new(Inventory.StockInCancel, "Cancel Inventory In", InventoryModule,
+            "Cancel posted Inventory In documents (reversal).", 730),
+        new(Inventory.StockInDelete, "Delete Inventory In", InventoryModule,
+            "Delete draft Inventory In documents.", 740),
+
+        new(Inventory.StockOutView, "View Inventory Out", InventoryModule,
+            "See Inventory Out documents.", 760),
+        new(Inventory.StockOutCreate, "Create Inventory Out", InventoryModule,
+            "Create and edit draft Inventory Out documents.", 770),
+        new(Inventory.StockOutPost, "Post Inventory Out", InventoryModule,
+            "Post Inventory Out documents (removes stock).", 780),
+        new(Inventory.StockOutCancel, "Cancel Inventory Out", InventoryModule,
+            "Cancel posted Inventory Out documents (reversal).", 790),
+        new(Inventory.StockOutDelete, "Delete Inventory Out", InventoryModule,
+            "Delete draft Inventory Out documents.", 800),
+
+        new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
+            "Change numbering and behaviour of document types.", 900),
+
+        new(Sales.InvoicesImport, "Import invoice items", SalesModule,
+            "Import invoice lines from an Excel file.", 600),
+        new(Sales.InvoicesPriceOverride, "Override selling price", SalesModule,
+            "Accept a manual unit price instead of the price list price.", 610),
     ];
 }
