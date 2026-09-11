@@ -44,6 +44,7 @@ public static class DependencyInjection
         services.TryAddSingleton<InvoiceImportWorkbooks>();
         services.TryAddScoped<IInvoiceImportService, InvoiceImportService>();
         services.TryAddScoped<IStockDocumentService, StockDocumentService>();
+        services.TryAddScoped<ISalesInvoiceService, SalesInvoiceService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

@@ -71,6 +71,7 @@ public sealed class InvoiceImportRepository : IInvoiceImportRepository
         parameters.Add("@WarningRows", request.WarningRows, DbType.Int32);
         parameters.Add("@RejectedRows", request.RejectedRows, DbType.Int32);
         parameters.Add("@DraftReference", request.DraftReference, DbType.String, size: 50);
+        parameters.Add("@InvoiceId", request.InvoiceId, DbType.Int32);
         parameters.Add("@ImportedBy", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 

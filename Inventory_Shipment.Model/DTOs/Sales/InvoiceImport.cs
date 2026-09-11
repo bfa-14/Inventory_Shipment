@@ -144,7 +144,9 @@ public sealed class InvoiceImportLogRequest
 {
     public int BranchId { get; init; }
     public int WarehouseId { get; init; }
-    public int PriceListId { get; init; }
+
+    /// <summary>Null on a stock-mode import (Inventory In / Out), where nothing was priced.</summary>
+    public int? PriceListId { get; init; }
     public string FileName { get; init; } = string.Empty;
     public int TotalRows { get; init; }
     public int ImportedRows { get; init; }
@@ -160,4 +162,14 @@ public sealed class InvoiceImportLogRequest
     /// come minutes later, or never.
     /// </summary>
     public string? DraftReference { get; init; }
+
+    /// <summary>
+    /// The invoice this import went into, once it has one.
+    ///
+    /// THE OTHER HALF OF <see cref="DraftReference"/>. Before the first save the wizard has only the
+    /// draft reference; after it, the invoice exists and the wizard logs straight against its id —
+    /// which also writes an "Imported" entry on the invoice's own audit trail. The procedure checks
+    /// the id exists; a made-up one is refused, so a log row can never point at nothing.
+    /// </summary>
+    public int? InvoiceId { get; init; }
 }

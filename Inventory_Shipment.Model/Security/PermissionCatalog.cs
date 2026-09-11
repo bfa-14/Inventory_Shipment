@@ -47,6 +47,11 @@ public static class Permissions
     {
         public const string InvoicesImport = "sales.invoices.import";
         public const string InvoicesPriceOverride = "sales.invoices.priceoverride";
+        public const string InvoicesView = "sales.invoices.view";
+        public const string InvoicesCreate = "sales.invoices.create";
+        public const string InvoicesPost = "sales.invoices.post";
+        public const string InvoicesCancel = "sales.invoices.cancel";
+        public const string InvoicesDelete = "sales.invoices.delete";
     }
 
     public static class MasterData
@@ -255,5 +260,16 @@ public static class Permissions
             "Import invoice lines from an Excel file.", 600),
         new(Sales.InvoicesPriceOverride, "Override selling price", SalesModule,
             "Accept a manual unit price instead of the price list price.", 610),
+
+        new(Sales.InvoicesView, "View Sales Invoices", SalesModule,
+            "See sales invoices.", 620),
+        new(Sales.InvoicesCreate, "Create Sales Invoices", SalesModule,
+            "Create and edit draft sales invoices.", 630),
+        new(Sales.InvoicesPost, "Post Sales Invoices", SalesModule,
+            "Post sales invoices (removes stock, assigns number).", 640),
+        new(Sales.InvoicesCancel, "Cancel Sales Invoices", SalesModule,
+            "Cancel posted sales invoices (stock reversal).", 650),
+        new(Sales.InvoicesDelete, "Delete Sales Invoices", SalesModule,
+            "Delete draft sales invoices.", 660),
     ];
 }

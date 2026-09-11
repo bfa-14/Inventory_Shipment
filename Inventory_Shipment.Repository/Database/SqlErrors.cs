@@ -7,7 +7,7 @@ namespace Inventory_Shipment.Repository.Database;
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
 /// Each module owns a block: 50xxx security, 56xxx inventory, 51xxx-55xxx + 57xxx-60xxx master data,
-/// 61xxx sales, and 62xxx inventory documents.
+/// 61xxx sales imports, 62xxx inventory documents, and 64xxx sales documents.
 /// </summary>
 public static class SqlErrors
 {
@@ -128,11 +128,27 @@ public static class SqlErrors
     /// <summary>The lifecycle forbids the move — posting something already posted, cancelling a draft.</summary>
     public const int StockDocumentInvalidStatus = 62010;
 
+    // ----- 64xxx: sales - invoices (the Sales document family) -----
+    public const int SalesDocumentValidation = 64000;
+    public const int SalesDocumentConcurrency = 64004;
+    public const int SalesDocumentNotDraft = 64005;
+    public const int SalesDocumentNotFound = 64006;
+    public const int SalesDocumentInsufficientStock = 64007;
+
+    /// <summary>Branch, warehouse, client, salesman or price list missing / inactive — or no exchange rate for the date.</summary>
+    public const int SalesDocumentMasterInactive = 64008;
+
+    public const int SalesDocumentNoLines = 64009;
+    public const int SalesDocumentInvalidStatus = 64010;
+
+    /// <summary>A line whose item unit has no price in the chosen list, and the caller may not override. The message names the line.</summary>
+    public const int SalesDocumentNoPrice = 64011;
+
     private const int FirstBusinessRule = 50000;
 
     // 61999 rather than 60999: the sales block starts at 61000, and a ceiling left behind its own
     // module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 62999;
+    private const int LastBusinessRule = 64999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;
