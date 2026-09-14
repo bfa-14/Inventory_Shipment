@@ -1,6 +1,4 @@
-﻿/* ------------------------------------------------------------------ 4c. Save (create or update a DRAFT) */
-
-CREATE   PROCEDURE inventory.usp_StockDocument_Save
+﻿CREATE   PROCEDURE inventory.usp_StockDocument_Save
     @Id               INT            = NULL,   -- NULL = create
     @DocumentTypeCode NVARCHAR(20),
     @DocumentDate     DATE,
@@ -43,7 +41,7 @@ BEGIN
         BEGIN
             DECLARE @Number NVARCHAR(30) = NULL;
             IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
-                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT;
+                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
 
             INSERT INTO inventory.StockDocuments (DocumentTypeId, DocumentNumber, DocumentDate, BranchId, WarehouseId, ReasonId,
                                                   ReferenceNo, CurrencyId, ExchangeRate, Notes, Status, CreatedBy)
@@ -66,8 +64,9 @@ BEGIN
             VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
         END
 
+        -- Lines: warehouse = header warehouse; Out documents take the item's moving average cost (per unit).
         INSERT INTO inventory.StockDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula, UnitCost, Notes)
-        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
                CASE WHEN @Direction = -1 THEN ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * iu.PackingFormula ELSE ISNULL(l.UnitCost, 0) END,
                NULLIF(LTRIM(RTRIM(l.Notes)), N'')
         FROM @Lines l

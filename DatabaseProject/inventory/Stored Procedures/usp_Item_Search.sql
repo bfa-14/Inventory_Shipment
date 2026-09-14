@@ -1,6 +1,4 @@
-﻿/* ================================================================== 5. Items: real On Hand / costs from the ledger */
-
-CREATE   PROCEDURE inventory.usp_Item_Search
+﻿CREATE   PROCEDURE inventory.usp_Item_Search
     @Search             NVARCHAR(200) = NULL,
     @ItemFamilyId       INT           = NULL,
     @BrandId            INT           = NULL,
@@ -20,7 +18,7 @@ BEGIN
     SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
     IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ItemCode', N'ItemName', N'BrandName', N'FamilyName', N'WarehouseName', N'IsActive', N'CreatedAtUtc', N'OnHand')
         SET @SortColumn = N'ItemCode';
-    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
     SET @SortDirection = UPPER(@SortDirection);
 
     SELECT i.Id, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.Model,
@@ -29,6 +27,8 @@ BEGIN
            i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
            bu.SkuCode AS BaseUnitSku, ut.UnitTypeName AS BaseUnitName,
            OnHand = inventory.fn_StockOnHand(i.Id, NULL),
+           AverageCost = CAST(i.AverageCost AS DECIMAL(18,2)), LastCost = CAST(i.LastCost AS DECIMAL(18,2)),
+           i.DefaultSupplierId, ds.PartyName AS DefaultSupplierName,
            i.CreatedAtUtc, i.CreatedBy, i.UpdatedAtUtc, i.UpdatedBy, i.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM inventory.Items i
@@ -37,6 +37,7 @@ BEGIN
     INNER JOIN masterdata.Warehouses w    ON w.Id = i.DefaultWarehouseId
     LEFT  JOIN inventory.ItemUnits bu     ON bu.ItemId = i.Id AND bu.IsBaseUnit = 1
     LEFT  JOIN masterdata.UnitTypes ut    ON ut.Id = bu.UnitTypeId
+    LEFT  JOIN masterdata.Parties ds      ON ds.Id = i.DefaultSupplierId
     WHERE (@Search IS NULL
            OR i.ItemCode LIKE N'%' + @Search + N'%'
            OR i.ItemName LIKE N'%' + @Search + N'%'

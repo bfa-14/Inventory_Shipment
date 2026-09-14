@@ -1,6 +1,4 @@
-﻿/* ------------------------------------------------------------------ 4d. Post (write the ledger) */
-
-CREATE   PROCEDURE inventory.usp_StockDocument_Post
+﻿CREATE   PROCEDURE inventory.usp_StockDocument_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
     @UserId     INT       = NULL
@@ -12,12 +10,10 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
-        DECLARE @Status TINYINT, @TypeId INT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @NumberOnPost BIT,
-                @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT, @ReasonCode NVARCHAR(20);
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT, @ReasonCode NVARCHAR(20);
 
-        SELECT @Status = d.Status, @TypeId = d.DocumentTypeId, @TypeCode = dt.Code, @Direction = dt.StockDirection,
-               @NumberOnPost = dt.NumberOnPost, @Number = d.DocumentNumber, @DocumentDate = d.DocumentDate,
-               @BranchId = d.BranchId, @ReasonCode = r.ReasonCode
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @ReasonCode = r.ReasonCode
         FROM inventory.StockDocuments d WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
         LEFT  JOIN inventory.StockReasons r ON r.Id = d.ReasonId
@@ -30,7 +26,6 @@ BEGIN
         IF NOT EXISTS (SELECT 1 FROM inventory.StockDocumentLines WHERE DocumentId = @Id)
             THROW 62009, 'The document has no lines. Add at least one item before posting.', 1;
 
-        -- Masters must still be valid at posting time.
         DECLARE @Msg NVARCHAR(400);
         SELECT TOP (1) @Msg =
             CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
@@ -43,9 +38,12 @@ BEGIN
         ORDER BY l.LineNumber;
         IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
 
-        -- Outgoing documents cannot exceed the stock on hand per item + warehouse.
         IF @Direction = -1
         BEGIN
+            -- Refresh the cost at posting time (moving average may have changed since the draft was saved).
+            UPDATE l SET UnitCost = ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * l.PackingFormula
+            FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
+
             SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
                                  + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
             FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM inventory.StockDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
@@ -54,10 +52,25 @@ BEGIN
             WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
             ORDER BY i.ItemCode;
             IF @Msg IS NOT NULL THROW 62007, @Msg, 1;
+
+            UPDATE d SET TotalCost = x.Cost
+            FROM inventory.StockDocuments d
+            CROSS APPLY (SELECT ISNULL(SUM(LineTotal), 0) AS Cost FROM inventory.StockDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
         END
 
         IF @Number IS NULL
-            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT;
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        -- Receipts update the moving average BEFORE the movements exist.
+        IF @Direction = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase)
+            SELECT l.ItemId, l.QuantityBase, CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula ELSE l.UnitCost END
+            FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId;
+        END
 
         DECLARE @MovementDate DATETIME2(3) =
             DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));

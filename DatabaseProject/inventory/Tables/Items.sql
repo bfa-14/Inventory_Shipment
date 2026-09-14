@@ -18,20 +18,31 @@
     [UpdatedAtUtc]       DATETIME2 (3)   NULL,
     [UpdatedBy]          INT             NULL,
     [RowVersion]         ROWVERSION      NOT NULL,
+    [AverageCost]        DECIMAL (18, 6) CONSTRAINT [DF_Items_AverageCost] DEFAULT ((0)) NOT NULL,
+    [LastCost]           DECIMAL (18, 6) NULL,
+    [LastSupplierId]     INT             NULL,
+    [LastPurchaseAtUtc]  DATETIME2 (3)   NULL,
+    [DefaultSupplierId]  INT             NULL,
+    [LeadTimeDays]       INT             NULL,
     CONSTRAINT [PK_Items] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_Items_ItemCode_NotBlank] CHECK (len(ltrim(rtrim([ItemCode])))>(0)),
     CONSTRAINT [CK_Items_ItemName_NotBlank] CHECK (len(ltrim(rtrim([ItemName])))>(0)),
+    CONSTRAINT [CK_Items_LeadTime] CHECK ([LeadTimeDays] IS NULL OR [LeadTimeDays]>=(0)),
     CONSTRAINT [CK_Items_MaxQuantity] CHECK ([MaxQuantity] IS NULL OR [MaxQuantity]>=(0)),
     CONSTRAINT [CK_Items_MinMax] CHECK ([MaxQuantity] IS NULL OR [MinQuantity]<=[MaxQuantity]),
     CONSTRAINT [CK_Items_MinQuantity] CHECK ([MinQuantity]>=(0)),
     CONSTRAINT [CK_Items_Warranty] CHECK ([WarrantyMonths] IS NULL OR [WarrantyMonths]>=(0)),
     CONSTRAINT [FK_Items_Brand] FOREIGN KEY ([BrandId]) REFERENCES [masterdata].[Brands] ([Id]),
     CONSTRAINT [FK_Items_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Items_DefaultSupplier] FOREIGN KEY ([DefaultSupplierId]) REFERENCES [masterdata].[Parties] ([Id]),
     CONSTRAINT [FK_Items_Family] FOREIGN KEY ([ItemFamilyId]) REFERENCES [masterdata].[ItemFamilies] ([Id]),
+    CONSTRAINT [FK_Items_LastSupplier] FOREIGN KEY ([LastSupplierId]) REFERENCES [masterdata].[Parties] ([Id]),
     CONSTRAINT [FK_Items_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_Items_Warehouse] FOREIGN KEY ([DefaultWarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]),
     CONSTRAINT [UQ_Items_ItemCode] UNIQUE NONCLUSTERED ([ItemCode] ASC)
 );
+
+
 
 
 GO

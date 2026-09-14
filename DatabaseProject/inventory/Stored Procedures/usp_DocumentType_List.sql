@@ -3,7 +3,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT Id, Code, Name, Family, StockDirection, NumberPrefix, NextNumber, NumberLength, NumberOnPost,
-           RequiresReason, IsActive, UpdatedAtUtc, UpdatedBy, RowVersion
+           RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, IsActive, UpdatedAtUtc, UpdatedBy, RowVersion
     FROM inventory.DocumentTypes
     ORDER BY Family, Code;
 END

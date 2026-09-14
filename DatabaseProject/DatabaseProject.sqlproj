@@ -74,6 +74,10 @@
     <Folder Include="sales\Stored Procedures\" />
     <Folder Include="inventory\User Defined Types\" />
     <Folder Include="sales\User Defined Types\" />
+    <Folder Include="purchase\" />
+    <Folder Include="purchase\Tables\" />
+    <Folder Include="purchase\Stored Procedures\" />
+    <Folder Include="purchase\User Defined Types\" />
   </ItemGroup>
   <ItemGroup>
     <Build Include="security\Tables\UserRoles.sql" />
@@ -237,5 +241,46 @@
     <Build Include="inventory\User Defined Types\tvp_ItemImportRow.sql" />
     <Build Include="sales\User Defined Types\tvp_InvoiceImportRow.sql" />
     <Build Include="security\sales.sql" />
+    <Build Include="sales\Tables\SalesDocuments.sql" />
+    <Build Include="sales\Tables\SalesDocumentLines.sql" />
+    <Build Include="sales\Tables\SalesDocumentFiles.sql" />
+    <Build Include="sales\Tables\SalesDocumentAudit.sql" />
+    <Build Include="inventory\Tables\DocumentSequences.sql" />
+    <Build Include="purchase\Tables\PurchaseDocumentAudit.sql" />
+    <Build Include="purchase\Tables\PurchaseDocumentFiles.sql" />
+    <Build Include="purchase\Tables\PurchaseDocumentLines.sql" />
+    <Build Include="purchase\Tables\PurchaseDocuments.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocumentFile_Get.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocumentFile_Delete.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocumentFile_Add.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_ValidateInput.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_Search.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_Save.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_ResolveRate.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_Post.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_Get.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_Delete.sql" />
+    <Build Include="sales\Stored Procedures\usp_SalesDocument_Cancel.sql" />
+    <Build Include="masterdata\Stored Procedures\usp_ExchangeRate_Resolve.sql" />
+    <Build Include="inventory\Stored Procedures\usp_Shortage_Report.sql" />
+    <Build Include="inventory\Stored Procedures\usp_Item_SetPurchasing.sql" />
+    <Build Include="inventory\Stored Procedures\usp_Item_ApplyReceipts.sql" />
+    <Build Include="inventory\Stored Procedures\usp_DocumentType_Update.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocumentFile_Delete.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocumentFile_Get.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocumentFile_Add.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_CreateFromSource.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Delete.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Close.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Cancel.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Post.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Save.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_ValidateInput.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Get.sql" />
+    <Build Include="purchase\Stored Procedures\usp_PurchaseDocument_Search.sql" />
+    <Build Include="sales\User Defined Types\tvp_SalesDocumentLine.sql" />
+    <Build Include="inventory\User Defined Types\tvp_ItemReceipt.sql" />
+    <Build Include="purchase\User Defined Types\tvp_PurchaseDocumentLine.sql" />
+    <Build Include="security\purchase.sql" />
   </ItemGroup>
 </Project>
