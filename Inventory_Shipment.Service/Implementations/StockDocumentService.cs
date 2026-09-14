@@ -1,10 +1,12 @@
 using ClosedXML.Excel;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
+using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
 using Microsoft.Extensions.Logging;
 
@@ -140,6 +142,163 @@ public sealed class StockDocumentService : IStockDocumentService
         => await ChangeAsync(id, permissions, DocumentAction.Cancel, cancellationToken,
             (documentId, version) => _documents.CancelAsync(documentId, request.Reason, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled");
+
+    public async Task<Result<DocumentTypeDto>> UpdateDocumentTypeAsync(
+        int id, UpdateDocumentTypeRequest request, int userId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await _documents.UpdateDocumentTypeAsync(id, request, ToRowVersion(request.RowVersion), userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return Result<DocumentTypeDto>.Failure(failure.Type, failure.Message, failure.Code);
+        }
+
+        _logger.LogInformation("Document type {DocumentTypeId} configured by user {UserId}", id, userId);
+
+        // Re-read: the procedure trims, defaults and stamps a new row version, and the page needs all three.
+        var types = await _documents.GetDocumentTypesAsync(cancellationToken);
+        var type = types.FirstOrDefault(t => t.Id == id);
+        return type is null
+            ? Result<DocumentTypeDto>.Failure(ErrorType.NotFound, "Document type not found.", "NOT_FOUND")
+            : Result<DocumentTypeDto>.Success(type);
+    }
+
+    public Task<BulkActionResult> BulkPostAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => BulkDocumentActions.RunAsync(ids, async id =>
+        {
+            var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
+            return posted.IsSuccess && posted.Value is not null
+                ? Result<string?>.Success(posted.Value.DocumentNumber)
+                : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
+        });
+
+    public Task<BulkActionResult> BulkDeleteAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => BulkDocumentActions.RunAsync(ids, async id =>
+        {
+            var deleted = await DeleteAsync(id, userId, permissions, cancellationToken);
+            return deleted.IsSuccess
+                ? Result<string?>.Success(null)
+                : Result<string?>.Failure(deleted.ErrorType, deleted.Error ?? string.Empty, deleted.Code ?? "ERROR");
+        });
+
+    /// <summary>
+    /// The imported file's lines, sorted into one document per warehouse and saved one by one.
+    ///
+    /// EACH DOCUMENT IS ITS OWN CALL, so a warehouse whose lines are refused — an inactive warehouse,
+    /// an overdraw on posting — is reported for that warehouse while the others go through. A refused
+    /// posting leaves its draft in place: the lines cost somebody a file and are worth keeping.
+    /// </summary>
+    public async Task<Result<ImportCreateResult>> ImportCreateAsync(
+        ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!StockDocumentTypes.IsKnown(request.DocumentTypeCode))
+        {
+            return Result<ImportCreateResult>.Failure(ErrorType.Validation, "documentTypeCode must be INV_IN or INV_OUT.", "VALIDATION");
+        }
+
+        if (!Allows(permissions, request.DocumentTypeCode, DocumentAction.Create)
+            || (request.PostImmediately && !Allows(permissions, request.DocumentTypeCode, DocumentAction.Post)))
+        {
+            return Result<ImportCreateResult>.Failure(ErrorType.Forbidden, ForbiddenMessage, "FORBIDDEN");
+        }
+
+        if (request.Lines.Count == 0)
+        {
+            return Result<ImportCreateResult>.Failure(ErrorType.Validation, "The file has no lines to import.", "NO_LINES");
+        }
+
+        var isIn = string.Equals(request.DocumentTypeCode, StockDocumentTypes.In, StringComparison.OrdinalIgnoreCase);
+        var documents = new List<ImportCreateDocument>();
+        var failed = new List<ImportCreateFailure>();
+        var posted = 0;
+
+        foreach (var (warehouseId, lines) in WarehouseGrouping.GroupLinesByWarehouse(request.Lines, line => line.WarehouseId))
+        {
+            var draft = new SaveStockDocumentRequest
+            {
+                DocumentTypeCode = request.DocumentTypeCode,
+                DocumentDate = request.DocumentDate,
+                BranchId = request.BranchId,
+                WarehouseId = warehouseId,
+                ReasonId = request.ReasonId,
+                ReferenceNo = request.ReferenceNo,
+                Notes = request.Notes,
+                Lines = lines.Select((line, index) => new SaveStockDocumentLineRequest
+                {
+                    LineNo = index + 1,
+                    ItemId = line.ItemId,
+                    ItemUnitId = line.ItemUnitId,
+                    WarehouseId = warehouseId,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = line.Quantity,
+                    // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
+                    UnitCost = isIn ? line.UnitPrice ?? 0 : null,
+                    Notes = line.Notes,
+                }).ToList(),
+            };
+
+            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+            if (saved.IsFailure || saved.Value is null)
+            {
+                failed.Add(new ImportCreateFailure
+                {
+                    WarehouseId = warehouseId,
+                    Code = saved.Code ?? "ERROR",
+                    Message = saved.Error ?? "The document could not be created.",
+                });
+                continue;
+            }
+
+            var document = saved.Value;
+            if (request.PostImmediately)
+            {
+                var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
+                if (result.IsSuccess && result.Value is not null)
+                {
+                    document = result.Value;
+                    posted++;
+                }
+                else
+                {
+                    failed.Add(new ImportCreateFailure
+                    {
+                        WarehouseId = warehouseId,
+                        WarehouseName = document.WarehouseName,
+                        Code = result.Code ?? "ERROR",
+                        Message = result.Error ?? "The document could not be posted.",
+                    });
+                }
+            }
+
+            documents.Add(new ImportCreateDocument
+            {
+                Id = document.Id,
+                DocumentNumber = document.DocumentNumber,
+                WarehouseId = warehouseId,
+                WarehouseName = document.WarehouseName,
+                LineCount = document.Lines.Count,
+                Status = document.Status,
+            });
+        }
+
+        _logger.LogInformation(
+            "Import created {Created} {TypeCode} document(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, request.DocumentTypeCode, userId, posted, failed.Count);
+
+        return Result<ImportCreateResult>.Success(new ImportCreateResult
+        {
+            Documents = documents,
+            Created = documents.Count,
+            Posted = posted,
+            Failed = failed,
+        });
+    }
 
     public async Task<Result> DeleteAsync(
         int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)

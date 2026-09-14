@@ -144,11 +144,24 @@ public static class SqlErrors
     /// <summary>A line whose item unit has no price in the chosen list, and the caller may not override. The message names the line.</summary>
     public const int SalesDocumentNoPrice = 64011;
 
+    // ----- 65xxx: purchase - orders, invoices and returns (the Purchase document family) -----
+    public const int PurchaseDocumentValidation = 65000;
+    public const int PurchaseDocumentConcurrency = 65004;
+    public const int PurchaseDocumentNotDraft = 65005;
+    public const int PurchaseDocumentNotFound = 65006;
+    public const int PurchaseDocumentInsufficientStock = 65007;
+    public const int PurchaseDocumentMasterInactive = 65008;
+    public const int PurchaseDocumentNoLines = 65009;
+    public const int PurchaseDocumentInvalidStatus = 65010;
+
+    /// <summary>The chain is broken: wrong source kind, source not open, more than remains, or a posted child in the way.</summary>
+    public const int PurchaseDocumentSourceInvalid = 65011;
+
     private const int FirstBusinessRule = 50000;
 
-    // 61999 rather than 60999: the sales block starts at 61000, and a ceiling left behind its own
-    // module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 64999;
+    // The ceiling moves with the newest block (65xxx is the purchase family): a ceiling left behind
+    // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
+    private const int LastBusinessRule = 65999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

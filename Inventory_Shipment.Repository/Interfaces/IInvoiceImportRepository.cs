@@ -16,6 +16,11 @@ public interface IInvoiceImportRepository
     /// two thousand round trips, and the rules (a price that falls back from branch to all-branches,
     /// a unit chosen by barcode) are joins, which is what the database is for.
     /// </summary>
+    /// <param name="checkStock">
+    /// True makes a row that would take more than the stock on hand an Error, cumulatively with the
+    /// rows above it for the same item and warehouse. Off for a stock-in import, where the shelf is
+    /// about to be filled rather than emptied.
+    /// </param>
     /// <exception cref="Exceptions.BusinessRuleException">
     /// 61008 when the branch, default warehouse or price list is missing or inactive, or the
     /// warehouse does not belong to the branch. These are header problems, not row problems: nothing
@@ -27,6 +32,8 @@ public interface IInvoiceImportRepository
         int? priceListId,
         bool allowPriceOverride,
         decimal maxDiscountPercent,
+        bool checkStock,
+        string? documentTypeCode,
         IReadOnlyList<InvoiceImportRow> rows,
         CancellationToken cancellationToken = default);
 

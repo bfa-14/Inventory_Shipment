@@ -1,11 +1,13 @@
 using ClosedXML.Excel;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Sales;
 using Inventory_Shipment.Model.Options;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
+using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
@@ -103,11 +105,238 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         => ChangeAsync(id, cancellationToken,
             version => _invoices.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted");
 
+    public async Task<Result<ImportPostResult>> ImportPostAsync(
+        SaveSalesInvoiceRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        /* THE SECOND PERMISSION. [HasPermission] on the action checks sales.invoices.post; a poster
+           who cannot create must not get an invoice made for them on the way through, so the create
+           right is checked here, before a single row is written. */
+        if (!permissions.Contains(Permissions.Sales.InvoicesCreate))
+        {
+            return Result<ImportPostResult>.Failure(
+                ErrorType.Forbidden, "Posting an import also requires the sales.invoices.create permission.", "FORBIDDEN");
+        }
+
+        var allowPriceOverride = permissions.Contains(Permissions.Sales.InvoicesPriceOverride);
+
+        int id;
+        try
+        {
+            id = await _invoices.SaveAsync(
+                request, null, allowPriceOverride, _options.MaxDiscountPercent, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<ImportPostResult>(ex);
+        }
+
+        try
+        {
+            // No row version: the draft was created a moment ago by this very call and nobody else
+            // has had the chance to touch it.
+            await _invoices.PostAsync(id, null, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            /* THE DRAFT MUST NOT OUTLIVE THE FAILURE. The page shows the error and keeps its lines
+               for the user to fix and re-post; an invisible draft left here would be posted twice
+               over by the retry, or sit forever in a list nobody opens from this page. */
+            await DeleteFailedDraftAsync(id, userId);
+            return Failure<ImportPostResult>(ex);
+        }
+
+        _logger.LogInformation(
+            "Sales invoice {InvoiceId} imported and posted by user {UserId} (price override {Override})",
+            id, userId, allowPriceOverride);
+
+        var invoice = await _invoices.GetAsync(id, cancellationToken);
+        if (invoice is null)
+        {
+            return Result<ImportPostResult>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        return Result<ImportPostResult>.Success(new ImportPostResult
+        {
+            Id = invoice.Id,
+            DocumentNumber = invoice.DocumentNumber ?? string.Empty,
+            TotalItems = invoice.TotalItems,
+            TotalQuantity = invoice.TotalQuantity,
+            Subtotal = invoice.Subtotal,
+            TotalDiscount = invoice.TotalDiscount,
+            TotalAmount = invoice.TotalAmount,
+            CurrencyCode = invoice.CurrencyCode,
+            CurrencySymbol = invoice.CurrencySymbol,
+            DecimalPlaces = invoice.DecimalPlaces,
+            TotalAmountBase = invoice.TotalAmountBase,
+            BaseCurrencyCode = invoice.BaseCurrencyCode,
+            ExchangeRate = invoice.ExchangeRate,
+            PostedAtUtc = invoice.PostedAtUtc,
+            // The posting procedure writes exactly one ledger row per line.
+            MovementsWritten = invoice.Lines.Count,
+        });
+    }
+
+    /// <summary>
+    /// Best effort, and it must not throw: the error the caller is about to receive is the posting
+    /// failure, and a second failure here would replace it with one about a draft the page never
+    /// knew about. CancellationToken.None because a caller that has already gone away is exactly the
+    /// case in which cleaning up matters most.
+    /// </summary>
+    private async Task DeleteFailedDraftAsync(int id, int userId)
+    {
+        try
+        {
+            await _invoices.DeleteAsync(id, userId, CancellationToken.None);
+            _logger.LogInformation("Sales invoice draft {InvoiceId} deleted after its import posting failed", id);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Sales invoice draft {InvoiceId} could not be deleted after its import posting failed", id);
+        }
+    }
+
     public Task<Result<SalesInvoiceDto>> CancelAsync(
         int id, CancelSalesInvoiceRequest request, int userId, CancellationToken cancellationToken = default)
         => ChangeAsync(id, cancellationToken,
             version => _invoices.CancelAsync(id, request.Reason, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled");
+
+    public Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
+        => BulkDocumentActions.RunAsync(ids, async id =>
+        {
+            var posted = await PostAsync(id, null, userId, cancellationToken);
+            return posted.IsSuccess && posted.Value is not null
+                ? Result<string?>.Success(posted.Value.DocumentNumber)
+                : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
+        });
+
+    public Task<BulkActionResult> BulkDeleteAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
+        => BulkDocumentActions.RunAsync(ids, async id =>
+        {
+            var deleted = await DeleteAsync(id, userId, cancellationToken);
+            return deleted.IsSuccess
+                ? Result<string?>.Success(null)
+                : Result<string?>.Failure(deleted.ErrorType, deleted.Error ?? string.Empty, deleted.Code ?? "ERROR");
+        });
+
+    /// <summary>
+    /// The imported file's lines, sorted into one invoice per warehouse and saved one by one.
+    ///
+    /// THE DRAFT REFERENCE GOES ON THE FIRST INVOICE ONLY. The import logs written while no invoice
+    /// existed are attached to it by the save; the page then logs the import once more against each
+    /// of the others, which gives every invoice its own "Imported" audit row. A refused posting
+    /// leaves its invoice as a draft: the lines are worth more than a clean failure.
+    /// </summary>
+    public async Task<Result<ImportCreateResult>> ImportCreateAsync(
+        ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Sales.InvoicesCreate)
+            || (request.PostImmediately && !permissions.Contains(Permissions.Sales.InvoicesPost)))
+        {
+            return Result<ImportCreateResult>.Failure(
+                ErrorType.Forbidden, "Creating invoices from an import needs sales.invoices.create, and sales.invoices.post to post them.", "FORBIDDEN");
+        }
+
+        if (request.Lines.Count == 0)
+        {
+            return Result<ImportCreateResult>.Failure(ErrorType.Validation, "The file has no lines to import.", "NO_LINES");
+        }
+
+        var documents = new List<ImportCreateDocument>();
+        var failed = new List<ImportCreateFailure>();
+        var posted = 0;
+        var first = true;
+
+        foreach (var (warehouseId, lines) in WarehouseGrouping.GroupLinesByWarehouse(request.Lines, line => line.WarehouseId))
+        {
+            var draft = new SaveSalesInvoiceRequest
+            {
+                DocumentDate = request.DocumentDate,
+                DueDate = request.DueDate,
+                BranchId = request.BranchId,
+                WarehouseId = warehouseId,
+                ClientId = request.ClientId,
+                SalesmanId = request.SalesmanId,
+                PriceListId = request.PriceListId,
+                RateType = request.RateType,
+                ExchangeRate = request.ExchangeRate,
+                ReferenceNo = request.ReferenceNo,
+                Notes = request.Notes,
+                DraftReference = first ? request.DraftReference : null,
+                Lines = lines.Select((line, index) => new SaveSalesInvoiceLineRequest
+                {
+                    LineNo = index + 1,
+                    ItemId = line.ItemId,
+                    ItemUnitId = line.ItemUnitId,
+                    WarehouseId = warehouseId,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = line.Quantity,
+                    UnitPrice = line.UnitPrice,
+                    DiscountPercent = line.DiscountPercent,
+                    ImportRowNumber = line.ImportRowNumber,
+                    Notes = line.Notes,
+                }).ToList(),
+            };
+            first = false;
+
+            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+            if (saved.IsFailure || saved.Value is null)
+            {
+                failed.Add(new ImportCreateFailure
+                {
+                    WarehouseId = warehouseId,
+                    Code = saved.Code ?? "ERROR",
+                    Message = saved.Error ?? "The invoice could not be created.",
+                });
+                continue;
+            }
+
+            var invoice = saved.Value;
+            if (request.PostImmediately)
+            {
+                var result = await PostAsync(invoice.Id, null, userId, cancellationToken);
+                if (result.IsSuccess && result.Value is not null)
+                {
+                    invoice = result.Value;
+                    posted++;
+                }
+                else
+                {
+                    failed.Add(new ImportCreateFailure
+                    {
+                        WarehouseId = warehouseId,
+                        WarehouseName = invoice.WarehouseName,
+                        Code = result.Code ?? "ERROR",
+                        Message = result.Error ?? "The invoice could not be posted.",
+                    });
+                }
+            }
+
+            documents.Add(new ImportCreateDocument
+            {
+                Id = invoice.Id,
+                DocumentNumber = invoice.DocumentNumber,
+                WarehouseId = warehouseId,
+                WarehouseName = invoice.WarehouseName,
+                LineCount = invoice.Lines.Count,
+                Status = invoice.Status,
+            });
+        }
+
+        _logger.LogInformation(
+            "Import created {Created} sales invoice(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, userId, posted, failed.Count);
+
+        return Result<ImportCreateResult>.Success(new ImportCreateResult
+        {
+            Documents = documents,
+            Created = documents.Count,
+            Posted = posted,
+            Failed = failed,
+        });
+    }
 
     public async Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
     {
@@ -343,9 +572,12 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     }
 
     private static Result<SalesInvoiceDto> Failure(BusinessRuleException exception)
+        => Failure<SalesInvoiceDto>(exception);
+
+    private static Result<T> Failure<T>(BusinessRuleException exception)
     {
         var failure = Describe(exception);
-        return Result<SalesInvoiceDto>.Failure(failure.Type, failure.Message, failure.Code);
+        return Result<T>.Failure(failure.Type, failure.Message, failure.Code);
     }
 
     /// <summary>

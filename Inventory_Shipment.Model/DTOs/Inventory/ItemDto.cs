@@ -31,6 +31,15 @@ public sealed class ItemListDto
     /// <summary>Placeholder until the stock module lands; always 0 today.</summary>
     public int OnHand { get; init; }
 
+    /// <summary>The moving average cost per base unit, kept on the item by the postings that add stock.</summary>
+    public decimal? AverageCost { get; init; }
+
+    /// <summary>What the last receipt cost, per base unit.</summary>
+    public decimal? LastCost { get; init; }
+
+    public int? DefaultSupplierId { get; init; }
+    public string? DefaultSupplierName { get; init; }
+
     public bool IsBivac { get; init; }
     public bool IsActive { get; init; }
     public DateTime CreatedAtUtc { get; init; }
@@ -80,6 +89,19 @@ public sealed class ItemDetailsDto
 
     /// <summary>Placeholder until purchasing lands; always null today.</summary>
     public decimal? LastPurchaseCost { get; init; }
+
+    /// <summary>The supplier a purchase order for this item is raised on by default.</summary>
+    public int? DefaultSupplierId { get; init; }
+    public string? DefaultSupplierCode { get; init; }
+    public string? DefaultSupplierName { get; init; }
+
+    /// <summary>Days between ordering and receiving — what the shortage report compares days of cover with.</summary>
+    public int? LeadTimeDays { get; init; }
+
+    /// <summary>Who last delivered the item and when; written by the purchase invoice posting.</summary>
+    public int? LastSupplierId { get; init; }
+    public string? LastSupplierName { get; init; }
+    public DateTime? LastPurchaseAtUtc { get; init; }
 
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }

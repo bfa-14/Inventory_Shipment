@@ -29,6 +29,8 @@ public sealed class InvoiceImportRepository : IInvoiceImportRepository
         int? priceListId,
         bool allowPriceOverride,
         decimal maxDiscountPercent,
+        bool checkStock,
+        string? documentTypeCode,
         IReadOnlyList<InvoiceImportRow> rows,
         CancellationToken cancellationToken = default)
     {
@@ -42,6 +44,9 @@ public sealed class InvoiceImportRepository : IInvoiceImportRepository
         parameters.Add("@AllowPriceOverride", allowPriceOverride, DbType.Boolean);
         parameters.Add("@MaxDiscountPercent", maxDiscountPercent, DbType.Decimal);
         parameters.Add("@Rows", ToTable(rows).AsTableValuedParameter(RowTypeName));
+        parameters.Add("@CheckStock", checkStock, DbType.Boolean);
+        // The page's type: rows naming another one come back as Errors, and it picks the unit preference.
+        parameters.Add("@DocumentTypeCode", documentTypeCode, DbType.String, size: 20);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -117,6 +122,8 @@ public sealed class InvoiceImportRepository : IInvoiceImportRepository
         table.Columns.Add("ExpiryDate", typeof(DateTime));
         table.Columns.Add("RawExpiryDate", typeof(string));
         table.Columns.Add("Notes", typeof(string));
+        // LAST, because script 20 re-created the type with this column at the end — and the parameter is positional.
+        table.Columns.Add("DocumentTypeCode", typeof(string));
 
         foreach (var row in rows)
         {
@@ -131,7 +138,8 @@ public sealed class InvoiceImportRepository : IInvoiceImportRepository
                 (object?)row.DiscountPercent ?? DBNull.Value,
                 (object?)row.ExpiryDate ?? DBNull.Value,
                 (object?)row.RawExpiryDate ?? DBNull.Value,
-                (object?)row.Notes ?? DBNull.Value);
+                (object?)row.Notes ?? DBNull.Value,
+                (object?)row.DocumentTypeCode ?? DBNull.Value);
         }
 
         return table;

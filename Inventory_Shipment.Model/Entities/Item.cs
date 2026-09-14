@@ -55,6 +55,19 @@ public class Item
     /// <summary>Placeholder until purchasing lands; always null today.</summary>
     public decimal? LastPurchaseCost { get; set; }
 
+    /// <summary>The supplier a purchase order for this item is raised on by default.</summary>
+    public int? DefaultSupplierId { get; set; }
+    public string? DefaultSupplierCode { get; set; }
+    public string? DefaultSupplierName { get; set; }
+
+    /// <summary>Days between ordering and receiving, for the shortage report's days-of-cover figure.</summary>
+    public int? LeadTimeDays { get; set; }
+
+    /// <summary>Who last delivered it, and when — written by the purchase invoice posting.</summary>
+    public int? LastSupplierId { get; set; }
+    public string? LastSupplierName { get; set; }
+    public DateTime? LastPurchaseAtUtc { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
     public int? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }

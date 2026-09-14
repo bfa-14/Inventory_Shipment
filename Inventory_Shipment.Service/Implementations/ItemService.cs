@@ -76,6 +76,8 @@ public sealed class ItemService : IItemService
         try
         {
             id = await _items.CreateAsync(item, userId, cancellationToken);
+            // The purchasing fields live in their own procedure (script 19); same call, same caller.
+            await _items.SetPurchasingAsync(id, item.DefaultSupplierId, item.LeadTimeDays, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -107,6 +109,7 @@ public sealed class ItemService : IItemService
         try
         {
             await _items.UpdateAsync(item, rowVersion, userId, cancellationToken);
+            await _items.SetPurchasingAsync(id, item.DefaultSupplierId, item.LeadTimeDays, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -359,6 +362,8 @@ public sealed class ItemService : IItemService
         ItemFamilyId = request.ItemFamilyId,
         CountryOfOrigin = request.CountryOfOrigin.Trim().ToUpperInvariant(),
         DefaultWarehouseId = request.DefaultWarehouseId,
+        DefaultSupplierId = request.DefaultSupplierId,
+        LeadTimeDays = request.LeadTimeDays,
         Description = Normalize(request.Description),
         WarrantyMonths = request.WarrantyMonths,
         MinQuantity = request.MinQuantity,

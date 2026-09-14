@@ -21,6 +21,7 @@ public sealed class InvoiceImportService : IInvoiceImportService
     private const string MasterInactiveCode = "MASTER_INACTIVE";
 
     private readonly IInvoiceImportRepository _imports;
+    private readonly IStockDocumentRepository _documentTypes;
     private readonly InvoiceImportParser _parser;
     private readonly InvoiceImportWorkbooks _workbooks;
     private readonly SalesOptions _options;
@@ -28,19 +29,32 @@ public sealed class InvoiceImportService : IInvoiceImportService
 
     public InvoiceImportService(
         IInvoiceImportRepository imports,
+        IStockDocumentRepository documentTypes,
         InvoiceImportParser parser,
         InvoiceImportWorkbooks workbooks,
         IOptions<SalesOptions> options,
         ILogger<InvoiceImportService> logger)
     {
         _imports = imports;
+        _documentTypes = documentTypes;
         _parser = parser;
         _workbooks = workbooks;
         _options = options.Value;
         _logger = logger;
     }
 
-    public byte[] GenerateTemplate() => _workbooks.GenerateTemplate();
+    public async Task<Result<(byte[] Content, string FileName)>> GenerateTemplateAsync(
+        string documentTypeCode, CancellationToken cancellationToken = default)
+    {
+        var types = await _documentTypes.GetDocumentTypesAsync(cancellationToken);
+        var type = types.FirstOrDefault(t => string.Equals(t.Code, documentTypeCode?.Trim(), StringComparison.OrdinalIgnoreCase));
+        if (type is null)
+        {
+            return Result<(byte[], string)>.Failure(ErrorType.NotFound, "Document type not found.", "NOT_FOUND");
+        }
+
+        return Result<(byte[], string)>.Success((_workbooks.GenerateTemplate(type, types), InvoiceImportWorkbooks.TemplateFileNameFor(type.Code)));
+    }
 
     public byte[] GenerateErrorReport(IReadOnlyList<InvoiceImportValidatedRow> rows)
         => _workbooks.GenerateErrorReport(rows);
@@ -52,6 +66,8 @@ public sealed class InvoiceImportService : IInvoiceImportService
         int branchId,
         int warehouseId,
         int? priceListId,
+        bool checkStock,
+        string documentTypeCode,
         IReadOnlySet<string> userPermissions,
         CancellationToken cancellationToken = default)
     {
@@ -96,7 +112,7 @@ public sealed class InvoiceImportService : IInvoiceImportService
         {
             validated = await _imports.ValidateAsync(
                 branchId, warehouseId, priceListId, allowPriceOverride,
-                _options.MaxDiscountPercent, rows, cancellationToken);
+                _options.MaxDiscountPercent, checkStock, documentTypeCode, rows, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -185,6 +201,9 @@ public sealed class InvoiceImportService : IInvoiceImportService
             }
 
             target.Quantity = (target.Quantity ?? 0) + (row.Quantity ?? 0);
+            // The absorbed row came later in the file, so its running total already counts the
+            // target's quantity: it is the figure the merged row must show against the stock on hand.
+            target.RequiredBase = row.RequiredBase ?? target.RequiredBase;
             row.Status = InvoiceImportStatus.Merged;
             row.Message = $"Merged into row {target.RowNumber}.";
 

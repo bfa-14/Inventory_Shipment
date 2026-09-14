@@ -45,6 +45,10 @@ public sealed class ItemRepository : IItemRepository
         public string? BaseUnitSku { get; init; }
         public string? BaseUnitName { get; init; }
         public int OnHand { get; init; }
+        public decimal? AverageCost { get; init; }
+        public decimal? LastCost { get; init; }
+        public int? DefaultSupplierId { get; init; }
+        public string? DefaultSupplierName { get; init; }
         public DateTime CreatedAtUtc { get; init; }
         public int? CreatedBy { get; init; }
         public DateTime? UpdatedAtUtc { get; init; }
@@ -75,6 +79,10 @@ public sealed class ItemRepository : IItemRepository
             BaseUnitSku = BaseUnitSku,
             BaseUnitName = BaseUnitName,
             OnHand = OnHand,
+            AverageCost = AverageCost,
+            LastCost = LastCost,
+            DefaultSupplierId = DefaultSupplierId,
+            DefaultSupplierName = DefaultSupplierName,
             CreatedAtUtc = CreatedAtUtc,
             CreatedBy = CreatedBy,
             UpdatedAtUtc = UpdatedAtUtc,
@@ -353,6 +361,23 @@ public sealed class ItemRepository : IItemRepository
         {
             await connection.ExecuteAsync(new CommandDefinition(
                 "inventory.usp_ItemFile_Delete", new { Id = fileId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task SetPurchasingAsync(
+        int id, int? defaultSupplierId, int? leadTimeDays, int? userId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_Item_SetPurchasing",
+                new { Id = id, DefaultSupplierId = defaultSupplierId, LeadTimeDays = leadTimeDays, UserId = userId },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

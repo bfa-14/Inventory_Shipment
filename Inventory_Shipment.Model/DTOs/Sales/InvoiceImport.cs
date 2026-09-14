@@ -61,6 +61,12 @@ public sealed class InvoiceImportRow
     public string? RawExpiryDate { get; init; }
 
     public string? Notes { get; init; }
+
+    /// <summary>
+    /// The "Document Type" cell: a type code or name, or blank for the page's own type. A row that
+    /// names another type is rejected by the procedure — one file, one kind of document.
+    /// </summary>
+    public string? DocumentTypeCode { get; init; }
 }
 
 /// <summary>
@@ -80,6 +86,9 @@ public sealed class InvoiceImportValidatedRow
 
     /// <summary>Every problem found with the row, in one sentence. Null on a row with nothing to say.</summary>
     public string? Message { get; set; }
+
+    /// <summary>The type the row belongs to: the cell's, resolved to a code, or the page's when blank.</summary>
+    public string? RowDocumentTypeCode { get; set; }
 
     /// <summary>What the file said, kept so an error about an unknown code can quote it.</summary>
     public string? ItemRef { get; set; }
@@ -115,6 +124,19 @@ public sealed class InvoiceImportValidatedRow
     public DateTime? ExpiryDate { get; set; }
 
     public string? Notes { get; set; }
+
+    /// <summary>
+    /// Stock on hand for the row's item and warehouse, in base units. Null when either could not be
+    /// resolved. Filled whether or not the stock check is on — the preview shows it either way.
+    /// </summary>
+    public int? OnHandBase { get; set; }
+
+    /// <summary>
+    /// Base units this row takes TOGETHER WITH the rows above it for the same item and warehouse —
+    /// the figure the stock check compares with <see cref="OnHandBase"/>. Cumulative, because a
+    /// file with three rows of the same item is one demand on the shelf, not three.
+    /// </summary>
+    public int? RequiredBase { get; set; }
 }
 
 /// <summary>

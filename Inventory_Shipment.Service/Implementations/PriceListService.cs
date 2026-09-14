@@ -171,6 +171,17 @@ public sealed class PriceListService : IPriceListService
         return Result<T>.Failure(failure.Type, failure.Message, failure.Code);
     }
 
+    public async Task<Result<UnitPriceResolutionDto>> ResolveUnitPriceAsync(
+        int itemUnitId, int priceListId, int? branchId, CancellationToken cancellationToken = default)
+    {
+        var found = await _priceLists.ResolveUnitPriceAsync(itemUnitId, priceListId, branchId, cancellationToken);
+
+        // No row is "no price", carried as a null Price rather than a NotFound: the page treats it as
+        // a state of the line, not as a broken request.
+        return Result<UnitPriceResolutionDto>.Success(
+            found ?? new UnitPriceResolutionDto { ItemUnitId = itemUnitId, PriceListId = priceListId });
+    }
+
     private static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
         // 58001 covers a duplicate code and a duplicate name; the procedure message says which one.

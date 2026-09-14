@@ -271,6 +271,35 @@ public sealed class RateResolutionDto
     public string? BaseCurrencyCode { get; init; }
 }
 
+/// <summary>
+/// What the Import Sales page gets back once its lines are posted: the invoice's identity, its
+/// totals in both currencies, and how many ledger rows were written.
+///
+/// A SUMMARY RATHER THAN THE WHOLE INVOICE, on purpose. The page has no invoice screen to open —
+/// it shows a success panel and offers to start over — so everything it prints is here and nothing
+/// it would have to ignore. The full document is one GET away for the screen that will want it.
+/// </summary>
+public sealed class ImportPostResult
+{
+    public int Id { get; init; }
+    public string DocumentNumber { get; init; } = string.Empty;
+    public int TotalItems { get; init; }
+    public decimal TotalQuantity { get; init; }
+    public decimal Subtotal { get; init; }
+    public decimal TotalDiscount { get; init; }
+    public decimal TotalAmount { get; init; }
+    public string CurrencyCode { get; init; } = string.Empty;
+    public string? CurrencySymbol { get; init; }
+    public byte DecimalPlaces { get; init; }
+    public decimal TotalAmountBase { get; init; }
+    public string? BaseCurrencyCode { get; init; }
+    public decimal ExchangeRate { get; init; }
+    public DateTime? PostedAtUtc { get; init; }
+
+    /// <summary>One ledger row per line: how many rows the posting wrote to inventory.StockMovements.</summary>
+    public int MovementsWritten { get; init; }
+}
+
 /* ── requests ──────────────────────────────────────────────────────────────────────────────── */
 
 public sealed class SaveSalesInvoiceLineRequest
@@ -361,6 +390,51 @@ public sealed class SaveSalesInvoiceRequest
     public string? DraftReference { get; init; }
 
     public string? RowVersion { get; init; }
+}
+
+/// <summary>
+/// An imported file becoming invoices: the header every invoice shares, and the lines the server
+/// sorts into one invoice per warehouse. The draft reference goes on the FIRST invoice only — the
+/// import logs written before the invoices existed are attached to it; the others get their own
+/// "Imported" audit rows through the log endpoint, called with their ids.
+/// </summary>
+public sealed class ImportCreateSalesInvoicesRequest
+{
+    [Required]
+    public DateOnly DocumentDate { get; init; }
+
+    public DateOnly? DueDate { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int BranchId { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int ClientId { get; init; }
+
+    public int? SalesmanId { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int PriceListId { get; init; }
+
+    [Range(1, 3)]
+    public byte RateType { get; init; } = RateTypes.Official;
+
+    [Range(0.000001, double.MaxValue)]
+    public decimal? ExchangeRate { get; init; }
+
+    [StringLength(100)]
+    public string? ReferenceNo { get; init; }
+
+    [StringLength(1000)]
+    public string? Notes { get; init; }
+
+    [StringLength(50)]
+    public string? DraftReference { get; init; }
+
+    public IReadOnlyList<Model.DTOs.Documents.ImportCreateLine> Lines { get; init; } = [];
+
+    /// <summary>True posts each created invoice at once; a refused posting leaves that one as a draft.</summary>
+    public bool PostImmediately { get; init; }
 }
 
 public sealed class PostSalesInvoiceRequest

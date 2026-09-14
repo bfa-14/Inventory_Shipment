@@ -7765,3 +7765,2560 @@ BEGIN
     PRINT 'Seeded client CLI-0001 Walk-in Customer';
 END
 GO
+
+-- ===== 18: Import stock check =====
+
+/* =====================================================================================
+   Inventory_Shipment - 18: Excel import validation checks STOCK (for "validate -> post to stock")
+
+   RE-CREATES sales.usp_InvoiceImport_Validate (scripts 14/15) with one new parameter and two new
+   output columns - everything else is unchanged:
+     @CheckStock BIT = 0   1 = rows that would take more than the stock on hand become Errors.
+                            The check is CUMULATIVE in file order per item + warehouse (row 5 for the
+                            same item/warehouse as row 2 sees what row 2 already takes), in BASE units.
+     OnHandBase            stock on hand for the row's item + warehouse (base units) - shown in the preview
+     RequiredBase          base units required by this row plus the rows above it for the same item + warehouse
+
+   Message: "Insufficient stock for TVS-AP160 in WH-001: available 3, required 5 (rows 2, 5)."
+   Used by the "Import Sales from Excel" page: validate (with stock) -> preview -> post as a Sales Invoice
+   (script 17: usp_SalesDocument_Save + usp_SalesDocument_Post) -> stock movements.
+
+   Requires 15 (ledger) and 17 (sales documents). Idempotent.
+   ===================================================================================== */
+
+IF OBJECT_ID(N'inventory.fn_StockOnHand', N'FN') IS NULL OR OBJECT_ID(N'sales.usp_SalesDocument_Post', N'P') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 15 and 17 before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_InvoiceImport_Validate
+    @BranchId            INT,
+    @DefaultWarehouseId  INT,
+    @PriceListId         INT           = NULL,  -- NULL = stock document: no pricing, Unit Price column = unit cost (optional)
+    @AllowPriceOverride  BIT           = 0,
+    @MaxDiscountPercent  DECIMAL(9,4)  = 100,
+    @Rows                sales.tvp_InvoiceImportRow READONLY,
+    @CheckStock          BIT           = 0      -- 1 = quantities are checked against the stock on hand (cumulative per item + warehouse)
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 61008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 61008, 'The default warehouse is not an active warehouse of the selected branch.', 1;
+    IF @PriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @PriceListId AND IsActive = 1)
+        THROW 61008, 'Price list not found or inactive.', 1;
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    SET @CheckStock = ISNULL(@CheckStock, 0);
+
+    DECLARE @Today DATE = CAST(SYSUTCDATETIME() AS DATE);
+
+    ;WITH resolved AS
+    (
+        SELECT r.RowNumber,
+               ItemRef      = NULLIF(LTRIM(RTRIM(r.ItemRef)), N''),
+               UnitName     = NULLIF(LTRIM(RTRIM(r.UnitName)), N''),
+               WarehouseRef = NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N''),
+               r.Quantity, r.RawQuantity, ManualPrice = r.UnitPrice, r.DiscountPercent, r.ExpiryDate, r.RawExpiryDate,
+               Notes        = NULLIF(LTRIM(RTRIM(r.Notes)), N''),
+               it.ItemId, it.ItemCode, it.ItemName, it.ItemActive, it.BarcodeUnitId,
+               u.ItemUnitId, u.UnitTypeName, u.PackingFormula,
+               w.WarehouseId, w.WarehouseCode, w.WarehouseName, w.WarehouseActive, w.WarehouseBranchId,
+               pr.BranchPrice, pr.AllBranchesPrice
+        FROM @Rows r
+        OUTER APPLY
+        (
+            SELECT TOP (1) i.Id AS ItemId, i.ItemCode, i.ItemName, i.IsActive AS ItemActive, bu.Id AS BarcodeUnitId
+            FROM inventory.Items i
+            LEFT JOIN inventory.ItemUnits bu ON bu.ItemId = i.Id AND bu.Barcode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'')
+            WHERE i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') OR bu.Id IS NOT NULL
+            ORDER BY CASE WHEN i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') THEN 0 ELSE 1 END
+        ) it
+        OUTER APPLY
+        (
+            SELECT TOP (1) iu.Id AS ItemUnitId, t.UnitTypeName, iu.PackingFormula
+            FROM inventory.ItemUnits iu
+            INNER JOIN masterdata.UnitTypes t ON t.Id = iu.UnitTypeId
+            WHERE iu.ItemId = it.ItemId
+              AND (   (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NOT NULL
+                       AND (t.UnitTypeName = LTRIM(RTRIM(r.UnitName)) OR iu.SkuCode = LTRIM(RTRIM(r.UnitName))))
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NOT NULL AND iu.Id = it.BarcodeUnitId)
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NULL))
+            ORDER BY CASE WHEN @PriceListId IS NULL THEN CASE WHEN iu.IsBaseUnit = 1 THEN 0 ELSE 1 END       -- stock docs: base unit first
+                          ELSE CASE WHEN iu.IsSalesUnit = 1 THEN 0 ELSE 1 END END, iu.IsBaseUnit DESC, iu.PackingFormula
+        ) u
+        OUTER APPLY
+        (
+            SELECT TOP (1) wh.Id AS WarehouseId, wh.WarehouseCode, wh.WarehouseName, wh.IsActive AS WarehouseActive, wh.BranchId AS WarehouseBranchId
+            FROM masterdata.Warehouses wh
+            WHERE (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NOT NULL
+                   AND (wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) OR wh.WarehouseName = LTRIM(RTRIM(r.WarehouseRef))))
+               OR (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NULL AND wh.Id = @DefaultWarehouseId)
+            ORDER BY CASE WHEN wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) THEN 0 ELSE 1 END
+        ) w
+        OUTER APPLY
+        (
+            SELECT BranchPrice      = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId = @BranchId AND IsActive = 1),
+                   AllBranchesPrice = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId IS NULL AND IsActive = 1)
+        ) pr
+    ),
+    stocked AS
+    (
+        -- Base units required by this row (0 when the row cannot be quantified) and the running total per item + warehouse.
+        SELECT x.*,
+               QtyBase      = CASE WHEN x.ItemUnitId IS NOT NULL AND x.Quantity IS NOT NULL AND x.Quantity > 0 AND x.Quantity = FLOOR(x.Quantity)
+                                   THEN CAST(x.Quantity AS INT) * x.PackingFormula ELSE 0 END,
+               OnHandBase   = CASE WHEN x.ItemId IS NOT NULL AND x.WarehouseId IS NOT NULL THEN inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) END
+        FROM resolved x
+    ),
+    running AS
+    (
+        SELECT s.*,
+               RequiredBase = SUM(s.QtyBase) OVER (PARTITION BY s.ItemId, s.WarehouseId ORDER BY s.RowNumber ROWS UNBOUNDED PRECEDING),
+               EarlierRows  = STUFF((SELECT N', ' + CAST(s2.RowNumber AS NVARCHAR(10))
+                                     FROM stocked s2
+                                     WHERE s2.ItemId = s.ItemId AND s2.WarehouseId = s.WarehouseId AND s2.QtyBase > 0 AND s2.RowNumber < s.RowNumber
+                                     ORDER BY s2.RowNumber FOR XML PATH(N''), TYPE).value(N'.', N'NVARCHAR(MAX)'), 1, 2, N'')
+        FROM stocked s
+    ),
+    judged AS
+    (
+        SELECT x.*,
+               SystemPrice = COALESCE(x.BranchPrice, x.AllBranchesPrice),
+               EffectiveDiscount = ISNULL(x.DiscountPercent, 0),
+               Err1 = CASE WHEN x.ItemRef IS NULL THEN N'Item Code / Barcode is required.'
+                           WHEN x.ItemId IS NULL THEN N'Item Code ' + x.ItemRef + N' does not exist.'
+                           WHEN x.ItemActive = 0 THEN N'Item ' + x.ItemCode + N' is inactive.' END,
+               Err2 = CASE WHEN x.Quantity IS NULL AND x.RawQuantity IS NOT NULL THEN N'Quantity ''' + x.RawQuantity + N''' is not a number.'
+                           WHEN x.Quantity IS NULL OR x.Quantity <= 0 THEN N'Quantity must be greater than zero.'
+                           WHEN x.Quantity <> FLOOR(x.Quantity) THEN N'Quantity must be a whole number of pieces.' END,
+               Err3 = CASE WHEN x.ItemId IS NOT NULL AND x.UnitName IS NOT NULL AND x.ItemUnitId IS NULL
+                                THEN N'Unit ''' + x.UnitName + N''' is not configured for Item ' + x.ItemCode + N'.'
+                           WHEN x.ItemId IS NOT NULL AND x.ItemUnitId IS NULL THEN N'Item ' + x.ItemCode + N' has no units configured.' END,
+               Err4 = CASE WHEN x.WarehouseRef IS NOT NULL AND x.WarehouseId IS NULL THEN N'Warehouse ' + x.WarehouseRef + N' does not exist.'
+                           WHEN x.WarehouseActive = 0 THEN N'Warehouse ' + x.WarehouseCode + N' is inactive.'
+                           WHEN x.WarehouseBranchId <> @BranchId THEN N'Warehouse ' + x.WarehouseCode + N' is not available for the selected branch.' END,
+               Err5 = CASE WHEN @PriceListId IS NOT NULL AND x.ItemUnitId IS NOT NULL
+                            AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NULL
+                            AND NOT (x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1)
+                                THEN N'No selling price was found for Item ' + x.ItemCode + N', Unit ' + x.UnitTypeName + N', and the selected Price List.'
+                           WHEN x.ManualPrice IS NOT NULL AND x.ManualPrice < 0 THEN N'Unit Price cannot be negative.' END,
+               Err6 = CASE WHEN ISNULL(x.DiscountPercent, 0) < 0 OR ISNULL(x.DiscountPercent, 0) > @MaxDiscountPercent
+                                THEN N'Discount % must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(20)) + N'.' END,
+               Err7 = CASE WHEN x.ExpiryDate IS NULL AND x.RawExpiryDate IS NOT NULL THEN N'Expiry Date ''' + x.RawExpiryDate + N''' is not a valid date.' END,
+               Err8 = CASE WHEN @CheckStock = 1 AND x.QtyBase > 0 AND x.WarehouseId IS NOT NULL AND x.WarehouseBranchId = @BranchId AND x.RequiredBase > ISNULL(x.OnHandBase, 0)
+                                THEN N'Insufficient stock for ' + x.ItemCode + N' in ' + x.WarehouseCode + N': available ' + CAST(ISNULL(x.OnHandBase, 0) AS NVARCHAR(20))
+                                     + N', required ' + CAST(x.RequiredBase AS NVARCHAR(20))
+                                     + CASE WHEN x.EarlierRows IS NULL THEN N'' ELSE N' (with rows ' + x.EarlierRows + N')' END + N'.' END,
+               Warn1 = CASE WHEN @PriceListId IS NOT NULL AND x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 0 AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NOT NULL
+                                THEN N'Manual price ignored - system price ' + CAST(COALESCE(x.BranchPrice, x.AllBranchesPrice) AS NVARCHAR(30)) + N' used (no price override permission).' END,
+               Warn2 = CASE WHEN x.ExpiryDate IS NOT NULL AND x.ExpiryDate < @Today THEN N'Expiry date is in the past.' END,
+               Warn3 = CASE WHEN @PriceListId IS NOT NULL AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsSalesUnit = 1)
+                                THEN N'No sales unit is flagged for this item - the base unit was used.' END
+        FROM running x
+    )
+    SELECT j.RowNumber,
+           Status  = CASE WHEN COALESCE(j.Err1, j.Err2, j.Err3, j.Err4, j.Err5, j.Err6, j.Err7, j.Err8) IS NOT NULL THEN N'Error'
+                          WHEN COALESCE(j.Warn1, j.Warn2, j.Warn3) IS NOT NULL THEN N'Warning'
+                          ELSE N'Valid' END,
+           Message = NULLIF(LTRIM(CONCAT(ISNULL(j.Err1 + N' ', N''), ISNULL(j.Err2 + N' ', N''), ISNULL(j.Err3 + N' ', N''), ISNULL(j.Err4 + N' ', N''),
+                                         ISNULL(j.Err5 + N' ', N''), ISNULL(j.Err6 + N' ', N''), ISNULL(j.Err7 + N' ', N''), ISNULL(j.Err8 + N' ', N''),
+                                         ISNULL(j.Warn1 + N' ', N''), ISNULL(j.Warn2 + N' ', N''), ISNULL(j.Warn3, N''))), N''),
+           j.ItemRef, j.ItemId, j.ItemCode, j.ItemName,
+           j.ItemUnitId, j.UnitTypeName, j.PackingFormula,
+           j.WarehouseId, j.WarehouseCode, j.WarehouseName,
+           Quantity    = CASE WHEN j.Quantity IS NOT NULL AND j.Quantity > 0 AND j.Quantity = FLOOR(j.Quantity) THEN CAST(j.Quantity AS INT) END,
+           UnitPrice   = CASE WHEN @PriceListId IS NULL THEN j.ManualPrice
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN j.ManualPrice
+                              ELSE j.SystemPrice END,
+           PriceSource = CASE WHEN @PriceListId IS NULL THEN CASE WHEN j.ManualPrice IS NOT NULL THEN N'Manual' END
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN N'Manual'
+                              WHEN j.BranchPrice IS NOT NULL THEN N'Branch'
+                              WHEN j.AllBranchesPrice IS NOT NULL THEN N'AllBranches' END,
+           ManualPrice = j.ManualPrice,
+           DiscountPercent = j.EffectiveDiscount,
+           j.ExpiryDate, j.Notes,
+           j.OnHandBase, j.RequiredBase
+    FROM judged j
+    ORDER BY j.RowNumber;
+END
+GO
+
+-- ===== 19: Document engine =====
+
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 19: Document engine upgrade (all families)
+
+   1. inventory.DocumentTypes  + DefaultPricing (Cost | PriceList | None), PriceEditable, NumberPerBranch
+                               + usp_DocumentType_List (new columns), usp_DocumentType_Update (configuration page)
+   2. Numbering PER BRANCH     inventory.DocumentSequences (type x branch) and usp_DocumentType_NextNumber
+                               re-created: "INV-KLW-000001" = prefix + branch code + '-' + sequence.
+                               (types with NumberPerBranch = 0 keep the old company-wide "IN-000001").
+                               Branch codes used in numbers are cut to 8 characters - keep them short.
+   3. inventory.Items          + AverageCost (MOVING average, kept on the item), LastCost, LastSupplierId,
+                               LastPurchaseAtUtc, DefaultSupplierId, LeadTimeDays
+                               + tvp_ItemReceipt / usp_Item_ApplyReceipts (the moving-average rule, called by every
+                                 posting that ADDS stock, before the movements are written):
+                                   new avg = (on-hand x old avg + received qty x cost) / (on-hand + received qty)
+                               + usp_Item_SetPurchasing (default supplier / lead time)
+                               + fn_AverageCost now returns Items.AverageCost; usp_Item_Search / usp_Item_Get re-created
+                               (one-time backfill of AverageCost / LastCost from the ledger for existing items).
+   4. ONE DOCUMENT = ONE WAREHOUSE: lines always take the header warehouse (Save procs force it; the pages hide
+                               the per-line warehouse column; the Excel import creates one document per warehouse).
+   5. Re-created with 2 + 3 + 4: inventory.usp_StockDocument_ValidateInput / _Save / _Post,
+                               sales.usp_SalesDocument_ValidateInput / _Save / _Post.
+      Cancelling a receipt does NOT recompute the moving average (standard practice; the reversal keeps its cost).
+
+   Requires 15 and 17. Idempotent.
+   ===================================================================================== */
+
+IF OBJECT_ID(N'inventory.DocumentTypes', N'U') IS NULL OR OBJECT_ID(N'sales.SalesDocuments', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 15 and 17 before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+/* ================================================================== 1. DocumentTypes configuration */
+
+IF COL_LENGTH(N'inventory.DocumentTypes', N'DefaultPricing') IS NULL
+BEGIN
+    ALTER TABLE inventory.DocumentTypes ADD
+        DefaultPricing  NVARCHAR(10) NOT NULL CONSTRAINT DF_DocumentTypes_DefaultPricing DEFAULT (N'Cost'),
+        PriceEditable   BIT          NOT NULL CONSTRAINT DF_DocumentTypes_PriceEditable DEFAULT (1),
+        NumberPerBranch BIT          NOT NULL CONSTRAINT DF_DocumentTypes_NumberPerBranch DEFAULT (1),
+        CONSTRAINT CK_DocumentTypes_DefaultPricing CHECK (DefaultPricing IN (N'Cost', N'PriceList', N'None'));
+    PRINT 'DocumentTypes: added DefaultPricing, PriceEditable, NumberPerBranch';
+END
+GO
+
+-- Behaviour per type (the configuration page can change these later).
+UPDATE dt SET DefaultPricing = s.Pricing, PriceEditable = s.Editable, NumberPerBranch = 1
+FROM inventory.DocumentTypes dt
+INNER JOIN (VALUES
+    (N'INV_IN',  N'Cost',      1),   -- cost entered by the user
+    (N'INV_OUT', N'Cost',      0),   -- moving average applied automatically, read-only
+    (N'PO',      N'Cost',      1),   -- supplier price, default = item last cost
+    (N'PINV',    N'Cost',      1),
+    (N'PRET',    N'Cost',      1),
+    (N'SO',      N'PriceList', 1),
+    (N'SINV',    N'PriceList', 1),   -- editable only with sales.invoices.priceoverride
+    (N'SRET',    N'PriceList', 1)
+) AS s (Code, Pricing, Editable) ON s.Code = dt.Code;
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_DocumentType_List
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, Code, Name, Family, StockDirection, NumberPrefix, NextNumber, NumberLength, NumberOnPost,
+           RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, IsActive, UpdatedAtUtc, UpdatedBy, RowVersion
+    FROM inventory.DocumentTypes
+    ORDER BY Family, Code;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_DocumentType_Update
+    @Id              INT,
+    @Name            NVARCHAR(100),
+    @NumberPrefix    NVARCHAR(10),
+    @NumberLength    TINYINT,
+    @NumberOnPost    BIT,
+    @RequiresReason  BIT,
+    @DefaultPricing  NVARCHAR(10),
+    @PriceEditable   BIT,
+    @NumberPerBranch BIT,
+    @IsActive        BIT,
+    @RowVersion      BINARY(8) = NULL,
+    @UserId          INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Name = NULLIF(LTRIM(RTRIM(@Name)), N'');
+    SET @NumberPrefix = NULLIF(LTRIM(RTRIM(@NumberPrefix)), N'');
+    IF @Name IS NULL THROW 62000, 'Name is required.', 1;
+    IF @NumberPrefix IS NULL THROW 62000, 'Number prefix is required.', 1;
+    IF @NumberLength IS NULL OR @NumberLength NOT BETWEEN 3 AND 10 THROW 62000, 'Number length must be between 3 and 10.', 1;
+    IF @DefaultPricing NOT IN (N'Cost', N'PriceList', N'None') THROW 62000, 'Default pricing must be Cost, PriceList or None.', 1;
+    IF NOT EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @Id) THROW 62006, 'Document type not found.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 62004, 'This document type was modified by another user. Reload the page and try again.', 1;
+
+    UPDATE inventory.DocumentTypes
+    SET Name = @Name, NumberPrefix = @NumberPrefix, NumberLength = @NumberLength, NumberOnPost = ISNULL(@NumberOnPost, 0),
+        RequiresReason = ISNULL(@RequiresReason, 0), DefaultPricing = @DefaultPricing, PriceEditable = ISNULL(@PriceEditable, 1),
+        NumberPerBranch = ISNULL(@NumberPerBranch, 1), IsActive = ISNULL(@IsActive, 1),
+        UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+/* ================================================================== 2. Numbering per branch */
+
+IF OBJECT_ID(N'inventory.DocumentSequences', N'U') IS NULL
+BEGIN
+    CREATE TABLE inventory.DocumentSequences
+    (
+        DocumentTypeId INT NOT NULL,
+        BranchId       INT NOT NULL,
+        NextNumber     INT NOT NULL CONSTRAINT DF_DocumentSequences_Next DEFAULT (1),
+        CONSTRAINT PK_DocumentSequences PRIMARY KEY CLUSTERED (DocumentTypeId, BranchId),
+        CONSTRAINT FK_DocumentSequences_Type   FOREIGN KEY (DocumentTypeId) REFERENCES inventory.DocumentTypes (Id),
+        CONSTRAINT FK_DocumentSequences_Branch FOREIGN KEY (BranchId)       REFERENCES masterdata.Branches (Id)
+    );
+    PRINT 'Created inventory.DocumentSequences';
+END
+GO
+
+-- Atomic next number. Per-branch types: prefix + branch code + '-' + zero-padded sequence (INV-KLW-000001).
+-- The third parameter is optional so older callers keep working (they get the company-wide format).
+CREATE OR ALTER PROCEDURE inventory.usp_DocumentType_NextNumber
+    @Code           NVARCHAR(20),
+    @DocumentNumber NVARCHAR(30) OUTPUT,
+    @BranchId       INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @TypeId INT, @Prefix NVARCHAR(10), @Len TINYINT, @PerBranch BIT;
+    SELECT @TypeId = Id, @Prefix = NumberPrefix, @Len = NumberLength, @PerBranch = NumberPerBranch
+    FROM inventory.DocumentTypes WHERE Code = @Code AND IsActive = 1;
+    IF @TypeId IS NULL THROW 62008, 'Document type not found or inactive.', 1;
+
+    DECLARE @Taken TABLE (Number INT);
+
+    IF @PerBranch = 1 AND @BranchId IS NOT NULL
+    BEGIN
+        DECLARE @BranchCode NVARCHAR(20) = (SELECT BranchCode FROM masterdata.Branches WHERE Id = @BranchId);
+        IF @BranchCode IS NULL THROW 62008, 'Branch not found.', 1;
+
+        MERGE inventory.DocumentSequences WITH (HOLDLOCK) AS t
+        USING (SELECT @TypeId AS DocumentTypeId, @BranchId AS BranchId) AS s
+            ON t.DocumentTypeId = s.DocumentTypeId AND t.BranchId = s.BranchId
+        WHEN MATCHED THEN UPDATE SET NextNumber = t.NextNumber + 1
+        WHEN NOT MATCHED THEN INSERT (DocumentTypeId, BranchId, NextNumber) VALUES (s.DocumentTypeId, s.BranchId, 2)
+        OUTPUT ISNULL(deleted.NextNumber, 1) INTO @Taken (Number);
+
+        SELECT @DocumentNumber = @Prefix + UPPER(LEFT(@BranchCode, 8)) + N'-' + RIGHT(REPLICATE(N'0', @Len) + CAST(Number AS NVARCHAR(10)), @Len)
+        FROM @Taken;
+    END
+    ELSE
+    BEGIN
+        UPDATE inventory.DocumentTypes WITH (UPDLOCK, ROWLOCK)
+        SET NextNumber = NextNumber + 1
+        OUTPUT deleted.NextNumber INTO @Taken (Number)
+        WHERE Id = @TypeId;
+
+        SELECT @DocumentNumber = @Prefix + RIGHT(REPLICATE(N'0', @Len) + CAST(Number AS NVARCHAR(10)), @Len) FROM @Taken;
+    END
+END
+GO
+
+/* ================================================================== 3. Items: moving average, last cost, purchasing defaults */
+
+IF COL_LENGTH(N'inventory.Items', N'AverageCost') IS NULL
+BEGIN
+    ALTER TABLE inventory.Items ADD
+        AverageCost       DECIMAL(18,6) NOT NULL CONSTRAINT DF_Items_AverageCost DEFAULT (0),   -- per BASE unit, base currency
+        LastCost          DECIMAL(18,6) NULL,                                                   -- per BASE unit, base currency
+        LastSupplierId    INT           NULL,
+        LastPurchaseAtUtc DATETIME2(3)  NULL,
+        DefaultSupplierId INT           NULL,
+        LeadTimeDays      INT           NULL,
+        CONSTRAINT CK_Items_LeadTime CHECK (LeadTimeDays IS NULL OR LeadTimeDays >= 0),
+        CONSTRAINT FK_Items_LastSupplier    FOREIGN KEY (LastSupplierId)    REFERENCES masterdata.Parties (Id),
+        CONSTRAINT FK_Items_DefaultSupplier FOREIGN KEY (DefaultSupplierId) REFERENCES masterdata.Parties (Id);
+    PRINT 'Items: added AverageCost, LastCost, LastSupplierId, LastPurchaseAtUtc, DefaultSupplierId, LeadTimeDays';
+END
+GO
+
+-- One-time backfill from the ledger (items that already have receipts but no stored average).
+UPDATE i
+SET AverageCost = ISNULL(x.Avg, 0),
+    LastCost = x.Last
+FROM inventory.Items i
+CROSS APPLY
+(
+    SELECT Avg  = (SELECT CASE WHEN SUM(m.QuantityBase) > 0 THEN SUM(m.QuantityBase * ISNULL(m.UnitCostBase, 0)) / SUM(m.QuantityBase) END
+                   FROM inventory.StockMovements m WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0),
+           Last = (SELECT TOP (1) m.UnitCostBase FROM inventory.StockMovements m
+                   WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0 ORDER BY m.MovementDate DESC, m.Id DESC)
+) x
+WHERE i.AverageCost = 0 AND i.LastCost IS NULL AND x.Avg IS NOT NULL AND x.Avg > 0;
+GO
+
+CREATE OR ALTER FUNCTION inventory.fn_AverageCost (@ItemId INT)
+RETURNS DECIMAL(18,6)
+AS
+BEGIN
+    RETURN (SELECT AverageCost FROM inventory.Items WHERE Id = @ItemId);
+END
+GO
+
+IF TYPE_ID(N'inventory.tvp_ItemReceipt') IS NULL
+BEGIN
+    CREATE TYPE inventory.tvp_ItemReceipt AS TABLE
+    (
+        ItemId       INT           NOT NULL,
+        QuantityBase INT           NOT NULL,   -- received, base units (> 0)
+        UnitCostBase DECIMAL(18,6) NOT NULL    -- per base unit, base currency
+    );
+    PRINT 'Created type inventory.tvp_ItemReceipt';
+END
+GO
+
+-- Moving average: CALL BEFORE the receipt movements are inserted (on-hand must be the quantity before the receipt).
+CREATE OR ALTER PROCEDURE inventory.usp_Item_ApplyReceipts
+    @Receipts   inventory.tvp_ItemReceipt READONLY,
+    @SupplierId INT = NULL,      -- purchases: becomes the item's last supplier
+    @UserId     INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    ;WITH agg AS
+    (
+        SELECT ItemId, Qty = SUM(QuantityBase), Cost = SUM(CAST(QuantityBase AS DECIMAL(18,6)) * UnitCostBase)
+        FROM @Receipts WHERE QuantityBase > 0 GROUP BY ItemId
+    )
+    UPDATE i
+    SET AverageCost = CASE WHEN oh.Q + a.Qty > 0 THEN (oh.Q * i.AverageCost + a.Cost) / (oh.Q + a.Qty) ELSE i.AverageCost END,
+        LastCost = a.Cost / a.Qty,
+        LastSupplierId = COALESCE(@SupplierId, i.LastSupplierId),
+        LastPurchaseAtUtc = CASE WHEN @SupplierId IS NOT NULL THEN SYSUTCDATETIME() ELSE i.LastPurchaseAtUtc END
+    FROM inventory.Items i
+    INNER JOIN agg a ON a.ItemId = i.Id
+    CROSS APPLY (SELECT Q = CAST(CASE WHEN inventory.fn_StockOnHand(i.Id, NULL) > 0 THEN inventory.fn_StockOnHand(i.Id, NULL) ELSE 0 END AS DECIMAL(18,6))) oh;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_SetPurchasing
+    @Id                INT,
+    @DefaultSupplierId INT = NULL,
+    @LeadTimeDays      INT = NULL,
+    @UserId            INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @Id) THROW 56000, 'Item not found.', 1;
+    IF @DefaultSupplierId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @DefaultSupplierId AND IsSupplier = 1 AND IsActive = 1)
+        THROW 56000, 'Default supplier not found, inactive, or not flagged as a supplier.', 1;
+    IF @LeadTimeDays IS NOT NULL AND @LeadTimeDays < 0 THROW 56000, 'Lead time cannot be negative.', 1;
+
+    UPDATE inventory.Items
+    SET DefaultSupplierId = @DefaultSupplierId, LeadTimeDays = @LeadTimeDays, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Search
+    @Search             NVARCHAR(200) = NULL,
+    @ItemFamilyId       INT           = NULL,
+    @BrandId            INT           = NULL,
+    @DefaultWarehouseId INT           = NULL,
+    @IsActive           BIT           = NULL,
+    @IsBivac            BIT           = NULL,
+    @SortColumn         NVARCHAR(30)  = N'ItemCode',
+    @SortDirection      NVARCHAR(4)   = N'ASC',
+    @PageNumber         INT           = 1,
+    @PageSize           INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ItemCode', N'ItemName', N'BrandName', N'FamilyName', N'WarehouseName', N'IsActive', N'CreatedAtUtc', N'OnHand')
+        SET @SortColumn = N'ItemCode';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT i.Id, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.Model,
+           i.ItemFamilyId, f.FamilyCode, f.FamilyName, i.CountryOfOrigin,
+           i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName,
+           i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
+           bu.SkuCode AS BaseUnitSku, ut.UnitTypeName AS BaseUnitName,
+           OnHand = inventory.fn_StockOnHand(i.Id, NULL),
+           AverageCost = CAST(i.AverageCost AS DECIMAL(18,2)), LastCost = CAST(i.LastCost AS DECIMAL(18,2)),
+           i.DefaultSupplierId, ds.PartyName AS DefaultSupplierName,
+           i.CreatedAtUtc, i.CreatedBy, i.UpdatedAtUtc, i.UpdatedBy, i.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM inventory.Items i
+    INNER JOIN masterdata.Brands b        ON b.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f  ON f.Id = i.ItemFamilyId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = i.DefaultWarehouseId
+    LEFT  JOIN inventory.ItemUnits bu     ON bu.ItemId = i.Id AND bu.IsBaseUnit = 1
+    LEFT  JOIN masterdata.UnitTypes ut    ON ut.Id = bu.UnitTypeId
+    LEFT  JOIN masterdata.Parties ds      ON ds.Id = i.DefaultSupplierId
+    WHERE (@Search IS NULL
+           OR i.ItemCode LIKE N'%' + @Search + N'%'
+           OR i.ItemName LIKE N'%' + @Search + N'%'
+           OR EXISTS (SELECT 1 FROM inventory.ItemUnits u
+                      WHERE u.ItemId = i.Id AND (u.SkuCode LIKE N'%' + @Search + N'%' OR u.Barcode LIKE N'%' + @Search + N'%')))
+      AND (@ItemFamilyId IS NULL OR i.ItemFamilyId IN (SELECT Id FROM masterdata.fn_ItemFamily_Subtree(@ItemFamilyId)))
+      AND (@BrandId IS NULL OR i.BrandId = @BrandId)
+      AND (@DefaultWarehouseId IS NULL OR i.DefaultWarehouseId = @DefaultWarehouseId)
+      AND (@IsActive IS NULL OR i.IsActive = @IsActive)
+      AND (@IsBivac IS NULL OR i.IsBivac = @IsBivac)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName WHEN N'BrandName' THEN b.BrandName
+                             WHEN N'FamilyName' THEN f.FamilyName WHEN N'WarehouseName' THEN w.WarehouseName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'ItemCode' THEN i.ItemCode WHEN N'ItemName' THEN i.ItemName WHEN N'BrandName' THEN b.BrandName
+                             WHEN N'FamilyName' THEN f.FamilyName WHEN N'WarehouseName' THEN w.WarehouseName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'OnHand' THEN inventory.fn_StockOnHand(i.Id, NULL) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'OnHand' THEN inventory.fn_StockOnHand(i.Id, NULL) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(i.IsActive AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(i.IsActive AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN i.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN i.CreatedAtUtc END DESC,
+        i.ItemCode ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT i.Id, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.Model,
+           i.ItemFamilyId, f.FamilyCode, f.FamilyName, i.CountryOfOrigin,
+           i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName, i.Description,
+           i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
+           OnHand = inventory.fn_StockOnHand(i.Id, NULL),
+           LastCost = CAST(i.LastCost AS DECIMAL(18,2)),
+           AverageCost = CAST(i.AverageCost AS DECIMAL(18,2)),
+           LastPurchaseCost = (SELECT TOP (1) CAST(m.UnitCostBase AS DECIMAL(18,2)) FROM inventory.StockMovements m
+                               WHERE m.ItemId = i.Id AND m.DocumentFamily = N'Purchase' AND m.QuantityBase > 0 AND m.IsReversal = 0
+                               ORDER BY m.MovementDate DESC, m.Id DESC),
+           i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays,
+           i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
+           i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
+           i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
+    FROM inventory.Items i
+    INNER JOIN masterdata.Brands b       ON b.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f ON f.Id = i.ItemFamilyId
+    INNER JOIN masterdata.Warehouses w   ON w.Id = i.DefaultWarehouseId
+    LEFT  JOIN masterdata.Parties ds     ON ds.Id = i.DefaultSupplierId
+    LEFT  JOIN masterdata.Parties ls     ON ls.Id = i.LastSupplierId
+    LEFT  JOIN security.Users cu ON cu.Id = i.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = i.UpdatedBy
+    WHERE i.Id = @Id;
+
+    SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,
+           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, u.RowVersion
+    FROM inventory.ItemUnits u
+    INNER JOIN masterdata.UnitTypes ut ON ut.Id = u.UnitTypeId
+    WHERE u.ItemId = @Id
+    ORDER BY u.IsBaseUnit DESC, u.PackingFormula, ut.UnitTypeName;
+
+    SELECT fl.Id, fl.ItemId, fl.FileName, fl.ContentType, fl.SizeBytes, fl.IsItemImage, fl.CreatedAtUtc
+    FROM inventory.ItemFiles fl
+    WHERE fl.ItemId = @Id
+    ORDER BY fl.IsItemImage DESC, fl.CreatedAtUtc DESC;
+END
+GO
+
+/* ================================================================== 4. Stock documents (Inventory In / Out) re-created */
+
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocument_ValidateInput
+    @DocumentTypeCode NVARCHAR(20),
+    @DocumentDate     DATE,
+    @BranchId         INT,
+    @WarehouseId      INT,
+    @ReasonId         INT,
+    @Lines            inventory.tvp_StockDocumentLine READONLY,
+    @DocumentTypeId   INT OUTPUT,
+    @StockDirection   SMALLINT OUTPUT,
+    @CurrencyId       INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @RequiresReason BIT;
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection, @RequiresReason = RequiresReason
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Inventory' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL
+        THROW 62008, 'Document type not found, inactive, or not an inventory document.', 1;
+
+    IF @DocumentDate IS NULL THROW 62000, 'Document Date is required.', 1;
+    IF @DocumentDate > CAST(SYSUTCDATETIME() AS DATE) THROW 62000, 'Document Date cannot be in the future.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 62008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 62008, 'The warehouse must be an active warehouse of the selected branch.', 1;
+    IF @RequiresReason = 1 AND @ReasonId IS NULL THROW 62000, 'Reason is required.', 1;
+    IF @ReasonId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockReasons
+                                             WHERE Id = @ReasonId AND IsActive = 1
+                                               AND (AppliesTo = N'Both' OR (AppliesTo = N'In' AND @StockDirection = 1) OR (AppliesTo = N'Out' AND @StockDirection = -1)))
+        THROW 62008, 'Reason not found, inactive, or not applicable to this document type.', 1;
+
+    SELECT @CurrencyId = Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1;
+    IF @CurrencyId IS NULL THROW 62008, 'No active base currency is configured.', 1;
+
+    -- Per-line checks (the warehouse is the header's - one document = one warehouse).
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        CASE WHEN i.Id IS NULL THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item not found.'
+             WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+             WHEN iu.Id IS NULL THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': quantity must be greater than zero.'
+             WHEN l.UnitCost IS NOT NULL AND l.UnitCost < 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': unit cost cannot be negative.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitCost IS NOT NULL AND l.UnitCost < 0)
+    ORDER BY l.LineNumber;
+
+    IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocument_Save
+    @Id               INT            = NULL,   -- NULL = create
+    @DocumentTypeCode NVARCHAR(20),
+    @DocumentDate     DATE,
+    @BranchId         INT,
+    @WarehouseId      INT,
+    @ReasonId         INT            = NULL,
+    @ReferenceNo      NVARCHAR(100)  = NULL,
+    @Notes            NVARCHAR(1000) = NULL,
+    @Lines            inventory.tvp_StockDocumentLine READONLY,
+    @RowVersion       BINARY(8)      = NULL,
+    @UserId           INT            = NULL,
+    @NewId            INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @ReferenceNo = NULLIF(LTRIM(RTRIM(@ReferenceNo)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+
+    DECLARE @TypeId INT, @Direction SMALLINT, @CurrencyId INT;
+    EXEC inventory.usp_StockDocument_ValidateInput @DocumentTypeCode, @DocumentDate, @BranchId, @WarehouseId, @ReasonId, @Lines,
+         @TypeId OUTPUT, @Direction OUTPUT, @CurrencyId OUTPUT;
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM inventory.StockDocuments WHERE Id = @Id);
+        IF @Status IS NULL THROW 62006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 62005, 'Only draft documents can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 62004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM inventory.StockDocuments WHERE Id = @Id AND DocumentTypeId <> @TypeId)
+            THROW 62000, 'The document type cannot be changed.', 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30) = NULL;
+            IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
+                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
+
+            INSERT INTO inventory.StockDocuments (DocumentTypeId, DocumentNumber, DocumentDate, BranchId, WarehouseId, ReasonId,
+                                                  ReferenceNo, CurrencyId, ExchangeRate, Notes, Status, CreatedBy)
+            VALUES (@TypeId, @Number, @DocumentDate, @BranchId, @WarehouseId, @ReasonId, @ReferenceNo, @CurrencyId, 1, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Created', ISNULL(N'Draft ' + @Number, N'Draft (number assigned on posting)'), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE inventory.StockDocuments
+            SET DocumentDate = @DocumentDate, BranchId = @BranchId, WarehouseId = @WarehouseId, ReasonId = @ReasonId,
+                ReferenceNo = @ReferenceNo, Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+
+            DELETE FROM inventory.StockDocumentLines WHERE DocumentId = @Id;
+
+            INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        -- Lines: warehouse = header warehouse; Out documents take the item's moving average cost (per unit).
+        INSERT INTO inventory.StockDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula, UnitCost, Notes)
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+               CASE WHEN @Direction = -1 THEN ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * iu.PackingFormula ELSE ISNULL(l.UnitCost, 0) END,
+               NULLIF(LTRIM(RTRIM(l.Notes)), N'')
+        FROM @Lines l
+        INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId;
+
+        UPDATE d SET TotalItems = x.Items, TotalQuantity = x.Qty, TotalCost = x.Cost
+        FROM inventory.StockDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty, ISNULL(SUM(LineTotal), 0) AS Cost
+                     FROM inventory.StockDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocument_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT, @ReasonCode NVARCHAR(20);
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @ReasonCode = r.ReasonCode
+        FROM inventory.StockDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        LEFT  JOIN inventory.StockReasons r ON r.Id = d.ReasonId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 62006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 62010, 'Only draft documents can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 62004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM inventory.StockDocumentLines WHERE DocumentId = @Id)
+            THROW 62009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.'
+                 WHEN w.BranchId <> @BranchId THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is not in the document branch.' END
+        FROM inventory.StockDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0 OR w.BranchId <> @BranchId)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
+
+        IF @Direction = -1
+        BEGIN
+            -- Refresh the cost at posting time (moving average may have changed since the draft was saved).
+            UPDATE l SET UnitCost = ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * l.PackingFormula
+            FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
+
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM inventory.StockDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 62007, @Msg, 1;
+
+            UPDATE d SET TotalCost = x.Cost
+            FROM inventory.StockDocuments d
+            CROSS APPLY (SELECT ISNULL(SUM(LineTotal), 0) AS Cost FROM inventory.StockDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        -- Receipts update the moving average BEFORE the movements exist.
+        IF @Direction = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase)
+            SELECT l.ItemId, l.QuantityBase, CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula ELSE l.UnitCost END
+            FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId;
+        END
+
+        DECLARE @MovementDate DATETIME2(3) =
+            DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+        SELECT @MovementDate, l.ItemId, l.WarehouseId, @BranchId, @Direction * l.QuantityBase,
+               CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula END,
+               N'Inventory', @TypeCode, @Id, l.Id, @Number, @ReasonCode, l.ExpiryDate, @UserId
+        FROM inventory.StockDocumentLines l
+        WHERE l.DocumentId = @Id;
+
+        UPDATE inventory.StockDocuments
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM inventory.StockDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s) written to the stock ledger', @UserId);
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 5. Sales documents re-created (branch numbering, header warehouse, receipts) */
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocument_ValidateInput
+    @DocumentTypeCode   NVARCHAR(20),
+    @DocumentDate       DATE,
+    @DueDate            DATE,
+    @BranchId           INT,
+    @WarehouseId        INT,
+    @ClientId           INT,
+    @SalesmanId         INT,
+    @PriceListId        INT,
+    @RateType           TINYINT,
+    @ExchangeRate       DECIMAL(18,6),
+    @MaxDiscountPercent DECIMAL(9,4),
+    @Lines              sales.tvp_SalesDocumentLine READONLY,
+    @DocumentTypeId     INT OUTPUT,
+    @StockDirection     SMALLINT OUTPUT,
+    @CurrencyId         INT OUTPUT,
+    @ResolvedRate       DECIMAL(18,6) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Sales' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL THROW 64008, 'Document type not found, inactive, or not a sales document.', 1;
+
+    IF @DocumentDate IS NULL THROW 64000, 'Document Date is required.', 1;
+    IF @DocumentDate > CAST(SYSUTCDATETIME() AS DATE) THROW 64000, 'Document Date cannot be in the future.', 1;
+    IF @DueDate IS NOT NULL AND @DueDate < @DocumentDate THROW 64000, 'Due Date cannot be before the Document Date.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 64008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 64008, 'The warehouse must be an active warehouse of the selected branch.', 1;
+    IF @ClientId IS NULL THROW 64000, 'Client is required.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ClientId AND IsClient = 1 AND IsActive = 1)
+        THROW 64008, 'Client not found, inactive, or not flagged as a client.', 1;
+    IF @SalesmanId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SalesmanId AND IsSalesman = 1 AND IsActive = 1)
+        THROW 64008, 'Salesman not found, inactive, or not flagged as a salesman.', 1;
+    IF @PriceListId IS NULL THROW 64000, 'Price List is required.', 1;
+
+    SELECT @CurrencyId = CurrencyId FROM masterdata.PriceLists WHERE Id = @PriceListId AND IsActive = 1;
+    IF @CurrencyId IS NULL THROW 64008, 'Price list not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 64008, 'The price list currency is inactive.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) THROW 64000, 'Rate type must be Official, Non-official or Market.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 64000, 'Exchange rate must be greater than zero.', 1;
+
+    SET @ResolvedRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @DocumentDate));
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1) SET @ResolvedRate = 1;
+    IF @ResolvedRate IS NULL
+    BEGIN
+        DECLARE @Cur NVARCHAR(3) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId);
+        DECLARE @RateMsg NVARCHAR(300) = N'No ' + CASE @RateType WHEN 1 THEN N'official' WHEN 2 THEN N'non-official' ELSE N'market' END
+                                       + N' exchange rate is defined for ' + @Cur + N' on or before ' + CONVERT(NVARCHAR(10), @DocumentDate, 120)
+                                       + N'. Add one in Master Data > Exchange Rates or enter the rate manually.';
+        THROW 64008, @RateMsg, 1;
+    END
+
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    IF @MaxDiscountPercent > 100 SET @MaxDiscountPercent = 100;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+        CASE WHEN i.Id IS NULL THEN N'item not found.'
+             WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+             WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
+             WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
+             WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
+                  THEN N'discount must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(12)) + N'%.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
+       OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
+    ORDER BY l.LineNumber;
+
+    IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocument_Save
+    @Id                 INT            = NULL,
+    @DocumentTypeCode   NVARCHAR(20)   = N'SINV',
+    @DocumentDate       DATE,
+    @DueDate            DATE           = NULL,
+    @BranchId           INT,
+    @WarehouseId        INT,
+    @ClientId           INT,
+    @SalesmanId         INT            = NULL,
+    @PriceListId        INT,
+    @RateType           TINYINT        = 1,
+    @ExchangeRate       DECIMAL(18,6)  = NULL,
+    @ReferenceNo        NVARCHAR(100)  = NULL,
+    @Notes              NVARCHAR(1000) = NULL,
+    @Lines              sales.tvp_SalesDocumentLine READONLY,
+    @AllowPriceOverride BIT            = 0,
+    @MaxDiscountPercent DECIMAL(9,4)   = 100,
+    @DraftReference     NVARCHAR(50)   = NULL,
+    @RowVersion         BINARY(8)      = NULL,
+    @UserId             INT            = NULL,
+    @NewId              INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @ReferenceNo = NULLIF(LTRIM(RTRIM(@ReferenceNo)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @DraftReference = NULLIF(LTRIM(RTRIM(@DraftReference)), N'');
+
+    DECLARE @TypeId INT, @Direction SMALLINT, @CurrencyId INT, @Rate DECIMAL(18,6);
+    EXEC sales.usp_SalesDocument_ValidateInput @DocumentTypeCode, @DocumentDate, @DueDate, @BranchId, @WarehouseId, @ClientId, @SalesmanId,
+         @PriceListId, @RateType, @ExchangeRate, @MaxDiscountPercent, @Lines,
+         @TypeId OUTPUT, @Direction OUTPUT, @CurrencyId OUTPUT, @Rate OUTPUT;
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM sales.SalesDocuments WHERE Id = @Id);
+        IF @Status IS NULL THROW 64006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 64005, 'Only draft documents can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 64004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @Id AND DocumentTypeId <> @TypeId)
+            THROW 64000, 'The document type cannot be changed.', 1;
+    END
+
+    DECLARE @Priced TABLE
+    (
+        LineNumber INT PRIMARY KEY, ItemId INT, ItemUnitId INT, ExpiryDate DATE, Quantity INT, PackingFormula INT,
+        UnitPrice DECIMAL(18,4) NULL, SystemPrice DECIMAL(18,4) NULL, DiscountPercent DECIMAL(9,4), ImportRowNumber INT, Notes NVARCHAR(300)
+    );
+    INSERT INTO @Priced (LineNumber, ItemId, ItemUnitId, ExpiryDate, Quantity, PackingFormula, UnitPrice, SystemPrice, DiscountPercent, ImportRowNumber, Notes)
+    SELECT l.LineNumber, l.ItemId, l.ItemUnitId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+           CASE WHEN @AllowPriceOverride = 1 AND l.UnitPrice IS NOT NULL THEN l.UnitPrice ELSE sp.Price END,
+           sp.Price, ISNULL(l.DiscountPercent, 0), l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N'')
+    FROM @Lines l
+    INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+    CROSS APPLY (SELECT masterdata.fn_GetUnitPrice(l.ItemUnitId, @PriceListId, @BranchId) AS Price) sp;
+
+    DECLARE @NoPrice NVARCHAR(400);
+    SELECT TOP (1) @NoPrice = N'Line ' + CAST(p.LineNumber AS NVARCHAR(10)) + N': no selling price for ' + i.ItemCode + N' (' + ut.UnitTypeName
+                              + N') in price list ' + pl.PriceListName + N'. Add the price or enter a manual price (requires the price override permission).'
+    FROM @Priced p
+    INNER JOIN inventory.Items i       ON i.Id = p.ItemId
+    INNER JOIN inventory.ItemUnits iu  ON iu.Id = p.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut ON ut.Id = iu.UnitTypeId
+    INNER JOIN masterdata.PriceLists pl ON pl.Id = @PriceListId
+    WHERE p.UnitPrice IS NULL
+    ORDER BY p.LineNumber;
+    IF @NoPrice IS NOT NULL THROW 64011, @NoPrice, 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30) = NULL;
+            IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
+                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
+
+            INSERT INTO sales.SalesDocuments (DocumentTypeId, DocumentNumber, DocumentDate, DueDate, BranchId, WarehouseId, ClientId, SalesmanId,
+                                              PriceListId, CurrencyId, RateType, ExchangeRate, ReferenceNo, Notes, Status, CreatedBy)
+            VALUES (@TypeId, @Number, @DocumentDate, @DueDate, @BranchId, @WarehouseId, @ClientId, @SalesmanId,
+                    @PriceListId, @CurrencyId, @RateType, @Rate, @ReferenceNo, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Created', ISNULL(N'Draft ' + @Number, N'Draft (number assigned on posting)'), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE sales.SalesDocuments
+            SET DocumentDate = @DocumentDate, DueDate = @DueDate, BranchId = @BranchId, WarehouseId = @WarehouseId,
+                ClientId = @ClientId, SalesmanId = @SalesmanId, PriceListId = @PriceListId, CurrencyId = @CurrencyId,
+                RateType = @RateType, ExchangeRate = @Rate, ReferenceNo = @ReferenceNo, Notes = @Notes,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+
+            DELETE FROM sales.SalesDocumentLines WHERE DocumentId = @Id;
+
+            INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        INSERT INTO sales.SalesDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
+                                              UnitPrice, DiscountPercent, PriceSource, ImportRowNumber, Notes)
+        SELECT @Id, p.LineNumber, p.ItemId, p.ItemUnitId, @WarehouseId, p.ExpiryDate, p.Quantity, p.PackingFormula,
+               p.UnitPrice, p.DiscountPercent,
+               CASE WHEN p.SystemPrice IS NULL OR p.UnitPrice <> p.SystemPrice THEN N'Manual' ELSE N'PriceList' END,
+               p.ImportRowNumber, p.Notes
+        FROM @Priced p;
+
+        UPDATE d
+        SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / @Rate, 2)
+        FROM sales.SalesDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM sales.SalesDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        IF @DraftReference IS NOT NULL
+        BEGIN
+            DECLARE @NewLogs TABLE (Id INT PRIMARY KEY, FileName NVARCHAR(255), ImportedRows INT);
+            INSERT INTO @NewLogs (Id, FileName, ImportedRows)
+            SELECT Id, FileName, ImportedRows FROM sales.InvoiceImportLogs WHERE DraftReference = @DraftReference AND InvoiceId IS NULL;
+
+            EXEC sales.usp_InvoiceImport_AttachInvoice @DraftReference, @Id;
+
+            INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+            SELECT @Id, N'Imported', N'Excel import: ' + FileName + N' (' + CAST(ImportedRows AS NVARCHAR(10)) + N' row(s))', @UserId
+            FROM @NewLogs ORDER BY Id;
+        END
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocument_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT;
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId
+        FROM sales.SalesDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 64006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 64010, 'Only draft documents can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 64004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM sales.SalesDocumentLines WHERE DocumentId = @Id)
+            THROW 64009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.'
+                 WHEN w.BranchId <> @BranchId THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is not in the document branch.' END
+        FROM sales.SalesDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0 OR w.BranchId <> @BranchId)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
+
+        IF NOT EXISTS (SELECT 1 FROM sales.SalesDocuments d INNER JOIN masterdata.Parties p ON p.Id = d.ClientId WHERE d.Id = @Id AND p.IsActive = 1)
+            THROW 64008, 'The client is inactive.', 1;
+
+        IF @Direction = -1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM sales.SalesDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 64007, @Msg, 1;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        -- COGS snapshot per line: invoices take the moving average; returns keep their given cost (falls back to the average).
+        UPDATE l SET UnitCostBase = ISNULL(CASE WHEN @Direction = 1 THEN l.UnitCostBase END, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
+        FROM sales.SalesDocumentLines l
+        WHERE l.DocumentId = @Id;
+
+        IF @Direction = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0) FROM sales.SalesDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId;
+        END
+
+        IF @Direction <> 0
+        BEGIN
+            DECLARE @MovementDate DATETIME2(3) =
+                DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, @BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+                   N'Sales', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
+            FROM sales.SalesDocumentLines l
+            WHERE l.DocumentId = @Id;
+        END
+
+        UPDATE d
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            TotalCostBase = ISNULL(x.Cost, 0), UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        FROM sales.SalesDocuments d
+        CROSS APPLY (SELECT SUM(CONVERT(DECIMAL(18,2), QuantityBase * ISNULL(UnitCostBase, 0))) AS Cost FROM sales.SalesDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM sales.SalesDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
+                                + CASE WHEN @Direction <> 0 THEN N' written to the stock ledger' ELSE N'' END, @UserId);
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. Permissions + report */
+
+MERGE security.Permissions AS target
+USING (VALUES (N'inventory.documenttypes.manage', N'Manage document types', N'Configuration', N'Change numbering, pricing and behaviour of document types.', 900))
+      AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN INSERT (Code, Name, Module, Description, SortOrder) VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+-- ===== 20: Import common template =====
+
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 20: ONE Excel import template for every document type
+
+   Template (header row; order free):
+     Document Type | Item Code / Barcode | Unit | Warehouse | Quantity | Unit Price | Discount % | Expiry Date | Notes
+   - Document Type = a code of inventory.DocumentTypes (INV_IN, INV_OUT, PO, PINV, PRET, SO, SINV, SRET) or its name.
+     Blank = the document type of the page doing the import. A different type = row Error
+     ("This row is for Purchase Invoice (PINV), not for Inventory In.").
+   - Warehouse = the warehouse of the line; ONE DOCUMENT = ONE WAREHOUSE, so the page creates one document per
+     warehouse found in the file (blank = the header warehouse).
+   - Unit Price = selling price for Sales types (price list rules), COST for Inventory In / Purchase types,
+     ignored for Inventory Out (moving average).
+   - Unit blank = the item's unit preferred by the family: Sales -> sales unit, Purchase -> purchase unit,
+     Inventory -> base unit (barcode rows fix the unit).
+
+   Changes:
+     sales.tvp_InvoiceImportRow      re-created with DocumentTypeCode NVARCHAR(50) as the LAST column
+     sales.usp_InvoiceImport_Validate re-created: + @DocumentTypeCode (page type), unit preference by family,
+                                     row type check, output columns RowDocumentTypeCode / OnHandBase / RequiredBase
+     (name and other parameters unchanged - the API keeps calling the same procedure)
+
+   Requires 18 and 19. Idempotent (the type is dropped and re-created only when the column is missing).
+   ===================================================================================== */
+
+IF OBJECT_ID(N'inventory.DocumentSequences', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 18 and 19 before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+-- Re-create the table type with the new column (a type cannot be altered).
+IF TYPE_ID(N'sales.tvp_InvoiceImportRow') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.columns c INNER JOIN sys.table_types tt ON tt.type_table_object_id = c.object_id
+                   WHERE tt.name = N'tvp_InvoiceImportRow' AND SCHEMA_NAME(tt.schema_id) = N'sales' AND c.name = N'DocumentTypeCode')
+BEGIN
+    IF OBJECT_ID(N'sales.usp_InvoiceImport_Validate', N'P') IS NOT NULL DROP PROCEDURE sales.usp_InvoiceImport_Validate;
+    DROP TYPE sales.tvp_InvoiceImportRow;
+    PRINT 'Dropped sales.tvp_InvoiceImportRow (re-created below with DocumentTypeCode)';
+END
+GO
+
+IF TYPE_ID(N'sales.tvp_InvoiceImportRow') IS NULL
+BEGIN
+    CREATE TYPE sales.tvp_InvoiceImportRow AS TABLE
+    (
+        RowNumber        INT           NOT NULL PRIMARY KEY,
+        ItemRef          NVARCHAR(100) NULL,     -- item code or barcode
+        UnitName         NVARCHAR(50)  NULL,     -- unit type name or SKU; blank = family's preferred unit
+        WarehouseRef     NVARCHAR(150) NULL,     -- code or name; blank = header warehouse
+        Quantity         DECIMAL(18,4) NULL,
+        RawQuantity      NVARCHAR(50)  NULL,
+        UnitPrice        DECIMAL(18,4) NULL,     -- price (sales) or cost (inventory in / purchase)
+        DiscountPercent  DECIMAL(9,4)  NULL,
+        ExpiryDate       DATE          NULL,
+        RawExpiryDate    NVARCHAR(50)  NULL,
+        Notes            NVARCHAR(300) NULL,
+        DocumentTypeCode NVARCHAR(50)  NULL      -- NEW: the "Document Type" cell (code or name), blank = page type
+    );
+    PRINT 'Created type sales.tvp_InvoiceImportRow (with DocumentTypeCode)';
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_InvoiceImport_Validate
+    @BranchId            INT,
+    @DefaultWarehouseId  INT,
+    @PriceListId         INT           = NULL,  -- NULL = cost mode (inventory / purchase): Unit Price column = cost, no price list checks
+    @AllowPriceOverride  BIT           = 0,
+    @MaxDiscountPercent  DECIMAL(9,4)  = 100,
+    @Rows                sales.tvp_InvoiceImportRow READONLY,
+    @CheckStock          BIT           = 0,     -- 1 = cumulative stock check per item + warehouse (outgoing documents)
+    @DocumentTypeCode    NVARCHAR(20)  = NULL   -- the page's document type; rows for another type become Errors
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 61008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 61008, 'The default warehouse is not an active warehouse of the selected branch.', 1;
+    IF @PriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @PriceListId AND IsActive = 1)
+        THROW 61008, 'Price list not found or inactive.', 1;
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    SET @CheckStock = ISNULL(@CheckStock, 0);
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+
+    DECLARE @PageTypeName NVARCHAR(100), @Family NVARCHAR(20);
+    IF @DocumentTypeCode IS NOT NULL
+    BEGIN
+        SELECT @PageTypeName = Name, @Family = Family FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode;
+        IF @PageTypeName IS NULL THROW 61008, 'Document type not found.', 1;
+    END
+    -- Unit preference: 1 = sales unit first, 2 = purchase unit first, 0 = base unit first.
+    DECLARE @UnitPref TINYINT = CASE WHEN @Family = N'Sales' OR (@Family IS NULL AND @PriceListId IS NOT NULL) THEN 1
+                                     WHEN @Family = N'Purchase' THEN 2 ELSE 0 END;
+
+    DECLARE @Today DATE = CAST(SYSUTCDATETIME() AS DATE);
+
+    ;WITH resolved AS
+    (
+        SELECT r.RowNumber,
+               ItemRef      = NULLIF(LTRIM(RTRIM(r.ItemRef)), N''),
+               UnitName     = NULLIF(LTRIM(RTRIM(r.UnitName)), N''),
+               WarehouseRef = NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N''),
+               r.Quantity, r.RawQuantity, ManualPrice = r.UnitPrice, r.DiscountPercent, r.ExpiryDate, r.RawExpiryDate,
+               Notes        = NULLIF(LTRIM(RTRIM(r.Notes)), N''),
+               RowTypeRef   = NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N''),
+               rt.RowTypeCode, rt.RowTypeName,
+               it.ItemId, it.ItemCode, it.ItemName, it.ItemActive, it.BarcodeUnitId,
+               u.ItemUnitId, u.UnitTypeName, u.PackingFormula,
+               w.WarehouseId, w.WarehouseCode, w.WarehouseName, w.WarehouseActive, w.WarehouseBranchId,
+               pr.BranchPrice, pr.AllBranchesPrice
+        FROM @Rows r
+        OUTER APPLY
+        (
+            SELECT TOP (1) dt.Code AS RowTypeCode, dt.Name AS RowTypeName
+            FROM inventory.DocumentTypes dt
+            WHERE NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N'') IS NOT NULL
+              AND (dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) OR dt.Name = LTRIM(RTRIM(r.DocumentTypeCode)))
+            ORDER BY CASE WHEN dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) THEN 0 ELSE 1 END
+        ) rt
+        OUTER APPLY
+        (
+            SELECT TOP (1) i.Id AS ItemId, i.ItemCode, i.ItemName, i.IsActive AS ItemActive, bu.Id AS BarcodeUnitId
+            FROM inventory.Items i
+            LEFT JOIN inventory.ItemUnits bu ON bu.ItemId = i.Id AND bu.Barcode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'')
+            WHERE i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') OR bu.Id IS NOT NULL
+            ORDER BY CASE WHEN i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') THEN 0 ELSE 1 END
+        ) it
+        OUTER APPLY
+        (
+            SELECT TOP (1) iu.Id AS ItemUnitId, t.UnitTypeName, iu.PackingFormula
+            FROM inventory.ItemUnits iu
+            INNER JOIN masterdata.UnitTypes t ON t.Id = iu.UnitTypeId
+            WHERE iu.ItemId = it.ItemId
+              AND (   (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NOT NULL
+                       AND (t.UnitTypeName = LTRIM(RTRIM(r.UnitName)) OR iu.SkuCode = LTRIM(RTRIM(r.UnitName))))
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NOT NULL AND iu.Id = it.BarcodeUnitId)
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NULL))
+            ORDER BY CASE @UnitPref WHEN 1 THEN CASE WHEN iu.IsSalesUnit = 1 THEN 0 ELSE 1 END
+                                    WHEN 2 THEN CASE WHEN iu.IsPurchaseUnit = 1 THEN 0 ELSE 1 END
+                                    ELSE CASE WHEN iu.IsBaseUnit = 1 THEN 0 ELSE 1 END END,
+                     iu.IsBaseUnit DESC, iu.PackingFormula
+        ) u
+        OUTER APPLY
+        (
+            SELECT TOP (1) wh.Id AS WarehouseId, wh.WarehouseCode, wh.WarehouseName, wh.IsActive AS WarehouseActive, wh.BranchId AS WarehouseBranchId
+            FROM masterdata.Warehouses wh
+            WHERE (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NOT NULL
+                   AND (wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) OR wh.WarehouseName = LTRIM(RTRIM(r.WarehouseRef))))
+               OR (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NULL AND wh.Id = @DefaultWarehouseId)
+            ORDER BY CASE WHEN wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) THEN 0 ELSE 1 END
+        ) w
+        OUTER APPLY
+        (
+            SELECT BranchPrice      = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId = @BranchId AND IsActive = 1),
+                   AllBranchesPrice = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId IS NULL AND IsActive = 1)
+        ) pr
+    ),
+    stocked AS
+    (
+        SELECT x.*,
+               QtyBase    = CASE WHEN x.ItemUnitId IS NOT NULL AND x.Quantity IS NOT NULL AND x.Quantity > 0 AND x.Quantity = FLOOR(x.Quantity)
+                                 THEN CAST(x.Quantity AS INT) * x.PackingFormula ELSE 0 END,
+               OnHandBase = CASE WHEN x.ItemId IS NOT NULL AND x.WarehouseId IS NOT NULL THEN inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) END
+        FROM resolved x
+    ),
+    running AS
+    (
+        SELECT s.*,
+               RequiredBase = SUM(s.QtyBase) OVER (PARTITION BY s.ItemId, s.WarehouseId ORDER BY s.RowNumber ROWS UNBOUNDED PRECEDING),
+               EarlierRows  = STUFF((SELECT N', ' + CAST(s2.RowNumber AS NVARCHAR(10))
+                                     FROM stocked s2
+                                     WHERE s2.ItemId = s.ItemId AND s2.WarehouseId = s.WarehouseId AND s2.QtyBase > 0 AND s2.RowNumber < s.RowNumber
+                                     ORDER BY s2.RowNumber FOR XML PATH(N''), TYPE).value(N'.', N'NVARCHAR(MAX)'), 1, 2, N'')
+        FROM stocked s
+    ),
+    judged AS
+    (
+        SELECT x.*,
+               SystemPrice = COALESCE(x.BranchPrice, x.AllBranchesPrice),
+               EffectiveDiscount = ISNULL(x.DiscountPercent, 0),
+               Err0 = CASE WHEN x.RowTypeRef IS NOT NULL AND x.RowTypeCode IS NULL THEN N'Document Type ''' + x.RowTypeRef + N''' does not exist.'
+                           WHEN x.RowTypeCode IS NOT NULL AND @DocumentTypeCode IS NOT NULL AND x.RowTypeCode <> @DocumentTypeCode
+                                THEN N'This row is for ' + x.RowTypeName + N' (' + x.RowTypeCode + N'), not for ' + @PageTypeName + N'.' END,
+               Err1 = CASE WHEN x.ItemRef IS NULL THEN N'Item Code / Barcode is required.'
+                           WHEN x.ItemId IS NULL THEN N'Item Code ' + x.ItemRef + N' does not exist.'
+                           WHEN x.ItemActive = 0 THEN N'Item ' + x.ItemCode + N' is inactive.' END,
+               Err2 = CASE WHEN x.Quantity IS NULL AND x.RawQuantity IS NOT NULL THEN N'Quantity ''' + x.RawQuantity + N''' is not a number.'
+                           WHEN x.Quantity IS NULL OR x.Quantity <= 0 THEN N'Quantity must be greater than zero.'
+                           WHEN x.Quantity <> FLOOR(x.Quantity) THEN N'Quantity must be a whole number of pieces.' END,
+               Err3 = CASE WHEN x.ItemId IS NOT NULL AND x.UnitName IS NOT NULL AND x.ItemUnitId IS NULL
+                                THEN N'Unit ''' + x.UnitName + N''' is not configured for Item ' + x.ItemCode + N'.'
+                           WHEN x.ItemId IS NOT NULL AND x.ItemUnitId IS NULL THEN N'Item ' + x.ItemCode + N' has no units configured.' END,
+               Err4 = CASE WHEN x.WarehouseRef IS NOT NULL AND x.WarehouseId IS NULL THEN N'Warehouse ' + x.WarehouseRef + N' does not exist.'
+                           WHEN x.WarehouseActive = 0 THEN N'Warehouse ' + x.WarehouseCode + N' is inactive.'
+                           WHEN x.WarehouseBranchId <> @BranchId THEN N'Warehouse ' + x.WarehouseCode + N' is not available for the selected branch.' END,
+               Err5 = CASE WHEN @PriceListId IS NOT NULL AND x.ItemUnitId IS NOT NULL
+                            AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NULL
+                            AND NOT (x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1)
+                                THEN N'No selling price was found for Item ' + x.ItemCode + N', Unit ' + x.UnitTypeName + N', and the selected Price List.'
+                           WHEN x.ManualPrice IS NOT NULL AND x.ManualPrice < 0 THEN N'Unit Price cannot be negative.' END,
+               Err6 = CASE WHEN ISNULL(x.DiscountPercent, 0) < 0 OR ISNULL(x.DiscountPercent, 0) > @MaxDiscountPercent
+                                THEN N'Discount % must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(20)) + N'.' END,
+               Err7 = CASE WHEN x.ExpiryDate IS NULL AND x.RawExpiryDate IS NOT NULL THEN N'Expiry Date ''' + x.RawExpiryDate + N''' is not a valid date.' END,
+               Err8 = CASE WHEN @CheckStock = 1 AND x.QtyBase > 0 AND x.WarehouseId IS NOT NULL AND x.WarehouseBranchId = @BranchId AND x.RequiredBase > ISNULL(x.OnHandBase, 0)
+                                THEN N'Insufficient stock for ' + x.ItemCode + N' in ' + x.WarehouseCode + N': available ' + CAST(ISNULL(x.OnHandBase, 0) AS NVARCHAR(20))
+                                     + N', required ' + CAST(x.RequiredBase AS NVARCHAR(20))
+                                     + CASE WHEN x.EarlierRows IS NULL THEN N'' ELSE N' (with rows ' + x.EarlierRows + N')' END + N'.' END,
+               Warn1 = CASE WHEN @PriceListId IS NOT NULL AND x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 0 AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NOT NULL
+                                THEN N'Manual price ignored - system price ' + CAST(COALESCE(x.BranchPrice, x.AllBranchesPrice) AS NVARCHAR(30)) + N' used (no price override permission).' END,
+               Warn2 = CASE WHEN x.ExpiryDate IS NOT NULL AND x.ExpiryDate < @Today THEN N'Expiry date is in the past.' END,
+               Warn3 = CASE WHEN @UnitPref = 1 AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsSalesUnit = 1)
+                                THEN N'No sales unit is flagged for this item - the base unit was used.'
+                            WHEN @UnitPref = 2 AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsPurchaseUnit = 1)
+                                THEN N'No purchase unit is flagged for this item - the base unit was used.' END
+        FROM running x
+    )
+    SELECT j.RowNumber,
+           Status  = CASE WHEN COALESCE(j.Err0, j.Err1, j.Err2, j.Err3, j.Err4, j.Err5, j.Err6, j.Err7, j.Err8) IS NOT NULL THEN N'Error'
+                          WHEN COALESCE(j.Warn1, j.Warn2, j.Warn3) IS NOT NULL THEN N'Warning'
+                          ELSE N'Valid' END,
+           Message = NULLIF(LTRIM(CONCAT(ISNULL(j.Err0 + N' ', N''), ISNULL(j.Err1 + N' ', N''), ISNULL(j.Err2 + N' ', N''), ISNULL(j.Err3 + N' ', N''), ISNULL(j.Err4 + N' ', N''),
+                                         ISNULL(j.Err5 + N' ', N''), ISNULL(j.Err6 + N' ', N''), ISNULL(j.Err7 + N' ', N''), ISNULL(j.Err8 + N' ', N''),
+                                         ISNULL(j.Warn1 + N' ', N''), ISNULL(j.Warn2 + N' ', N''), ISNULL(j.Warn3, N''))), N''),
+           RowDocumentTypeCode = ISNULL(j.RowTypeCode, @DocumentTypeCode),
+           j.ItemRef, j.ItemId, j.ItemCode, j.ItemName,
+           j.ItemUnitId, j.UnitTypeName, j.PackingFormula,
+           j.WarehouseId, j.WarehouseCode, j.WarehouseName,
+           Quantity    = CASE WHEN j.Quantity IS NOT NULL AND j.Quantity > 0 AND j.Quantity = FLOOR(j.Quantity) THEN CAST(j.Quantity AS INT) END,
+           UnitPrice   = CASE WHEN @PriceListId IS NULL THEN j.ManualPrice
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN j.ManualPrice
+                              ELSE j.SystemPrice END,
+           PriceSource = CASE WHEN @PriceListId IS NULL THEN CASE WHEN j.ManualPrice IS NOT NULL THEN N'Manual' END
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN N'Manual'
+                              WHEN j.BranchPrice IS NOT NULL THEN N'Branch'
+                              WHEN j.AllBranchesPrice IS NOT NULL THEN N'AllBranches' END,
+           ManualPrice = j.ManualPrice,
+           DiscountPercent = j.EffectiveDiscount,
+           j.ExpiryDate, j.Notes,
+           j.OnHandBase, j.RequiredBase
+    FROM judged j
+    ORDER BY j.RowNumber;
+END
+GO
+
+-- ===== 21: Purchase documents =====
+
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 21: PURCHASE document family + Shortages report
+
+   Family Purchase (schema purchase), one header + one lines table, discriminated by inventory.DocumentTypes:
+     PO   Purchase Order   - no stock effect. Draft -> Posted (= confirmed / open) -> Closed (fully received or
+                             closed manually) | Cancelled (only while nothing was received against it).
+     PINV Purchase Invoice - stock +, cost. Draft -> Posted (ledger, moving average, item last cost/supplier,
+                             PO received quantities) -> Cancelled (reversal; PO re-opened).
+     PRET Purchase Return  - stock -. Created from a posted PINV (or from scratch). Draft -> Posted (needs stock,
+                             cost = the invoice cost) -> Cancelled (reversal).
+   Money: the supplier CURRENCY (default = supplier's DefaultCurrencyId, else base) with RateType + ExchangeRate
+          (1 base = Rate x currency; auto from masterdata.fn_GetRate, editable). Lines are priced in the document
+          currency; the ledger cost per base unit in USD = UnitPrice x (1 - Disc%) / PackingFormula / Rate.
+          A blank line price on PO/PINV = the item's last cost converted to the document currency.
+   Conversions: usp_PurchaseDocument_CreateFromSource  PO -> PINV (remaining quantities), PINV -> PRET (invoiced -
+          returned); SourceDocumentId / SourceLineId keep the link; ReceivedQuantityBase (PO lines) and
+          ReturnedQuantityBase (PINV lines) track what was consumed.
+   One document = one warehouse (lines take the header warehouse).
+
+   Objects: purchase.PurchaseDocuments / PurchaseDocumentLines / PurchaseDocumentFiles / PurchaseDocumentAudit,
+            purchase.tvp_PurchaseDocumentLine, usp_PurchaseDocument_Search / _Get (5 result sets: header, lines,
+            files, audit, linked documents) / _ValidateInput / _Save / _Post / _Cancel / _Close / _Delete /
+            _CreateFromSource, usp_PurchaseDocumentFile_Add / _Get / _Delete,
+            masterdata.usp_ExchangeRate_Resolve (rate for a currency), inventory.usp_Shortage_Report.
+
+   Shortages (general formula until the customer's formulas arrive), per item + warehouse:
+     Available = OnHand + Incoming (open PO remaining, base units, same warehouse)
+     Short when Available < MinQuantity;  ShortageBase = Min - Available
+     SuggestedBase = ISNULL(Max, Min) - Available, rounded UP to the purchase unit (SuggestedQty in that unit)
+     AvgDailySales = net Sales-family outflow of the last @DaysForAverage days / days; DaysOfCover = OnHand / AvgDailySales
+     Supplier = item DefaultSupplierId, else LastSupplierId.  Evaluated at the item's default warehouse and at every
+     warehouse where the item has movements (filters: branch, warehouse, family, brand, supplier, search).
+
+   Error numbers 65xxx: 65000 validation ("Line N: ...")  65004 concurrency  65005 not a draft  65006 not found
+     65007 insufficient stock  65008 master data / rate  65009 no lines  65010 invalid status  65011 source document
+     problem (not posted, other supplier, quantity above remaining, already referenced)
+   Permissions (module Purchase): purchase.orders.* 1000-1040, purchase.invoices.* 1060-1100, purchase.returns.* 1120-1160;
+     (module Inventory) inventory.shortages.view 950.  Manager gets the .view ones.
+
+   Requires 19 and 20. Idempotent.
+   ===================================================================================== */
+
+IF OBJECT_ID(N'inventory.usp_Item_ApplyReceipts', N'P') IS NULL OR TYPE_ID(N'inventory.tvp_ItemReceipt') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 19 and 20 before this script.', 16, 1);
+    RETURN;
+END
+GO
+
+IF SCHEMA_ID(N'purchase') IS NULL EXEC (N'CREATE SCHEMA purchase AUTHORIZATION dbo');
+GO
+
+/* ================================================================== 1. Tables */
+
+IF OBJECT_ID(N'purchase.PurchaseDocuments', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PurchaseDocuments
+    (
+        Id                INT IDENTITY(1,1) NOT NULL,
+        DocumentTypeId    INT            NOT NULL,     -- PO | PINV | PRET
+        DocumentNumber    NVARCHAR(30)   NULL,
+        DocumentDate      DATE           NOT NULL,
+        ExpectedDate      DATE           NULL,         -- PO: expected delivery; PINV: due date
+        BranchId          INT            NOT NULL,
+        WarehouseId       INT            NOT NULL,
+        SupplierId        INT            NOT NULL,     -- masterdata.Parties (IsSupplier) - name matters: party type guard
+        CurrencyId        INT            NOT NULL,
+        RateType          TINYINT        NOT NULL CONSTRAINT DF_PurchaseDocuments_RateType DEFAULT (1),
+        ExchangeRate      DECIMAL(18,6)  NOT NULL CONSTRAINT DF_PurchaseDocuments_Rate DEFAULT (1),
+        SupplierReference NVARCHAR(100)  NULL,         -- supplier's order / invoice number
+        Notes             NVARCHAR(1000) NULL,
+        Status            TINYINT        NOT NULL CONSTRAINT DF_PurchaseDocuments_Status DEFAULT (1),   -- 1 Draft, 2 Posted, 3 Cancelled, 4 Closed (PO)
+        TotalItems        INT            NOT NULL CONSTRAINT DF_PurchaseDocuments_TotalItems DEFAULT (0),
+        TotalQuantity     INT            NOT NULL CONSTRAINT DF_PurchaseDocuments_TotalQuantity DEFAULT (0),
+        Subtotal          DECIMAL(18,2)  NOT NULL CONSTRAINT DF_PurchaseDocuments_Subtotal DEFAULT (0),
+        TotalDiscount     DECIMAL(18,2)  NOT NULL CONSTRAINT DF_PurchaseDocuments_TotalDiscount DEFAULT (0),
+        TotalAmount       DECIMAL(18,2)  NOT NULL CONSTRAINT DF_PurchaseDocuments_TotalAmount DEFAULT (0),      -- document currency
+        TotalAmountBase   DECIMAL(18,2)  NOT NULL CONSTRAINT DF_PurchaseDocuments_TotalAmountBase DEFAULT (0),  -- base currency
+        SourceDocumentId  INT            NULL,         -- PINV <- PO, PRET <- PINV
+        PostedAtUtc       DATETIME2(3)   NULL,
+        PostedBy          INT            NULL,
+        CancelledAtUtc    DATETIME2(3)   NULL,
+        CancelledBy       INT            NULL,
+        CancelReason      NVARCHAR(300)  NULL,
+        ClosedAtUtc       DATETIME2(3)   NULL,
+        ClosedBy          INT            NULL,
+        CloseReason       NVARCHAR(300)  NULL,
+        CreatedAtUtc      DATETIME2(3)   NOT NULL CONSTRAINT DF_PurchaseDocuments_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy         INT            NULL,
+        UpdatedAtUtc      DATETIME2(3)   NULL,
+        UpdatedBy         INT            NULL,
+        RowVersion        ROWVERSION     NOT NULL,
+        CONSTRAINT PK_PurchaseDocuments PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_PurchaseDocuments_Status CHECK (Status IN (1, 2, 3, 4)),
+        CONSTRAINT CK_PurchaseDocuments_RateType CHECK (RateType IN (1, 2, 3)),
+        CONSTRAINT CK_PurchaseDocuments_Rate CHECK (ExchangeRate > 0),
+        CONSTRAINT FK_PurchaseDocuments_Type        FOREIGN KEY (DocumentTypeId)   REFERENCES inventory.DocumentTypes (Id),
+        CONSTRAINT FK_PurchaseDocuments_Branch      FOREIGN KEY (BranchId)         REFERENCES masterdata.Branches (Id),
+        CONSTRAINT FK_PurchaseDocuments_Warehouse   FOREIGN KEY (WarehouseId)      REFERENCES masterdata.Warehouses (Id),
+        CONSTRAINT FK_PurchaseDocuments_Supplier    FOREIGN KEY (SupplierId)       REFERENCES masterdata.Parties (Id),
+        CONSTRAINT FK_PurchaseDocuments_Currency    FOREIGN KEY (CurrencyId)       REFERENCES masterdata.Currencies (Id),
+        CONSTRAINT FK_PurchaseDocuments_Source      FOREIGN KEY (SourceDocumentId) REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_PurchaseDocuments_CreatedBy   FOREIGN KEY (CreatedBy)        REFERENCES security.Users (Id),
+        CONSTRAINT FK_PurchaseDocuments_UpdatedBy   FOREIGN KEY (UpdatedBy)        REFERENCES security.Users (Id),
+        CONSTRAINT FK_PurchaseDocuments_PostedBy    FOREIGN KEY (PostedBy)         REFERENCES security.Users (Id),
+        CONSTRAINT FK_PurchaseDocuments_CancelledBy FOREIGN KEY (CancelledBy)      REFERENCES security.Users (Id),
+        CONSTRAINT FK_PurchaseDocuments_ClosedBy    FOREIGN KEY (ClosedBy)         REFERENCES security.Users (Id)
+    );
+    CREATE UNIQUE NONCLUSTERED INDEX UX_PurchaseDocuments_Number ON purchase.PurchaseDocuments (DocumentNumber) WHERE DocumentNumber IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocuments_TypeDate   ON purchase.PurchaseDocuments (DocumentTypeId, DocumentDate DESC);
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocuments_TypeStatus ON purchase.PurchaseDocuments (DocumentTypeId, Status);
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocuments_Supplier   ON purchase.PurchaseDocuments (SupplierId, DocumentDate DESC);
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocuments_Source     ON purchase.PurchaseDocuments (SourceDocumentId) WHERE SourceDocumentId IS NOT NULL;
+    PRINT 'Created purchase.PurchaseDocuments';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PurchaseDocumentLines', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PurchaseDocumentLines
+    (
+        Id                   INT IDENTITY(1,1) NOT NULL,
+        DocumentId           INT           NOT NULL,
+        LineNumber           INT           NOT NULL,
+        ItemId               INT           NOT NULL,
+        ItemUnitId           INT           NOT NULL,
+        WarehouseId          INT           NOT NULL,
+        ExpiryDate           DATE          NULL,
+        Quantity             INT           NOT NULL,
+        PackingFormula       INT           NOT NULL,
+        QuantityBase         AS (Quantity * PackingFormula) PERSISTED,
+        UnitPrice            DECIMAL(18,4) NOT NULL,          -- per unit, document currency
+        DiscountPercent      DECIMAL(9,4)  NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Discount DEFAULT (0),
+        LineDiscount         AS (CONVERT(DECIMAL(18,2), Quantity * UnitPrice * DiscountPercent / 100.0)) PERSISTED,
+        LineTotal            AS (CONVERT(DECIMAL(18,2), Quantity * UnitPrice * (1 - DiscountPercent / 100.0))) PERSISTED,
+        UnitCostBase         DECIMAL(18,6) NULL,              -- per BASE unit, base currency (set at posting)
+        ReceivedQuantityBase INT           NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Received DEFAULT (0),  -- PO lines: invoiced so far
+        ReturnedQuantityBase INT           NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Returned DEFAULT (0),  -- PINV lines: returned so far
+        ImportRowNumber      INT           NULL,
+        Notes                NVARCHAR(300) NULL,
+        SourceLineId         INT           NULL,
+        CONSTRAINT PK_PurchaseDocumentLines PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_PurchaseDocumentLines_LineNo UNIQUE (DocumentId, LineNumber),
+        CONSTRAINT CK_PurchaseDocumentLines_Qty CHECK (Quantity > 0),
+        CONSTRAINT CK_PurchaseDocumentLines_Formula CHECK (PackingFormula >= 1),
+        CONSTRAINT CK_PurchaseDocumentLines_Price CHECK (UnitPrice >= 0),
+        CONSTRAINT CK_PurchaseDocumentLines_Discount CHECK (DiscountPercent BETWEEN 0 AND 100),
+        CONSTRAINT FK_PurchaseDocumentLines_Document   FOREIGN KEY (DocumentId)   REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_PurchaseDocumentLines_Item       FOREIGN KEY (ItemId)       REFERENCES inventory.Items (Id),
+        CONSTRAINT FK_PurchaseDocumentLines_ItemUnit   FOREIGN KEY (ItemUnitId)   REFERENCES inventory.ItemUnits (Id),
+        CONSTRAINT FK_PurchaseDocumentLines_Warehouse  FOREIGN KEY (WarehouseId)  REFERENCES masterdata.Warehouses (Id),
+        CONSTRAINT FK_PurchaseDocumentLines_SourceLine FOREIGN KEY (SourceLineId) REFERENCES purchase.PurchaseDocumentLines (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocumentLines_Document ON purchase.PurchaseDocumentLines (DocumentId);
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocumentLines_Item     ON purchase.PurchaseDocumentLines (ItemId);
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocumentLines_Source   ON purchase.PurchaseDocumentLines (SourceLineId) WHERE SourceLineId IS NOT NULL;
+    PRINT 'Created purchase.PurchaseDocumentLines';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PurchaseDocumentFiles', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PurchaseDocumentFiles
+    (
+        Id           INT IDENTITY(1,1) NOT NULL,
+        DocumentId   INT            NOT NULL,
+        FileName     NVARCHAR(255)  NOT NULL,
+        ContentType  NVARCHAR(100)  NOT NULL,
+        SizeBytes    INT            NOT NULL,
+        Content      VARBINARY(MAX) NOT NULL,
+        CreatedAtUtc DATETIME2(3)   NOT NULL CONSTRAINT DF_PurchaseDocumentFiles_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy    INT            NULL,
+        CONSTRAINT PK_PurchaseDocumentFiles PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_PurchaseDocumentFiles_Size CHECK (SizeBytes > 0),
+        CONSTRAINT FK_PurchaseDocumentFiles_Document  FOREIGN KEY (DocumentId) REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_PurchaseDocumentFiles_CreatedBy FOREIGN KEY (CreatedBy)  REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocumentFiles_Document ON purchase.PurchaseDocumentFiles (DocumentId);
+    PRINT 'Created purchase.PurchaseDocumentFiles';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PurchaseDocumentAudit', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PurchaseDocumentAudit
+    (
+        Id         BIGINT IDENTITY(1,1) NOT NULL,
+        DocumentId INT           NOT NULL,
+        Action     NVARCHAR(20)  NOT NULL,   -- Created | Updated | Imported | Posted | Cancelled | Closed | FileAdded | FileDeleted
+        Details    NVARCHAR(500) NULL,
+        UserId     INT           NULL,
+        AtUtc      DATETIME2(3)  NOT NULL CONSTRAINT DF_PurchaseDocumentAudit_AtUtc DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_PurchaseDocumentAudit PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT FK_PurchaseDocumentAudit_User FOREIGN KEY (UserId) REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_PurchaseDocumentAudit_Document ON purchase.PurchaseDocumentAudit (DocumentId, AtUtc);
+    PRINT 'Created purchase.PurchaseDocumentAudit';
+END
+GO
+
+IF TYPE_ID(N'purchase.tvp_PurchaseDocumentLine') IS NULL
+BEGIN
+    CREATE TYPE purchase.tvp_PurchaseDocumentLine AS TABLE
+    (
+        LineNumber      INT           NOT NULL PRIMARY KEY,
+        ItemId          INT           NOT NULL,
+        ItemUnitId      INT           NOT NULL,
+        WarehouseId     INT           NOT NULL,       -- ignored: the header warehouse is used
+        ExpiryDate      DATE          NULL,
+        Quantity        INT           NOT NULL,
+        UnitPrice       DECIMAL(18,4) NULL,           -- NULL = item last cost converted to the document currency (0 when none)
+        DiscountPercent DECIMAL(9,4)  NULL,
+        ImportRowNumber INT           NULL,
+        Notes           NVARCHAR(300) NULL,
+        SourceLineId    INT           NULL            -- PO line (for PINV) / PINV line (for PRET)
+    );
+    PRINT 'Created type purchase.tvp_PurchaseDocumentLine';
+END
+GO
+
+/* ================================================================== 2. Rate helper (any currency) */
+
+CREATE OR ALTER PROCEDURE masterdata.usp_ExchangeRate_Resolve
+    @CurrencyId INT,
+    @RateType   TINYINT = 1,
+    @AsOfDate   DATE    = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @AsOfDate IS NULL SET @AsOfDate = CAST(SYSUTCDATETIME() AS DATE);
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) SET @RateType = 1;
+
+    SELECT c.Id AS CurrencyId, c.CurrencyCode, c.Symbol, c.DecimalPlaces, c.IsBaseCurrency,
+           RateType = @RateType,
+           Rate     = masterdata.fn_GetRate(c.Id, @RateType, @AsOfDate),
+           RateDate = CASE WHEN c.IsBaseCurrency = 1 THEN @AsOfDate
+                           ELSE (SELECT TOP (1) RateDate FROM masterdata.ExchangeRates
+                                 WHERE CurrencyId = c.Id AND RateType = @RateType AND RateDate <= @AsOfDate ORDER BY RateDate DESC) END,
+           BaseCurrencyCode = (SELECT TOP (1) CurrencyCode FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1)
+    FROM masterdata.Currencies c
+    WHERE c.Id = @CurrencyId;
+END
+GO
+
+/* ================================================================== 3. Search / Get */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Search
+    @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
+    @Search           NVARCHAR(100) = NULL,    -- number, supplier reference, supplier code/name, notes
+    @BranchId         INT          = NULL,
+    @WarehouseId      INT          = NULL,
+    @SupplierId       INT          = NULL,
+    @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted | 3 Cancelled | 4 Closed
+    @DateFrom         DATE         = NULL,
+    @DateTo           DATE         = NULL,
+    @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | SupplierName | Status | TotalAmount | CreatedAtUtc
+    @SortDirection    NVARCHAR(4)  = N'DESC',
+    @PageNumber       INT          = 1,
+    @PageSize         INT          = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'DocumentNumber', N'DocumentDate', N'SupplierName', N'Status', N'TotalAmount', N'CreatedAtUtc')
+        SET @SortColumn = N'DocumentDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT d.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.BranchId, b.BranchName, d.WarehouseId, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, c.CurrencyCode, c.Symbol AS CurrencySymbol, c.DecimalPlaces, d.ExchangeRate,
+           d.SupplierReference, d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND d.TotalQuantity > 0
+                                  THEN CAST(100.0 * (SELECT SUM(ReceivedQuantityBase) FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) / d.TotalQuantity AS DECIMAL(5,1)) END,
+           d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
+           d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    WHERE dt.Family = N'Purchase'
+      AND (@DocumentTypeCode IS NULL OR dt.Code = @DocumentTypeCode)
+      AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.SupplierReference LIKE N'%' + @Search + N'%'
+           OR sp.PartyCode LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%' OR d.Notes LIKE N'%' + @Search + N'%')
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR d.WarehouseId = @WarehouseId)
+      AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)
+      AND (@Status IS NULL OR d.Status = @Status)
+      AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
+      AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END DESC,
+        d.DocumentDate DESC, d.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+-- Five result sets: header, lines, files, audit, linked documents (source + children).
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT d.Id, d.DocumentTypeId, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection, dt.NumberOnPost,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate,
+           d.BranchId, b.BranchCode, b.BranchName, d.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName, sp.Phone AS SupplierPhone, sp.Email AS SupplierEmail, sp.Address AS SupplierAddress,
+           d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
+           d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
+           d.SupplierReference, d.Notes, d.Status,
+           d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber, sdt.Code AS SourceDocumentTypeCode,
+           d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
+           d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
+           d.ClosedAtUtc, d.ClosedBy, ku.FullName AS ClosedByName, d.CloseReason,
+           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
+           d.RowVersion
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN masterdata.Currencies bc   ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN inventory.DocumentTypes sdt ON sdt.Id = src.DocumentTypeId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = d.CancelledBy
+    LEFT  JOIN security.Users ku ON ku.Id = d.ClosedBy
+    WHERE d.Id = @Id;
+
+    SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, iu.Barcode, l.PackingFormula,
+           l.WarehouseId, w.WarehouseCode, w.WarehouseName, l.ExpiryDate,
+           l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal,
+           l.UnitCostBase, l.ReceivedQuantityBase, l.ReturnedQuantityBase,
+           RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
+           l.ImportRowNumber, l.Notes, l.SourceLineId,
+           OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+    INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+    INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+    INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
+    INNER JOIN masterdata.Warehouses w      ON w.Id = l.WarehouseId
+    WHERE l.DocumentId = @Id
+    ORDER BY l.LineNumber;
+
+    SELECT f.Id, f.DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM purchase.PurchaseDocumentFiles f
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.DocumentId = @Id
+    ORDER BY f.CreatedAtUtc DESC;
+
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM purchase.PurchaseDocumentAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.DocumentId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+
+    -- Linked documents: the source (Relation = 'Source') and everything created from this one (Relation = 'Child').
+    SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN purchase.PurchaseDocuments x ON x.Id = d.SourceDocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE d.Id = @Id
+    UNION ALL
+    SELECT N'Child', x.Id, dt.Code, dt.Name, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments x
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE x.SourceDocumentId = @Id
+    ORDER BY Relation DESC, DocumentDate, Id;
+END
+GO
+
+/* ================================================================== 4. Validation helper */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_ValidateInput
+    @DocumentTypeCode   NVARCHAR(20),
+    @DocumentDate       DATE,
+    @ExpectedDate       DATE,
+    @BranchId           INT,
+    @WarehouseId        INT,
+    @SupplierId         INT,
+    @CurrencyId         INT,             -- NULL = supplier default currency, else base
+    @RateType           TINYINT,
+    @ExchangeRate       DECIMAL(18,6),   -- NULL = resolve
+    @MaxDiscountPercent DECIMAL(9,4),
+    @SourceDocumentId   INT,
+    @Lines              purchase.tvp_PurchaseDocumentLine READONLY,
+    @DocumentTypeId     INT OUTPUT,
+    @StockDirection     SMALLINT OUTPUT,
+    @ResolvedCurrencyId INT OUTPUT,
+    @ResolvedRate       DECIMAL(18,6) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Purchase' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL THROW 65008, 'Document type not found, inactive, or not a purchase document.', 1;
+
+    IF @DocumentDate IS NULL THROW 65000, 'Document Date is required.', 1;
+    IF @DocumentDate > CAST(SYSUTCDATETIME() AS DATE) THROW 65000, 'Document Date cannot be in the future.', 1;
+    IF @ExpectedDate IS NOT NULL AND @ExpectedDate < @DocumentDate THROW 65000, 'Expected / due date cannot be before the Document Date.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 65008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 65008, 'The warehouse must be an active warehouse of the selected branch.', 1;
+    IF @SupplierId IS NULL THROW 65000, 'Supplier is required.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1)
+        THROW 65008, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
+
+    SET @ResolvedCurrencyId = COALESCE(@CurrencyId,
+                                       (SELECT DefaultCurrencyId FROM masterdata.Parties WHERE Id = @SupplierId),
+                                       (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1));
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId AND IsActive = 1)
+        THROW 65008, 'Currency not found or inactive.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) THROW 65000, 'Rate type must be Official, Non-official or Market.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 65000, 'Exchange rate must be greater than zero.', 1;
+    SET @ResolvedRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@ResolvedCurrencyId, @RateType, @DocumentDate));
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId AND IsBaseCurrency = 1) SET @ResolvedRate = 1;
+    IF @ResolvedRate IS NULL
+    BEGIN
+        DECLARE @Cur NVARCHAR(3) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId);
+        DECLARE @RateMsg NVARCHAR(300) = N'No ' + CASE @RateType WHEN 1 THEN N'official' WHEN 2 THEN N'non-official' ELSE N'market' END
+                                       + N' exchange rate is defined for ' + @Cur + N' on or before ' + CONVERT(NVARCHAR(10), @DocumentDate, 120)
+                                       + N'. Add one in Master Data > Exchange Rates or enter the rate manually.';
+        THROW 65008, @RateMsg, 1;
+    END
+
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    IF @MaxDiscountPercent > 100 SET @MaxDiscountPercent = 100;
+
+    -- Source document rules.
+    IF @SourceDocumentId IS NOT NULL
+    BEGIN
+        DECLARE @SrcType NVARCHAR(20), @SrcStatus TINYINT, @SrcSupplier INT, @SrcBranch INT;
+        SELECT @SrcType = dt.Code, @SrcStatus = d.Status, @SrcSupplier = d.SupplierId, @SrcBranch = d.BranchId
+        FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceDocumentId;
+        IF @SrcType IS NULL THROW 65011, 'Source document not found.', 1;
+        IF (@DocumentTypeCode = N'PINV' AND @SrcType <> N'PO') OR (@DocumentTypeCode = N'PRET' AND @SrcType <> N'PINV') OR @DocumentTypeCode = N'PO'
+            THROW 65011, 'A purchase invoice can only come from a purchase order and a return from a purchase invoice.', 1;
+        IF @SrcStatus <> 2 THROW 65011, 'The source document must be posted (and, for an order, still open).', 1;
+        IF @SrcSupplier <> @SupplierId THROW 65011, 'The supplier must be the supplier of the source document.', 1;
+        IF @SrcBranch <> @BranchId THROW 65011, 'The branch must be the branch of the source document.', 1;
+        IF EXISTS (SELECT 1 FROM @Lines l WHERE l.SourceLineId IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines s WHERE s.Id = l.SourceLineId AND s.DocumentId = @SourceDocumentId))
+            THROW 65011, 'A line refers to a source line that does not belong to the source document.', 1;
+    END
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+        CASE WHEN i.Id IS NULL THEN N'item not found.'
+             WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+             WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
+             WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
+             WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
+                  THEN N'discount must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(12)) + N'%.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
+       OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+END
+GO
+
+/* ================================================================== 5. Save (draft) */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Save
+    @Id                 INT            = NULL,
+    @DocumentTypeCode   NVARCHAR(20),
+    @DocumentDate       DATE,
+    @ExpectedDate       DATE           = NULL,
+    @BranchId           INT,
+    @WarehouseId        INT,
+    @SupplierId         INT,
+    @CurrencyId         INT            = NULL,
+    @RateType           TINYINT        = 1,
+    @ExchangeRate       DECIMAL(18,6)  = NULL,
+    @SupplierReference  NVARCHAR(100)  = NULL,
+    @Notes              NVARCHAR(1000) = NULL,
+    @Lines              purchase.tvp_PurchaseDocumentLine READONLY,
+    @MaxDiscountPercent DECIMAL(9,4)   = 100,
+    @SourceDocumentId   INT            = NULL,
+    @RowVersion         BINARY(8)      = NULL,
+    @UserId             INT            = NULL,
+    @NewId              INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @SupplierReference = NULLIF(LTRIM(RTRIM(@SupplierReference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+
+    DECLARE @TypeId INT, @Direction SMALLINT, @Cur INT, @Rate DECIMAL(18,6);
+    EXEC purchase.usp_PurchaseDocument_ValidateInput @DocumentTypeCode, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
+         @CurrencyId, @RateType, @ExchangeRate, @MaxDiscountPercent, @SourceDocumentId, @Lines,
+         @TypeId OUTPUT, @Direction OUTPUT, @Cur OUTPUT, @Rate OUTPUT;
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM purchase.PurchaseDocuments WHERE Id = @Id);
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 65005, 'Only draft documents can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND DocumentTypeId <> @TypeId)
+            THROW 65000, 'The document type cannot be changed.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND ISNULL(SourceDocumentId, 0) <> ISNULL(@SourceDocumentId, 0))
+            THROW 65000, 'The source document cannot be changed.', 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30) = NULL;
+            IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
+                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
+
+            INSERT INTO purchase.PurchaseDocuments (DocumentTypeId, DocumentNumber, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
+                                                    CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId, CreatedBy)
+            VALUES (@TypeId, @Number, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
+                    @Cur, @RateType, @Rate, @SupplierReference, @Notes, 1, @SourceDocumentId, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Created', ISNULL(N'Draft ' + @Number, N'Draft (number assigned on posting)')
+                        + ISNULL(N' from ' + (SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @SourceDocumentId), N''), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE purchase.PurchaseDocuments
+            SET DocumentDate = @DocumentDate, ExpectedDate = @ExpectedDate, BranchId = @BranchId, WarehouseId = @WarehouseId,
+                SupplierId = @SupplierId, CurrencyId = @Cur, RateType = @RateType, ExchangeRate = @Rate,
+                SupplierReference = @SupplierReference, Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+
+            DELETE FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+
+            INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        -- Lines: header warehouse; blank price = item last cost (USD per base unit) converted to the document currency per unit.
+        INSERT INTO purchase.PurchaseDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
+                                                    UnitPrice, DiscountPercent, UnitCostBase, ImportRowNumber, Notes, SourceLineId)
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+               ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
+               ISNULL(l.DiscountPercent, 0),
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN src.UnitCostBase END,      -- returns carry the invoice cost
+               l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N''), l.SourceLineId
+        FROM @Lines l
+        INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        LEFT  JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId;
+
+        UPDATE d
+        SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / @Rate, 2)
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. Post */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE,
+                @BranchId INT, @SupplierId INT, @Rate DECIMAL(18,6), @SourceId INT;
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @SupplierId = d.SupplierId, @Rate = d.ExchangeRate, @SourceId = d.SourceDocumentId
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 65010, 'Only draft documents can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
+            THROW 65009, 'The document has no lines. Add at least one item before posting.', 1;
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
+            THROW 65008, 'The supplier is inactive.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.'
+                 WHEN w.BranchId <> @BranchId THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is not in the document branch.' END
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0 OR w.BranchId <> @BranchId)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+
+        -- Source consumption checks (posted documents only count).
+        IF @SourceId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 2)
+                THROW 65011, 'The source document is no longer open (cancelled or closed).', 1;
+
+            IF @TypeCode = N'PINV'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units invoiced but only ' + CAST(s.QuantityBase - s.ReceivedQuantityBase AS NVARCHAR(20)) + N' remain on the order line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN purchase.PurchaseDocumentLines l ON l.DocumentId = @Id AND l.LineNumber = x.LineNumber
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReceivedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+            IF @TypeCode = N'PRET'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units returned but only ' + CAST(s.QuantityBase - s.ReturnedQuantityBase AS NVARCHAR(20)) + N' can still be returned from the invoice line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN purchase.PurchaseDocumentLines l ON l.DocumentId = @Id AND l.LineNumber = x.LineNumber
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReturnedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+        END
+
+        -- Returns remove stock: it must be there.
+        IF @Direction = -1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        -- Cost per base unit in the base currency.
+        UPDATE l
+        SET UnitCostBase = CASE WHEN @TypeCode = N'PRET' THEN ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
+                                ELSE (l.UnitPrice * (1 - l.DiscountPercent / 100.0)) / l.PackingFormula / @Rate END
+        FROM purchase.PurchaseDocumentLines l
+        WHERE l.DocumentId = @Id;
+
+        IF @Direction = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0) FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId;
+        END
+
+        IF @Direction <> 0
+        BEGIN
+            DECLARE @MovementDate DATETIME2(3) =
+                DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, @BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+                   N'Purchase', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
+            FROM purchase.PurchaseDocumentLines l
+            WHERE l.DocumentId = @Id;
+        END
+
+        -- Consume the source: PO received quantities (close the PO when everything is in) / PINV returned quantities.
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceId AND ReceivedQuantityBase < QuantityBase)
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = N'Fully received' WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Closed', N'Fully received by ' + @Number, @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        UPDATE purchase.PurchaseDocuments
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
+                                + CASE WHEN @Direction <> 0 THEN N' written to the stock ledger' ELSE N' (order confirmed)' END, @UserId);
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 7. Cancel / Close / Delete */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 65000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @SourceId INT, @Number NVARCHAR(30);
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @SourceId = d.SourceDocumentId, @Number = d.DocumentNumber
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status NOT IN (2, 4) THROW 65010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+        -- Nothing may still depend on this document.
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE SourceDocumentId = @Id AND Status IN (2, 4))
+            THROW 65011, 'This document cannot be cancelled: posted documents were created from it. Cancel those first.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        IF @Direction = 1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Cannot cancel: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N' left, but this document added ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
+        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+               m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
+        FROM inventory.StockMovements m
+        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentId = @Id AND m.IsReversal = 0;
+
+        -- Give the source its quantities back (and re-open a PO that this invoice had closed).
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase - x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 4 AND CloseReason = N'Fully received')
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 2, ClosedAtUtc = NULL, ClosedBy = NULL, CloseReason = NULL WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Updated', N'Re-opened: ' + @Number + N' was cancelled', @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase - x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        UPDATE purchase.PurchaseDocuments
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Purchase orders only: stop receiving against an open order.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Close
+    @Id         INT,
+    @Reason     NVARCHAR(300) = NULL,
+    @RowVersion BINARY(8)     = NULL,
+    @UserId     INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @Status TINYINT, @TypeCode NVARCHAR(20);
+    SELECT @Status = d.Status, @TypeCode = dt.Code FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @Id;
+    IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+    IF @TypeCode <> N'PO' THROW 65010, 'Only purchase orders can be closed.', 1;
+    IF @Status <> 2 THROW 65010, 'Only open (posted) purchase orders can be closed.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+    UPDATE purchase.PurchaseDocuments
+    SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = ISNULL(NULLIF(LTRIM(RTRIM(@Reason)), N''), N'Closed manually'),
+        UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id;
+    INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Closed', ISNULL(@Reason, N'Closed manually'), @UserId);
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Delete
+    @Id     INT,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.PurchaseDocuments WHERE Id = @Id);
+    IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+    IF @Status <> 1 THROW 65005, 'Only draft documents can be deleted. Posted documents must be cancelled.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE FROM purchase.PurchaseDocumentFiles WHERE DocumentId = @Id;
+        DELETE FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+        DELETE FROM purchase.PurchaseDocumentAudit WHERE DocumentId = @Id;
+        DELETE FROM purchase.PurchaseDocuments WHERE Id = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 8. Conversions: PO -> PINV, PINV -> PRET (drafts) */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
+    @SourceId       INT,
+    @TargetTypeCode NVARCHAR(20),        -- PINV (from PO) | PRET (from PINV)
+    @DocumentDate   DATE = NULL,         -- default today
+    @UserId         INT  = NULL,
+    @NewId          INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @SrcType NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT, @RateType TINYINT, @SupplierRef NVARCHAR(100);
+    SELECT @SrcType = dt.Code, @Status = d.Status, @BranchId = d.BranchId, @WarehouseId = d.WarehouseId, @SupplierId = d.SupplierId,
+           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference
+    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceId;
+
+    IF @SrcType IS NULL THROW 65006, 'Source document not found.', 1;
+    IF @Status <> 2 THROW 65011, 'The source document must be posted and still open.', 1;
+    IF NOT ((@TargetTypeCode = N'PINV' AND @SrcType = N'PO') OR (@TargetTypeCode = N'PRET' AND @SrcType = N'PINV'))
+        THROW 65011, 'Purchase orders become purchase invoices; purchase invoices become purchase returns.', 1;
+
+    -- Remaining quantity per line; when it is not a whole number of the line's unit, the new line uses the BASE unit
+    -- (price converted per base unit) so nothing is over-received or over-returned.
+    DECLARE @Lines purchase.tvp_PurchaseDocumentLine;
+    INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+    SELECT ROW_NUMBER() OVER (ORDER BY l.LineNumber), l.ItemId, c.ItemUnitId, l.WarehouseId, l.ExpiryDate,
+           c.Quantity, c.UnitPrice, l.DiscountPercent, NULL, l.Notes, l.Id
+    FROM purchase.PurchaseDocumentLines l
+    CROSS APPLY (SELECT Remaining = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase ELSE l.QuantityBase - l.ReturnedQuantityBase END) r
+    CROSS APPLY (SELECT ItemUnitId = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN l.ItemUnitId
+                                          ELSE (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = l.ItemId AND IsBaseUnit = 1) END,
+                        Quantity   = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN r.Remaining / l.PackingFormula ELSE r.Remaining END,
+                        UnitPrice  = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN l.UnitPrice ELSE ROUND(l.UnitPrice / l.PackingFormula, 4) END) c
+    WHERE l.DocumentId = @SourceId AND r.Remaining > 0;
+
+    IF NOT EXISTS (SELECT 1 FROM @Lines) THROW 65011, 'Nothing remains to receive / return on the source document.', 1;
+
+    EXEC purchase.usp_PurchaseDocument_Save
+         @Id = NULL, @DocumentTypeCode = @TargetTypeCode, @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+         @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+         @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+         @Lines = @Lines, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId, @NewId = @NewId OUTPUT;
+END
+GO
+
+/* ================================================================== 9. Attachments */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Add
+    @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
+    @UserId INT = NULL, @NewId INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @DocumentId) THROW 65006, 'Document not found.', 1;
+    IF @FileName IS NULL OR LTRIM(RTRIM(@FileName)) = N'' THROW 65000, 'File name is required.', 1;
+    IF @Content IS NULL OR @SizeBytes IS NULL OR @SizeBytes <= 0 THROW 65000, 'The file is empty.', 1;
+
+    INSERT INTO purchase.PurchaseDocumentFiles (DocumentId, FileName, ContentType, SizeBytes, Content, CreatedBy)
+    VALUES (@DocumentId, LTRIM(RTRIM(@FileName)), @ContentType, @SizeBytes, @Content, @UserId);
+    SET @NewId = SCOPE_IDENTITY();
+    INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@DocumentId, N'FileAdded', LTRIM(RTRIM(@FileName)), @UserId);
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, DocumentId, FileName, ContentType, SizeBytes, Content, CreatedAtUtc FROM purchase.PurchaseDocumentFiles WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @DocumentId INT, @Name NVARCHAR(255);
+    SELECT @DocumentId = DocumentId, @Name = FileName FROM purchase.PurchaseDocumentFiles WHERE Id = @Id;
+    IF @DocumentId IS NULL THROW 65006, 'File not found.', 1;
+    DELETE FROM purchase.PurchaseDocumentFiles WHERE Id = @Id;
+    INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@DocumentId, N'FileDeleted', @Name, @UserId);
+END
+GO
+
+/* ================================================================== 10. Shortages report */
+
+CREATE OR ALTER PROCEDURE inventory.usp_Shortage_Report
+    @BranchId       INT           = NULL,
+    @WarehouseId    INT           = NULL,
+    @ItemFamilyId   INT           = NULL,
+    @BrandId        INT           = NULL,
+    @SupplierId     INT           = NULL,     -- default supplier (else last supplier)
+    @Search         NVARCHAR(200) = NULL,     -- item code / name
+    @OnlyShortages  BIT           = 1,        -- 1 = rows where Available < Min; 0 = every evaluated item + warehouse
+    @DaysForAverage INT           = 30
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @DaysForAverage IS NULL OR @DaysForAverage < 1 SET @DaysForAverage = 30;
+    DECLARE @Since DATETIME2(3) = DATEADD(DAY, -@DaysForAverage, SYSUTCDATETIME());
+
+    ;WITH pairs AS
+    (
+        SELECT i.Id AS ItemId, i.DefaultWarehouseId AS WarehouseId FROM inventory.Items i WHERE i.IsActive = 1
+        UNION
+        SELECT m.ItemId, m.WarehouseId FROM inventory.StockMovements m INNER JOIN inventory.Items i ON i.Id = m.ItemId WHERE i.IsActive = 1
+    ),
+    base AS
+    (
+        SELECT p.ItemId, p.WarehouseId,
+               OnHandBase   = inventory.fn_StockOnHand(p.ItemId, p.WarehouseId),
+               IncomingBase = ISNULL((SELECT SUM(l.QuantityBase - l.ReceivedQuantityBase)
+                                      FROM purchase.PurchaseDocumentLines l
+                                      INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+                                      INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                                      WHERE dt.Code = N'PO' AND d.Status = 2 AND l.ItemId = p.ItemId AND l.WarehouseId = p.WarehouseId
+                                        AND l.QuantityBase > l.ReceivedQuantityBase), 0),
+               SoldBase     = ISNULL((SELECT SUM(-m.QuantityBase) FROM inventory.StockMovements m
+                                      WHERE m.ItemId = p.ItemId AND m.WarehouseId = p.WarehouseId AND m.DocumentFamily = N'Sales' AND m.MovementDate >= @Since), 0)
+        FROM pairs p
+    )
+    SELECT i.Id AS ItemId, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.ItemFamilyId, f.FamilyName, i.IsBivac,
+           w.Id AS WarehouseId, w.WarehouseCode, w.WarehouseName, w.BranchId, br.BranchName,
+           x.OnHandBase, x.IncomingBase, AvailableBase = x.OnHandBase + x.IncomingBase,
+           i.MinQuantity, i.MaxQuantity,
+           ShortageBase  = CASE WHEN x.OnHandBase + x.IncomingBase < i.MinQuantity THEN i.MinQuantity - (x.OnHandBase + x.IncomingBase) ELSE 0 END,
+           SuggestedBase = CASE WHEN x.OnHandBase + x.IncomingBase < i.MinQuantity THEN ISNULL(i.MaxQuantity, i.MinQuantity) - (x.OnHandBase + x.IncomingBase) ELSE 0 END,
+           PurchaseItemUnitId = pu.Id, PurchaseUnitName = put.UnitTypeName, PurchasePackingFormula = pu.PackingFormula,
+           SuggestedQty  = CASE WHEN x.OnHandBase + x.IncomingBase < i.MinQuantity
+                                THEN CEILING(CAST(ISNULL(i.MaxQuantity, i.MinQuantity) - (x.OnHandBase + x.IncomingBase) AS DECIMAL(18,4)) / pu.PackingFormula) ELSE 0 END,
+           AvgDailySalesBase = CAST(x.SoldBase AS DECIMAL(18,2)) / @DaysForAverage,
+           DaysOfCover = CASE WHEN x.SoldBase > 0 THEN CAST(x.OnHandBase AS DECIMAL(18,2)) * @DaysForAverage / x.SoldBase END,
+           SupplierId = COALESCE(i.DefaultSupplierId, i.LastSupplierId),
+           SupplierName = COALESCE(ds.PartyName, ls.PartyName),
+           SupplierIsDefault = CASE WHEN i.DefaultSupplierId IS NOT NULL THEN 1 ELSE 0 END,
+           i.LastCost, i.AverageCost, i.LeadTimeDays, i.LastPurchaseAtUtc
+    FROM base x
+    INNER JOIN inventory.Items i ON i.Id = x.ItemId
+    INNER JOIN masterdata.Brands b ON b.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f ON f.Id = i.ItemFamilyId
+    INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+    INNER JOIN masterdata.Branches br ON br.Id = w.BranchId
+    LEFT  JOIN masterdata.Parties ds ON ds.Id = i.DefaultSupplierId
+    LEFT  JOIN masterdata.Parties ls ON ls.Id = i.LastSupplierId
+    OUTER APPLY (SELECT TOP (1) u.Id, u.PackingFormula, u.UnitTypeId FROM inventory.ItemUnits u WHERE u.ItemId = i.Id ORDER BY u.IsPurchaseUnit DESC, u.IsBaseUnit DESC) pu
+    LEFT  JOIN masterdata.UnitTypes put ON put.Id = pu.UnitTypeId
+    WHERE w.IsActive = 1
+      AND (@BranchId IS NULL OR w.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR w.Id = @WarehouseId)
+      AND (@ItemFamilyId IS NULL OR i.ItemFamilyId IN (SELECT Id FROM masterdata.fn_ItemFamily_Subtree(@ItemFamilyId)))
+      AND (@BrandId IS NULL OR i.BrandId = @BrandId)
+      AND (@SupplierId IS NULL OR COALESCE(i.DefaultSupplierId, i.LastSupplierId) = @SupplierId)
+      AND (@Search IS NULL OR i.ItemCode LIKE N'%' + @Search + N'%' OR i.ItemName LIKE N'%' + @Search + N'%')
+      AND (@OnlyShortages = 0 OR x.OnHandBase + x.IncomingBase < i.MinQuantity)
+    ORDER BY CASE WHEN x.OnHandBase + x.IncomingBase < i.MinQuantity THEN 0 ELSE 1 END, i.ItemCode, w.WarehouseCode;
+END
+GO
+
+/* ================================================================== 11. Permissions + demo supplier + report */
+
+MERGE security.Permissions AS target
+USING
+(
+    VALUES
+        (N'purchase.orders.view',     N'View Purchase Orders',     N'Purchase', N'See purchase orders.',                              1000),
+        (N'purchase.orders.create',   N'Create Purchase Orders',   N'Purchase', N'Create and edit draft purchase orders.',            1010),
+        (N'purchase.orders.post',     N'Post Purchase Orders',     N'Purchase', N'Confirm purchase orders (assigns the number).',     1020),
+        (N'purchase.orders.cancel',   N'Cancel Purchase Orders',   N'Purchase', N'Cancel or close open purchase orders.',             1030),
+        (N'purchase.orders.delete',   N'Delete Purchase Orders',   N'Purchase', N'Delete draft purchase orders.',                     1040),
+        (N'purchase.invoices.view',   N'View Purchase Invoices',   N'Purchase', N'See purchase invoices.',                            1060),
+        (N'purchase.invoices.create', N'Create Purchase Invoices', N'Purchase', N'Create and edit draft purchase invoices.',          1070),
+        (N'purchase.invoices.post',   N'Post Purchase Invoices',   N'Purchase', N'Post purchase invoices (adds stock, sets costs).',  1080),
+        (N'purchase.invoices.cancel', N'Cancel Purchase Invoices', N'Purchase', N'Cancel posted purchase invoices (stock reversal).', 1090),
+        (N'purchase.invoices.delete', N'Delete Purchase Invoices', N'Purchase', N'Delete draft purchase invoices.',                   1100),
+        (N'purchase.returns.view',    N'View Purchase Returns',    N'Purchase', N'See purchase returns.',                             1120),
+        (N'purchase.returns.create',  N'Create Purchase Returns',  N'Purchase', N'Create and edit draft purchase returns.',           1130),
+        (N'purchase.returns.post',    N'Post Purchase Returns',    N'Purchase', N'Post purchase returns (removes stock).',            1140),
+        (N'purchase.returns.cancel',  N'Cancel Purchase Returns',  N'Purchase', N'Cancel posted purchase returns (stock reversal).',  1150),
+        (N'purchase.returns.delete',  N'Delete Purchase Returns',  N'Purchase', N'Delete draft purchase returns.',                    1160),
+        (N'inventory.shortages.view', N'View Shortages',           N'Inventory', N'See the shortage report and create purchase orders from it.', 950)
+) AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN
+    UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Module, Description, SortOrder)
+    VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+INSERT INTO security.RolePermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM security.Roles r
+CROSS JOIN security.Permissions p
+WHERE (p.Code LIKE N'purchase.%' OR p.Code = N'inventory.shortages.view')
+  AND (r.IsSystem = 1 OR (r.Name = N'Manager' AND p.Code IN (N'purchase.orders.view', N'purchase.invoices.view', N'purchase.returns.view', N'inventory.shortages.view')))
+  AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+GO
+
+-- The seeded supplier becomes the default supplier of items that have none (demo convenience).
+UPDATE i SET DefaultSupplierId = s.Id
+FROM inventory.Items i
+CROSS APPLY (SELECT TOP (1) Id FROM masterdata.Parties WHERE IsSupplier = 1 AND IsActive = 1 ORDER BY Id) s
+WHERE i.DefaultSupplierId IS NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE IsSupplier = 1 AND IsActive = 1 AND Id <> s.Id);
+GO

@@ -1,6 +1,9 @@
+using Inventory_Shipment.API.Authorization;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
+using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
 using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
@@ -135,6 +138,39 @@ public sealed class StockDocumentsController : ControllerBase
     }
 
     /// <summary>The document as a workbook, for filing or for sending to somebody without a login.</summary>
+    /// <summary>
+    /// Posts several drafts at once — each in its own transaction, so one refusal leaves the others
+    /// posted. The result says, id by id, what happened. [Authorize] like every action here: the
+    /// per-document permission is checked by the service against each document's own type.
+    /// </summary>
+    [HttpPost("bulk-post")]
+    [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<BulkActionResult>> BulkPost(
+        [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
+        => Ok(await _documents.BulkPostAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
+
+    /// <summary>Deletes several drafts; a posted document among them fails alone with NOT_DRAFT.</summary>
+    [HttpPost("bulk-delete")]
+    [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<BulkActionResult>> BulkDelete(
+        [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
+        => Ok(await _documents.BulkDeleteAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
+
+    /// <summary>
+    /// An imported file becoming documents: one per warehouse found in the lines, each posted at
+    /// once when asked. A refused posting leaves that document as a draft and is listed in Failed.
+    /// </summary>
+    [HttpPost("import-create")]
+    [ProducesResponseType<ImportCreateResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ImportCreateResult>> ImportCreate(
+        [FromBody] ImportCreateStockDocumentsRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.ImportCreateAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpGet("{id:int}/export")]
     [Produces(SpreadsheetContentType)]
     [ProducesResponseType(StatusCodes.Status200OK)]
@@ -247,6 +283,22 @@ public sealed class InventoryLookupsController : ControllerBase
     public async Task<ActionResult<IReadOnlyList<DocumentTypeDto>>> GetDocumentTypes(CancellationToken cancellationToken)
     {
         var result = await _documents.GetDocumentTypesAsync(cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The configuration page's save. GUARDED BY ITS OWN PERMISSION where the read is open to every
+    /// signed-in user: every document page reads the list; one business owner changes it.
+    /// </summary>
+    [HttpPut("document-types/{id:int}")]
+    [HasPermission(Permissions.Configuration.DocumentTypesManage)]
+    [ProducesResponseType<DocumentTypeDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<DocumentTypeDto>> UpdateDocumentType(
+        int id, [FromBody] UpdateDocumentTypeRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.UpdateDocumentTypeAsync(id, request, User.GetUserId(), cancellationToken);
         return result.ToActionResult(this);
     }
 

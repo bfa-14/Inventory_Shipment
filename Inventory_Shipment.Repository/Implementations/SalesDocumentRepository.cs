@@ -525,6 +525,10 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
 
     private static byte? ToStatusCode(string? status) => status switch
     {
+        // The list page may send the code itself (1 Draft, 2 Posted, 3 Cancelled) as well as the word.
+        "1" => StockDocumentStatus.DraftCode,
+        "2" => StockDocumentStatus.PostedCode,
+        "3" => StockDocumentStatus.CancelledCode,
         StockDocumentStatus.Draft => StockDocumentStatus.DraftCode,
         StockDocumentStatus.Posted => StockDocumentStatus.PostedCode,
         StockDocumentStatus.Cancelled => StockDocumentStatus.CancelledCode,

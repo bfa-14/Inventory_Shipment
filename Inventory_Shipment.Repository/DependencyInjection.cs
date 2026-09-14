@@ -36,6 +36,8 @@ public static class DependencyInjection
         services.TryAddScoped<IInvoiceImportRepository, InvoiceImportRepository>();
         services.TryAddScoped<IStockDocumentRepository, StockDocumentRepository>();
         services.TryAddScoped<ISalesDocumentRepository, SalesDocumentRepository>();
+        services.TryAddScoped<IPurchaseDocumentRepository, PurchaseDocumentRepository>();
+        services.TryAddScoped<IShortageRepository, ShortageRepository>();
 
         return services;
     }

@@ -14,6 +14,10 @@ public interface IStockDocumentRepository
     /// <summary>The configuration of all eight document kinds.</summary>
     Task<IReadOnlyList<DocumentTypeDto>> GetDocumentTypesAsync(CancellationToken cancellationToken = default);
 
+    /// <summary>inventory.usp_DocumentType_Update — the configuration page's save. Throws 62000 / 62004 / 62006.</summary>
+    Task UpdateDocumentTypeAsync(
+        int id, UpdateDocumentTypeRequest request, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+
     /// <summary>Reasons usable in one direction: 1 for In, -1 for Out, null for all.</summary>
     Task<IReadOnlyList<StockReasonDto>> GetStockReasonsAsync(short? direction, CancellationToken cancellationToken = default);
 

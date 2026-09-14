@@ -73,6 +73,14 @@ public sealed class InvoiceImportParser
         ["expiry"] = ColumnExpiry,
         ["notes"] = ColumnNotes,
         ["note"] = ColumnNotes,
+        ["documenttype"] = ColumnDocumentType,
+        ["type"] = ColumnDocumentType,
+        ["doctype"] = ColumnDocumentType,
+        ["invoicetype"] = ColumnDocumentType,
+        // The common template's price heading; the older "Unit Price" files still match above.
+        ["unitprice/cost"] = ColumnPrice,
+        ["cost"] = ColumnPrice,
+        ["unitcost"] = ColumnPrice,
     };
 
     internal const string ColumnItem = "Item";
@@ -83,6 +91,7 @@ public sealed class InvoiceImportParser
     internal const string ColumnDiscount = "Discount";
     internal const string ColumnExpiry = "Expiry";
     internal const string ColumnNotes = "Notes";
+    internal const string ColumnDocumentType = "DocumentType";
 
     /// <summary>
     /// Date formats accepted from a TEXT cell.
@@ -222,6 +231,7 @@ public sealed class InvoiceImportParser
                 ExpiryDate = expiry,
                 RawExpiryDate = rawExpiry,
                 Notes = Text(sheet, rowNumber, columns, ColumnNotes),
+                DocumentTypeCode = Text(sheet, rowNumber, columns, ColumnDocumentType),
             });
         }
 

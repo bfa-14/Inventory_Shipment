@@ -1,3 +1,4 @@
+using System.ComponentModel.DataAnnotations;
 using Inventory_Shipment.API.Authorization;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.DTOs.Sales;
@@ -32,13 +33,25 @@ public sealed class InvoiceImportController : ControllerBase
         _imports = imports;
     }
 
-    /// <summary>The blank import template, with three example rows and a sheet explaining every column.</summary>
+    /// <summary>
+    /// The blank import template for one document type — the SAME workbook for every type, its
+    /// "Document Type" column pre-filled with the requested code and every type listed in the
+    /// instructions. File name "Import_INV_IN_Template.xlsx".
+    /// </summary>
     [HttpGet("template")]
     [HasPermission(Permissions.Sales.InvoicesImport)]
     [Produces(InvoiceImportWorkbooks.ContentType)]
     [ProducesResponseType(StatusCodes.Status200OK)]
-    public IActionResult GetTemplate()
-        => File(_imports.GenerateTemplate(), InvoiceImportWorkbooks.ContentType, InvoiceImportWorkbooks.TemplateFileName);
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<IActionResult> GetTemplate(
+        [FromQuery][Required] string documentTypeCode, CancellationToken cancellationToken)
+    {
+        var result = await _imports.GenerateTemplateAsync(documentTypeCode, cancellationToken);
+
+        return result.IsSuccess
+            ? File(result.Value.Content, InvoiceImportWorkbooks.ContentType, result.Value.FileName)
+            : this.ToProblem(result);
+    }
 
     /// <summary>
     /// Reads an uploaded .xlsx and judges every row against the master data of the chosen branch,
@@ -46,6 +59,10 @@ public sealed class InvoiceImportController : ControllerBase
     ///
     /// PRICE LIST OPTIONAL. With one, rows are priced against it and a row with no price is an
     /// error; without one (stock mode) nothing is priced and the Unit Price column is the unit cost.
+    ///
+    /// STOCK IS CHECKED ONLY WHEN ASKED (checkStock=true): the Import Sales page asks, because its
+    /// rows are about to leave the warehouse; a stock-in import does not. Either way each row carries
+    /// onHandBase and requiredBase, so a preview can show the shelf beside the demand.
     ///
     /// A 400 WITH code INVALID_FILE is the file's own problem — not .xlsx, over 10 MB, or without the
     /// template's columns. A 400 with MASTER_INACTIVE is the HEADER's: the branch, the default
@@ -78,7 +95,14 @@ public sealed class InvoiceImportController : ControllerBase
         // Inventory In / Out document: no price list, no pricing checks, and the Unit Price column
         // read as the unit cost. A nullable form field is how "not sent" stays distinguishable from 0.
         [FromForm] int? priceListId,
-        CancellationToken cancellationToken)
+        // OFF BY DEFAULT. On, a row that would take more than the stock on hand — cumulatively with
+        // the rows above it for the same item and warehouse — is an Error, and every row carries the
+        // on-hand and required figures. The Import Sales page turns it on; a stock-in import must not.
+        [FromForm] bool checkStock = false,
+        // REQUIRED FROM NOW ON: the page's own type. It decides the unit a blank Unit cell means and
+        // rejects rows whose "Document Type" cell names another type.
+        [FromForm][Required] string documentTypeCode = "",
+        CancellationToken cancellationToken = default)
     {
         if (file is null || file.Length == 0)
         {
@@ -101,6 +125,8 @@ public sealed class InvoiceImportController : ControllerBase
             branchId,
             warehouseId,
             priceListId,
+            checkStock,
+            documentTypeCode,
             // FROM THE TOKEN, never from the request: whether a manual price in the file is honoured
             // is a permission, and a client that could ask for it would not need to hold it.
             User.GetPermissions(),

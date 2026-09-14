@@ -38,6 +38,36 @@ public sealed class StockDocumentRepository : IStockDocumentRepository
         return rows.AsList();
     }
 
+    public async Task UpdateDocumentTypeAsync(
+        int id, UpdateDocumentTypeRequest request, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", id, DbType.Int32);
+        parameters.Add("@Name", request.Name, DbType.String, size: 100);
+        parameters.Add("@NumberPrefix", request.NumberPrefix, DbType.String, size: 10);
+        parameters.Add("@NumberLength", request.NumberLength, DbType.Byte);
+        parameters.Add("@NumberOnPost", request.NumberOnPost, DbType.Boolean);
+        parameters.Add("@RequiresReason", request.RequiresReason, DbType.Boolean);
+        parameters.Add("@DefaultPricing", request.DefaultPricing, DbType.String, size: 10);
+        parameters.Add("@PriceEditable", request.PriceEditable, DbType.Boolean);
+        parameters.Add("@NumberPerBranch", request.NumberPerBranch, DbType.Boolean);
+        parameters.Add("@IsActive", request.IsActive, DbType.Boolean);
+        parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_DocumentType_Update", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public async Task<IReadOnlyList<StockReasonDto>> GetStockReasonsAsync(
         short? direction, CancellationToken cancellationToken = default)
     {

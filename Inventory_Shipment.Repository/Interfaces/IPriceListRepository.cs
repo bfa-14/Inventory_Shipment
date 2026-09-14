@@ -38,4 +38,11 @@ public interface IPriceListRepository
     /// </summary>
     Task<IReadOnlyList<PriceListLookup>> LookupAsync(
         bool activeOnly, int? includeId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// masterdata.usp_UnitPrice_Resolve - the price of one unit in one list, the branch price
+    /// winning over the All Branches price. Null when the list has none for the unit.
+    /// </summary>
+    Task<UnitPriceResolutionDto?> ResolveUnitPriceAsync(
+        int itemUnitId, int priceListId, int? branchId, CancellationToken cancellationToken = default);
 }

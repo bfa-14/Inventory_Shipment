@@ -45,6 +45,8 @@ public static class DependencyInjection
         services.TryAddScoped<IInvoiceImportService, InvoiceImportService>();
         services.TryAddScoped<IStockDocumentService, StockDocumentService>();
         services.TryAddScoped<ISalesInvoiceService, SalesInvoiceService>();
+        services.TryAddScoped<IPurchaseDocumentService, PurchaseDocumentService>();
+        services.TryAddScoped<IShortageService, ShortageService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

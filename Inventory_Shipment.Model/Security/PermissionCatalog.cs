@@ -116,6 +116,37 @@ public static class Permissions
         public const string StockOutPost = "inventory.stockout.post";
         public const string StockOutCancel = "inventory.stockout.cancel";
         public const string StockOutDelete = "inventory.stockout.delete";
+
+        /// <summary>The shortage report, and the "Create Purchase Order" it offers (which also needs purchase.orders.create).</summary>
+        public const string ShortagesView = "inventory.shortages.view";
+    }
+
+    /// <summary>
+    /// Buying: the three documents of the Purchase family, each with the same five verbs.
+    ///
+    /// THREE SETS FOR ONE ENGINE. An order commits nothing but a promise; an invoice moves stock in and
+    /// sets the cost every later sale is valued at; a return moves stock out. Different people sign
+    /// each, so each is its own permission even though one page serves all three.
+    /// </summary>
+    public static class Purchase
+    {
+        public const string OrdersView = "purchase.orders.view";
+        public const string OrdersCreate = "purchase.orders.create";
+        public const string OrdersPost = "purchase.orders.post";
+        public const string OrdersCancel = "purchase.orders.cancel";
+        public const string OrdersDelete = "purchase.orders.delete";
+
+        public const string InvoicesView = "purchase.invoices.view";
+        public const string InvoicesCreate = "purchase.invoices.create";
+        public const string InvoicesPost = "purchase.invoices.post";
+        public const string InvoicesCancel = "purchase.invoices.cancel";
+        public const string InvoicesDelete = "purchase.invoices.delete";
+
+        public const string ReturnsView = "purchase.returns.view";
+        public const string ReturnsCreate = "purchase.returns.create";
+        public const string ReturnsPost = "purchase.returns.post";
+        public const string ReturnsCancel = "purchase.returns.cancel";
+        public const string ReturnsDelete = "purchase.returns.delete";
     }
 
     private const string SecurityModule = "Security";
@@ -123,6 +154,7 @@ public static class Permissions
     private const string ConfigurationModule = "Configuration";
     private const string MasterDataModule = "Master Data";
     private const string InventoryModule = "Inventory";
+    private const string PurchaseModule = "Purchase";
 
     public static IReadOnlyList<PermissionDefinition> All { get; } =
     [
@@ -255,6 +287,42 @@ public static class Permissions
 
         new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
             "Change numbering and behaviour of document types.", 900),
+
+        new(Inventory.ShortagesView, "View Shortages", InventoryModule,
+            "See the shortage report and create purchase orders from it.", 950),
+
+        new(Purchase.OrdersView, "View Purchase Orders", PurchaseModule,
+            "See purchase orders.", 1000),
+        new(Purchase.OrdersCreate, "Create Purchase Orders", PurchaseModule,
+            "Create and edit draft purchase orders.", 1010),
+        new(Purchase.OrdersPost, "Post Purchase Orders", PurchaseModule,
+            "Confirm purchase orders (assigns number, stock becomes incoming) and close open ones.", 1020),
+        new(Purchase.OrdersCancel, "Cancel Purchase Orders", PurchaseModule,
+            "Cancel confirmed purchase orders.", 1030),
+        new(Purchase.OrdersDelete, "Delete Purchase Orders", PurchaseModule,
+            "Delete draft purchase orders.", 1040),
+
+        new(Purchase.InvoicesView, "View Purchase Invoices", PurchaseModule,
+            "See purchase invoices.", 1060),
+        new(Purchase.InvoicesCreate, "Create Purchase Invoices", PurchaseModule,
+            "Create and edit draft purchase invoices.", 1070),
+        new(Purchase.InvoicesPost, "Post Purchase Invoices", PurchaseModule,
+            "Post purchase invoices (adds stock, sets costs).", 1080),
+        new(Purchase.InvoicesCancel, "Cancel Purchase Invoices", PurchaseModule,
+            "Cancel posted purchase invoices (stock reversal).", 1090),
+        new(Purchase.InvoicesDelete, "Delete Purchase Invoices", PurchaseModule,
+            "Delete draft purchase invoices.", 1100),
+
+        new(Purchase.ReturnsView, "View Purchase Returns", PurchaseModule,
+            "See purchase returns.", 1120),
+        new(Purchase.ReturnsCreate, "Create Purchase Returns", PurchaseModule,
+            "Create and edit draft purchase returns.", 1130),
+        new(Purchase.ReturnsPost, "Post Purchase Returns", PurchaseModule,
+            "Post purchase returns (removes stock).", 1140),
+        new(Purchase.ReturnsCancel, "Cancel Purchase Returns", PurchaseModule,
+            "Cancel posted purchase returns (stock reversal).", 1150),
+        new(Purchase.ReturnsDelete, "Delete Purchase Returns", PurchaseModule,
+            "Delete draft purchase returns.", 1160),
 
         new(Sales.InvoicesImport, "Import invoice items", SalesModule,
             "Import invoice lines from an Excel file.", 600),

@@ -29,6 +29,14 @@ public interface IItemRepository
     /// </summary>
     Task UpdateAsync(Item item, byte[]? rowVersion, int? userId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// inventory.usp_Item_SetPurchasing - the default supplier and lead time, written after create /
+    /// update in the same service call. No row-version check: the item was just saved by this caller.
+    /// Throws 56000 when the supplier is missing, inactive or not a supplier.
+    /// </summary>
+    Task SetPurchasingAsync(
+        int id, int? defaultSupplierId, int? leadTimeDays, int? userId, CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_Item_SetActive - throws 56006.</summary>
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);
 

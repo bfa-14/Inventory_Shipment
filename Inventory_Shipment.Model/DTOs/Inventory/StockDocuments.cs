@@ -65,7 +65,19 @@ public sealed class DocumentTypeDto
     public bool NumberOnPost { get; init; }
 
     public bool RequiresReason { get; init; }
+
+    /// <summary>Cost | PriceList | None — what prices the lines: a typed cost, a price list, or nothing (orders).</summary>
+    public string DefaultPricing { get; init; } = string.Empty;
+
+    /// <summary>Whether the price / cost column may be typed. False on an Out: the average cost is applied.</summary>
+    public bool PriceEditable { get; init; }
+
+    /// <summary>True: one sequence per branch ("IN-KLW-000012"); false: one sequence for the company.</summary>
+    public bool NumberPerBranch { get; init; }
+
     public bool IsActive { get; init; }
+    public DateTime? UpdatedAtUtc { get; init; }
+    public byte[] RowVersion { get; init; } = [];
 }
 
 /// <summary>One reason an inventory document exists — opening balance, damage, transfer.</summary>
@@ -353,4 +365,69 @@ public sealed class StockDocumentQuery
 
     public int Page { get; init; } = 1;
     public int PageSize { get; init; } = 10;
+}
+
+/// <summary>
+/// The configuration page's save for one document type.
+///
+/// CODE, FAMILY AND STOCK DIRECTION ARE NOT HERE. They are what the procedures branch on; a type
+/// whose direction could be flipped by a form would turn every posted document of it into a lie.
+/// What a business owner changes is the wording, the numbering and the pricing rule.
+/// </summary>
+public sealed class UpdateDocumentTypeRequest
+{
+    [Required]
+    [StringLength(100, MinimumLength = 1)]
+    public string Name { get; init; } = string.Empty;
+
+    [Required]
+    [StringLength(10, MinimumLength = 1)]
+    public string NumberPrefix { get; init; } = string.Empty;
+
+    [Range(3, 10)]
+    public byte NumberLength { get; init; } = 6;
+
+    public bool NumberOnPost { get; init; }
+    public bool RequiresReason { get; init; }
+
+    /// <summary>Cost | PriceList | None.</summary>
+    [Required]
+    [RegularExpression("^(Cost|PriceList|None)$", ErrorMessage = "Default pricing must be Cost, PriceList or None.")]
+    public string DefaultPricing { get; init; } = "Cost";
+
+    public bool PriceEditable { get; init; } = true;
+    public bool NumberPerBranch { get; init; } = true;
+    public bool IsActive { get; init; } = true;
+
+    /// <summary>Base64 ROWVERSION read with the type. Null skips the concurrency check.</summary>
+    public string? RowVersion { get; init; }
+}
+
+/// <summary>
+/// An imported file becoming stock documents: the header every document shares, and the lines the
+/// server sorts into one document per warehouse.
+/// </summary>
+public sealed class ImportCreateStockDocumentsRequest
+{
+    [Required]
+    public string DocumentTypeCode { get; init; } = string.Empty;
+
+    [Required]
+    public DateOnly DocumentDate { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int BranchId { get; init; }
+
+    public int? ReasonId { get; init; }
+
+    [StringLength(100)]
+    public string? ReferenceNo { get; init; }
+
+    [StringLength(1000)]
+    public string? Notes { get; init; }
+
+    public IReadOnlyList<Model.DTOs.Documents.ImportCreateLine> Lines { get; init; } = [];
+
+    /// <summary>True posts each created document at once; a refused posting leaves that one as a draft.</summary>
+    public bool PostImmediately { get; init; }
 }

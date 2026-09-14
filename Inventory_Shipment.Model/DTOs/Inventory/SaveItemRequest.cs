@@ -47,6 +47,14 @@ public sealed class SaveItemRequest
 
     public bool IsActive { get; init; } = true;
 
+    /// <summary>The supplier a purchase order is raised on by default. Must be an active party flagged as a supplier.</summary>
+    [Range(1, int.MaxValue)]
+    public int? DefaultSupplierId { get; init; }
+
+    /// <summary>Days between ordering and receiving.</summary>
+    [Range(0, 3650)]
+    public int? LeadTimeDays { get; init; }
+
     /// <summary>Base64 ROWVERSION read with the item (update only). Null skips the concurrency check.</summary>
     public string? RowVersion { get; init; }
 }

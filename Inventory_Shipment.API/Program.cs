@@ -7,6 +7,7 @@ using Inventory_Shipment.Repository;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Service;
 using Inventory_Shipment.Service.Interfaces;
+using Microsoft.AspNetCore.Mvc;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -28,6 +29,9 @@ builder.Services.AddOptions<SeedOptions>()
 builder.Services.AddOptions<SalesOptions>()
     .Bind(builder.Configuration.GetSection(SalesOptions.SectionName));
 
+builder.Services.AddOptions<PurchaseOptions>()
+    .Bind(builder.Configuration.GetSection(PurchaseOptions.SectionName));
+
 // ----- Layers -----
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is missing from configuration.");
@@ -44,6 +48,33 @@ builder.Services.AddControllers()
     .AddJsonOptions(options =>
     {
         options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+    })
+    .ConfigureApiBehaviorOptions(options =>
+    {
+        // A REQUEST THE MODEL BINDER REFUSES GETS THE SAME SHAPE AS ONE A PROCEDURE REFUSES. The
+        // default answer is a ValidationProblemDetails with an "errors" map and no code, so a client
+        // routing on "code" (VALIDATION, NO_PRICE, INSUFFICIENT_STOCK, ...) would have to special-case
+        // it. The map stays; a code and a one-line detail naming the first field are added on top.
+        options.InvalidModelStateResponseFactory = context =>
+        {
+            var problem = new ValidationProblemDetails(context.ModelState)
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Validation failed",
+                Instance = context.HttpContext.Request.Path,
+            };
+
+            var first = problem.Errors.FirstOrDefault(e => e.Value.Length > 0);
+            problem.Detail = first.Key is null
+                ? "The request is not valid."
+                : string.IsNullOrEmpty(first.Key) ? first.Value[0] : $"{first.Key}: {first.Value[0]}";
+            problem.Extensions["code"] = "VALIDATION";
+
+            return new BadRequestObjectResult(problem)
+            {
+                ContentTypes = { "application/problem+json" },
+            };
+        };
     });
 
 builder.Services.AddProblemDetails();

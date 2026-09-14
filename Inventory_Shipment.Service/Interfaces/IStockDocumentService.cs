@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 
 namespace Inventory_Shipment.Service.Interfaces;
@@ -15,6 +16,23 @@ namespace Inventory_Shipment.Service.Interfaces;
 public interface IStockDocumentService
 {
     Task<Result<IReadOnlyList<DocumentTypeDto>>> GetDocumentTypesAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>The configuration page's save: wording, numbering, pricing and behaviour of one document type.</summary>
+    Task<Result<DocumentTypeDto>> UpdateDocumentTypeAsync(
+        int id, UpdateDocumentTypeRequest request, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Posts each id in its own call; one refusal does not stop the others. Results keep the input order.</summary>
+    Task<BulkActionResult> BulkPostAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes each draft in its own call; a posted document among the ids is a NOT_DRAFT failure for that id alone.</summary>
+    Task<BulkActionResult> BulkDeleteAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>One document per warehouse found in the imported lines, each posted at once when asked.</summary>
+    Task<Result<ImportCreateResult>> ImportCreateAsync(
+        ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<StockReasonDto>>> GetStockReasonsAsync(short? direction, CancellationToken cancellationToken = default);
 

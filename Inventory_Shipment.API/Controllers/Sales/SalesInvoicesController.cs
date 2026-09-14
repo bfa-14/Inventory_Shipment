@@ -1,6 +1,7 @@
 using Inventory_Shipment.API.Authorization;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Sales;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
@@ -97,6 +98,29 @@ public sealed class SalesInvoicesController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>
+    /// The Import Sales page's single call: the header and lines become a draft that is posted at
+    /// once. Answers with the posted invoice's summary. A draft that fails to post is deleted, so a
+    /// failure here leaves nothing behind — the page keeps its lines, fixes them and calls again.
+    ///
+    /// GUARDED BY THE POST PERMISSION HERE AND THE CREATE PERMISSION IN THE SERVICE: the two rights
+    /// this one call spends. A caller with only the first gets 403.
+    /// </summary>
+    [HttpPost("import-post")]
+    [HasPermission(Permissions.Sales.InvoicesPost)]
+    [ProducesResponseType<ImportPostResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ImportPostResult>> ImportPost(
+        [FromBody] SaveSalesInvoiceRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _invoices.ImportPostAsync(
+            request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
     /// <summary>Replaces a draft, lines and all. A posted invoice is refused with NOT_DRAFT.</summary>
     [HttpPut("{id:int}")]
     [HasPermission(Permissions.Sales.InvoicesCreate)]
@@ -146,6 +170,38 @@ public sealed class SalesInvoicesController : ControllerBase
     {
         var result = await _invoices.DeleteAsync(id, User.GetUserId(), cancellationToken);
         return result.ToNoContentResult(this);
+    }
+
+    /// <summary>Posts several drafts at once, each in its own transaction; the result says what happened to each.</summary>
+    [HttpPost("bulk-post")]
+    [HasPermission(Permissions.Sales.InvoicesPost)]
+    [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<BulkActionResult>> BulkPost(
+        [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
+        => Ok(await _invoices.BulkPostAsync(request.Ids, User.GetUserId(), cancellationToken));
+
+    /// <summary>Deletes several drafts; a posted invoice among them fails alone with NOT_DRAFT.</summary>
+    [HttpPost("bulk-delete")]
+    [HasPermission(Permissions.Sales.InvoicesDelete)]
+    [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<BulkActionResult>> BulkDelete(
+        [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
+        => Ok(await _invoices.BulkDeleteAsync(request.Ids, User.GetUserId(), cancellationToken));
+
+    /// <summary>
+    /// An imported file becoming invoices: one per warehouse found in the lines, each posted at once
+    /// when asked (which also needs the post permission, checked in the service).
+    /// </summary>
+    [HttpPost("import-create")]
+    [HasPermission(Permissions.Sales.InvoicesCreate)]
+    [ProducesResponseType<ImportCreateResult>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<ImportCreateResult>> ImportCreate(
+        [FromBody] ImportCreateSalesInvoicesRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _invoices.ImportCreateAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("{id:int}/export")]

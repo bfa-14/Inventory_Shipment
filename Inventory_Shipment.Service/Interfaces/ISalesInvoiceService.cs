@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Sales;
 using Inventory_Shipment.Repository.Interfaces;
 
@@ -32,10 +33,41 @@ public interface ISalesInvoiceService
 
     Task<Result<SalesInvoiceDto>> PostAsync(int id, string? rowVersion, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// The Import Sales page's one call: the header and lines become a draft that is posted at once,
+    /// and the answer is the posted invoice's summary.
+    ///
+    /// A DRAFT THAT FAILS TO POST IS DELETED before the error goes back. The page never showed a
+    /// draft and has no screen to find one on; leaving it behind would be an invoice nobody can see
+    /// holding a place in nobody's list. The error itself is the posting procedure's, unchanged —
+    /// INSUFFICIENT_STOCK with its own figures, NO_PRICE with its "Line N:".
+    ///
+    /// TWO PERMISSIONS FOR ONE CALL. The action is guarded by sales.invoices.post; creating the
+    /// invoice is a separate right, checked here, and a caller without it is refused (Forbidden)
+    /// before anything is written.
+    /// </summary>
+    Task<Result<ImportPostResult>> ImportPostAsync(
+        SaveSalesInvoiceRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     Task<Result<SalesInvoiceDto>> CancelAsync(
         int id, CancelSalesInvoiceRequest request, int userId, CancellationToken cancellationToken = default);
 
     Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Posts each id in its own call; one refusal does not stop the others. Results keep the input order.</summary>
+    Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes each draft in its own call; a posted invoice among the ids is a NOT_DRAFT failure for that id alone.</summary>
+    Task<BulkActionResult> BulkDeleteAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// One invoice per warehouse found in the imported lines, each posted at once when asked. The
+    /// caller needs sales.invoices.create, and sales.invoices.post as well when posting.
+    /// </summary>
+    Task<Result<ImportCreateResult>> ImportCreateAsync(
+        ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 
     /// <summary>The rate the page pre-fills. Rate is null when none is defined — a warning, not an error.</summary>
     Task<Result<RateResolutionDto>> ResolveRateAsync(

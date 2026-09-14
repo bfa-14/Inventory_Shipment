@@ -14,8 +14,13 @@ namespace Inventory_Shipment.Service.Interfaces;
 /// </summary>
 public interface IInvoiceImportService
 {
-    /// <summary>The blank template, generated from the same headings the parser matches.</summary>
-    byte[] GenerateTemplate();
+    /// <summary>
+    /// The blank template for one document type: the same workbook for every type, with the
+    /// "Document Type" column pre-filled and the type listed in the instructions. The value is the
+    /// bytes and the file name ("Import_INV_IN_Template.xlsx"); NOT_FOUND for an unknown type.
+    /// </summary>
+    Task<Result<(byte[] Content, string FileName)>> GenerateTemplateAsync(
+        string documentTypeCode, CancellationToken cancellationToken = default);
 
     /// <summary>The non-valid rows of a validated file, as a workbook to correct and re-upload.</summary>
     byte[] GenerateErrorReport(IReadOnlyList<InvoiceImportValidatedRow> rows);
@@ -30,6 +35,14 @@ public interface IInvoiceImportService
     /// The price list to price against, or NULL for STOCK MODE — an Inventory In / Out import, which
     /// has no selling price at all and reads the Unit Price column as the unit cost.
     /// </param>
+    /// <param name="checkStock">
+    /// True for a sales import: rows are checked against the stock on hand, cumulatively per item
+    /// and warehouse, and a row that would overdraw it is an Error. False for a stock-in import.
+    /// </param>
+    /// <param name="documentTypeCode">
+    /// The page's document type. Rows whose "Document Type" cell names another type are Errors, and
+    /// the family decides which unit a blank Unit cell means (sales unit, purchase unit, base unit).
+    /// </param>
     /// <param name="userPermissions">
     /// The caller's permission codes. sales.invoices.priceoverride among them is what decides whether
     /// a price typed into the file is honoured — read from the token rather than passed as a flag, so
@@ -42,6 +55,8 @@ public interface IInvoiceImportService
         int branchId,
         int warehouseId,
         int? priceListId,
+        bool checkStock,
+        string documentTypeCode,
         IReadOnlySet<string> userPermissions,
         CancellationToken cancellationToken = default);
 

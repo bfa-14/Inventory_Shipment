@@ -219,4 +219,39 @@ public sealed class PriceListRepository : IPriceListRepository
 
     private static string ResolveSortDirection(string? sortDir)
         => string.Equals(sortDir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC";
+
+    public async Task<UnitPriceResolutionDto?> ResolveUnitPriceAsync(
+        int itemUnitId, int priceListId, int? branchId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var row = await connection.QueryFirstOrDefaultAsync<ResolvedPriceRow>(new CommandDefinition(
+            "masterdata.usp_UnitPrice_Resolve",
+            new { ItemUnitId = itemUnitId, PriceListId = priceListId, BranchId = branchId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        return row is null
+            ? null
+            : new UnitPriceResolutionDto
+            {
+                ItemUnitId = row.ItemUnitId,
+                PriceListId = row.PriceListId,
+                Price = row.Price,
+                Source = row.PriceSource,
+                CurrencyCode = row.CurrencyCode,
+                DecimalPlaces = row.DecimalPlaces,
+                BranchName = row.BranchName,
+            };
+    }
+
+    /// <summary>The columns usp_UnitPrice_Resolve answers with; the rest of its row is not needed here.</summary>
+    private sealed class ResolvedPriceRow
+    {
+        public int ItemUnitId { get; init; }
+        public int PriceListId { get; init; }
+        public decimal Price { get; init; }
+        public string PriceSource { get; init; } = string.Empty;
+        public string CurrencyCode { get; init; } = string.Empty;
+        public byte DecimalPlaces { get; init; }
+        public string BranchName { get; init; } = string.Empty;
+    }
 }
