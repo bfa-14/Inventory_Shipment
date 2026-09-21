@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE purchase.usp_PurchaseDocument_Get
+CREATE   PROCEDURE purchase.usp_PurchaseDocument_Get
     @Id INT
 AS
 BEGIN
@@ -11,8 +11,9 @@ BEGIN
            d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
            d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
            d.SupplierReference, d.Notes, d.Status,
-           d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalChargesBase, d.TotalLandedCostBase,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber, sdt.Code AS SourceDocumentTypeCode,
+           d.SourceShortageId, sh.DocumentNumber AS SourceShortageNumber,
            d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
            d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
            d.ClosedAtUtc, d.ClosedBy, ku.FullName AS ClosedByName, d.CloseReason,
@@ -27,6 +28,7 @@ BEGIN
     LEFT  JOIN masterdata.Currencies bc   ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
     LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
     LEFT  JOIN inventory.DocumentTypes sdt ON sdt.Id = src.DocumentTypeId
+    LEFT  JOIN inventory.ShortageDocuments sh ON sh.Id = d.SourceShortageId
     LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
     LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
     LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
@@ -38,12 +40,14 @@ BEGIN
            l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, iu.Barcode, l.PackingFormula,
            l.WarehouseId, w.WarehouseCode, w.WarehouseName, l.ExpiryDate,
            l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal,
-           l.UnitCostBase, l.ReceivedQuantityBase, l.ReturnedQuantityBase,
+           l.UnitCostBase, LandedCostBase = l.UnitCostBase, l.FobCostBase, l.AllocatedChargesBase,
+           l.ReceivedQuantityBase, l.ReturnedQuantityBase, l.ShippedQuantityBase,
+           TransitBase = CASE WHEN l.ShippedQuantityBase > l.ReceivedQuantityBase THEN l.ShippedQuantityBase - l.ReceivedQuantityBase ELSE 0 END,
            RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
                                 WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
            l.ImportRowNumber, l.Notes, l.SourceLineId,
            OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
-           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
     INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
@@ -66,7 +70,6 @@ BEGIN
     WHERE a.DocumentId = @Id
     ORDER BY a.AtUtc DESC, a.Id DESC;
 
-    -- Linked documents: the source (Relation = 'Source') and everything created from this one (Relation = 'Child').
     SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
     FROM purchase.PurchaseDocuments d
     INNER JOIN purchase.PurchaseDocuments x ON x.Id = d.SourceDocumentId
@@ -80,4 +83,20 @@ BEGIN
     INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
     WHERE x.SourceDocumentId = @Id
     ORDER BY Relation DESC, DocumentDate, Id;
+
+    -- 6: charges of the invoice (kind PINV) and of its posted / draft adjustments (kind LCA), with the allocated total.
+    SELECT c.Id, c.DocumentKind, c.DocumentId, SourceNumber = CASE WHEN c.DocumentKind = N'LCA' THEN lca.DocumentNumber ELSE d.DocumentNumber END,
+           c.LineNumber, c.ChargeTypeId, ct.ChargeCode, ct.ChargeName, c.Description, c.ProviderPartyId, pp.PartyName AS ProviderName, c.Reference,
+           c.CurrencyId, cur.CurrencyCode, c.RateType, c.ExchangeRate, c.Amount, c.AmountBase, c.AllocationMethod, c.IncludeInLandedCost, c.IncludedInSupplierInvoice, c.Notes,
+           AllocatedBase = (SELECT SUM(AmountBase) FROM purchase.PurchaseChargeAllocations x WHERE x.ChargeId = c.Id),
+           AdjustmentStatus = lca.Status
+    FROM purchase.PurchaseCharges c
+    INNER JOIN purchase.ChargeTypes ct ON ct.Id = c.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = c.CurrencyId
+    LEFT  JOIN masterdata.Parties pp ON pp.Id = c.ProviderPartyId
+    LEFT  JOIN purchase.PurchaseDocuments d ON d.Id = c.DocumentId AND c.DocumentKind = N'PINV'
+    LEFT  JOIN purchase.LandedCostAdjustments lca ON lca.Id = c.DocumentId AND c.DocumentKind = N'LCA'
+    WHERE (c.DocumentKind = N'PINV' AND c.DocumentId = @Id)
+       OR (c.DocumentKind = N'LCA' AND lca.SourceInvoiceId = @Id)
+    ORDER BY c.DocumentKind, c.DocumentId, c.LineNumber;
 END

@@ -1,4 +1,4 @@
-﻿CREATE TABLE [purchase].[PurchaseDocumentLines] (
+CREATE TABLE [purchase].[PurchaseDocumentLines] (
     [Id]                   INT             IDENTITY (1, 1) NOT NULL,
     [DocumentId]           INT             NOT NULL,
     [LineNumber]           INT             NOT NULL,
@@ -19,12 +19,16 @@
     [ImportRowNumber]      INT             NULL,
     [Notes]                NVARCHAR (300)  NULL,
     [SourceLineId]         INT             NULL,
+    [ShippedQuantityBase]  INT             CONSTRAINT [DF_PurchaseDocumentLines_Shipped] DEFAULT ((0)) NOT NULL,
+    [FobCostBase]          DECIMAL (18, 6) NULL,
+    [AllocatedChargesBase] DECIMAL (18, 2) CONSTRAINT [DF_PurchaseDocumentLines_Charges] DEFAULT ((0)) NOT NULL,
     CONSTRAINT [PK_PurchaseDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_PurchaseDocumentLines_Discount] CHECK ([DiscountPercent]>=(0) AND [DiscountPercent]<=(100)),
     CONSTRAINT [CK_PurchaseDocumentLines_Formula] CHECK ([PackingFormula]>=(1)),
     CONSTRAINT [CK_PurchaseDocumentLines_Price] CHECK ([UnitPrice]>=(0)),
     CONSTRAINT [CK_PurchaseDocumentLines_Qty] CHECK ([Quantity]>(0)),
-    CONSTRAINT [FK_PurchaseDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]),
+    ALTER TABLE [purchase].[PurchaseDocumentLines]
+    ADD CONSTRAINT [FK_PurchaseDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);,
     CONSTRAINT [FK_PurchaseDocumentLines_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_ItemUnit] FOREIGN KEY ([ItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_SourceLine] FOREIGN KEY ([SourceLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]),

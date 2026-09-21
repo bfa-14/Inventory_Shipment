@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE sales.usp_SalesDocument_Save
+CREATE   PROCEDURE sales.usp_SalesDocument_Save
     @Id                 INT            = NULL,
     @DocumentTypeCode   NVARCHAR(20)   = N'SINV',
     @DocumentDate       DATE,
@@ -33,6 +33,9 @@ BEGIN
          @PriceListId, @RateType, @ExchangeRate, @MaxDiscountPercent, @Lines,
          @TypeId OUTPUT, @Direction OUTPUT, @CurrencyId OUTPUT, @Rate OUTPUT;
 
+    -- Source links of a return draft (SINV -> SRET) survive a re-save: kept by line number + item.
+    DECLARE @Kept TABLE (LineNumber INT PRIMARY KEY, ItemId INT, SourceLineId INT, UnitCostBase DECIMAL(18,6));
+
     IF @Id IS NOT NULL
     BEGIN
         DECLARE @Status TINYINT = (SELECT Status FROM sales.SalesDocuments WHERE Id = @Id);
@@ -42,6 +45,8 @@ BEGIN
             THROW 64004, 'This document was modified by another user. Reload the page and try again.', 1;
         IF EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @Id AND DocumentTypeId <> @TypeId)
             THROW 64000, 'The document type cannot be changed.', 1;
+        INSERT INTO @Kept (LineNumber, ItemId, SourceLineId, UnitCostBase)
+        SELECT LineNumber, ItemId, SourceLineId, UnitCostBase FROM sales.SalesDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL;
     END
 
     DECLARE @Priced TABLE
@@ -56,6 +61,12 @@ BEGIN
     FROM @Lines l
     INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
     CROSS APPLY (SELECT masterdata.fn_GetUnitPrice(l.ItemUnitId, @PriceListId, @BranchId) AS Price) sp;
+
+    -- Return lines created from an invoice keep the invoice price and discount (the customer is refunded what was paid).
+    UPDATE p SET UnitPrice = s.UnitPrice, DiscountPercent = s.DiscountPercent, SystemPrice = s.UnitPrice
+    FROM @Priced p
+    INNER JOIN @Kept k ON k.LineNumber = p.LineNumber AND k.ItemId = p.ItemId
+    INNER JOIN sales.SalesDocumentLines s ON s.Id = k.SourceLineId;
 
     DECLARE @NoPrice NVARCHAR(400);
     SELECT TOP (1) @NoPrice = N'Line ' + CAST(p.LineNumber AS NVARCHAR(10)) + N': no selling price for ' + i.ItemCode + N' (' + ut.UnitTypeName
@@ -103,12 +114,13 @@ BEGIN
         END
 
         INSERT INTO sales.SalesDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
-                                              UnitPrice, DiscountPercent, PriceSource, ImportRowNumber, Notes)
+                                              UnitPrice, DiscountPercent, PriceSource, UnitCostBase, ImportRowNumber, Notes, SourceLineId)
         SELECT @Id, p.LineNumber, p.ItemId, p.ItemUnitId, @WarehouseId, p.ExpiryDate, p.Quantity, p.PackingFormula,
                p.UnitPrice, p.DiscountPercent,
                CASE WHEN p.SystemPrice IS NULL OR p.UnitPrice <> p.SystemPrice THEN N'Manual' ELSE N'PriceList' END,
-               p.ImportRowNumber, p.Notes
-        FROM @Priced p;
+               k.UnitCostBase, p.ImportRowNumber, p.Notes, k.SourceLineId
+        FROM @Priced p
+        LEFT JOIN @Kept k ON k.LineNumber = p.LineNumber AND k.ItemId = p.ItemId;
 
         UPDATE d
         SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,

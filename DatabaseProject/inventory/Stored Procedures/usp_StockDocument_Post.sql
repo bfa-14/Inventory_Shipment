@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE inventory.usp_StockDocument_Post
+CREATE   PROCEDURE inventory.usp_StockDocument_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
     @UserId     INT       = NULL
@@ -40,7 +40,6 @@ BEGIN
 
         IF @Direction = -1
         BEGIN
-            -- Refresh the cost at posting time (moving average may have changed since the draft was saved).
             UPDATE l SET UnitCost = ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * l.PackingFormula
             FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
 
@@ -62,14 +61,13 @@ BEGIN
         IF @Number IS NULL
             EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
 
-        -- Receipts update the moving average BEFORE the movements exist.
         IF @Direction = 1
         BEGIN
             DECLARE @R inventory.tvp_ItemReceipt;
-            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase)
-            SELECT l.ItemId, l.QuantityBase, CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula ELSE l.UnitCost END
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula ELSE l.UnitCost END, NULL
             FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
-            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId;
+            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId, 0;      -- average yes, last / FOB cost no
         END
 
         DECLARE @MovementDate DATETIME2(3) =

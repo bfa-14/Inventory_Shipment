@@ -1,4 +1,4 @@
-﻿/* ================================================================== 5. Save (draft) */
+/* ================================================================== 5. Save (draft) */
 
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @Id                 INT            = NULL,
@@ -72,19 +72,23 @@ BEGIN
                 SupplierReference = @SupplierReference, Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
             WHERE Id = @Id;
 
+            -- Lines are replaced: manual charge allocations pointing at the old lines are dropped (the charges stay).
+            DELETE a FROM purchase.PurchaseChargeAllocations a
+            INNER JOIN purchase.PurchaseCharges c ON c.Id = a.ChargeId
+            WHERE c.DocumentKind = N'PINV' AND c.DocumentId = @Id;
             DELETE FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
 
             INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
             VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
         END
 
-        -- Lines: header warehouse; blank price = item last cost (USD per base unit) converted to the document currency per unit.
         INSERT INTO purchase.PurchaseDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
-                                                    UnitPrice, DiscountPercent, UnitCostBase, ImportRowNumber, Notes, SourceLineId)
+                                                    UnitPrice, DiscountPercent, UnitCostBase, FobCostBase, ImportRowNumber, Notes, SourceLineId)
         SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
                ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
                ISNULL(l.DiscountPercent, 0),
-               CASE WHEN @DocumentTypeCode = N'PRET' THEN src.UnitCostBase END,      -- returns carry the invoice cost
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN src.UnitCostBase END,      -- returns carry the invoice LANDED cost
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN src.FobCostBase END,
                l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N''), l.SourceLineId
         FROM @Lines l
         INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
@@ -93,7 +97,7 @@ BEGIN
 
         UPDATE d
         SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
-            TotalAmountBase = ROUND(x.Amt / @Rate, 2)
+            TotalAmountBase = ROUND(x.Amt / @Rate, 2), TotalLandedCostBase = ROUND(x.Amt / @Rate, 2) + d.TotalChargesBase
         FROM purchase.PurchaseDocuments d
         CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
                             ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt

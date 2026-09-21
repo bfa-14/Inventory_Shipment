@@ -1,4 +1,4 @@
-﻿CREATE TABLE [purchase].[PurchaseDocumentFiles] (
+CREATE TABLE [purchase].[PurchaseDocumentFiles] (
     [Id]           INT             IDENTITY (1, 1) NOT NULL,
     [DocumentId]   INT             NOT NULL,
     [FileName]     NVARCHAR (255)  NOT NULL,
@@ -10,7 +10,8 @@
     CONSTRAINT [PK_PurchaseDocumentFiles] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_PurchaseDocumentFiles_Size] CHECK ([SizeBytes]>(0)),
     CONSTRAINT [FK_PurchaseDocumentFiles_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
-    CONSTRAINT [FK_PurchaseDocumentFiles_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id])
+    ALTER TABLE [purchase].[PurchaseDocumentFiles]
+    ADD CONSTRAINT [FK_PurchaseDocumentFiles_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
 );
 
 

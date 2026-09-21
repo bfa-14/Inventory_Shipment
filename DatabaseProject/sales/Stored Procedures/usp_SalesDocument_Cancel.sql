@@ -1,4 +1,4 @@
-﻿/* ================================================================== 6. Cancel (reversal) / Delete draft */
+/* ================================================================== 6. Cancel (reversal) / Delete draft */
 
 CREATE   PROCEDURE sales.usp_SalesDocument_Cancel
     @Id         INT,
@@ -16,8 +16,8 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
-        DECLARE @Status TINYINT, @Direction SMALLINT;
-        SELECT @Status = d.Status, @Direction = dt.StockDirection
+        DECLARE @Status TINYINT, @Direction SMALLINT, @TypeCode NVARCHAR(20), @SourceId INT;
+        SELECT @Status = d.Status, @Direction = dt.StockDirection, @TypeCode = dt.Code, @SourceId = d.SourceDocumentId
         FROM sales.SalesDocuments d WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
         WHERE d.Id = @Id;
@@ -26,8 +26,9 @@ BEGIN
         IF @Status <> 2 THROW 64010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 64004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE SourceDocumentId = @Id AND Status = 2)
+            THROW 64010, 'This invoice cannot be cancelled: posted returns refer to it. Cancel those first.', 1;
 
-        -- Cancelling a document that ADDED stock (sales return) removes it again: it must still be there.
         IF @Direction = 1
         BEGIN
             DECLARE @Msg NVARCHAR(400);
@@ -48,12 +49,31 @@ BEGIN
         FROM inventory.StockMovements m
         WHERE m.DocumentFamily = N'Sales' AND m.DocumentId = @Id AND m.IsReversal = 0;
 
+        IF @TypeCode = N'SRET' AND @SourceId IS NOT NULL
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase - x.Qty
+            FROM sales.SalesDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM sales.SalesDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
         UPDATE sales.SalesDocuments
         SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
         WHERE Id = @Id;
 
         INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        -- A cancelled return was a receipt: replay the cost history of its items.
+        IF @Direction = 1
+        BEGIN
+            DECLARE @ItemId INT;
+            DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM sales.SalesDocumentLines WHERE DocumentId = @Id;
+            OPEN items; FETCH NEXT FROM items INTO @ItemId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC inventory.usp_Item_RebuildCosts @ItemId;
+                FETCH NEXT FROM items INTO @ItemId;
+            END
+            CLOSE items; DEALLOCATE items;
+        END
 
         COMMIT TRANSACTION;
     END TRY

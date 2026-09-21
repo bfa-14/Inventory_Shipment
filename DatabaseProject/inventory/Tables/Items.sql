@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[Items] (
+CREATE TABLE [inventory].[Items] (
     [Id]                 INT             IDENTITY (1, 1) NOT NULL,
     [ItemCode]           NVARCHAR (30)   NOT NULL,
     [ItemName]           NVARCHAR (200)  NOT NULL,
@@ -24,6 +24,10 @@
     [LastPurchaseAtUtc]  DATETIME2 (3)   NULL,
     [DefaultSupplierId]  INT             NULL,
     [LeadTimeDays]       INT             NULL,
+    [PcPerContainer]     INT             NULL,
+    [FobCost]            DECIMAL (18, 6) NULL,
+    [WeightKg]           DECIMAL (18, 3) NULL,
+    [VolumeCbm]          DECIMAL (18, 4) NULL,
     CONSTRAINT [PK_Items] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_Items_ItemCode_NotBlank] CHECK (len(ltrim(rtrim([ItemCode])))>(0)),
     CONSTRAINT [CK_Items_ItemName_NotBlank] CHECK (len(ltrim(rtrim([ItemName])))>(0)),
@@ -31,7 +35,10 @@
     CONSTRAINT [CK_Items_MaxQuantity] CHECK ([MaxQuantity] IS NULL OR [MaxQuantity]>=(0)),
     CONSTRAINT [CK_Items_MinMax] CHECK ([MaxQuantity] IS NULL OR [MinQuantity]<=[MaxQuantity]),
     CONSTRAINT [CK_Items_MinQuantity] CHECK ([MinQuantity]>=(0)),
+    CONSTRAINT [CK_Items_PcPerContainer] CHECK ([PcPerContainer] IS NULL OR [PcPerContainer]>(0)),
+    CONSTRAINT [CK_Items_VolumeCbm] CHECK ([VolumeCbm] IS NULL OR [VolumeCbm]>=(0)),
     CONSTRAINT [CK_Items_Warranty] CHECK ([WarrantyMonths] IS NULL OR [WarrantyMonths]>=(0)),
+    CONSTRAINT [CK_Items_WeightKg] CHECK ([WeightKg] IS NULL OR [WeightKg]>=(0)),
     CONSTRAINT [FK_Items_Brand] FOREIGN KEY ([BrandId]) REFERENCES [masterdata].[Brands] ([Id]),
     CONSTRAINT [FK_Items_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_Items_DefaultSupplier] FOREIGN KEY ([DefaultSupplierId]) REFERENCES [masterdata].[Parties] ([Id]),

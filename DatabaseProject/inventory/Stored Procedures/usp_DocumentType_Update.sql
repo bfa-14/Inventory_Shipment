@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE inventory.usp_DocumentType_Update
+CREATE   PROCEDURE inventory.usp_DocumentType_Update
     @Id              INT,
     @Name            NVARCHAR(100),
     @NumberPrefix    NVARCHAR(10),
@@ -10,7 +10,8 @@
     @NumberPerBranch BIT,
     @IsActive        BIT,
     @RowVersion      BINARY(8) = NULL,
-    @UserId          INT       = NULL
+    @UserId          INT       = NULL,
+    @YearInNumber    BIT       = NULL     -- NULL = unchanged
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -27,7 +28,7 @@ BEGIN
     UPDATE inventory.DocumentTypes
     SET Name = @Name, NumberPrefix = @NumberPrefix, NumberLength = @NumberLength, NumberOnPost = ISNULL(@NumberOnPost, 0),
         RequiresReason = ISNULL(@RequiresReason, 0), DefaultPricing = @DefaultPricing, PriceEditable = ISNULL(@PriceEditable, 1),
-        NumberPerBranch = ISNULL(@NumberPerBranch, 1), IsActive = ISNULL(@IsActive, 1),
+        NumberPerBranch = ISNULL(@NumberPerBranch, 1), YearInNumber = ISNULL(@YearInNumber, YearInNumber), IsActive = ISNULL(@IsActive, 1),
         UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
     WHERE Id = @Id;
 END

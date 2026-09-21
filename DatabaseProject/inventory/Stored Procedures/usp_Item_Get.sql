@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE inventory.usp_Item_Get
+CREATE   PROCEDURE inventory.usp_Item_Get
     @Id INT
 AS
 BEGIN
@@ -9,12 +9,13 @@ BEGIN
            i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName, i.Description,
            i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
            OnHand = inventory.fn_StockOnHand(i.Id, NULL),
+           FobCost = CAST(i.FobCost AS DECIMAL(18,2)),
            LastCost = CAST(i.LastCost AS DECIMAL(18,2)),
            AverageCost = CAST(i.AverageCost AS DECIMAL(18,2)),
-           LastPurchaseCost = (SELECT TOP (1) CAST(m.UnitCostBase AS DECIMAL(18,2)) FROM inventory.StockMovements m
-                               WHERE m.ItemId = i.Id AND m.DocumentFamily = N'Purchase' AND m.QuantityBase > 0 AND m.IsReversal = 0
-                               ORDER BY m.MovementDate DESC, m.Id DESC),
-           i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays,
+           InventoryValue = CAST(inventory.fn_StockOnHand(i.Id, NULL) * i.AverageCost AS DECIMAL(18,2)),
+           LastPurchaseCost = CAST(i.FobCost AS DECIMAL(18,2)),      -- kept for the current API mapping (= FOB)
+           i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays, i.PcPerContainer,
+           i.WeightKg, i.VolumeCbm,
            i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
            i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion

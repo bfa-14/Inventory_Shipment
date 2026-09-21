@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[DocumentTypes] (
+CREATE TABLE [inventory].[DocumentTypes] (
     [Id]              INT            IDENTITY (1, 1) NOT NULL,
     [Code]            NVARCHAR (20)  NOT NULL,
     [Name]            NVARCHAR (100) NOT NULL,
@@ -16,6 +16,8 @@
     [DefaultPricing]  NVARCHAR (10)  CONSTRAINT [DF_DocumentTypes_DefaultPricing] DEFAULT (N'Cost') NOT NULL,
     [PriceEditable]   BIT            CONSTRAINT [DF_DocumentTypes_PriceEditable] DEFAULT ((1)) NOT NULL,
     [NumberPerBranch] BIT            CONSTRAINT [DF_DocumentTypes_NumberPerBranch] DEFAULT ((1)) NOT NULL,
+    [YearInNumber]    BIT            CONSTRAINT [DF_DocumentTypes_YearInNumber] DEFAULT ((0)) NOT NULL,
+    [NextNumberYear]  INT            NULL,
     CONSTRAINT [PK_DocumentTypes] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_DocumentTypes_DefaultPricing] CHECK ([DefaultPricing]=N'None' OR [DefaultPricing]=N'PriceList' OR [DefaultPricing]=N'Cost'),
     CONSTRAINT [CK_DocumentTypes_Direction] CHECK ([StockDirection]=(1) OR [StockDirection]=(0) OR [StockDirection]=(-1)),

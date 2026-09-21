@@ -1,4 +1,4 @@
-﻿/* ================================================================== 7. Cancel / Close / Delete */
+/* ================================================================== 7. Cancel / Close / Delete */
 
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Cancel
     @Id         INT,
@@ -26,10 +26,10 @@ BEGIN
         IF @Status NOT IN (2, 4) THROW 65010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
-
-        -- Nothing may still depend on this document.
         IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE SourceDocumentId = @Id AND Status IN (2, 4))
             THROW 65011, 'This document cannot be cancelled: posted documents were created from it. Cancel those first.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @Id AND Status = 2)
+            THROW 65011, 'This invoice cannot be cancelled: posted landed cost adjustments refer to it. Cancel those first.', 1;
 
         DECLARE @Msg NVARCHAR(400);
         IF @Direction = 1
@@ -51,7 +51,6 @@ BEGIN
         FROM inventory.StockMovements m
         WHERE m.DocumentFamily = N'Purchase' AND m.DocumentId = @Id AND m.IsReversal = 0;
 
-        -- Give the source its quantities back (and re-open a PO that this invoice had closed).
         IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
         BEGIN
             UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase - x.Qty
@@ -77,6 +76,20 @@ BEGIN
         WHERE Id = @Id;
 
         INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        -- A cancelled receipt / return changes the cost history: replay the ledger for the items concerned.
+        IF @Direction <> 0
+        BEGIN
+            DECLARE @ItemId INT;
+            DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+            OPEN items; FETCH NEXT FROM items INTO @ItemId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC inventory.usp_Item_RebuildCosts @ItemId;
+                FETCH NEXT FROM items INTO @ItemId;
+            END
+            CLOSE items; DEALLOCATE items;
+        END
 
         COMMIT TRANSACTION;
     END TRY

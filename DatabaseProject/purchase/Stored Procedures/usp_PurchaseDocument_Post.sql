@@ -1,4 +1,4 @@
-﻿/* ================================================================== 6. Post */
+/* ================================================================== 6. Post */
 
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Post
     @Id         INT,
@@ -42,7 +42,6 @@ BEGIN
         ORDER BY l.LineNumber;
         IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
 
-        -- Source consumption checks (posted documents only count).
         IF @SourceId IS NOT NULL
         BEGIN
             IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 2)
@@ -50,11 +49,10 @@ BEGIN
 
             IF @TypeCode = N'PINV'
             BEGIN
-                SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
                                      + N' base units invoiced but only ' + CAST(s.QuantityBase - s.ReceivedQuantityBase AS NVARCHAR(20)) + N' remain on the order line.'
                 FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
                 INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
-                INNER JOIN purchase.PurchaseDocumentLines l ON l.DocumentId = @Id AND l.LineNumber = x.LineNumber
                 INNER JOIN inventory.Items i ON i.Id = s.ItemId
                 WHERE x.Qty > s.QuantityBase - s.ReceivedQuantityBase
                 ORDER BY x.LineNumber;
@@ -62,11 +60,10 @@ BEGIN
             END
             IF @TypeCode = N'PRET'
             BEGIN
-                SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
                                      + N' base units returned but only ' + CAST(s.QuantityBase - s.ReturnedQuantityBase AS NVARCHAR(20)) + N' can still be returned from the invoice line.'
                 FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
                 INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
-                INNER JOIN purchase.PurchaseDocumentLines l ON l.DocumentId = @Id AND l.LineNumber = x.LineNumber
                 INNER JOIN inventory.Items i ON i.Id = s.ItemId
                 WHERE x.Qty > s.QuantityBase - s.ReturnedQuantityBase
                 ORDER BY x.LineNumber;
@@ -74,7 +71,6 @@ BEGIN
             END
         END
 
-        -- Returns remove stock: it must be there.
         IF @Direction = -1
         BEGIN
             SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
@@ -90,19 +86,38 @@ BEGIN
         IF @Number IS NULL
             EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
 
-        -- Cost per base unit in the base currency.
-        UPDATE l
-        SET UnitCostBase = CASE WHEN @TypeCode = N'PRET' THEN ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
-                                ELSE (l.UnitPrice * (1 - l.DiscountPercent / 100.0)) / l.PackingFormula / @Rate END
-        FROM purchase.PurchaseDocumentLines l
-        WHERE l.DocumentId = @Id;
+        IF @TypeCode = N'PINV'
+        BEGIN
+            -- FOB per base unit, then charges allocated over the lines, then landed cost per base unit.
+            EXEC purchase.usp_PurchaseCharges_Allocate N'PINV', @Id, @Id;
+
+            UPDATE l
+            SET FobCostBase = (l.LineTotal / @Rate) / l.QuantityBase,
+                AllocatedChargesBase = ISNULL(a.Total, 0),
+                UnitCostBase = ((l.LineTotal / @Rate) + ISNULL(a.Total, 0)) / l.QuantityBase
+            FROM purchase.PurchaseDocumentLines l
+            OUTER APPLY (SELECT SUM(x.AmountBase) AS Total
+                         FROM purchase.PurchaseChargeAllocations x
+                         INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                         WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'PINV' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1) a
+            WHERE l.DocumentId = @Id;
+
+            UPDATE d
+            SET TotalChargesBase = ISNULL(x.Charges, 0), TotalLandedCostBase = d.TotalAmountBase + ISNULL(x.Charges, 0)
+            FROM purchase.PurchaseDocuments d
+            CROSS APPLY (SELECT SUM(AllocatedChargesBase) AS Charges FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
+        END
+        ELSE IF @TypeCode = N'PRET'
+            UPDATE l SET UnitCostBase = ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
+            FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
 
         IF @Direction = 1
         BEGIN
             DECLARE @R inventory.tvp_ItemReceipt;
-            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase)
-            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0) FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
-            EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0), l.FobCostBase FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId, 1;
         END
 
         IF @Direction <> 0
@@ -118,7 +133,6 @@ BEGIN
             WHERE l.DocumentId = @Id;
         END
 
-        -- Consume the source: PO received quantities (close the PO when everything is in) / PINV returned quantities.
         IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
         BEGIN
             UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase + x.Qty
@@ -146,7 +160,8 @@ BEGIN
         DECLARE @LineCount INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id);
         INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
         VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
-                                + CASE WHEN @Direction <> 0 THEN N' written to the stock ledger' ELSE N' (order confirmed)' END, @UserId);
+                                + CASE WHEN @Direction <> 0 THEN N' written to the stock ledger' ELSE N' (order confirmed)' END
+                                + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END, @UserId);
 
         COMMIT TRANSACTION;
         SELECT @Number AS DocumentNumber;

@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE purchase.usp_PurchaseDocument_Delete
+CREATE   PROCEDURE purchase.usp_PurchaseDocument_Delete
     @Id     INT,
     @UserId INT = NULL
 AS
@@ -12,6 +12,8 @@ BEGIN
 
     BEGIN TRY
         BEGIN TRANSACTION;
+        DELETE a FROM purchase.PurchaseChargeAllocations a INNER JOIN purchase.PurchaseCharges c ON c.Id = a.ChargeId WHERE c.DocumentKind = N'PINV' AND c.DocumentId = @Id;
+        DELETE FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id;
         DELETE FROM purchase.PurchaseDocumentFiles WHERE DocumentId = @Id;
         DELETE FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
         DELETE FROM purchase.PurchaseDocumentAudit WHERE DocumentId = @Id;
