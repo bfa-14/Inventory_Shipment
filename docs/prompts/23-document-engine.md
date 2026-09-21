@@ -6,7 +6,7 @@ warehouse), **7** (multi-select posting on every document list), **8** (`Default
 column), plus the recommendations: moving average cost kept on the item, last cost / last supplier, default
 supplier + lead time on the item.
 
-SQL first (SSMS, in this order): `19_Core_DocumentEngine.sql` → `20_Import_CommonTemplate.sql` →
+SQL first (Azure Data Studio / sqlcmd, in this order): `19_Core_DocumentEngine.sql` → `20_Import_CommonTemplate.sql` →
 `21_Purchase_Documents.sql` (21 is used by batch 4 but the API's Schema.sql must contain all three).
 Then Prompt A (API folder), then Prompt B (Web folder).
 
@@ -16,11 +16,11 @@ Existing documents keep their old numbers.
 ## Prompt A — Backend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
 Established pattern: Dapper repositories over stored procedures (SqlErrors -> BusinessRuleException), services
 returning Result with codes, controllers with [HasPermission], PermissionCatalog, Schema.sql embedded, ClosedXML.
 
-Scripts already written - read the three headers: D:\VSProjects\Inventory_Shipment\Database\19_Core_DocumentEngine.sql,
+Scripts already written - read the three headers: /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment/Database/19_Core_DocumentEngine.sql,
 20_Import_CommonTemplate.sql, 21_Purchase_Documents.sql. What changed for THIS prompt (21 is wired in a later prompt):
 - inventory.DocumentTypes: + DefaultPricing ('Cost'|'PriceList'|'None'), PriceEditable BIT, NumberPerBranch BIT;
   usp_DocumentType_List returns them; NEW usp_DocumentType_Update(@Id, @Name, @NumberPrefix, @NumberLength,
@@ -36,8 +36,10 @@ Scripts already written - read the three headers: D:\VSProjects\Inventory_Shipme
   OnHandBase, RequiredBase; rows whose "Document Type" cell names another type are Errors.
 
 TASK
-1. Run the three scripts in order (sqlcmd -S . -E -d Inventory_Shipment -i "..."), show their output, append each to
-   Repository\Database\Schema.sql under "-- ===== 19 =====", "-- ===== 20 =====", "-- ===== 21 =====" (no USE, no
+1. Run the three scripts in order with sqlcmd -S localhost -U sa -P '<password>' -d Inventory_Shipment -i "<script>"
+   (SQL authentication, values from appsettings ConnectionStrings; without sqlcmd run each script in Azure Data
+   Studio and paste its output), show their output, append each to
+   Repository/Database/Schema.sql under "-- ===== 19 =====", "-- ===== 20 =====", "-- ===== 21 =====" (no USE, no
    self-test / report batches; keep every guarded ALTER / CREATE TYPE / DROP TYPE block exactly as written - script
    20 drops and re-creates a table type, that block must stay guarded so startup is idempotent).
 2. Document types configuration:
@@ -101,7 +103,7 @@ Report: script output, files changed, every verification result.
 ## Prompt B — Frontend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared ui
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared ui
 components, document-page skeleton, ImportInvoiceItemsWizard). Frontend only. Backend (new): GET/PUT
 api/inventory/document-types (defaultPricing, priceEditable, numberPerBranch, numberOnPost...), items with
 averageCost/lastCost/defaultSupplier*/leadTimeDays, invoice-import/validate (+ documentTypeCode, rows carry

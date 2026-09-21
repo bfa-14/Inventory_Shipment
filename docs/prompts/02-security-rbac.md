@@ -423,7 +423,7 @@ VERIFY (API running; npm run dev; sign in as admin / Admin@12345)
     checked and disabled.
 14. Users page: create user clerk1 (Clerk#2026!) with the Warehouse Clerk role; it appears with the role chip.
 15. Sign in as clerk1 in a private/incognito window: sidebar shows Dashboard and Security > Users only; typing
-    http://localhost:5173/security/roles in the address bar shows the Forbidden page; the Users page shows no
+    http://localhost:5174/security/roles in the address bar shows the Forbidden page; the Users page shows no
     New user / edit actions.
 16. Back as admin: remove the role from clerk1, delete the role; login audit lists the sign-ins including the
     clerk1 ones. Everything responsive at 1366px and 390px widths (drawer works).

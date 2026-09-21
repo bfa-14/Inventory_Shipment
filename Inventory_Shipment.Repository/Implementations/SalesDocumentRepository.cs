@@ -190,6 +190,10 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal TotalAmount { get; init; }
         public decimal TotalAmountBase { get; init; }
         public decimal? TotalCostBase { get; init; }
+        public decimal? TotalGrossProfitBase { get; init; }
+        public decimal? TotalGrossProfitPct { get; init; }
+        public int? SourceDocumentId { get; init; }
+        public string? SourceDocumentNumber { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -227,10 +231,19 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal LineTotal { get; init; }
         public string PriceSource { get; init; } = PriceSources.PriceList;
         public decimal? UnitCostBase { get; init; }
+        public decimal? FobCostAtSale { get; init; }
+        public decimal? LastCostAtSale { get; init; }
+        public decimal? NetSalesBase { get; init; }
+        public decimal? CogsBase { get; init; }
+        public decimal? GrossProfitBase { get; init; }
+        public decimal? GrossProfitPct { get; init; }
+        public decimal ReturnedQuantityBase { get; init; }
+        public decimal RemainingBase { get; init; }
         public int? ImportRowNumber { get; init; }
         public string? Notes { get; init; }
         public decimal OnHandBase { get; init; }
         public decimal? SystemPrice { get; init; }
+        public decimal? ItemAverageCost { get; init; }
 
         public SalesInvoiceLineDto ToDto() => new()
         {
@@ -256,10 +269,19 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             LineTotal = LineTotal,
             PriceSource = PriceSource,
             UnitCostBase = UnitCostBase,
+            FobCostAtSale = FobCostAtSale,
+            LastCostAtSale = LastCostAtSale,
+            NetSalesBase = NetSalesBase,
+            CogsBase = CogsBase,
+            GrossProfitBase = GrossProfitBase,
+            GrossProfitPct = GrossProfitPct,
+            ReturnedQuantityBase = ReturnedQuantityBase,
+            RemainingBase = RemainingBase,
             ImportRowNumber = ImportRowNumber,
             Notes = Notes,
             OnHandBase = OnHandBase,
             SystemPrice = SystemPrice,
+            ItemAverageCost = ItemAverageCost,
         };
     }
 
@@ -329,6 +351,10 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             TotalAmount = header.TotalAmount,
             TotalAmountBase = header.TotalAmountBase,
             TotalCostBase = header.TotalCostBase,
+            TotalGrossProfitBase = header.TotalGrossProfitBase,
+            TotalGrossProfitPct = header.TotalGrossProfitPct,
+            SourceDocumentId = header.SourceDocumentId,
+            SourceDocumentNumber = header.SourceDocumentNumber,
             PostedAtUtc = header.PostedAtUtc,
             PostedByName = header.PostedByName,
             CancelledAtUtc = header.CancelledAtUtc,
@@ -413,6 +439,38 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("sales.usp_SalesDocument_Delete", new { Id = id, UserId = userId }, cancellationToken);
+
+    /// <summary>
+    /// A sales return draft from a posted invoice: what has not already come back, at the invoice's
+    /// own prices and — this is the point — its ORIGINAL cost of sales, so returning goods reverses
+    /// the margin that was booked rather than today's average.
+    /// </summary>
+    public async Task<int> CreateFromSourceAsync(
+        int sourceId, DateOnly? documentDate, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@SourceId", sourceId, DbType.Int32);
+        parameters.Add("@DocumentDate", documentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        try
+        {
+            await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "sales.usp_SalesDocument_CreateFromSource", parameters,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            }, cancellationToken);
+
+            return parameters.Get<int>("@NewId");
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     public Task DeleteFileAsync(int fileId, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("sales.usp_SalesDocumentFile_Delete", new { Id = fileId, UserId = userId }, cancellationToken);

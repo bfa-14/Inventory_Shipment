@@ -31,7 +31,7 @@ Open `D:\VSProjects\Inventory_Shipment.code-workspace` to get both folders in a 
 
 1. Open `D:\VSProjects\Inventory_Shipment.Web` in VS Code (or open `D:\VSProjects\Inventory_Shipment.code-workspace` for both folders at once).
 2. `npm install` (first time), then `npm run dev` — or press **F5** in VS Code.
-3. Browse to `http://localhost:5173` and sign in with the seeded account:
+3. Browse to `http://localhost:5174` and sign in with the seeded account:
 
    | Username | Password |
    |----------|--------------|

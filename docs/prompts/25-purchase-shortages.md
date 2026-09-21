@@ -12,11 +12,11 @@ be created from scratch and imported from Excel (common template, one document p
 ## Prompt A — Backend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
 Established pattern as in the stock / sales documents (repository over procedures + TVP, service with per-type
 permission checks, controller, export, bulk helper, GroupLinesByWarehouse helper).
 
-Script already written and in Schema.sql: D:\VSProjects\Inventory_Shipment\Database\21_Purchase_Documents.sql -
+Script already written and in Schema.sql: /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment/Database/21_Purchase_Documents.sql -
 read its header. Objects (schema purchase): PurchaseDocuments / PurchaseDocumentLines (+ ReceivedQuantityBase,
 ReturnedQuantityBase, UnitCostBase) / Files / Audit; tvp_PurchaseDocumentLine (LineNumber, ItemId, ItemUnitId,
 WarehouseId, ExpiryDate, Quantity, UnitPrice NULL = item last cost converted, DiscountPercent NULL, ImportRowNumber,
@@ -99,7 +99,7 @@ Report: files changed, every verification result.
 ## Prompt B — Frontend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared ui
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared ui
 components, document-page skeleton used by Inventory In and Sales Invoice, DocumentListPage bulk actions, import
 wizard with one-document-per-warehouse, useDocumentTypes()). Frontend only. Backend: api/purchase/documents
 (list/get/create/update/post/cancel/close/delete/export/files/create-invoice/create-return/bulk-post/bulk-delete/

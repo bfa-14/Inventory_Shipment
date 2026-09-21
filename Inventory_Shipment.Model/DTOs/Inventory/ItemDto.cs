@@ -34,8 +34,14 @@ public sealed class ItemListDto
     /// <summary>The moving average cost per base unit, kept on the item by the postings that add stock.</summary>
     public decimal? AverageCost { get; init; }
 
-    /// <summary>What the last receipt cost, per base unit.</summary>
+    /// <summary>What the last purchase LANDED at, per base unit.</summary>
     public decimal? LastCost { get; init; }
+
+    /// <summary>What the supplier charged on the last posted invoice, before the charges around it.</summary>
+    public decimal? FobCost { get; init; }
+
+    /// <summary>On hand × average cost, in the base currency.</summary>
+    public decimal InventoryValue { get; init; }
 
     public int? DefaultSupplierId { get; init; }
     public string? DefaultSupplierName { get; init; }
@@ -81,13 +87,19 @@ public sealed class ItemDetailsDto
     /// <summary>Placeholder until the stock module lands; always 0 today.</summary>
     public int OnHand { get; init; }
 
-    /// <summary>Placeholder until purchasing lands; always null today.</summary>
+    /// <summary>What the last posted purchase LANDED at, per base unit. An Inventory In does not touch it.</summary>
     public decimal? LastCost { get; init; }
 
-    /// <summary>Placeholder until the stock module lands; always null today.</summary>
+    /// <summary>The moving weighted average, moved only by the postings that add stock. What a sale is costed at.</summary>
     public decimal? AverageCost { get; init; }
 
-    /// <summary>Placeholder until purchasing lands; always null today.</summary>
+    /// <summary>What the supplier charged per base unit on the last posted invoice, before freight, customs and the rest.</summary>
+    public decimal? FobCost { get; init; }
+
+    /// <summary>On hand × average cost, in the base currency.</summary>
+    public decimal InventoryValue { get; init; }
+
+    /// <summary>The same figure as <see cref="FobCost"/>, under the name the item page used before landed costs existed.</summary>
     public decimal? LastPurchaseCost { get; init; }
 
     /// <summary>The supplier a purchase order for this item is raised on by default.</summary>
@@ -97,6 +109,15 @@ public sealed class ItemDetailsDto
 
     /// <summary>Days between ordering and receiving — what the shortage report compares days of cover with.</summary>
     public int? LeadTimeDays { get; init; }
+
+    /// <summary>Pieces (base units) per container — the default of a shortage plan line. Only the item's own Get returns it.</summary>
+    public int? PcPerContainer { get; init; }
+
+    /// <summary>Per BASE unit. What a charge allocated by weight is shared out on; the posting refuses without it.</summary>
+    public decimal? WeightKg { get; init; }
+
+    /// <summary>Per BASE unit, in cubic metres. The same, for a charge allocated by volume.</summary>
+    public decimal? VolumeCbm { get; init; }
 
     /// <summary>Who last delivered the item and when; written by the purchase invoice posting.</summary>
     public int? LastSupplierId { get; init; }

@@ -157,11 +157,43 @@ public static class SqlErrors
     /// <summary>The chain is broken: wrong source kind, source not open, more than remains, or a posted child in the way.</summary>
     public const int PurchaseDocumentSourceInvalid = 65011;
 
+    // ----- 66xxx: inventory - shortage planning documents -----
+    public const int ShortageDocumentValidation = 66000;
+    public const int ShortageDocumentConcurrency = 66004;
+    public const int ShortageDocumentNotDraft = 66005;
+    public const int ShortageDocumentNotFound = 66006;
+    public const int ShortageDocumentNoLines = 66009;
+    public const int ShortageDocumentInvalidStatus = 66010;
+
+    /// <summary>A purchase order was asked of a posted plan on which no line has a required quantity above zero.</summary>
+    public const int ShortageDocumentNothingToOrder = 66011;
+
+    /// <summary>A purchase charge could not be allocated: no weight, no volume, a zero basis, or manual amounts that do not add up.</summary>
+    public const int PurchaseChargeAllocation = 65012;
+
+    // ----- 67xxx: purchase - landed cost adjustments (charges arriving after receipt) -----
+    public const int LandedCostValidation = 67000;
+    public const int LandedCostConcurrency = 67004;
+    public const int LandedCostNotDraft = 67005;
+    public const int LandedCostNotFound = 67006;
+    public const int LandedCostInvalidStatus = 67010;
+
+    /// <summary>The source invoice is missing, not a purchase invoice, not posted, or still carries a posted adjustment.</summary>
+    public const int LandedCostSourceInvalid = 67011;
+
+    // ----- 68xxx: purchase - charge types (US-MD-008) -----
+    public const int ChargeTypeValidation = 68000;
+    public const int ChargeTypeDuplicateCode = 68001;
+    public const int ChargeTypeDuplicateName = 68002;
+    public const int ChargeTypeConcurrency = 68004;
+    public const int ChargeTypeInUse = 68005;
+    public const int ChargeTypeNotFound = 68006;
+
     private const int FirstBusinessRule = 50000;
 
-    // The ceiling moves with the newest block (65xxx is the purchase family): a ceiling left behind
+    // The ceiling moves with the newest block (68xxx is the charge types): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 65999;
+    private const int LastBusinessRule = 68999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

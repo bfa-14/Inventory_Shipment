@@ -370,14 +370,24 @@ public sealed class ItemRepository : IItemRepository
     }
 
     public async Task SetPurchasingAsync(
-        int id, int? defaultSupplierId, int? leadTimeDays, int? userId, CancellationToken cancellationToken = default)
+        int id, int? defaultSupplierId, int? leadTimeDays, int? pcPerContainer, decimal? weightKg,
+        decimal? volumeCbm, int? userId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
         {
             await connection.ExecuteAsync(new CommandDefinition(
                 "inventory.usp_Item_SetPurchasing",
-                new { Id = id, DefaultSupplierId = defaultSupplierId, LeadTimeDays = leadTimeDays, UserId = userId },
+                new
+                {
+                    Id = id,
+                    DefaultSupplierId = defaultSupplierId,
+                    LeadTimeDays = leadTimeDays,
+                    UserId = userId,
+                    PcPerContainer = pcPerContainer,
+                    WeightKg = weightKg,
+                    VolumeCbm = volumeCbm,
+                },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

@@ -246,6 +246,68 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             request.RowVersion, userId, "closed");
     }
 
+    /// <summary>
+    /// RECORDING A SHIPMENT IS EDITING THE ORDER, so it is the order's create right — the same person
+    /// who typed the quantities types what the supplier says has left. It moves no stock: the shipped
+    /// quantity is only what the shortage plan reads as Transit until the invoice receives it.
+    /// </summary>
+    public async Task<Result<PurchaseDocumentDto>> MarkShippedAsync(
+        int id, MarkShippedRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Purchase.OrdersCreate))
+        {
+            return Forbidden<PurchaseDocumentDto>(Permissions.Purchase.OrdersCreate);
+        }
+
+        if (request.Lines.GroupBy(l => l.LineId).Any(g => g.Count() > 1))
+        {
+            return Result<PurchaseDocumentDto>.Failure(ErrorType.Validation, "A line appears more than once.", "VALIDATION");
+        }
+
+        return await ChangeAsync(id, cancellationToken,
+            version => _documents.MarkShippedAsync(id, request.Lines, version, userId, cancellationToken),
+            request.RowVersion, userId, "marked as shipped");
+    }
+
+    /// <summary>
+    /// The charges of a draft invoice — freight, customs, clearing — replacing whatever was there.
+    ///
+    /// EDITING CHARGES IS EDITING THE INVOICE, so it is the invoice's create right. It is refused on
+    /// anything that is not a DRAFT PURCHASE INVOICE: once the goods are received the cost is
+    /// already in the ledger, and a charge arriving later is a landed cost adjustment instead.
+    /// </summary>
+    public async Task<Result<PurchaseDocumentDto>> SetChargesAsync(
+        int id, SetPurchaseChargesRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        var allowed = await AllowAsync(id, s => s.Create, permissions, cancellationToken);
+        if (allowed.IsFailure)
+        {
+            return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
+        }
+
+        if (allowed.Value!.DocumentTypeCode != PurchaseDocumentTypes.Invoice)
+        {
+            return Result<PurchaseDocumentDto>.Failure(
+                ErrorType.Conflict,
+                "Charges are entered on purchase invoices only (use a Landed Cost Adjustment after posting).", "INVALID_STATUS");
+        }
+
+        // Said here with the numbers the page shows; the table type's primary key would refuse the
+        // batch too, but with a message about a constraint nobody on the page has heard of.
+        var duplicate = request.Charges.GroupBy(c => c.LineNumber).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            return Result<PurchaseDocumentDto>.Failure(
+                ErrorType.Validation, $"Charge {duplicate.Key} appears more than once.", "VALIDATION");
+        }
+
+        return await ChangeAsync(id, cancellationToken,
+            version => _documents.SetChargesAsync(id, request, version, userId, cancellationToken),
+            request.RowVersion, userId, "charges saved");
+    }
+
     public async Task<Result> DeleteAsync(
         int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
@@ -739,6 +801,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         SqlErrors.PurchaseDocumentNoLines => new RuleFailure(ErrorType.Validation, exception.Message, "NO_LINES"),
         SqlErrors.PurchaseDocumentInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
         SqlErrors.PurchaseDocumentSourceInvalid => new RuleFailure(ErrorType.Conflict, exception.Message, "SOURCE_INVALID"),
+        SqlErrors.PurchaseChargeAllocation => new RuleFailure(ErrorType.Validation, exception.Message, "CHARGE_ALLOCATION"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 

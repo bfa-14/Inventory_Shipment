@@ -46,7 +46,10 @@ public static class DependencyInjection
         services.TryAddScoped<IStockDocumentService, StockDocumentService>();
         services.TryAddScoped<ISalesInvoiceService, SalesInvoiceService>();
         services.TryAddScoped<IPurchaseDocumentService, PurchaseDocumentService>();
-        services.TryAddScoped<IShortageService, ShortageService>();
+        services.TryAddScoped<IShortageDocumentService, ShortageDocumentService>();
+        services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
+        services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();
+        services.TryAddScoped<ICostingReportService, CostingReportService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

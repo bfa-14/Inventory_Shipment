@@ -11,6 +11,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 {
     /// <summary>Matched by TYPE NAME on the server; a wrong one fails with a message that never mentions the type.</summary>
     private const string LineTypeName = "purchase.tvp_PurchaseDocumentLine";
+    private const string ShippedLineTypeName = "purchase.tvp_ShippedLine";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the document date.</summary>
     private static readonly string[] SortColumns =
@@ -188,9 +189,13 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal TotalDiscount { get; init; }
         public decimal TotalAmount { get; init; }
         public decimal TotalAmountBase { get; init; }
+        public decimal TotalChargesBase { get; init; }
+        public decimal TotalLandedCostBase { get; init; }
         public int? SourceDocumentId { get; init; }
         public string? SourceDocumentNumber { get; init; }
         public string? SourceDocumentTypeCode { get; init; }
+        public int? SourceShortageId { get; init; }
+        public string? SourceShortageNumber { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -230,15 +235,21 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal LineDiscount { get; init; }
         public decimal LineTotal { get; init; }
         public decimal? UnitCostBase { get; init; }
+        public decimal? LandedCostBase { get; init; }
+        public decimal? FobCostBase { get; init; }
+        public decimal AllocatedChargesBase { get; init; }
         public decimal ReceivedQuantityBase { get; init; }
         public decimal ReturnedQuantityBase { get; init; }
         public decimal? RemainingBase { get; init; }
+        public decimal ShippedQuantityBase { get; init; }
+        public decimal TransitBase { get; init; }
         public int? ImportRowNumber { get; init; }
         public string? Notes { get; init; }
         public int? SourceLineId { get; init; }
         public decimal OnHandBase { get; init; }
         public decimal? ItemLastCost { get; init; }
         public decimal? ItemAverageCost { get; init; }
+        public decimal? ItemFobCost { get; init; }
 
         public PurchaseDocumentLineDto ToDto() => new()
         {
@@ -263,15 +274,21 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             LineDiscount = LineDiscount,
             LineTotal = LineTotal,
             UnitCostBase = UnitCostBase,
+            LandedCostBase = LandedCostBase,
+            FobCostBase = FobCostBase,
+            AllocatedChargesBase = AllocatedChargesBase,
             ReceivedQuantityBase = ReceivedQuantityBase,
             ReturnedQuantityBase = ReturnedQuantityBase,
             RemainingBase = RemainingBase,
+            ShippedQuantityBase = ShippedQuantityBase,
+            TransitBase = TransitBase,
             ImportRowNumber = ImportRowNumber,
             Notes = Notes,
             SourceLineId = SourceLineId,
             OnHandBase = OnHandBase,
             ItemLastCost = ItemLastCost,
             ItemAverageCost = ItemAverageCost,
+            ItemFobCost = ItemFobCost,
         };
     }
 
@@ -305,7 +322,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     {
         await using var connection = _connectionFactory.Create();
 
-        // Five result sets in one round trip, so the header, the lines and the chain are from the same moment.
+        // Six result sets in one round trip, so the header, the lines, the chain and the charges are
+        // from the same moment — a charge allocated between two reads would otherwise not add up.
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
             "purchase.usp_PurchaseDocument_Get", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
@@ -320,6 +338,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         var files = (await multi.ReadAsync<PurchaseDocumentFileDto>()).AsList();
         var audit = (await multi.ReadAsync<PurchaseDocumentAuditDto>()).AsList();
         var linked = (await multi.ReadAsync<LinkedRow>()).AsList();
+        var charges = (await multi.ReadAsync<PurchaseChargeRow>()).AsList();
 
         return new PurchaseDocumentDto
         {
@@ -362,9 +381,13 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             TotalDiscount = header.TotalDiscount,
             TotalAmount = header.TotalAmount,
             TotalAmountBase = header.TotalAmountBase,
+            TotalChargesBase = header.TotalChargesBase,
+            TotalLandedCostBase = header.TotalLandedCostBase,
             SourceDocumentId = header.SourceDocumentId,
             SourceDocumentNumber = header.SourceDocumentNumber,
             SourceDocumentTypeCode = header.SourceDocumentTypeCode,
+            SourceShortageId = header.SourceShortageId,
+            SourceShortageNumber = header.SourceShortageNumber,
             PostedAtUtc = header.PostedAtUtc,
             PostedByName = header.PostedByName,
             CancelledAtUtc = header.CancelledAtUtc,
@@ -382,6 +405,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             Files = files,
             Audit = audit,
             Linked = linked.Select(l => l.ToDto()).ToList(),
+            Charges = charges.Select(c => c.ToDto()).ToList(),
         };
     }
 
@@ -477,6 +501,46 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Delete", new { Id = id, UserId = userId }, cancellationToken);
+
+    /// <summary>
+    /// The charges of a DRAFT invoice, replacing whatever was there. Allocation is not done here:
+    /// posting is what spreads them over the lines, because only then are the lines final.
+    /// </summary>
+    public Task SetChargesAsync(
+        int id, SetPurchaseChargesRequest request, byte[]? rowVersion, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@DocumentId", id, DbType.Int32);
+        parameters.Add("@Charges", PurchaseChargeTables.Charges(request.Charges).AsTableValuedParameter(PurchaseChargeTables.ChargeTypeName));
+        parameters.Add("@ManualAllocations", PurchaseChargeTables.ManualAllocations(request.ManualAllocations, request.Charges).AsTableValuedParameter(PurchaseChargeTables.ManualAllocationTypeName));
+        parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return ExecuteAsync("purchase.usp_PurchaseDocument_SetCharges", parameters, cancellationToken);
+    }
+
+    /// <summary>An EMPTY table is the procedure's "everything shipped"; the table is sent either way, never null.</summary>
+    public Task MarkShippedAsync(
+        int id, IReadOnlyList<ShippedLineRequest> lines, byte[]? rowVersion, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var table = new DataTable();
+        table.Columns.Add("LineId", typeof(int));
+        table.Columns.Add("ShippedQuantityBase", typeof(int));
+        foreach (var line in lines)
+        {
+            table.Rows.Add(line.LineId, line.ShippedQuantityBase);
+        }
+
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", id, DbType.Int32);
+        parameters.Add("@Lines", table.AsTableValuedParameter(ShippedLineTypeName));
+        parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return ExecuteAsync("purchase.usp_PurchaseDocument_MarkShipped", parameters, cancellationToken);
+    }
 
     public async Task<int> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, int userId,

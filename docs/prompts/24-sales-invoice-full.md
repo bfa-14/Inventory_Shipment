@@ -8,7 +8,7 @@ prompt completes it. Requires batches 1 and 2 applied.
 ## Prompt A — Backend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
 Established pattern as in the stock documents. Existing: SalesInvoicesController (import-post, GET {id}, rate) +
 ISalesInvoiceService / ISalesDocumentRepository (Save, Post, Delete, Get, ResolveRate). Script 17 procedures:
 sales.usp_SalesDocument_Search / _Get / _Save / _Post / _Cancel / _Delete, usp_SalesDocumentFile_Add/_Get/_Delete
@@ -54,7 +54,7 @@ Report: files changed, every verification result.
 ## Prompt B — Frontend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared
 ui components, document-page skeleton, DocumentListPage bulk actions, ImportInvoiceItemsWizard with the
 one-document-per-warehouse flow, useDocumentTypes()). Frontend only. Backend: api/sales/invoices (list, get,
 create, update, post, cancel, delete, export, files, rate, bulk-post, bulk-delete, import-create),

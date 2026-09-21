@@ -75,6 +75,9 @@ public sealed class DocumentTypeDto
     /// <summary>True: one sequence per branch ("IN-KLW-000012"); false: one sequence for the company.</summary>
     public bool NumberPerBranch { get; init; }
 
+    /// <summary>True: the year is part of the number and the sequence restarts every year ("SHR-2026-000001").</summary>
+    public bool YearInNumber { get; init; }
+
     public bool IsActive { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
     public byte[] RowVersion { get; init; } = [];
@@ -397,6 +400,10 @@ public sealed class UpdateDocumentTypeRequest
 
     public bool PriceEditable { get; init; } = true;
     public bool NumberPerBranch { get; init; } = true;
+
+    /// <summary>The year as a segment of the number, with a sequence per year. Null leaves the stored value alone.</summary>
+    public bool? YearInNumber { get; init; }
+
     public bool IsActive { get; init; } = true;
 
     /// <summary>Base64 ROWVERSION read with the type. Null skips the concurrency check.</summary>

@@ -35,7 +35,8 @@ public interface IItemRepository
     /// Throws 56000 when the supplier is missing, inactive or not a supplier.
     /// </summary>
     Task SetPurchasingAsync(
-        int id, int? defaultSupplierId, int? leadTimeDays, int? userId, CancellationToken cancellationToken = default);
+        int id, int? defaultSupplierId, int? leadTimeDays, int? pcPerContainer, decimal? weightKg,
+        decimal? volumeCbm, int? userId, CancellationToken cancellationToken = default);
 
     /// <summary>inventory.usp_Item_SetActive - throws 56006.</summary>
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);

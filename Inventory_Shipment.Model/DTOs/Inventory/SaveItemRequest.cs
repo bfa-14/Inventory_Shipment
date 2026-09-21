@@ -55,6 +55,18 @@ public sealed class SaveItemRequest
     [Range(0, 3650)]
     public int? LeadTimeDays { get; init; }
 
+    /// <summary>Pieces (base units) that fit in one container; the shortage plan turns a required quantity into containers with it.</summary>
+    [Range(1, int.MaxValue)]
+    public int? PcPerContainer { get; init; }
+
+    /// <summary>Per BASE unit. Needed by charges allocated by weight; null leaves those charges unable to allocate.</summary>
+    [Range(0, 9999999)]
+    public decimal? WeightKg { get; init; }
+
+    /// <summary>Per BASE unit, in cubic metres. The same, for charges allocated by volume.</summary>
+    [Range(0, 9999999)]
+    public decimal? VolumeCbm { get; init; }
+
     /// <summary>Base64 ROWVERSION read with the item (update only). Null skips the concurrency check.</summary>
     public string? RowVersion { get; init; }
 }

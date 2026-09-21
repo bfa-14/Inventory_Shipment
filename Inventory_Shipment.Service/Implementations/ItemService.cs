@@ -77,7 +77,8 @@ public sealed class ItemService : IItemService
         {
             id = await _items.CreateAsync(item, userId, cancellationToken);
             // The purchasing fields live in their own procedure (script 19); same call, same caller.
-            await _items.SetPurchasingAsync(id, item.DefaultSupplierId, item.LeadTimeDays, userId, cancellationToken);
+            await _items.SetPurchasingAsync(
+                id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -109,7 +110,8 @@ public sealed class ItemService : IItemService
         try
         {
             await _items.UpdateAsync(item, rowVersion, userId, cancellationToken);
-            await _items.SetPurchasingAsync(id, item.DefaultSupplierId, item.LeadTimeDays, userId, cancellationToken);
+            await _items.SetPurchasingAsync(
+                id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -364,6 +366,9 @@ public sealed class ItemService : IItemService
         DefaultWarehouseId = request.DefaultWarehouseId,
         DefaultSupplierId = request.DefaultSupplierId,
         LeadTimeDays = request.LeadTimeDays,
+        PcPerContainer = request.PcPerContainer,
+        WeightKg = request.WeightKg,
+        VolumeCbm = request.VolumeCbm,
         Description = Normalize(request.Description),
         WarrantyMonths = request.WarrantyMonths,
         MinQuantity = request.MinQuantity,

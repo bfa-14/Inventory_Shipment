@@ -41,6 +41,9 @@ public static class Permissions
     public static class Configuration
     {
         public const string DocumentTypesManage = "inventory.documenttypes.manage";
+
+        /// <summary>Charge types and their allocation rules (US-MD-008): setup, not day-to-day buying.</summary>
+        public const string ChargeTypesManage = "purchase.chargetypes.manage";
     }
 
     public static class Sales
@@ -52,6 +55,9 @@ public static class Permissions
         public const string InvoicesPost = "sales.invoices.post";
         public const string InvoicesCancel = "sales.invoices.cancel";
         public const string InvoicesDelete = "sales.invoices.delete";
+
+        /// <summary>Cost and margin on invoices and the profit report. A price is everybody's business; a margin is not.</summary>
+        public const string ProfitView = "sales.profit.view";
     }
 
     public static class MasterData
@@ -117,8 +123,13 @@ public static class Permissions
         public const string StockOutCancel = "inventory.stockout.cancel";
         public const string StockOutDelete = "inventory.stockout.delete";
 
-        /// <summary>The shortage report, and the "Create Purchase Order" it offers (which also needs purchase.orders.create).</summary>
+        /* Shortage plans: saved planning documents. A draft is a working sheet; posting freezes it
+           into a historical snapshot. Creating the purchase order from a posted plan is NOT one of
+           these — it is creating a purchase order, and needs purchase.orders.create. */
         public const string ShortagesView = "inventory.shortages.view";
+        public const string ShortagesCreate = "inventory.shortages.create";
+        public const string ShortagesPost = "inventory.shortages.post";
+        public const string ShortagesDelete = "inventory.shortages.delete";
     }
 
     /// <summary>
@@ -147,6 +158,14 @@ public static class Permissions
         public const string ReturnsPost = "purchase.returns.post";
         public const string ReturnsCancel = "purchase.returns.cancel";
         public const string ReturnsDelete = "purchase.returns.delete";
+
+        /* Landed cost adjustments: charges that arrive after the goods. Posting one moves stock
+           VALUE and the period's cost of sales, so it carries the same five verbs as a document. */
+        public const string LandedCostsView = "purchase.landedcosts.view";
+        public const string LandedCostsCreate = "purchase.landedcosts.create";
+        public const string LandedCostsPost = "purchase.landedcosts.post";
+        public const string LandedCostsCancel = "purchase.landedcosts.cancel";
+        public const string LandedCostsDelete = "purchase.landedcosts.delete";
     }
 
     private const string SecurityModule = "Security";
@@ -287,9 +306,17 @@ public static class Permissions
 
         new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
             "Change numbering and behaviour of document types.", 900),
+        new(Configuration.ChargeTypesManage, "Manage purchase charge types", ConfigurationModule,
+            "Define charge types and their allocation rules.", 910),
 
-        new(Inventory.ShortagesView, "View Shortages", InventoryModule,
-            "See the shortage report and create purchase orders from it.", 950),
+        new(Inventory.ShortagesView, "View Shortage Plans", InventoryModule,
+            "See shortage planning documents.", 950),
+        new(Inventory.ShortagesCreate, "Create Shortage Plans", InventoryModule,
+            "Create, edit and recalculate draft shortage plans.", 960),
+        new(Inventory.ShortagesPost, "Post Shortage Plans", InventoryModule,
+            "Post shortage plans (locks the snapshot).", 970),
+        new(Inventory.ShortagesDelete, "Delete Shortage Plans", InventoryModule,
+            "Delete draft shortage plans.", 980),
 
         new(Purchase.OrdersView, "View Purchase Orders", PurchaseModule,
             "See purchase orders.", 1000),
@@ -324,10 +351,23 @@ public static class Permissions
         new(Purchase.ReturnsDelete, "Delete Purchase Returns", PurchaseModule,
             "Delete draft purchase returns.", 1160),
 
+        new(Purchase.LandedCostsView, "View Landed Cost Adjustments", PurchaseModule,
+            "See landed cost adjustments.", 1180),
+        new(Purchase.LandedCostsCreate, "Create Landed Cost Adjustments", PurchaseModule,
+            "Create and edit draft landed cost adjustments.", 1190),
+        new(Purchase.LandedCostsPost, "Post Landed Cost Adjustments", PurchaseModule,
+            "Post landed cost adjustments (updates item costs).", 1200),
+        new(Purchase.LandedCostsCancel, "Cancel Landed Cost Adjustments", PurchaseModule,
+            "Cancel posted landed cost adjustments.", 1210),
+        new(Purchase.LandedCostsDelete, "Delete Landed Cost Adjustments", PurchaseModule,
+            "Delete draft landed cost adjustments.", 1220),
+
         new(Sales.InvoicesImport, "Import invoice items", SalesModule,
             "Import invoice lines from an Excel file.", 600),
         new(Sales.InvoicesPriceOverride, "Override selling price", SalesModule,
             "Accept a manual unit price instead of the price list price.", 610),
+        new(Sales.ProfitView, "View Sales Profit", SalesModule,
+            "See the sales profit report (net sales, COGS, gross profit).", 680),
 
         new(Sales.InvoicesView, "View Sales Invoices", SalesModule,
             "See sales invoices.", 620),

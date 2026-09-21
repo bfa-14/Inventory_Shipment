@@ -10,6 +10,7 @@ namespace Inventory_Shipment.Model.DTOs.Sales;
 public static class SalesDocumentTypes
 {
     public const string Invoice = "SINV";
+    public const string Return = "SRET";
 }
 
 /// <summary>
@@ -132,6 +133,32 @@ public sealed class SalesInvoiceLineDto
     /// <summary>The cost of goods per base unit at posting time, in the base currency. Null until posted.</summary>
     public decimal? UnitCostBase { get; init; }
 
+    /* THE COST SNAPSHOT, frozen when the invoice was posted. Null on a draft, and null for a reader
+       without sales.profit.view — a price is everybody's business, a margin is not. */
+
+    /// <summary>What the goods had cost the company FOB when this line was sold.</summary>
+    public decimal? FobCostAtSale { get; init; }
+
+    /// <summary>The item's landed cost at that moment — what replacing the goods would have cost.</summary>
+    public decimal? LastCostAtSale { get; init; }
+
+    /// <summary>The line's sale after discount, in the base currency.</summary>
+    public decimal? NetSalesBase { get; init; }
+
+    /// <summary>Cost of goods sold: base quantity × the average cost at posting.</summary>
+    public decimal? CogsBase { get; init; }
+
+    public decimal? GrossProfitBase { get; init; }
+
+    /// <summary>Gross profit as a percentage OF NET SALES. Null when the line sold for nothing.</summary>
+    public decimal? GrossProfitPct { get; init; }
+
+    /// <summary>How much of this line has come back on a sales return, in base units.</summary>
+    public decimal ReturnedQuantityBase { get; init; }
+
+    /// <summary>What can still be returned: base quantity less what already came back.</summary>
+    public decimal RemainingBase { get; init; }
+
     /// <summary>The Excel row this line came from, where it came from a file. What the row-number tooltip shows.</summary>
     public int? ImportRowNumber { get; init; }
 
@@ -139,6 +166,9 @@ public sealed class SalesInvoiceLineDto
 
     /// <summary>Stock in this item and warehouse right now, so the grid can warn before posting.</summary>
     public decimal OnHandBase { get; init; }
+
+    /// <summary>The item's average cost as it stands NOW — what a line posted today would be costed at.</summary>
+    public decimal? ItemAverageCost { get; init; }
 
     /// <summary>The price list price as it stands NOW — informational, so a Manual line can show what it overrode.</summary>
     public decimal? SystemPrice { get; init; }
@@ -224,8 +254,19 @@ public sealed class SalesInvoiceDto
     public decimal TotalAmount { get; init; }
     public decimal TotalAmountBase { get; init; }
 
-    /// <summary>Cost of the goods that left, in the base currency. Set on posting; the margin is TotalAmountBase less this.</summary>
+    /// <summary>Cost of the goods that left, in the base currency. Set on posting; null without sales.profit.view.</summary>
     public decimal? TotalCostBase { get; init; }
+
+    /// <summary>Net sales less cost of sales, in the base currency. Null on a draft and for a reader without sales.profit.view.</summary>
+    public decimal? TotalGrossProfitBase { get; init; }
+
+    /// <summary>The same as a percentage of the invoice's base total.</summary>
+    public decimal? TotalGrossProfitPct { get; init; }
+
+    /// <summary>The invoice a return was created from (SRET), by id and by number.</summary>
+    public int? SourceDocumentId { get; init; }
+
+    public string? SourceDocumentNumber { get; init; }
 
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
@@ -245,9 +286,22 @@ public sealed class SalesInvoiceDto
     public bool CanCancel => Status == StockDocumentStatus.Posted;
     public bool CanDelete => Status == StockDocumentStatus.Draft;
 
+    /// <summary>A posted invoice with something still not returned becomes a sales return draft.</summary>
+    public bool CanCreateReturn
+        => DocumentTypeCode == SalesDocumentTypes.Invoice
+           && Status == StockDocumentStatus.Posted
+           && Lines.Any(l => l.RemainingBase > 0);
+
     public IReadOnlyList<SalesInvoiceLineDto> Lines { get; init; } = [];
     public IReadOnlyList<SalesInvoiceFileDto> Files { get; init; } = [];
     public IReadOnlyList<SalesInvoiceAuditDto> Audit { get; init; } = [];
+}
+
+/// <summary>Make the sales return of a posted invoice.</summary>
+public sealed class CreateSalesReturnRequest
+{
+    /// <summary>Null = today.</summary>
+    public DateOnly? DocumentDate { get; init; }
 }
 
 /// <summary>

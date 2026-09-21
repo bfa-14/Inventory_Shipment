@@ -37,6 +37,16 @@ public interface IPurchaseDocumentService
         int id, ClosePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>Records what the supplier has shipped on an open order. Needs purchase.orders.create.</summary>
+    Task<Result<PurchaseDocumentDto>> MarkShippedAsync(
+        int id, MarkShippedRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Replaces the charges of a draft purchase invoice. Needs purchase.invoices.create.</summary>
+    Task<Result<PurchaseDocumentDto>> SetChargesAsync(
+        int id, SetPurchaseChargesRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     Task<Result> DeleteAsync(
         int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 

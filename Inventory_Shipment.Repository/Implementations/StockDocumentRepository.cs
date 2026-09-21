@@ -54,6 +54,7 @@ public sealed class StockDocumentRepository : IStockDocumentRepository
         parameters.Add("@IsActive", request.IsActive, DbType.Boolean);
         parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@YearInNumber", request.YearInNumber, DbType.Boolean);
 
         await using var connection = _connectionFactory.Create();
         try

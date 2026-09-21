@@ -46,14 +46,139 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         });
     }
 
-    public async Task<Result<SalesInvoiceDto>> GetAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Result<SalesInvoiceDto>> GetAsync(
+        int id, IReadOnlySet<string>? permissions = null, CancellationToken cancellationToken = default)
     {
         var invoice = await _invoices.GetAsync(id, cancellationToken);
 
         return invoice is null
             ? Result<SalesInvoiceDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<SalesInvoiceDto>.Success(invoice);
+            : Result<SalesInvoiceDto>.Success(WithCostsFor(invoice, permissions));
     }
+
+    /// <summary>
+    /// The invoice as this caller may see it: without sales.profit.view, every cost and margin comes
+    /// back NULL rather than absent.
+    ///
+    /// STRIPPED HERE, ONCE, ON THE WAY OUT. A price is everybody's business and a margin is not, and
+    /// the difference is a permission rather than a screen — so it is enforced where the document
+    /// leaves the service, not in the pages that draw it. Null rather than a missing field because
+    /// a client that asks for a number and receives nothing has an answer either way; one that
+    /// receives 0 would print a margin of zero and be believed.
+    /// </summary>
+    private static SalesInvoiceDto WithCostsFor(SalesInvoiceDto invoice, IReadOnlySet<string>? permissions)
+    {
+        // Null permissions = an internal caller that is not answering a request (the import posting).
+        if (permissions is null || permissions.Contains(Permissions.Sales.ProfitView))
+        {
+            return invoice;
+        }
+
+        return new SalesInvoiceDto
+        {
+            Id = invoice.Id,
+            DocumentTypeId = invoice.DocumentTypeId,
+            DocumentTypeCode = invoice.DocumentTypeCode,
+            DocumentTypeName = invoice.DocumentTypeName,
+            NumberOnPost = invoice.NumberOnPost,
+            DocumentNumber = invoice.DocumentNumber,
+            DocumentDate = invoice.DocumentDate,
+            DueDate = invoice.DueDate,
+            BranchId = invoice.BranchId,
+            BranchCode = invoice.BranchCode,
+            BranchName = invoice.BranchName,
+            WarehouseId = invoice.WarehouseId,
+            WarehouseCode = invoice.WarehouseCode,
+            WarehouseName = invoice.WarehouseName,
+            ClientId = invoice.ClientId,
+            ClientCode = invoice.ClientCode,
+            ClientName = invoice.ClientName,
+            ClientPhone = invoice.ClientPhone,
+            ClientEmail = invoice.ClientEmail,
+            ClientAddress = invoice.ClientAddress,
+            SalesmanId = invoice.SalesmanId,
+            SalesmanCode = invoice.SalesmanCode,
+            SalesmanName = invoice.SalesmanName,
+            PriceListId = invoice.PriceListId,
+            PriceListCode = invoice.PriceListCode,
+            PriceListName = invoice.PriceListName,
+            CurrencyId = invoice.CurrencyId,
+            CurrencyCode = invoice.CurrencyCode,
+            CurrencyName = invoice.CurrencyName,
+            CurrencySymbol = invoice.CurrencySymbol,
+            DecimalPlaces = invoice.DecimalPlaces,
+            IsBaseCurrency = invoice.IsBaseCurrency,
+            RateType = invoice.RateType,
+            ExchangeRate = invoice.ExchangeRate,
+            BaseCurrencyCode = invoice.BaseCurrencyCode,
+            ReferenceNo = invoice.ReferenceNo,
+            Notes = invoice.Notes,
+            Status = invoice.Status,
+            TotalItems = invoice.TotalItems,
+            TotalQuantity = invoice.TotalQuantity,
+            Subtotal = invoice.Subtotal,
+            TotalDiscount = invoice.TotalDiscount,
+            TotalAmount = invoice.TotalAmount,
+            TotalAmountBase = invoice.TotalAmountBase,
+            TotalCostBase = null,
+            TotalGrossProfitBase = null,
+            TotalGrossProfitPct = null,
+            SourceDocumentId = invoice.SourceDocumentId,
+            SourceDocumentNumber = invoice.SourceDocumentNumber,
+            PostedAtUtc = invoice.PostedAtUtc,
+            PostedByName = invoice.PostedByName,
+            CancelledAtUtc = invoice.CancelledAtUtc,
+            CancelledByName = invoice.CancelledByName,
+            CancelReason = invoice.CancelReason,
+            CreatedAtUtc = invoice.CreatedAtUtc,
+            CreatedByName = invoice.CreatedByName,
+            UpdatedAtUtc = invoice.UpdatedAtUtc,
+            UpdatedByName = invoice.UpdatedByName,
+            RowVersion = invoice.RowVersion,
+            Files = invoice.Files,
+            Audit = invoice.Audit,
+            Lines = invoice.Lines.Select(WithoutCosts).ToList(),
+        };
+    }
+
+    private static SalesInvoiceLineDto WithoutCosts(SalesInvoiceLineDto line) => new()
+    {
+        Id = line.Id,
+        LineNo = line.LineNo,
+        ItemId = line.ItemId,
+        ItemCode = line.ItemCode,
+        ItemName = line.ItemName,
+        ItemUnitId = line.ItemUnitId,
+        UnitTypeName = line.UnitTypeName,
+        SkuCode = line.SkuCode,
+        Barcode = line.Barcode,
+        PackingFormula = line.PackingFormula,
+        WarehouseId = line.WarehouseId,
+        WarehouseCode = line.WarehouseCode,
+        WarehouseName = line.WarehouseName,
+        ExpiryDate = line.ExpiryDate,
+        Quantity = line.Quantity,
+        QuantityBase = line.QuantityBase,
+        UnitPrice = line.UnitPrice,
+        DiscountPercent = line.DiscountPercent,
+        LineDiscount = line.LineDiscount,
+        LineTotal = line.LineTotal,
+        PriceSource = line.PriceSource,
+        UnitCostBase = null,
+        FobCostAtSale = null,
+        LastCostAtSale = null,
+        NetSalesBase = null,
+        CogsBase = null,
+        GrossProfitBase = null,
+        GrossProfitPct = null,
+        ReturnedQuantityBase = line.ReturnedQuantityBase,
+        RemainingBase = line.RemainingBase,
+        ImportRowNumber = line.ImportRowNumber,
+        Notes = line.Notes,
+        OnHandBase = line.OnHandBase,
+        SystemPrice = line.SystemPrice,
+        ItemAverageCost = null,
+    };
 
     public async Task<Result<RateResolutionDto>> ResolveRateAsync(
         int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default)
@@ -98,12 +223,43 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         _logger.LogInformation("Sales invoice {InvoiceId} saved by user {UserId} (price override {Override})",
             savedId, userId, allowPriceOverride);
 
-        return await GetAsync(savedId, cancellationToken);
+        return await GetAsync(savedId, permissions, cancellationToken);
     }
 
-    public Task<Result<SalesInvoiceDto>> PostAsync(int id, string? rowVersion, int userId, CancellationToken cancellationToken = default)
+    public Task<Result<SalesInvoiceDto>> PostAsync(
+        int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
+        CancellationToken cancellationToken = default)
         => ChangeAsync(id, cancellationToken,
-            version => _invoices.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted");
+            version => _invoices.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted", permissions);
+
+    /// <summary>
+    /// A sales return draft from a posted invoice: what has not already come back, at the invoice's
+    /// prices and its ORIGINAL cost of sales. There is no returns page yet — the caller gets the
+    /// draft and its number, and the page says so.
+    /// </summary>
+    public async Task<Result<SalesInvoiceDto>> CreateReturnAsync(
+        int id, DateOnly? documentDate, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Sales.InvoicesCreate))
+        {
+            return Result<SalesInvoiceDto>.Failure(
+                ErrorType.Forbidden, $"This action needs the {Permissions.Sales.InvoicesCreate} permission.", "FORBIDDEN");
+        }
+
+        int newId;
+        try
+        {
+            newId = await _invoices.CreateFromSourceAsync(id, documentDate, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure(ex);
+        }
+
+        _logger.LogInformation("Sales return {ReturnId} created from invoice {InvoiceId} by user {UserId}", newId, id, userId);
+        return await GetAsync(newId, permissions, cancellationToken);
+    }
 
     public async Task<Result<ImportPostResult>> ImportPostAsync(
         SaveSalesInvoiceRequest request, int userId, IReadOnlySet<string> permissions,
@@ -197,15 +353,16 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     }
 
     public Task<Result<SalesInvoiceDto>> CancelAsync(
-        int id, CancelSalesInvoiceRequest request, int userId, CancellationToken cancellationToken = default)
+        int id, CancelSalesInvoiceRequest request, int userId, IReadOnlySet<string>? permissions = null,
+        CancellationToken cancellationToken = default)
         => ChangeAsync(id, cancellationToken,
             version => _invoices.CancelAsync(id, request.Reason, version, userId, cancellationToken),
-            request.RowVersion, userId, "cancelled");
+            request.RowVersion, userId, "cancelled", permissions);
 
     public Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
         => BulkDocumentActions.RunAsync(ids, async id =>
         {
-            var posted = await PostAsync(id, null, userId, cancellationToken);
+            var posted = await PostAsync(id, null, userId, cancellationToken: cancellationToken);
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
@@ -296,7 +453,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             var invoice = saved.Value;
             if (request.PostImmediately)
             {
-                var result = await PostAsync(invoice.Id, null, userId, cancellationToken);
+                var result = await PostAsync(invoice.Id, null, userId, cancellationToken: cancellationToken);
                 if (result.IsSuccess && result.Value is not null)
                 {
                     invoice = result.Value;
@@ -553,7 +710,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
     private async Task<Result<SalesInvoiceDto>> ChangeAsync(
         int id, CancellationToken cancellationToken, Func<byte[]?, Task> change,
-        string? rowVersion, int userId, string verb)
+        string? rowVersion, int userId, string verb, IReadOnlySet<string>? permissions = null)
     {
         try
         {
@@ -568,7 +725,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
         // Re-read: posting assigns the number, writes the ledger and the cost snapshot, and moves the
         // status. The document is the server's answer, not a patch of what was sent.
-        return await GetAsync(id, cancellationToken);
+        return await GetAsync(id, permissions, cancellationToken);
     }
 
     private static Result<SalesInvoiceDto> Failure(BusinessRuleException exception)

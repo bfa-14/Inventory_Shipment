@@ -124,6 +124,40 @@ public sealed class PurchaseDocumentsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// The charges of a DRAFT purchase invoice — freight, customs, clearing — replacing whatever was
+    /// there. Sent apart from the lines: the lines are the supplier's bill and the charges are
+    /// everybody else's, and they are refused for different reasons.
+    /// </summary>
+    [HttpPut("{id:int}/charges")]
+    [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<PurchaseDocumentDto>> SetCharges(
+        int id, [FromBody] SetPurchaseChargesRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.SetChargesAsync(
+            id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>What the supplier has shipped on an open order (in transit until received). No lines = everything shipped.</summary>
+    [HttpPost("{id:int}/mark-shipped")]
+    [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<PurchaseDocumentDto>> MarkShipped(
+        int id, [FromBody] MarkShippedRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.MarkShippedAsync(
+            id, request ?? new MarkShippedRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
     [HttpDelete("{id:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]

@@ -36,6 +36,10 @@ public interface ISalesDocumentRepository
     /// <summary>Drafts only.</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>sales.usp_SalesDocument_CreateFromSource — a return draft from a posted invoice; the new id.</summary>
+    Task<int> CreateFromSourceAsync(
+        int sourceId, DateOnly? documentDate, int userId, CancellationToken cancellationToken = default);
+
     /// <summary>The rate for a price list's currency on a date. Null when the price list does not exist; Rate null when no rate is defined.</summary>
     Task<RateResolutionDto?> ResolveRateAsync(
         int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);

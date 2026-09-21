@@ -10,7 +10,7 @@ Run: Prompt A with the API folder open (5 minutes), then Prompt B with the Web f
 ## Prompt A — Backend check (API)
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment (.NET 10 solution). Do not touch the Web project.
 
 Bug: the unit cost typed on an Inventory In line is not saved (after Save Draft / reload the line shows 0 or the
 old value). Find where it is lost on the API side and fix it:
@@ -29,7 +29,7 @@ Report the root cause and the files changed.
 ## Prompt B — Frontend
 
 ```text
-You are working on D:\VSProjects\Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared ui
+You are working on /home/bilal/VSProjects/InventoryShipment-Project/Inventory_Shipment.Web (Mantine 9 stack, docs/frontend-conventions.md, shared ui
 components, document-page skeleton: DocumentHeaderCard, QuickItemSearch, DocumentLinesGrid, DocumentSummary,
 DocumentActionBar, AttachmentsDrawer, AuditTrail). Frontend only. Dev: npm run dev, admin / Admin@12345.
 

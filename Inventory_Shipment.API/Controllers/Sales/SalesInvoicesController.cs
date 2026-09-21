@@ -75,7 +75,7 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<SalesInvoiceDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _invoices.GetAsync(id, cancellationToken);
+        var result = await _invoices.GetAsync(id, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -147,8 +147,29 @@ public sealed class SalesInvoicesController : ControllerBase
     public async Task<ActionResult<SalesInvoiceDto>> Post(
         int id, [FromBody] PostSalesInvoiceRequest? request, CancellationToken cancellationToken)
     {
-        var result = await _invoices.PostAsync(id, request?.RowVersion, User.GetUserId(), cancellationToken);
+        var result = await _invoices.PostAsync(id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// A sales return draft from a posted invoice: the remaining quantities, the invoice's prices
+    /// and its ORIGINAL cost of sales. There is no returns page yet — the draft and its number come
+    /// back so the caller can say what was made.
+    /// </summary>
+    [HttpPost("{id:int}/create-return")]
+    [HasPermission(Permissions.Sales.InvoicesCreate)]
+    [ProducesResponseType<SalesInvoiceDto>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<SalesInvoiceDto>> CreateReturn(
+        int id, [FromBody] CreateSalesReturnRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _invoices.CreateReturnAsync(
+            id, request?.DocumentDate, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.IsSuccess
+            ? CreatedAtAction(nameof(GetById), new { id = result.Value!.Id }, result.Value)
+            : this.ToProblem(result);
     }
 
     [HttpPost("{id:int}/cancel")]
@@ -158,7 +179,7 @@ public sealed class SalesInvoicesController : ControllerBase
     public async Task<ActionResult<SalesInvoiceDto>> Cancel(
         int id, [FromBody] CancelSalesInvoiceRequest request, CancellationToken cancellationToken)
     {
-        var result = await _invoices.CancelAsync(id, request, User.GetUserId(), cancellationToken);
+        var result = await _invoices.CancelAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

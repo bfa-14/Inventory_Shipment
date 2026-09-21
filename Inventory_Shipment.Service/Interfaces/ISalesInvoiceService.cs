@@ -19,7 +19,13 @@ public interface ISalesInvoiceService
     Task<Result<PagedResult<SalesInvoiceListDto>>> SearchAsync(
         SalesInvoiceQuery query, CancellationToken cancellationToken = default);
 
-    Task<Result<SalesInvoiceDto>> GetAsync(int id, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// One invoice. WITHOUT sales.profit.view IN <paramref name="permissions"/>, every cost and
+    /// margin comes back null: a price is everybody's business, a margin is not. Null permissions
+    /// means an internal caller that is not answering a request, and nothing is stripped.
+    /// </summary>
+    Task<Result<SalesInvoiceDto>> GetAsync(
+        int id, IReadOnlySet<string>? permissions = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Creates a draft (<paramref name="id"/> null) or replaces one.
@@ -31,7 +37,14 @@ public interface ISalesInvoiceService
         int? id, SaveSalesInvoiceRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
-    Task<Result<SalesInvoiceDto>> PostAsync(int id, string? rowVersion, int userId, CancellationToken cancellationToken = default);
+    Task<Result<SalesInvoiceDto>> PostAsync(
+        int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>A sales return draft from a posted invoice, at its prices and its original COGS. Needs sales.invoices.create.</summary>
+    Task<Result<SalesInvoiceDto>> CreateReturnAsync(
+        int id, DateOnly? documentDate, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// The Import Sales page's one call: the header and lines become a draft that is posted at once,
@@ -51,7 +64,8 @@ public interface ISalesInvoiceService
         CancellationToken cancellationToken = default);
 
     Task<Result<SalesInvoiceDto>> CancelAsync(
-        int id, CancelSalesInvoiceRequest request, int userId, CancellationToken cancellationToken = default);
+        int id, CancelSalesInvoiceRequest request, int userId, IReadOnlySet<string>? permissions = null,
+        CancellationToken cancellationToken = default);
 
     Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 

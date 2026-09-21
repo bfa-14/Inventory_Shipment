@@ -25,6 +25,16 @@ public interface IPurchaseDocumentRepository
 
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>purchase.usp_PurchaseDocument_SetCharges — draft invoices only; throws 65012 when a charge is refused.</summary>
+    Task SetChargesAsync(
+        int id, SetPurchaseChargesRequest request, byte[]? rowVersion, int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>purchase.usp_PurchaseDocument_MarkShipped — open orders only; no lines means everything was shipped.</summary>
+    Task MarkShippedAsync(
+        int id, IReadOnlyList<ShippedLineRequest> lines, byte[]? rowVersion, int userId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>A draft of the target kind holding what remains on the source; the new id.</summary>
     Task<int> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, int userId,

@@ -63,6 +63,21 @@ public class Item
     /// <summary>Days between ordering and receiving, for the shortage report's days-of-cover figure.</summary>
     public int? LeadTimeDays { get; set; }
 
+    /// <summary>Pieces (base units) that fit in one container, for the shortage plan's container requirement.</summary>
+    public int? PcPerContainer { get; set; }
+
+    /// <summary>Per base unit; the basis of a charge allocated by weight.</summary>
+    public decimal? WeightKg { get; set; }
+
+    /// <summary>Per base unit, in cubic metres; the basis of a charge allocated by volume.</summary>
+    public decimal? VolumeCbm { get; set; }
+
+    /// <summary>What the supplier charged per base unit on the last posted purchase invoice.</summary>
+    public decimal? FobCost { get; set; }
+
+    /// <summary>On hand × average cost, in the base currency.</summary>
+    public decimal InventoryValue { get; set; }
+
     /// <summary>Who last delivered it, and when — written by the purchase invoice posting.</summary>
     public int? LastSupplierId { get; set; }
     public string? LastSupplierName { get; set; }

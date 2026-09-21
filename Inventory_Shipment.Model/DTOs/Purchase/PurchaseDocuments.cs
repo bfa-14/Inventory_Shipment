@@ -132,8 +132,17 @@ public sealed class PurchaseDocumentLineDto
     public decimal LineDiscount { get; init; }
     public decimal LineTotal { get; init; }
 
-    /// <summary>The cost per base unit in the base currency, written by the posting.</summary>
+    /// <summary>The LANDED cost per base unit in the base currency, written by the posting (FOB + allocated charges).</summary>
     public decimal? UnitCostBase { get; init; }
+
+    /// <summary>The same figure under the name the costing uses. Kept beside it so a column can say "Landed" without arithmetic.</summary>
+    public decimal? LandedCostBase { get; init; }
+
+    /// <summary>What the supplier charged, per base unit, before any of the charges around it.</summary>
+    public decimal? FobCostBase { get; init; }
+
+    /// <summary>The charges this line took, in the base currency — the difference between FOB and landed, times the quantity.</summary>
+    public decimal AllocatedChargesBase { get; init; }
 
     public decimal ReceivedQuantityBase { get; init; }
     public decimal ReturnedQuantityBase { get; init; }
@@ -141,12 +150,21 @@ public sealed class PurchaseDocumentLineDto
     /// <summary>Orders: still to receive; invoices: still returnable; returns: null.</summary>
     public decimal? RemainingBase { get; init; }
 
+    /// <summary>Orders: what the supplier has shipped so far (base units), recorded with "Mark as shipped".</summary>
+    public decimal ShippedQuantityBase { get; init; }
+
+    /// <summary>Shipped and not yet received — the quantity on its way. The shortage plan counts it as Transit.</summary>
+    public decimal TransitBase { get; init; }
+
     public int? ImportRowNumber { get; init; }
     public string? Notes { get; init; }
     public int? SourceLineId { get; init; }
     public decimal OnHandBase { get; init; }
     public decimal? ItemLastCost { get; init; }
     public decimal? ItemAverageCost { get; init; }
+
+    /// <summary>The item's FOB cost as it stands now — what the next invoice would start from.</summary>
+    public decimal? ItemFobCost { get; init; }
 }
 
 public sealed class PurchaseDocumentFileDto
@@ -226,9 +244,21 @@ public sealed class PurchaseDocumentDto
     public decimal TotalDiscount { get; init; }
     public decimal TotalAmount { get; init; }
     public decimal TotalAmountBase { get; init; }
+
+    /// <summary>The landed charges on the goods, in the base currency: the invoice's own and its posted adjustments'.</summary>
+    public decimal TotalChargesBase { get; init; }
+
+    /// <summary>What the goods really cost: TotalAmountBase + TotalChargesBase.</summary>
+    public decimal TotalLandedCostBase { get; init; }
+
     public int? SourceDocumentId { get; init; }
     public string? SourceDocumentNumber { get; init; }
     public string? SourceDocumentTypeCode { get; init; }
+
+    /// <summary>The shortage plan this order was created from (Shortage → PO → Purchase Invoice traceability).</summary>
+    public int? SourceShortageId { get; init; }
+    public string? SourceShortageNumber { get; init; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime? CancelledAtUtc { get; init; }
@@ -255,6 +285,15 @@ public sealed class PurchaseDocumentDto
     /// <summary>Only an open (posted) order can be closed by hand.</summary>
     public bool CanClose => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
 
+    /// <summary>Charges are typed on a DRAFT invoice; after posting they arrive as a landed cost adjustment instead.</summary>
+    public bool CanEditCharges => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Draft;
+
+    /// <summary>A posted invoice can receive charges that arrived late, through a landed cost adjustment.</summary>
+    public bool CanAdjustLandedCost => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Posted;
+
+    /// <summary>Shipped quantities are recorded on an open order only — the procedure refuses anything else.</summary>
+    public bool CanMarkShipped => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
+
     /// <summary>An open order with something left to receive becomes a purchase invoice.</summary>
     public bool CanCreateInvoice
         => DocumentTypeCode == PurchaseDocumentTypes.Order
@@ -268,6 +307,10 @@ public sealed class PurchaseDocumentDto
            && Lines.Any(l => (l.RemainingBase ?? 0) > 0);
 
     public IReadOnlyList<PurchaseDocumentLineDto> Lines { get; init; } = [];
+
+    /// <summary>The invoice's own charges AND those of its adjustments, each saying which it came from.</summary>
+    public IReadOnlyList<PurchaseChargeDto> Charges { get; init; } = [];
+
     public IReadOnlyList<PurchaseDocumentFileDto> Files { get; init; } = [];
     public IReadOnlyList<PurchaseDocumentAuditDto> Audit { get; init; } = [];
     public IReadOnlyList<LinkedPurchaseDocumentDto> Linked { get; init; } = [];
@@ -388,6 +431,23 @@ public sealed class ClosePurchaseDocumentRequest
     [StringLength(300)]
     public string? Reason { get; init; }
 
+    public string? RowVersion { get; init; }
+}
+
+/// <summary>One line of "Mark as shipped": the TOTAL shipped so far on that line, in base units (0..ordered).</summary>
+public sealed class ShippedLineRequest
+{
+    [Range(1, int.MaxValue)]
+    public int LineId { get; init; }
+
+    [Range(0, int.MaxValue)]
+    public int ShippedQuantityBase { get; init; }
+}
+
+/// <summary>What the supplier has shipped on an open purchase order. NO LINES = EVERYTHING SHIPPED.</summary>
+public sealed class MarkShippedRequest
+{
+    public IReadOnlyList<ShippedLineRequest> Lines { get; init; } = [];
     public string? RowVersion { get; init; }
 }
 

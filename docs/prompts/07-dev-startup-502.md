@@ -21,7 +21,7 @@ stops on any exception).
 TASK
 
 1. Diagnose now (PowerShell) and report:
-   Get-NetTCPConnection -LocalPort 7089,5121,5173 -State Listen -ErrorAction SilentlyContinue |
+   Get-NetTCPConnection -LocalPort 7089,5121,5174 -State Listen -ErrorAction SilentlyContinue |
      Select-Object LocalAddress, LocalPort, OwningProcess, @{n='Process';e={(Get-Process -Id $_.OwningProcess).ProcessName}}
    Then start the API in a terminal and read the whole output:
      dotnet run --project D:\VSProjects\Inventory_Shipment\Inventory_Shipment.API --launch-profile https
@@ -62,13 +62,13 @@ TASK
       Make sure Inventory_Shipment.API is running (https://localhost:7089)." so the login page shows the real
       cause. Keep every other message unchanged.
    e. README.md of the Web project: a "Running in development" section - npm run dev (API + web), npm run dev:web
-      (API already running from Visual Studio), ports 7089 / 5121 / 5173, how to change the API port in
+      (API already running from Visual Studio), ports 7089 / 5121 / 5174, how to change the API port in
       .env.development, sign-in admin / Admin@12345.
 
 3. Verify and report each result:
-   - with nothing running: npm run dev -> both start, http://localhost:5173/login signs in with admin /
+   - with nothing running: npm run dev -> both start, http://localhost:5174/login signs in with admin /
      Admin@12345 and lands on the dashboard;
-   - Ctrl+C -> nothing left listening on 7089 or 5173 (Get-NetTCPConnection);
+   - Ctrl+C -> nothing left listening on 7089 or 5174 (Get-NetTCPConnection);
    - API started first from Visual Studio (or dev:api), then npm run dev -> starts only vite, login works;
    - API stopped while vite runs, sign in -> the page shows the "API not reachable" message (503), no 502;
    - npm run typecheck, npm run lint, npm run build clean.
