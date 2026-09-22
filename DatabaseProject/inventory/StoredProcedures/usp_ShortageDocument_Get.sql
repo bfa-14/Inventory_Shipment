@@ -26,6 +26,7 @@ BEGIN
            l.ExpectedRequirementBase, l.ShortageBase, l.CoverageMonths,
            l.PurchaseItemUnitId, ut.UnitTypeName AS PurchaseUnitName, l.PurchasePackingFormula,
            l.RequiredQty, l.RequiredBase, l.PcPerContainer, l.ContainerRequirement,
+           DefaultPcPerContainer = inventory.fn_Item_PcPerContainer(l.ItemId),   -- the Container unit today: what a cleared cell falls back to
            l.MinQuantity, l.MaxQuantity, l.LastCost, l.Notes
     FROM inventory.ShortageDocumentLines l
     INNER JOIN inventory.Items i ON i.Id = l.ItemId

@@ -5,7 +5,7 @@ RETURN
 (
     SELECT i.Id AS ItemId, i.ItemCode, i.ItemName, i.BrandId, i.ItemFamilyId, i.IsBivac,
            i.DefaultSupplierId, i.LastSupplierId, i.MinQuantity, i.MaxQuantity, i.LastCost, i.AverageCost, i.LeadTimeDays,
-           ItemPcPerContainer = i.PcPerContainer,
+           ItemPcPerContainer = inventory.fn_Item_PcPerContainer(i.Id),     -- the item's Container unit
            CurrentInventoryBase     = inventory.fn_StockOnHand(i.Id, @WarehouseId),
            TransitBase              = ISNULL(po.Transit, 0),
            OutstandingOrderBase     = ISNULL(po.Outstanding, 0),

@@ -219,6 +219,7 @@
     <Build Include="inventory\Views\vw_StockBalance.sql" />
     <Build Include="inventory\Functions\fn_StockOnHand.sql" />
     <Build Include="inventory\Functions\fn_AverageCost.sql" />
+    <Build Include="inventory\Functions\fn_Item_PcPerContainer.sql" />
     <Build Include="inventory\Stored Procedures\usp_StockReason_Lookup.sql" />
     <Build Include="inventory\Stored Procedures\usp_StockDocumentFile_Get.sql" />
     <Build Include="inventory\Stored Procedures\usp_StockDocumentFile_Delete.sql" />
