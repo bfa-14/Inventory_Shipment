@@ -55,10 +55,6 @@ public sealed class SaveItemRequest
     [Range(0, 3650)]
     public int? LeadTimeDays { get; init; }
 
-    /// <summary>Pieces (base units) that fit in one container; the shortage plan turns a required quantity into containers with it.</summary>
-    [Range(1, int.MaxValue)]
-    public int? PcPerContainer { get; init; }
-
     /// <summary>Per BASE unit. Needed by charges allocated by weight; null leaves those charges unable to allocate.</summary>
     [Range(0, 9999999)]
     public decimal? WeightKg { get; init; }

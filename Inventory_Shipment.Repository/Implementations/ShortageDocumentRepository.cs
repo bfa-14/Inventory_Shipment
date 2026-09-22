@@ -218,6 +218,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         public int RequiredBase { get; init; }
         public int? PcPerContainer { get; init; }
         public decimal? ContainerRequirement { get; init; }
+        public int? DefaultPcPerContainer { get; init; }
         public int? MinQuantity { get; init; }
         public int? MaxQuantity { get; init; }
         public decimal? LastCost { get; init; }
@@ -252,6 +253,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
             RequiredBase = RequiredBase,
             PcPerContainer = PcPerContainer,
             ContainerRequirement = ContainerRequirement,
+            DefaultPcPerContainer = DefaultPcPerContainer,
             MinQuantity = MinQuantity,
             MaxQuantity = MaxQuantity,
             LastCost = LastCost,

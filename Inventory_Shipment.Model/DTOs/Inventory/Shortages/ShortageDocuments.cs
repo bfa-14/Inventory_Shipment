@@ -68,6 +68,10 @@ public abstract class ShortageFiguresDto
     public string PurchaseUnitName { get; init; } = string.Empty;
     public int PurchasePackingFormula { get; init; }
 
+    /// <summary>
+    /// Pieces (base units) in one container. A live row carries the Packing Formula of the item's "Container"
+    /// unit; a saved line carries what the plan used — that default, or the planner's override.
+    /// </summary>
     public int? PcPerContainer { get; init; }
     public decimal? ContainerRequirement { get; init; }
 
@@ -113,6 +117,13 @@ public sealed class ShortageDocumentLineDto : ShortageFiguresDto
     public int RequiredQty { get; init; }
 
     public int RequiredBase { get; init; }
+
+    /// <summary>
+    /// The Packing Formula of the item's "Container" unit TODAY — what the line's PC per Container falls back to
+    /// when the planner clears it. Null when the item has no Container unit.
+    /// </summary>
+    public int? DefaultPcPerContainer { get; init; }
+
     public string? Notes { get; init; }
 }
 
@@ -261,7 +272,7 @@ public sealed class SaveShortageDocumentLineRequest
     [Range(0, 999999999)]
     public decimal? ExpectedMonthlySalesManual { get; init; }
 
-    /// <summary>Null = the item's own PC per container.</summary>
+    /// <summary>Null = the Packing Formula of the item's "Container" unit.</summary>
     [Range(1, int.MaxValue)]
     public int? PcPerContainer { get; init; }
 

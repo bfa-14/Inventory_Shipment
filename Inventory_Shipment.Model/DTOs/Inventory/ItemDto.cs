@@ -110,9 +110,6 @@ public sealed class ItemDetailsDto
     /// <summary>Days between ordering and receiving — what the shortage report compares days of cover with.</summary>
     public int? LeadTimeDays { get; init; }
 
-    /// <summary>Pieces (base units) per container — the default of a shortage plan line. Only the item's own Get returns it.</summary>
-    public int? PcPerContainer { get; init; }
-
     /// <summary>Per BASE unit. What a charge allocated by weight is shared out on; the posting refuses without it.</summary>
     public decimal? WeightKg { get; init; }
 

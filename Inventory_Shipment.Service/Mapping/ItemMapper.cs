@@ -68,7 +68,6 @@ public static class ItemMapper
         DefaultSupplierCode = item.DefaultSupplierCode,
         DefaultSupplierName = item.DefaultSupplierName,
         LeadTimeDays = item.LeadTimeDays,
-        PcPerContainer = item.PcPerContainer,
         WeightKg = item.WeightKg,
         VolumeCbm = item.VolumeCbm,
         FobCost = item.FobCost,

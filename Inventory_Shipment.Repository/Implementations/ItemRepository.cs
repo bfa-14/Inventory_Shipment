@@ -370,8 +370,8 @@ public sealed class ItemRepository : IItemRepository
     }
 
     public async Task SetPurchasingAsync(
-        int id, int? defaultSupplierId, int? leadTimeDays, int? pcPerContainer, decimal? weightKg,
-        decimal? volumeCbm, int? userId, CancellationToken cancellationToken = default)
+        int id, int? defaultSupplierId, int? leadTimeDays, decimal? weightKg, decimal? volumeCbm,
+        int? userId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
@@ -384,7 +384,6 @@ public sealed class ItemRepository : IItemRepository
                     DefaultSupplierId = defaultSupplierId,
                     LeadTimeDays = leadTimeDays,
                     UserId = userId,
-                    PcPerContainer = pcPerContainer,
                     WeightKg = weightKg,
                     VolumeCbm = volumeCbm,
                 },
