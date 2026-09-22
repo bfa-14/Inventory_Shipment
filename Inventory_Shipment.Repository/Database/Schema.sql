@@ -11667,6 +11667,17 @@ GO
 
 /* ================================================================== 3. Receipts: moving average + FOB (type re-created) */
 
+-- Before usp_Item_RebuildCosts below reads l.FobCostBase: a procedure may name a missing table but not a
+-- missing column, so on an empty database the CREATE failed when this ran in section 5.
+IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'FobCostBase') IS NULL
+BEGIN
+    ALTER TABLE purchase.PurchaseDocumentLines ADD
+        FobCostBase          DECIMAL(18,6) NULL,                                                       -- per base unit, base currency
+        AllocatedChargesBase DECIMAL(18,2) NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Charges DEFAULT (0);   -- landed charges of the line
+    PRINT 'PurchaseDocumentLines: added FobCostBase, AllocatedChargesBase';
+END
+GO
+
 IF TYPE_ID(N'inventory.tvp_ItemReceipt') IS NOT NULL
    AND NOT EXISTS (SELECT 1 FROM sys.columns c INNER JOIN sys.table_types tt ON tt.type_table_object_id = c.object_id
                    WHERE tt.name = N'tvp_ItemReceipt' AND SCHEMA_NAME(tt.schema_id) = N'inventory' AND c.name = N'FobCostBase')
@@ -11972,15 +11983,6 @@ END
 GO
 
 /* ================================================================== 5. Purchase charges on invoices / adjustments + allocations */
-
-IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'FobCostBase') IS NULL
-BEGIN
-    ALTER TABLE purchase.PurchaseDocumentLines ADD
-        FobCostBase          DECIMAL(18,6) NULL,                                                       -- per base unit, base currency
-        AllocatedChargesBase DECIMAL(18,2) NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Charges DEFAULT (0);   -- landed charges of the line
-    PRINT 'PurchaseDocumentLines: added FobCostBase, AllocatedChargesBase';
-END
-GO
 
 IF COL_LENGTH(N'purchase.PurchaseDocuments', N'TotalChargesBase') IS NULL
 BEGIN
