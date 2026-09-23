@@ -1,4 +1,4 @@
-CREATE SCHEMA [messaging]
+CREATE SCHEMA [inventory]
     AUTHORIZATION [dbo];
 
 

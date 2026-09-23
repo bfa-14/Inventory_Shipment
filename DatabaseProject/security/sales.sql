@@ -1,4 +1,4 @@
-CREATE SCHEMA [logistics]
+CREATE SCHEMA [sales]
     AUTHORIZATION [dbo];
 
 
