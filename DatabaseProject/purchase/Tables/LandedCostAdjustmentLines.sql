@@ -12,23 +12,13 @@ CREATE TABLE [purchase].[LandedCostAdjustmentLines] (
     [InventoryPortionBase] DECIMAL (18, 2) NOT NULL,
     [CogsPortionBase]      DECIMAL (18, 2) NOT NULL,
     [LandedCostBefore]     DECIMAL (18, 6) NOT NULL,
-    [LandedCostAfter]      DECIMAL (18, 6) NOT NULL
+    [LandedCostAfter]      DECIMAL (18, 6) NOT NULL,
+    CONSTRAINT [PK_LandedCostAdjustmentLines] PRIMARY KEY CLUSTERED ([Id] ASC),
+    CONSTRAINT [FK_LandedCostAdjustmentLines_Adj] FOREIGN KEY ([AdjustmentId]) REFERENCES [purchase].[LandedCostAdjustments] ([Id]),
+    CONSTRAINT [FK_LandedCostAdjustmentLines_Line] FOREIGN KEY ([PurchaseLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]),
+    CONSTRAINT [UQ_LandedCostAdjustmentLines] UNIQUE NONCLUSTERED ([AdjustmentId] ASC, [PurchaseLineId] ASC)
 );
-GO
 
-ALTER TABLE [purchase].[LandedCostAdjustmentLines]
-    ADD CONSTRAINT [UQ_LandedCostAdjustmentLines] UNIQUE NONCLUSTERED ([AdjustmentId] ASC, [PurchaseLineId] ASC);
-GO
 
-ALTER TABLE [purchase].[LandedCostAdjustmentLines]
-    ADD CONSTRAINT [FK_LandedCostAdjustmentLines_Adj] FOREIGN KEY ([AdjustmentId]) REFERENCES [purchase].[LandedCostAdjustments] ([Id]);
-GO
-
-ALTER TABLE [purchase].[LandedCostAdjustmentLines]
-    ADD CONSTRAINT [FK_LandedCostAdjustmentLines_Line] FOREIGN KEY ([PurchaseLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]);
-GO
-
-ALTER TABLE [purchase].[LandedCostAdjustmentLines]
-    ADD CONSTRAINT [PK_LandedCostAdjustmentLines] PRIMARY KEY CLUSTERED ([Id] ASC);
 GO
 

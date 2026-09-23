@@ -1,4 +1,4 @@
-﻿/* ------------------------------------------------------------------ 2. Functions */
+/* ------------------------------------------------------------------ 2. Functions */
 
 -- Active roles of a user
 CREATE   FUNCTION security.fn_UserRoles (@UserId INT)
@@ -12,3 +12,6 @@ RETURN
     WHERE ur.UserId = @UserId
       AND r.IsActive = 1
 );
+
+GO
+

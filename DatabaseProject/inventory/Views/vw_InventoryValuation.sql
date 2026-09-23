@@ -6,5 +6,6 @@ AS
            InventoryValue = CAST(inventory.fn_StockOnHand(i.Id, NULL) * i.AverageCost AS DECIMAL(18,2))
     FROM inventory.Items i
     WHERE i.IsActive = 1;
+
 GO
 

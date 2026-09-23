@@ -98,6 +98,12 @@ public static class Permissions
         public const string PartiesCreate = "masterdata.parties.create";
         public const string PartiesEdit = "masterdata.parties.edit";
         public const string PartiesDelete = "masterdata.parties.delete";
+
+        /* The lists behind the container pages. One "manage" each: they are setup, and the lookups
+           the container page reads from them are open to any signed-in user. */
+        public const string ContainerTypesManage = "masterdata.containertypes.manage";
+        public const string PortsManage = "masterdata.ports.manage";
+        public const string AttachmentTypesManage = "masterdata.attachmenttypes.manage";
     }
 
     public static class Inventory
@@ -168,12 +174,33 @@ public static class Permissions
         public const string LandedCostsDelete = "purchase.landedcosts.delete";
     }
 
+    /// <summary>
+    /// Import shipments between the purchase invoice and the warehouse.
+    ///
+    /// OFFLOAD IS ITS OWN PERMISSION because it is the moment stock enters, at landed cost; the
+    /// person who types a loading plan is rarely the one who signs for the goods at the gate. Cancel
+    /// covers both cancelling a container and reversing its offload. OVERCAPACITY is the right to
+    /// confirm the capacity warning: without it, a load above the container's units is refused.
+    /// </summary>
+    public static class Containers
+    {
+        public const string View = "containers.view";
+        public const string Create = "containers.create";
+        public const string Confirm = "containers.confirm";
+        public const string Offload = "containers.offload";
+        public const string Cancel = "containers.cancel";
+        public const string Close = "containers.close";
+        public const string Delete = "containers.delete";
+        public const string OverCapacity = "containers.overcapacity";
+    }
+
     private const string SecurityModule = "Security";
     private const string SalesModule = "Sales";
     private const string ConfigurationModule = "Configuration";
     private const string MasterDataModule = "Master Data";
     private const string InventoryModule = "Inventory";
     private const string PurchaseModule = "Purchase";
+    private const string ContainersModule = "Containers";
 
     public static IReadOnlyList<PermissionDefinition> All { get; } =
     [
@@ -361,6 +388,30 @@ public static class Permissions
             "Cancel posted landed cost adjustments.", 1210),
         new(Purchase.LandedCostsDelete, "Delete Landed Cost Adjustments", PurchaseModule,
             "Delete draft landed cost adjustments.", 1220),
+
+        // Names, descriptions and sort orders match script 24's MERGE, so the start-up sync changes nothing.
+        new(Containers.View, "View Containers", ContainersModule,
+            "See the container list and details.", 1300),
+        new(Containers.Create, "Create Containers", ContainersModule,
+            "Create and edit containers and their loading plan.", 1310),
+        new(Containers.Confirm, "Confirm Containers", ContainersModule,
+            "Confirm the loading plan of a container.", 1320),
+        new(Containers.Offload, "Offload Containers", ContainersModule,
+            "Offload a container: the goods enter stock.", 1330),
+        new(Containers.Cancel, "Cancel Containers", ContainersModule,
+            "Cancel a container or reverse an offload.", 1340),
+        new(Containers.Close, "Close Containers", ContainersModule,
+            "Close an offloaded container.", 1350),
+        new(Containers.Delete, "Delete Containers", ContainersModule,
+            "Delete draft containers.", 1360),
+        new(Containers.OverCapacity, "Load Above Capacity", ContainersModule,
+            "Load a container above the capacity of its type.", 1370),
+        new(MasterData.ContainerTypesManage, "Manage container types", MasterDataModule,
+            "Define container types and their capacity.", 1380),
+        new(MasterData.PortsManage, "Manage ports", MasterDataModule,
+            "Define ports, borders and inland destinations.", 1390),
+        new(MasterData.AttachmentTypesManage, "Manage attachment types", MasterDataModule,
+            "Define the document types used by attachments.", 1400),
 
         new(Sales.InvoicesImport, "Import invoice items", SalesModule,
             "Import invoice lines from an Excel file.", 600),

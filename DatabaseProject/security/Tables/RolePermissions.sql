@@ -1,4 +1,4 @@
-﻿CREATE TABLE [security].[RolePermissions] (
+CREATE TABLE [security].[RolePermissions] (
     [RoleId]       INT           NOT NULL,
     [PermissionId] INT           NOT NULL,
     [GrantedAtUtc] DATETIME2 (3) CONSTRAINT [DF_RolePermissions_GrantedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
@@ -9,6 +9,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_RolePermissions_PermissionId]
     ON [security].[RolePermissions]([PermissionId] ASC);
+
+
+GO
 

@@ -49,6 +49,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public byte DecimalPlaces { get; init; }
         public decimal ExchangeRate { get; init; }
         public string? SupplierReference { get; init; }
+        public string? ExporterReference { get; init; }
+        public string? CommercialInvoiceNo { get; init; }
+        public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
         public byte Status { get; init; }
         public int TotalItems { get; init; }
         public decimal TotalQuantity { get; init; }
@@ -91,6 +94,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             DecimalPlaces = DecimalPlaces,
             ExchangeRate = ExchangeRate,
             SupplierReference = SupplierReference,
+            ExporterReference = ExporterReference,
+            CommercialInvoiceNo = CommercialInvoiceNo,
+            ReceiptMode = ReceiptMode,
             Status = PurchaseDocumentStatus.From(Status),
             TotalItems = TotalItems,
             TotalQuantity = TotalQuantity,
@@ -181,6 +187,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal ExchangeRate { get; init; }
         public string? BaseCurrencyCode { get; init; }
         public string? SupplierReference { get; init; }
+        public string? ExporterReference { get; init; }
+        public string? CommercialInvoiceNo { get; init; }
+        public byte ReceiptMode { get; init; }
         public string? Notes { get; init; }
         public byte Status { get; init; }
         public int TotalItems { get; init; }
@@ -243,6 +252,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal? RemainingBase { get; init; }
         public decimal ShippedQuantityBase { get; init; }
         public decimal TransitBase { get; init; }
+        public int AllocatedToContainersBase { get; init; }
+        public int? AvailableForContainerBase { get; init; }
         public int? ImportRowNumber { get; init; }
         public string? Notes { get; init; }
         public int? SourceLineId { get; init; }
@@ -282,6 +293,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             RemainingBase = RemainingBase,
             ShippedQuantityBase = ShippedQuantityBase,
             TransitBase = TransitBase,
+            AllocatedToContainersBase = AllocatedToContainersBase,
+            AvailableForContainerBase = AvailableForContainerBase,
             ImportRowNumber = ImportRowNumber,
             Notes = Notes,
             SourceLineId = SourceLineId,
@@ -322,7 +335,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     {
         await using var connection = _connectionFactory.Create();
 
-        // Six result sets in one round trip, so the header, the lines, the chain and the charges are
+        // Seven result sets in one round trip, so the header, the lines, the chain and the charges are
         // from the same moment — a charge allocated between two reads would otherwise not add up.
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
             "purchase.usp_PurchaseDocument_Get", new { Id = id },
@@ -339,6 +352,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         var audit = (await multi.ReadAsync<PurchaseDocumentAuditDto>()).AsList();
         var linked = (await multi.ReadAsync<LinkedRow>()).AsList();
         var charges = (await multi.ReadAsync<PurchaseChargeRow>()).AsList();
+        var containers = (await multi.ReadAsync<PurchaseInvoiceContainerDto>()).AsList();
 
         return new PurchaseDocumentDto
         {
@@ -373,6 +387,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             ExchangeRate = header.ExchangeRate,
             BaseCurrencyCode = header.BaseCurrencyCode,
             SupplierReference = header.SupplierReference,
+            ExporterReference = header.ExporterReference,
+            CommercialInvoiceNo = header.CommercialInvoiceNo,
+            ReceiptMode = header.ReceiptMode,
             Notes = header.Notes,
             Status = PurchaseDocumentStatus.From(header.Status),
             TotalItems = header.TotalItems,
@@ -406,6 +423,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             Audit = audit,
             Linked = linked.Select(l => l.ToDto()).ToList(),
             Charges = charges.Select(c => c.ToDto()).ToList(),
+            Containers = containers,
         };
     }
 
@@ -467,6 +485,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         parameters.Add("@SourceDocumentId", request.SourceDocumentId, DbType.Int32);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@ReceiptMode", request.ReceiptMode, DbType.Byte);
+        // Trimmed here as well as in the procedure: an all-blank value is "none", not a reference.
+        parameters.Add("@ExporterReference", string.IsNullOrWhiteSpace(request.ExporterReference) ? null : request.ExporterReference.Trim(), DbType.String, size: 50);
+        parameters.Add("@CommercialInvoiceNo", string.IsNullOrWhiteSpace(request.CommercialInvoiceNo) ? null : request.CommercialInvoiceNo.Trim(), DbType.String, size: 50);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
         try

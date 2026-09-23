@@ -10,40 +10,27 @@ CREATE TABLE [inventory].[CostAdjustments] (
     [SourceId]       INT             NOT NULL,
     [SourceNumber]   NVARCHAR (30)   NOT NULL,
     [PurchaseLineId] INT             NULL,
-    [CreatedAtUtc]   DATETIME2 (3)   NOT NULL,
-    [CreatedBy]      INT             NULL
+    [CreatedAtUtc]   DATETIME2 (3)   CONSTRAINT [DF_CostAdjustments_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
+    [CreatedBy]      INT             NULL,
+    CONSTRAINT [PK_CostAdjustments] PRIMARY KEY CLUSTERED ([Id] ASC),
+    CONSTRAINT [CK_CostAdjustments_Kind] CHECK ([Kind]=N'COGS' OR [Kind]=N'Inventory'),
+    CONSTRAINT [FK_CostAdjustments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]),
+    CONSTRAINT [FK_CostAdjustments_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]),
+    CONSTRAINT [FK_CostAdjustments_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id])
 );
-GO
 
-CREATE NONCLUSTERED INDEX [IX_CostAdjustments_Source]
-    ON [inventory].[CostAdjustments]([SourceKind] ASC, [SourceId] ASC);
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_CostAdjustments_ItemDate]
     ON [inventory].[CostAdjustments]([ItemId] ASC, [AdjustmentDate] ASC);
+
+
 GO
 
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [DF_CostAdjustments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
-GO
+CREATE NONCLUSTERED INDEX [IX_CostAdjustments_Source]
+    ON [inventory].[CostAdjustments]([SourceKind] ASC, [SourceId] ASC);
 
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [PK_CostAdjustments] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
 
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [FK_CostAdjustments_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]);
-GO
-
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [FK_CostAdjustments_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]);
-GO
-
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [FK_CostAdjustments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
-GO
-
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [CK_CostAdjustments_Kind] CHECK ([Kind]=N'COGS' OR [Kind]=N'Inventory');
 GO
 

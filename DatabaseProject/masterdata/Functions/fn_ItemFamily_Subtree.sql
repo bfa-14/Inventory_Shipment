@@ -1,4 +1,4 @@
-﻿/* ------------------------------------------------------------------ 2. Subtree function (loop-based, no depth limit) */
+/* ------------------------------------------------------------------ 2. Subtree function (loop-based, no depth limit) */
 
 -- A family plus every descendant. Iterative, so it works at ANY depth.
 CREATE   FUNCTION masterdata.fn_ItemFamily_Subtree (@Id INT)
@@ -19,3 +19,6 @@ BEGIN
 
     RETURN;
 END
+
+GO
+

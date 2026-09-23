@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[StockDocumentFiles] (
+CREATE TABLE [inventory].[StockDocumentFiles] (
     [Id]           INT             IDENTITY (1, 1) NOT NULL,
     [DocumentId]   INT             NOT NULL,
     [FileName]     NVARCHAR (255)  NOT NULL,
@@ -15,6 +15,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_StockDocumentFiles_Document]
     ON [inventory].[StockDocumentFiles]([DocumentId] ASC);
+
+
+GO
 

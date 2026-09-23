@@ -1,4 +1,4 @@
-﻿CREATE TABLE [sales].[SalesDocumentFiles] (
+CREATE TABLE [sales].[SalesDocumentFiles] (
     [Id]           INT             IDENTITY (1, 1) NOT NULL,
     [DocumentId]   INT             NOT NULL,
     [FileName]     NVARCHAR (255)  NOT NULL,
@@ -15,6 +15,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_SalesDocumentFiles_Document]
     ON [sales].[SalesDocumentFiles]([DocumentId] ASC);
+
+
+GO
 

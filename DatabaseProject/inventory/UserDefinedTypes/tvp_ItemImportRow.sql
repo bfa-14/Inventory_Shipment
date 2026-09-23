@@ -1,0 +1,30 @@
+CREATE TYPE [inventory].[tvp_ItemImportRow] AS TABLE (
+    [RowNumber]       INT             NOT NULL,
+    [ItemCode]        NVARCHAR (50)   NULL,
+    [ItemName]        NVARCHAR (200)  NULL,
+    [BrandRef]        NVARCHAR (150)  NULL,
+    [Model]           NVARCHAR (100)  NULL,
+    [FamilyRef]       NVARCHAR (150)  NULL,
+    [Country]         NVARCHAR (10)   NULL,
+    [WarehouseRef]    NVARCHAR (150)  NULL,
+    [Description]     NVARCHAR (1000) NULL,
+    [WarrantyMonths]  INT             NULL,
+    [RawWarranty]     NVARCHAR (50)   NULL,
+    [MinQuantity]     INT             NULL,
+    [RawMin]          NVARCHAR (50)   NULL,
+    [MaxQuantity]     INT             NULL,
+    [RawMax]          NVARCHAR (50)   NULL,
+    [BivacText]       NVARCHAR (10)   NULL,
+    [BaseUnitName]    NVARCHAR (50)   NULL,
+    [BaseSku]         NVARCHAR (50)   NULL,
+    [BaseBarcode]     NVARCHAR (50)   NULL,
+    [Unit2Name]       NVARCHAR (50)   NULL,
+    [Unit2Formula]    INT             NULL,
+    [RawUnit2Formula] NVARCHAR (50)   NULL,
+    [Unit2Sku]        NVARCHAR (50)   NULL,
+    [Unit2Barcode]    NVARCHAR (50)   NULL,
+    PRIMARY KEY CLUSTERED ([RowNumber] ASC));
+
+
+GO
+

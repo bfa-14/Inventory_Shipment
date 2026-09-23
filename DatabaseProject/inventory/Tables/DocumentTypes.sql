@@ -21,8 +21,11 @@ CREATE TABLE [inventory].[DocumentTypes] (
     CONSTRAINT [PK_DocumentTypes] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_DocumentTypes_DefaultPricing] CHECK ([DefaultPricing]=N'None' OR [DefaultPricing]=N'PriceList' OR [DefaultPricing]=N'Cost'),
     CONSTRAINT [CK_DocumentTypes_Direction] CHECK ([StockDirection]=(1) OR [StockDirection]=(0) OR [StockDirection]=(-1)),
-    CONSTRAINT [CK_DocumentTypes_Family] CHECK ([Family]=N'Sales' OR [Family]=N'Purchase' OR [Family]=N'Inventory'),
+    CONSTRAINT [CK_DocumentTypes_Family] CHECK ([Family]=N'Logistics' OR [Family]=N'Sales' OR [Family]=N'Purchase' OR [Family]=N'Inventory'),
     CONSTRAINT [CK_DocumentTypes_NumberLength] CHECK ([NumberLength]>=(3) AND [NumberLength]<=(10)),
     CONSTRAINT [UQ_DocumentTypes_Code] UNIQUE NONCLUSTERED ([Code] ASC)
 );
+
+
+GO
 

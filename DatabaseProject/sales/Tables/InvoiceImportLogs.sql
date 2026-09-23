@@ -1,4 +1,4 @@
-﻿CREATE TABLE [sales].[InvoiceImportLogs] (
+CREATE TABLE [sales].[InvoiceImportLogs] (
     [Id]             INT            IDENTITY (1, 1) NOT NULL,
     [InvoiceId]      INT            NULL,
     [DraftReference] NVARCHAR (50)  NULL,
@@ -21,9 +21,11 @@
 );
 
 
+GO
+
+CREATE NONCLUSTERED INDEX [IX_InvoiceImportLogs_Invoice]
+    ON [sales].[InvoiceImportLogs]([InvoiceId] ASC);
 
 
 GO
-CREATE NONCLUSTERED INDEX [IX_InvoiceImportLogs_Invoice]
-    ON [sales].[InvoiceImportLogs]([InvoiceId] ASC);
 

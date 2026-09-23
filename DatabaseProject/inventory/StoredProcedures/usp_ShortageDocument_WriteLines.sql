@@ -56,5 +56,6 @@ BEGIN
                  FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id) x
     WHERE d.Id = @Id;
 END
+
 GO
 

@@ -42,5 +42,6 @@ BEGIN
         SET @NewId = @Id;
     END
 END
+
 GO
 

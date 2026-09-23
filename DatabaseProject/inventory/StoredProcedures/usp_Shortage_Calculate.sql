@@ -47,5 +47,6 @@ BEGIN
       AND (@OnlyShortages = 0 OR c.ShortageBase > 0)
     ORDER BY CASE WHEN c.ShortageBase > 0 THEN 0 ELSE 1 END, c.ShortageBase DESC, x.ItemCode;
 END
+
 GO
 

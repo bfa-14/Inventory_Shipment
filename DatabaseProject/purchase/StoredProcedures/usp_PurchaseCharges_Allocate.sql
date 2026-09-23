@@ -65,5 +65,6 @@ BEGIN
     END
     CLOSE cur; DEALLOCATE cur;
 END
+
 GO
 

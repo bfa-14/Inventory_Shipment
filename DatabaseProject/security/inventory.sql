@@ -1,3 +1,6 @@
-﻿CREATE SCHEMA [inventory]
+CREATE SCHEMA [inventory]
     AUTHORIZATION [dbo];
+
+
+GO
 

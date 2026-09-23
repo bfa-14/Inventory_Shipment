@@ -10,12 +10,15 @@ CREATE TABLE [purchase].[PurchaseDocumentFiles] (
     CONSTRAINT [PK_PurchaseDocumentFiles] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_PurchaseDocumentFiles_Size] CHECK ([SizeBytes]>(0)),
     CONSTRAINT [FK_PurchaseDocumentFiles_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
-    ALTER TABLE [purchase].[PurchaseDocumentFiles]
-    ADD CONSTRAINT [FK_PurchaseDocumentFiles_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
+    CONSTRAINT [FK_PurchaseDocumentFiles_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id])
 );
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentFiles_Document]
     ON [purchase].[PurchaseDocumentFiles]([DocumentId] ASC);
+
+
+GO
 

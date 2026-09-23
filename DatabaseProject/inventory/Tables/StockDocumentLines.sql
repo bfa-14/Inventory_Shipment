@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[StockDocumentLines] (
+CREATE TABLE [inventory].[StockDocumentLines] (
     [Id]             INT             IDENTITY (1, 1) NOT NULL,
     [DocumentId]     INT             NOT NULL,
     [LineNumber]     INT             NOT NULL,
@@ -26,11 +26,16 @@
 
 
 GO
+
+CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Document]
+    ON [inventory].[StockDocumentLines]([DocumentId] ASC);
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Item]
     ON [inventory].[StockDocumentLines]([ItemId] ASC);
 
 
 GO
-CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Document]
-    ON [inventory].[StockDocumentLines]([DocumentId] ASC);
 

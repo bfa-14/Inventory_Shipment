@@ -1,4 +1,4 @@
-﻿/* ------------------------------------------------------------------ 2. Function */
+/* ------------------------------------------------------------------ 2. Function */
 
 -- The rate in force for a currency/type on a date: the latest RateDate <= @AsOfDate.
 -- Returns 1 for the base currency and NULL when no rate has been entered yet.
@@ -22,3 +22,6 @@ BEGIN
         ORDER BY RateDate DESC
     );
 END
+
+GO
+

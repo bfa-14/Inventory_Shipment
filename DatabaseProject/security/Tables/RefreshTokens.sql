@@ -1,4 +1,4 @@
-﻿CREATE TABLE [security].[RefreshTokens] (
+CREATE TABLE [security].[RefreshTokens] (
     [Id]                  BIGINT         IDENTITY (1, 1) NOT NULL,
     [UserId]              INT            NOT NULL,
     [TokenHash]           NVARCHAR (64)  NOT NULL,
@@ -16,6 +16,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_RefreshTokens_UserId]
     ON [security].[RefreshTokens]([UserId] ASC);
+
+
+GO
 

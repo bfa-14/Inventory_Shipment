@@ -1,4 +1,4 @@
-﻿CREATE   FUNCTION security.fn_UserPermissions (@UserId INT)
+CREATE   FUNCTION security.fn_UserPermissions (@UserId INT)
 RETURNS TABLE
 AS
 RETURN
@@ -10,3 +10,6 @@ RETURN
     INNER JOIN security.Permissions p      ON p.Id = rp.PermissionId
     WHERE ur.UserId = @UserId
 );
+
+GO
+

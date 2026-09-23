@@ -68,5 +68,6 @@ BEGIN
                  ORDER BY d.PostedAtUtc DESC, l.Id DESC) x
     WHERE (@ItemId IS NULL OR i.Id = @ItemId);
 END
+
 GO
 

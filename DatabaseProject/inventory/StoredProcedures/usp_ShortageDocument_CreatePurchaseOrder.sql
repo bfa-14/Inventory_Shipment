@@ -34,5 +34,6 @@ BEGIN
     INSERT INTO inventory.ShortageDocumentAudit (DocumentId, Action, Details, UserId)
     VALUES (@Id, N'POCreated', N'Purchase order draft created (' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s))', @UserId);
 END
+
 GO
 

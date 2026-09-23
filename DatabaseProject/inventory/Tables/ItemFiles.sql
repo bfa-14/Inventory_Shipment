@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[ItemFiles] (
+CREATE TABLE [inventory].[ItemFiles] (
     [Id]           INT             IDENTITY (1, 1) NOT NULL,
     [ItemId]       INT             NOT NULL,
     [FileName]     NVARCHAR (255)  NOT NULL,
@@ -16,11 +16,16 @@
 
 
 GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemFiles_ItemImage]
+    ON [inventory].[ItemFiles]([ItemId] ASC) WHERE ([IsItemImage]=(1));
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_ItemFiles_Item]
     ON [inventory].[ItemFiles]([ItemId] ASC);
 
 
 GO
-CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemFiles_ItemImage]
-    ON [inventory].[ItemFiles]([ItemId] ASC) WHERE ([IsItemImage]=(1));
 

@@ -20,5 +20,6 @@ BEGIN
     WHERE Id = @Id;
     INSERT INTO inventory.ShortageDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Posted', N'Snapshot locked', @UserId);
 END
+
 GO
 

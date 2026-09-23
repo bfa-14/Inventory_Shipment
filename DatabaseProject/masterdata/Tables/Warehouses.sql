@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[Warehouses] (
+CREATE TABLE [masterdata].[Warehouses] (
     [Id]              INT            IDENTITY (1, 1) NOT NULL,
     [WarehouseCode]   NVARCHAR (20)  NOT NULL,
     [WarehouseName]   NVARCHAR (150) NOT NULL,
@@ -23,16 +23,22 @@
 
 
 GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_ActiveMainWarehouse]
+    ON [masterdata].[Warehouses]([IsMainWarehouse] ASC) WHERE ([IsMainWarehouse]=(1) AND [IsActive]=(1));
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
     ON [masterdata].[Warehouses]([WarehouseName] ASC);
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_Warehouses_BranchId]
     ON [masterdata].[Warehouses]([BranchId] ASC);
 
 
 GO
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_ActiveMainWarehouse]
-    ON [masterdata].[Warehouses]([IsMainWarehouse] ASC) WHERE ([IsMainWarehouse]=(1) AND [IsActive]=(1));
 

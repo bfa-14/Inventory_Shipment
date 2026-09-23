@@ -1,4 +1,4 @@
-﻿CREATE TABLE [security].[LoginAudit] (
+CREATE TABLE [security].[LoginAudit] (
     [Id]             BIGINT         IDENTITY (1, 1) NOT NULL,
     [Username]       NVARCHAR (256) NOT NULL,
     [UserId]         INT            NULL,
@@ -12,6 +12,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_LoginAudit_Username_AttemptedAtUtc]
     ON [security].[LoginAudit]([Username] ASC, [AttemptedAtUtc] DESC);
+
+
+GO
 

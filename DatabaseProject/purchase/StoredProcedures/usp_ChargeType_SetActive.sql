@@ -8,5 +8,6 @@ BEGIN
         THROW 68004, 'This charge type was modified by another user. Reload the page and try again.', 1;
     UPDATE purchase.ChargeTypes SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
 END
+
 GO
 

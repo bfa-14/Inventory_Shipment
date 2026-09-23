@@ -636,6 +636,18 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             ("Notes", document.Notes ?? string.Empty),
         };
 
+        if (document.DocumentTypeCode == PurchaseDocumentTypes.Invoice)
+        {
+            // Inserted after the supplier's own reference: the three numbers the supplier's paperwork quotes.
+            var at = header.FindIndex(h => h.Label == "Supplier Reference") + 1;
+            header.InsertRange(at,
+            [
+                ("Exporter Ref.", document.ExporterReference ?? string.Empty),
+                ("Commercial Invoice No.", document.CommercialInvoiceNo ?? string.Empty),
+                ("Receipt Mode", document.ReceiptMode == PurchaseReceiptModes.OnContainerOffload ? "On container offload" : "On posting"),
+            ]);
+        }
+
         if (document.Status == PurchaseDocumentStatus.Closed)
         {
             header.Add(("Closed", $"{document.ClosedAtUtc:dd/MM/yyyy} {document.CloseReason}".Trim()));
@@ -802,6 +814,9 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         SqlErrors.PurchaseDocumentInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
         SqlErrors.PurchaseDocumentSourceInvalid => new RuleFailure(ErrorType.Conflict, exception.Message, "SOURCE_INVALID"),
         SqlErrors.PurchaseChargeAllocation => new RuleFailure(ErrorType.Validation, exception.Message, "CHARGE_ALLOCATION"),
+
+        // Script 24: an invoice a container carries cannot be edited, cancelled or deleted from here.
+        SqlErrors.ContainerInvoiceInUse => new RuleFailure(ErrorType.Conflict, exception.Message, "INVOICE_IN_USE"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 

@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[ItemUnits] (
+CREATE TABLE [inventory].[ItemUnits] (
     [Id]             INT           IDENTITY (1, 1) NOT NULL,
     [ItemId]         INT           NOT NULL,
     [UnitTypeId]     INT           NOT NULL,
@@ -27,16 +27,22 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_ItemUnits_Item]
     ON [inventory].[ItemUnits]([ItemId] ASC);
 
 
 GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_Barcode]
     ON [inventory].[ItemUnits]([Barcode] ASC) WHERE ([Barcode] IS NOT NULL);
 
 
 GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_BaseUnit]
     ON [inventory].[ItemUnits]([ItemId] ASC) WHERE ([IsBaseUnit]=(1));
+
+
+GO
 

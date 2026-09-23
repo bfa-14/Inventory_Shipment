@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[StockReasons] (
+CREATE TABLE [inventory].[StockReasons] (
     [Id]         INT            IDENTITY (1, 1) NOT NULL,
     [ReasonCode] NVARCHAR (20)  NOT NULL,
     [ReasonName] NVARCHAR (100) NOT NULL,
@@ -8,4 +8,7 @@
     CONSTRAINT [CK_StockReasons_AppliesTo] CHECK ([AppliesTo]=N'Both' OR [AppliesTo]=N'Out' OR [AppliesTo]=N'In'),
     CONSTRAINT [UQ_StockReasons_Code] UNIQUE NONCLUSTERED ([ReasonCode] ASC)
 );
+
+
+GO
 

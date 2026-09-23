@@ -27,8 +27,7 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
     CONSTRAINT [CK_PurchaseDocumentLines_Formula] CHECK ([PackingFormula]>=(1)),
     CONSTRAINT [CK_PurchaseDocumentLines_Price] CHECK ([UnitPrice]>=(0)),
     CONSTRAINT [CK_PurchaseDocumentLines_Qty] CHECK ([Quantity]>(0)),
-    ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [FK_PurchaseDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);,
+    CONSTRAINT [FK_PurchaseDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_ItemUnit] FOREIGN KEY ([ItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_SourceLine] FOREIGN KEY ([SourceLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]),
@@ -38,16 +37,22 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
 
 
 GO
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
-    ON [purchase].[PurchaseDocumentLines]([SourceLineId] ASC) WHERE ([SourceLineId] IS NOT NULL);
 
-
-GO
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Item]
     ON [purchase].[PurchaseDocumentLines]([ItemId] ASC);
 
 
 GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
+    ON [purchase].[PurchaseDocumentLines]([SourceLineId] ASC) WHERE ([SourceLineId] IS NOT NULL);
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
     ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
+
+
+GO
 
