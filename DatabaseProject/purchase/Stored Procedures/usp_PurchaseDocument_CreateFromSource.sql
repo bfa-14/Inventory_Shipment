@@ -1,4 +1,4 @@
-﻿/* ================================================================== 8. Conversions: PO -> PINV, PINV -> PRET (drafts) */
+/* ================================================================== 8. Conversions: PO -> PINV, PINV -> PRET (drafts) */
 
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
     @SourceId       INT,

@@ -16,8 +16,9 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
-        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @SourceId INT, @Number NVARCHAR(30);
-        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @SourceId = d.SourceDocumentId, @Number = d.DocumentNumber
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @SourceId INT, @Number NVARCHAR(30), @ReceiptMode TINYINT;
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @SourceId = d.SourceDocumentId,
+               @Number = d.DocumentNumber, @ReceiptMode = d.ReceiptMode
         FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
         WHERE d.Id = @Id;
@@ -31,8 +32,19 @@ BEGIN
         IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @Id AND Status = 2)
             THROW 65011, 'This invoice cannot be cancelled: posted landed cost adjustments refer to it. Cancel those first.', 1;
 
+        DECLARE @Ct NVARCHAR(200);
+        SELECT TOP (1) @Ct = c.ContainerRef
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+        WHERE cl.PurchaseDocumentId = @Id AND c.Status NOT IN (1, 8)
+        ORDER BY c.ContainerRef;
+        IF @Ct IS NOT NULL
+            THROW 69012, 'This invoice cannot be cancelled: its quantities are loaded into a container that has left the supplier. Cancel the container first.', 1;
+        IF EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE PurchaseDocumentId = @Id AND ISNULL(ReceivedQuantityBase, 0) > 0)
+            THROW 69012, 'This invoice cannot be cancelled: part of it was already received by a container offload.', 1;
+
         DECLARE @Msg NVARCHAR(400);
-        IF @Direction = 1
+        IF @Direction = 1 AND @ReceiptMode = 1
         BEGIN
             SELECT TOP (1) @Msg = N'Cannot cancel: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
                                  + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N' left, but this document added ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
@@ -49,7 +61,10 @@ BEGIN
         SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
                m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
         FROM inventory.StockMovements m
-        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentId = @Id AND m.IsReversal = 0;
+        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = @TypeCode AND m.DocumentId = @Id AND m.IsReversal = 0;
+
+        IF @TypeCode = N'PINV'
+            UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = 0 WHERE DocumentId = @Id;
 
         IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
         BEGIN
@@ -69,6 +84,10 @@ BEGIN
             FROM purchase.PurchaseDocumentLines s
             INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
         END
+
+        -- A cancelled invoice is removed from the containers that were still being prepared.
+        DELETE FROM logistics.ContainerLines WHERE PurchaseDocumentId = @Id;
+        DELETE FROM logistics.ContainerInvoices WHERE PurchaseDocumentId = @Id;
 
         UPDATE purchase.PurchaseDocuments
         SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,

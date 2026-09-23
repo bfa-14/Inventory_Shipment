@@ -26,19 +26,7 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [PK_PurchaseDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [FK_PurchaseDocumentLines_ItemUnit] FOREIGN KEY ([ItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocumentLines]
     ADD CONSTRAINT [FK_PurchaseDocumentLines_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [FK_PurchaseDocumentLines_SourceLine] FOREIGN KEY ([SourceLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
@@ -46,7 +34,19 @@ ALTER TABLE [purchase].[PurchaseDocumentLines]
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
+    ADD CONSTRAINT [FK_PurchaseDocumentLines_ItemUnit] FOREIGN KEY ([ItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocumentLines]
     ADD CONSTRAINT [FK_PurchaseDocumentLines_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocumentLines]
+    ADD CONSTRAINT [FK_PurchaseDocumentLines_SourceLine] FOREIGN KEY ([SourceLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
+    ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
 GO
 
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
@@ -57,8 +57,8 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Item]
     ON [purchase].[PurchaseDocumentLines]([ItemId] ASC);
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
-    ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
+ALTER TABLE [purchase].[PurchaseDocumentLines]
+    ADD CONSTRAINT [CK_PurchaseDocumentLines_Price] CHECK ([UnitPrice]>=(0));
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
@@ -66,23 +66,15 @@ ALTER TABLE [purchase].[PurchaseDocumentLines]
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [CK_PurchaseDocumentLines_Qty] CHECK ([Quantity]>(0));
-GO
-
-ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [CK_PurchaseDocumentLines_Price] CHECK ([UnitPrice]>=(0));
-GO
-
-ALTER TABLE [purchase].[PurchaseDocumentLines]
     ADD CONSTRAINT [CK_PurchaseDocumentLines_Formula] CHECK ([PackingFormula]>=(1));
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [DF_PurchaseDocumentLines_Shipped] DEFAULT ((0)) FOR [ShippedQuantityBase];
+    ADD CONSTRAINT [CK_PurchaseDocumentLines_Qty] CHECK ([Quantity]>(0));
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [DF_PurchaseDocumentLines_Discount] DEFAULT ((0)) FOR [DiscountPercent];
+    ADD CONSTRAINT [UQ_PurchaseDocumentLines_LineNo] UNIQUE NONCLUSTERED ([DocumentId] ASC, [LineNumber] ASC);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
@@ -94,10 +86,18 @@ ALTER TABLE [purchase].[PurchaseDocumentLines]
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
+    ADD CONSTRAINT [DF_PurchaseDocumentLines_Shipped] DEFAULT ((0)) FOR [ShippedQuantityBase];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocumentLines]
+    ADD CONSTRAINT [DF_PurchaseDocumentLines_Discount] DEFAULT ((0)) FOR [DiscountPercent];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocumentLines]
     ADD CONSTRAINT [DF_PurchaseDocumentLines_Charges] DEFAULT ((0)) FOR [AllocatedChargesBase];
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentLines]
-    ADD CONSTRAINT [UQ_PurchaseDocumentLines_LineNo] UNIQUE NONCLUSTERED ([DocumentId] ASC, [LineNumber] ASC);
+    ADD CONSTRAINT [PK_PurchaseDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC);
 GO
 

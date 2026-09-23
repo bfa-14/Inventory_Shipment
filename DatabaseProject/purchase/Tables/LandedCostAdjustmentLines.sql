@@ -17,7 +17,7 @@ CREATE TABLE [purchase].[LandedCostAdjustmentLines] (
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustmentLines]
-    ADD CONSTRAINT [UQ_LandedCostAdjustmentLines] UNIQUE NONCLUSTERED ([AdjustmentId] ASC, [PurchaseLineId] ASC);
+    ADD CONSTRAINT [FK_LandedCostAdjustmentLines_Line] FOREIGN KEY ([PurchaseLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]);
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustmentLines]
@@ -25,7 +25,7 @@ ALTER TABLE [purchase].[LandedCostAdjustmentLines]
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustmentLines]
-    ADD CONSTRAINT [FK_LandedCostAdjustmentLines_Line] FOREIGN KEY ([PurchaseLineId]) REFERENCES [purchase].[PurchaseDocumentLines] ([Id]);
+    ADD CONSTRAINT [UQ_LandedCostAdjustmentLines] UNIQUE NONCLUSTERED ([AdjustmentId] ASC, [PurchaseLineId] ASC);
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustmentLines]

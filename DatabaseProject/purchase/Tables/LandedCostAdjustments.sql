@@ -24,11 +24,7 @@ CREATE TABLE [purchase].[LandedCostAdjustments] (
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [UQ_LandedCostAdjustments_Number] UNIQUE NONCLUSTERED ([DocumentNumber] ASC);
-GO
-
-ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [DF_LandedCostAdjustments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
+    ADD CONSTRAINT [DF_LandedCostAdjustments_Inv] DEFAULT ((0)) FOR [InventoryPortionBase];
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
@@ -40,15 +36,15 @@ ALTER TABLE [purchase].[LandedCostAdjustments]
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
+    ADD CONSTRAINT [DF_LandedCostAdjustments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
+GO
+
+ALTER TABLE [purchase].[LandedCostAdjustments]
     ADD CONSTRAINT [DF_LandedCostAdjustments_Cogs] DEFAULT ((0)) FOR [CogsPortionBase];
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [DF_LandedCostAdjustments_Inv] DEFAULT ((0)) FOR [InventoryPortionBase];
-GO
-
-ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [FK_LandedCostAdjustments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
+    ADD CONSTRAINT [FK_LandedCostAdjustments_Invoice] FOREIGN KEY ([SourceInvoiceId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
@@ -60,11 +56,15 @@ ALTER TABLE [purchase].[LandedCostAdjustments]
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [FK_LandedCostAdjustments_Invoice] FOREIGN KEY ([SourceInvoiceId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
+    ADD CONSTRAINT [FK_LandedCostAdjustments_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [FK_LandedCostAdjustments_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
+    ADD CONSTRAINT [FK_LandedCostAdjustments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
+GO
+
+ALTER TABLE [purchase].[LandedCostAdjustments]
+    ADD CONSTRAINT [UQ_LandedCostAdjustments_Number] UNIQUE NONCLUSTERED ([DocumentNumber] ASC);
 GO
 
 CREATE NONCLUSTERED INDEX [IX_LandedCostAdjustments_Invoice]
@@ -72,10 +72,10 @@ CREATE NONCLUSTERED INDEX [IX_LandedCostAdjustments_Invoice]
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [PK_LandedCostAdjustments] PRIMARY KEY CLUSTERED ([Id] ASC);
+    ADD CONSTRAINT [CK_LandedCostAdjustments_Status] CHECK ([Status]=(3) OR [Status]=(2) OR [Status]=(1));
 GO
 
 ALTER TABLE [purchase].[LandedCostAdjustments]
-    ADD CONSTRAINT [CK_LandedCostAdjustments_Status] CHECK ([Status]=(3) OR [Status]=(2) OR [Status]=(1));
+    ADD CONSTRAINT [PK_LandedCostAdjustments] PRIMARY KEY CLUSTERED ([Id] ASC);
 GO
 

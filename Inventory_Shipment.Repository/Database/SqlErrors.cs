@@ -7,7 +7,8 @@ namespace Inventory_Shipment.Repository.Database;
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
 /// Each module owns a block: 50xxx security, 56xxx inventory, 51xxx-55xxx + 57xxx-60xxx master data,
-/// 61xxx sales imports, 62xxx inventory documents, and 64xxx sales documents.
+/// 61xxx sales imports, 62xxx inventory documents, 64xxx sales documents, 65xxx-68xxx purchase
+/// and shortage plans, and 69xxx logistics (containers).
 /// </summary>
 public static class SqlErrors
 {
@@ -189,11 +190,45 @@ public static class SqlErrors
     public const int ChargeTypeInUse = 68005;
     public const int ChargeTypeNotFound = 68006;
 
+    // ----- 69xxx: logistics - containers and their master data (container types, ports, attachment types) -----
+    public const int ContainerValidation = 69000;
+    public const int ContainerConcurrency = 69004;
+
+    /// <summary>Offloaded, closed or cancelled containers (and non-draft ones, for a delete) cannot be changed.</summary>
+    public const int ContainerNotEditable = 69005;
+
+    public const int ContainerNotFound = 69006;
+
+    /// <summary>More units allocated than the container holds, and the caller did not confirm the override.</summary>
+    public const int ContainerOverCapacity = 69007;
+
+    /// <summary>A line takes more of an invoice line than remains on it. The message names both lines and figures.</summary>
+    public const int ContainerAllocationExceedsInvoice = 69008;
+
+    public const int ContainerNoLines = 69009;
+    public const int ContainerInvalidStatus = 69010;
+    public const int ContainerAlreadyOffloaded = 69011;
+
+    /// <summary>
+    /// An invoice and a container disagree: the invoice is cancelled or already received, or — raised by
+    /// the purchase procedures — it cannot be edited, cancelled or deleted while a container carries it.
+    /// </summary>
+    public const int ContainerInvoiceInUse = 69012;
+
+    /// <summary>Another open container has the box number, or a master data code already exists.</summary>
+    public const int ContainerDuplicate = 69013;
+
+    /// <summary>A container type, port or attachment type that containers use cannot be deleted.</summary>
+    public const int LogisticsMasterInUse = 69014;
+
+    /// <summary>Reversing an offload would take an item below zero: the goods were already sold or moved.</summary>
+    public const int ContainerInsufficientStock = 69015;
+
     private const int FirstBusinessRule = 50000;
 
-    // The ceiling moves with the newest block (68xxx is the charge types): a ceiling left behind
+    // The ceiling moves with the newest block (69xxx is logistics): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 68999;
+    private const int LastBusinessRule = 69999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

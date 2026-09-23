@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. Search / Get */
+/* ================================================================== 3. Search / Get */
 
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family

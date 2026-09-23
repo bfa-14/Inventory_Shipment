@@ -1,24 +1,27 @@
 /* ================================================================== 5. Save (draft) */
 
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
-    @Id                 INT            = NULL,
-    @DocumentTypeCode   NVARCHAR(20),
-    @DocumentDate       DATE,
-    @ExpectedDate       DATE           = NULL,
-    @BranchId           INT,
-    @WarehouseId        INT,
-    @SupplierId         INT,
-    @CurrencyId         INT            = NULL,
-    @RateType           TINYINT        = 1,
-    @ExchangeRate       DECIMAL(18,6)  = NULL,
-    @SupplierReference  NVARCHAR(100)  = NULL,
-    @Notes              NVARCHAR(1000) = NULL,
-    @Lines              purchase.tvp_PurchaseDocumentLine READONLY,
-    @MaxDiscountPercent DECIMAL(9,4)   = 100,
-    @SourceDocumentId   INT            = NULL,
-    @RowVersion         BINARY(8)      = NULL,
-    @UserId             INT            = NULL,
-    @NewId              INT OUTPUT
+    @Id                  INT            = NULL,
+    @DocumentTypeCode    NVARCHAR(20),
+    @DocumentDate        DATE,
+    @ExpectedDate        DATE           = NULL,
+    @BranchId            INT,
+    @WarehouseId         INT,
+    @SupplierId          INT,
+    @CurrencyId          INT            = NULL,
+    @RateType            TINYINT        = 1,
+    @ExchangeRate        DECIMAL(18,6)  = NULL,
+    @SupplierReference   NVARCHAR(100)  = NULL,
+    @Notes               NVARCHAR(1000) = NULL,
+    @Lines               purchase.tvp_PurchaseDocumentLine READONLY,
+    @MaxDiscountPercent  DECIMAL(9,4)   = 100,
+    @SourceDocumentId    INT            = NULL,
+    @RowVersion          BINARY(8)      = NULL,
+    @UserId              INT            = NULL,
+    @ReceiptMode         TINYINT        = NULL,    -- NULL = unchanged (1 on creation)
+    @ExporterReference   NVARCHAR(50)   = NULL,
+    @CommercialInvoiceNo NVARCHAR(50)   = NULL,
+    @NewId               INT OUTPUT
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -26,6 +29,10 @@ BEGIN
 
     SET @SupplierReference = NULLIF(LTRIM(RTRIM(@SupplierReference)), N'');
     SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @ExporterReference = NULLIF(LTRIM(RTRIM(@ExporterReference)), N'');
+    SET @CommercialInvoiceNo = NULLIF(LTRIM(RTRIM(@CommercialInvoiceNo)), N'');
+    IF @ReceiptMode IS NOT NULL AND @ReceiptMode NOT IN (1, 2) THROW 65000, 'Receipt mode must be 1 (on posting) or 2 (on container offload).', 1;
+    IF @ReceiptMode = 2 AND @DocumentTypeCode <> N'PINV' THROW 65000, 'Only purchase invoices can be received on container offload.', 1;
 
     DECLARE @TypeId INT, @Direction SMALLINT, @Cur INT, @Rate DECIMAL(18,6);
     EXEC purchase.usp_PurchaseDocument_ValidateInput @DocumentTypeCode, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
@@ -43,6 +50,14 @@ BEGIN
             THROW 65000, 'The document type cannot be changed.', 1;
         IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND ISNULL(SourceDocumentId, 0) <> ISNULL(@SourceDocumentId, 0))
             THROW 65000, 'The source document cannot be changed.', 1;
+        -- An invoice already loaded into a container is always received at offload.
+        IF EXISTS (SELECT 1 FROM logistics.ContainerInvoices ci INNER JOIN logistics.Containers c ON c.Id = ci.ContainerId
+                   WHERE ci.PurchaseDocumentId = @Id AND c.Status <> 8)
+            SET @ReceiptMode = 2;
+        -- Lines that are allocated to a container cannot be replaced.
+        IF EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                   WHERE cl.PurchaseDocumentId = @Id AND c.Status <> 8)
+            THROW 69012, 'This invoice has quantities loaded into a container. Remove them from the container before changing the lines.', 1;
     END
 
     BEGIN TRY
@@ -55,9 +70,11 @@ BEGIN
                 EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
 
             INSERT INTO purchase.PurchaseDocuments (DocumentTypeId, DocumentNumber, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
-                                                    CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId, CreatedBy)
+                                                    CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId,
+                                                    ReceiptMode, ExporterReference, CommercialInvoiceNo, CreatedBy)
             VALUES (@TypeId, @Number, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
-                    @Cur, @RateType, @Rate, @SupplierReference, @Notes, 1, @SourceDocumentId, @UserId);
+                    @Cur, @RateType, @Rate, @SupplierReference, @Notes, 1, @SourceDocumentId,
+                    ISNULL(@ReceiptMode, 1), @ExporterReference, @CommercialInvoiceNo, @UserId);
             SET @Id = SCOPE_IDENTITY();
 
             INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
@@ -69,8 +86,16 @@ BEGIN
             UPDATE purchase.PurchaseDocuments
             SET DocumentDate = @DocumentDate, ExpectedDate = @ExpectedDate, BranchId = @BranchId, WarehouseId = @WarehouseId,
                 SupplierId = @SupplierId, CurrencyId = @Cur, RateType = @RateType, ExchangeRate = @Rate,
-                SupplierReference = @SupplierReference, Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+                SupplierReference = @SupplierReference, Notes = @Notes,
+                ReceiptMode = ISNULL(@ReceiptMode, ReceiptMode),
+                ExporterReference = @ExporterReference, CommercialInvoiceNo = @CommercialInvoiceNo,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
             WHERE Id = @Id;
+
+            -- Lines of cancelled containers protect nothing: they are cleaned up first.
+            DELETE cl FROM logistics.ContainerLines cl
+            INNER JOIN logistics.Containers c2 ON c2.Id = cl.ContainerId
+            WHERE cl.PurchaseDocumentId = @Id AND c2.Status = 8;
 
             -- Lines are replaced: manual charge allocations pointing at the old lines are dropped (the charges stay).
             DELETE a FROM purchase.PurchaseChargeAllocations a

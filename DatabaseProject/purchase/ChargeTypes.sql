@@ -16,11 +16,7 @@ CREATE TABLE [purchase].[ChargeTypes] (
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]
-    ADD CONSTRAINT [FK_ChargeTypes_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [purchase].[ChargeTypes]
-    ADD CONSTRAINT [FK_ChargeTypes_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
+    ADD CONSTRAINT [CK_ChargeTypes_TaxNotLanded] CHECK (NOT ([IsRecoverableTax]=(1) AND [IncludeInLandedCost]=(1)));
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]
@@ -28,7 +24,7 @@ ALTER TABLE [purchase].[ChargeTypes]
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]
-    ADD CONSTRAINT [CK_ChargeTypes_TaxNotLanded] CHECK (NOT ([IsRecoverableTax]=(1) AND [IncludeInLandedCost]=(1)));
+    ADD CONSTRAINT [DF_ChargeTypes_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]
@@ -44,11 +40,15 @@ ALTER TABLE [purchase].[ChargeTypes]
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]
-    ADD CONSTRAINT [DF_ChargeTypes_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
+    ADD CONSTRAINT [PK_ChargeTypes] PRIMARY KEY CLUSTERED ([Id] ASC);
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]
-    ADD CONSTRAINT [PK_ChargeTypes] PRIMARY KEY CLUSTERED ([Id] ASC);
+    ADD CONSTRAINT [FK_ChargeTypes_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
+GO
+
+ALTER TABLE [purchase].[ChargeTypes]
+    ADD CONSTRAINT [FK_ChargeTypes_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
 GO
 
 ALTER TABLE [purchase].[ChargeTypes]

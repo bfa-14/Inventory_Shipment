@@ -15,7 +15,7 @@ BEGIN
            InventoryValue = CAST(inventory.fn_StockOnHand(i.Id, NULL) * i.AverageCost AS DECIMAL(18,2)),
            LastPurchaseCost = CAST(i.FobCost AS DECIMAL(18,2)),      -- kept for the current API mapping (= FOB)
            i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays, i.PcPerContainer,
-           i.WeightKg, i.VolumeCbm,
+           i.WeightKg, i.VolumeCbm, i.OilQtyPerUnit,
            i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
            i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion

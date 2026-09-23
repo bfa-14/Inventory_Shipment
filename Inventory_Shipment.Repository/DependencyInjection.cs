@@ -41,6 +41,10 @@ public static class DependencyInjection
         services.TryAddScoped<IChargeTypeRepository, ChargeTypeRepository>();
         services.TryAddScoped<ILandedCostAdjustmentRepository, LandedCostAdjustmentRepository>();
         services.TryAddScoped<ICostingReportRepository, CostingReportRepository>();
+        services.TryAddScoped<IContainerRepository, ContainerRepository>();
+        services.TryAddScoped<IContainerTypeRepository, ContainerTypeRepository>();
+        services.TryAddScoped<IPortRepository, PortRepository>();
+        services.TryAddScoped<IAttachmentTypeRepository, AttachmentTypeRepository>();
 
         return services;
     }

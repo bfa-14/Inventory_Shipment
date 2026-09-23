@@ -10,12 +10,16 @@ CREATE TABLE [purchase].[PurchaseDocumentFiles] (
 );
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentFiles_Document]
-    ON [purchase].[PurchaseDocumentFiles]([DocumentId] ASC);
+ALTER TABLE [purchase].[PurchaseDocumentFiles]
+    ADD CONSTRAINT [FK_PurchaseDocumentFiles_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentFiles]
-    ADD CONSTRAINT [DF_PurchaseDocumentFiles_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
+    ADD CONSTRAINT [FK_PurchaseDocumentFiles_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentFiles_Document]
+    ON [purchase].[PurchaseDocumentFiles]([DocumentId] ASC);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentFiles]
@@ -23,11 +27,7 @@ ALTER TABLE [purchase].[PurchaseDocumentFiles]
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentFiles]
-    ADD CONSTRAINT [FK_PurchaseDocumentFiles_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocumentFiles]
-    ADD CONSTRAINT [FK_PurchaseDocumentFiles_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
+    ADD CONSTRAINT [DF_PurchaseDocumentFiles_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
 GO
 
 ALTER TABLE [purchase].[PurchaseDocumentFiles]

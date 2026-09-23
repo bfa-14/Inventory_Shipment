@@ -8,10 +8,6 @@ CREATE TABLE [inventory].[ShortageDocumentAudit] (
 );
 GO
 
-ALTER TABLE [inventory].[ShortageDocumentAudit]
-    ADD CONSTRAINT [PK_ShortageDocumentAudit] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
 CREATE NONCLUSTERED INDEX [IX_ShortageDocumentAudit_Document]
     ON [inventory].[ShortageDocumentAudit]([DocumentId] ASC, [AtUtc] ASC);
 GO
@@ -22,5 +18,9 @@ GO
 
 ALTER TABLE [inventory].[ShortageDocumentAudit]
     ADD CONSTRAINT [FK_ShortageDocumentAudit_User] FOREIGN KEY ([UserId]) REFERENCES [security].[Users] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentAudit]
+    ADD CONSTRAINT [PK_ShortageDocumentAudit] PRIMARY KEY CLUSTERED ([Id] ASC);
 GO
 

@@ -10,7 +10,7 @@ BEGIN
            d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName, sp.Phone AS SupplierPhone, sp.Email AS SupplierEmail, sp.Address AS SupplierAddress,
            d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
            d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
-           d.SupplierReference, d.Notes, d.Status,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode, d.Notes, d.Status,
            d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalChargesBase, d.TotalLandedCostBase,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber, sdt.Code AS SourceDocumentTypeCode,
            d.SourceShortageId, sh.DocumentNumber AS SourceShortageNumber,
@@ -42,9 +42,11 @@ BEGIN
            l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal,
            l.UnitCostBase, LandedCostBase = l.UnitCostBase, l.FobCostBase, l.AllocatedChargesBase,
            l.ReceivedQuantityBase, l.ReturnedQuantityBase, l.ShippedQuantityBase,
-           TransitBase = CASE WHEN l.ShippedQuantityBase > l.ReceivedQuantityBase THEN l.ShippedQuantityBase - l.ReceivedQuantityBase ELSE 0 END,
+           AllocatedToContainersBase = ISNULL(ct.Allocated, 0),
+           TransitBase = ISNULL(ct.Transit, 0),
            RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
                                 WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
+           AvailableForContainerBase = CASE WHEN dt.Code = N'PINV' THEN l.QuantityBase - ISNULL(ct.Allocated, 0) END,
            l.ImportRowNumber, l.Notes, l.SourceLineId,
            OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
            ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost
@@ -55,6 +57,11 @@ BEGIN
     INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
     INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
     INNER JOIN masterdata.Warehouses w      ON w.Id = l.WarehouseId
+    OUTER APPLY (SELECT Allocated = SUM(cl.QuantityBase),
+                        Transit   = SUM(CASE WHEN c.Status IN (3, 4, 5) THEN cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0) ELSE 0 END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                 WHERE cl.PurchaseLineId = l.Id AND c.Status <> 8) ct
     WHERE l.DocumentId = @Id
     ORDER BY l.LineNumber;
 
@@ -99,4 +106,17 @@ BEGIN
     WHERE (c.DocumentKind = N'PINV' AND c.DocumentId = @Id)
        OR (c.DocumentKind = N'LCA' AND lca.SourceInvoiceId = @Id)
     ORDER BY c.DocumentKind, c.DocumentId, c.LineNumber;
+
+    -- 7: containers carrying this invoice.
+    SELECT ct.Id, ct.ContainerRef, ct.ContainerNo, ct.Status, ct.DispatchDate, ct.Eta, ct.OffloadedDate,
+           ct.CurrentLocation, w.WarehouseCode, w.WarehouseName,
+           AllocatedBase = ISNULL(x.Allocated, 0), ReceivedBase = ISNULL(x.Received, 0)
+    FROM logistics.ContainerInvoices ci
+    INNER JOIN logistics.Containers ct ON ct.Id = ci.ContainerId
+    LEFT  JOIN masterdata.Warehouses w ON w.Id = ct.WarehouseId
+    OUTER APPLY (SELECT Allocated = SUM(cl.QuantityBase), Received = SUM(ISNULL(cl.ReceivedQuantityBase, 0))
+                 FROM logistics.ContainerLines cl
+                 WHERE cl.ContainerId = ct.Id AND cl.PurchaseDocumentId = @Id) x
+    WHERE ci.PurchaseDocumentId = @Id
+    ORDER BY ct.ContainerRef;
 END

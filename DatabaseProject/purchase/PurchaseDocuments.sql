@@ -35,100 +35,15 @@ CREATE TABLE [purchase].[PurchaseDocuments] (
     [RowVersion]          ROWVERSION      NOT NULL,
     [SourceShortageId]    INT             NULL,
     [TotalChargesBase]    DECIMAL (18, 2) NOT NULL,
-    [TotalLandedCostBase] DECIMAL (18, 2) NOT NULL
+    [TotalLandedCostBase] DECIMAL (18, 2) NOT NULL,
+    [ReceiptMode]         TINYINT         NOT NULL,
+    [ExporterReference]   NVARCHAR (50)   NULL,
+    [CommercialInvoiceNo] NVARCHAR (50)   NULL
 );
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeDate]
-    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
-    ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
-    ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
-    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
-    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
-GO
-
 ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [CK_PurchaseDocuments_Status] CHECK ([Status]=(4) OR [Status]=(3) OR [Status]=(2) OR [Status]=(1));
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [CK_PurchaseDocuments_Rate] CHECK ([ExchangeRate]>(0));
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [CK_PurchaseDocuments_RateType] CHECK ([RateType]=(3) OR [RateType]=(2) OR [RateType]=(1));
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Supplier] FOREIGN KEY ([SupplierId]) REFERENCES [masterdata].[Parties] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_PostedBy] FOREIGN KEY ([PostedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Source] FOREIGN KEY ([SourceDocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_ClosedBy] FOREIGN KEY ([ClosedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_CancelledBy] FOREIGN KEY ([CancelledBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [FK_PurchaseDocuments_Shortage] FOREIGN KEY ([SourceShortageId]) REFERENCES [inventory].[ShortageDocuments] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_Rate] DEFAULT ((1)) FOR [ExchangeRate];
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_Status] DEFAULT ((1)) FOR [Status];
-GO
-
-ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_Landed] DEFAULT ((0)) FOR [TotalLandedCostBase];
+    ADD CONSTRAINT [DF_PurchaseDocuments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
@@ -136,11 +51,39 @@ ALTER TABLE [purchase].[PurchaseDocuments]
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_Status] DEFAULT ((1)) FOR [Status];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_TotalAmountBase] DEFAULT ((0)) FOR [TotalAmountBase];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_RateType] DEFAULT ((1)) FOR [RateType];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_Rate] DEFAULT ((1)) FOR [ExchangeRate];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_ReceiptMode] DEFAULT ((1)) FOR [ReceiptMode];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
     ADD CONSTRAINT [DF_PurchaseDocuments_Charges] DEFAULT ((0)) FOR [TotalChargesBase];
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_Landed] DEFAULT ((0)) FOR [TotalLandedCostBase];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
     ADD CONSTRAINT [DF_PurchaseDocuments_TotalAmount] DEFAULT ((0)) FOR [TotalAmount];
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [DF_PurchaseDocuments_TotalQuantity] DEFAULT ((0)) FOR [TotalQuantity];
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
@@ -152,19 +95,87 @@ ALTER TABLE [purchase].[PurchaseDocuments]
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_RateType] DEFAULT ((1)) FOR [RateType];
+    ADD CONSTRAINT [FK_PurchaseDocuments_CancelledBy] FOREIGN KEY ([CancelledBy]) REFERENCES [security].[Users] ([Id]);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
+    ADD CONSTRAINT [FK_PurchaseDocuments_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_TotalAmountBase] DEFAULT ((0)) FOR [TotalAmountBase];
+    ADD CONSTRAINT [FK_PurchaseDocuments_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]
-    ADD CONSTRAINT [DF_PurchaseDocuments_TotalQuantity] DEFAULT ((0)) FOR [TotalQuantity];
+    ADD CONSTRAINT [FK_PurchaseDocuments_PostedBy] FOREIGN KEY ([PostedBy]) REFERENCES [security].[Users] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_Source] FOREIGN KEY ([SourceDocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_Shortage] FOREIGN KEY ([SourceShortageId]) REFERENCES [inventory].[ShortageDocuments] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_Supplier] FOREIGN KEY ([SupplierId]) REFERENCES [masterdata].[Parties] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [FK_PurchaseDocuments_ClosedBy] FOREIGN KEY ([ClosedBy]) REFERENCES [security].[Users] ([Id]);
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
+    ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
+    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
+    ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
+    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeDate]
+    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [CK_PurchaseDocuments_ReceiptMode] CHECK ([ReceiptMode]=(2) OR [ReceiptMode]=(1));
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [CK_PurchaseDocuments_Rate] CHECK ([ExchangeRate]>(0));
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [CK_PurchaseDocuments_RateType] CHECK ([RateType]=(3) OR [RateType]=(2) OR [RateType]=(1));
+GO
+
+ALTER TABLE [purchase].[PurchaseDocuments]
+    ADD CONSTRAINT [CK_PurchaseDocuments_Status] CHECK ([Status]=(4) OR [Status]=(3) OR [Status]=(2) OR [Status]=(1));
 GO
 
 ALTER TABLE [purchase].[PurchaseDocuments]

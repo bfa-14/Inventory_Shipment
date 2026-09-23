@@ -28,20 +28,8 @@ CREATE TABLE [inventory].[ShortageDocuments] (
 );
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Warehouse]
-    ON [inventory].[ShortageDocuments]([WarehouseId] ASC, [Status] ASC);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Supplier]
-    ON [inventory].[ShortageDocuments]([SupplierId] ASC);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Date]
-    ON [inventory].[ShortageDocuments]([DocumentDate] DESC);
-GO
-
 ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [FK_ShortageDocuments_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
+    ADD CONSTRAINT [FK_ShortageDocuments_PostedBy] FOREIGN KEY ([PostedBy]) REFERENCES [security].[Users] ([Id]);
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]
@@ -49,19 +37,7 @@ ALTER TABLE [inventory].[ShortageDocuments]
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [FK_ShortageDocuments_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]);
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
     ADD CONSTRAINT [FK_ShortageDocuments_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]);
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [FK_ShortageDocuments_Supplier] FOREIGN KEY ([SupplierId]) REFERENCES [masterdata].[Parties] ([Id]);
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [FK_ShortageDocuments_PostedBy] FOREIGN KEY ([PostedBy]) REFERENCES [security].[Users] ([Id]);
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]
@@ -69,7 +45,59 @@ ALTER TABLE [inventory].[ShortageDocuments]
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [CK_ShortageDocuments_Status] CHECK ([Status]=(2) OR [Status]=(1));
+    ADD CONSTRAINT [FK_ShortageDocuments_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [FK_ShortageDocuments_Supplier] FOREIGN KEY ([SupplierId]) REFERENCES [masterdata].[Parties] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [FK_ShortageDocuments_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_History] DEFAULT ((3)) FOR [MonthsOfHistory];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_Containers] DEFAULT ((0)) FOR [TotalContainers];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_Shortage] DEFAULT ((0)) FOR [TotalShortageBase];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_Required] DEFAULT ((0)) FOR [TotalRequiredBase];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_Status] DEFAULT ((1)) FOR [Status];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_ContainersRounded] DEFAULT ((0)) FOR [ContainersRounded];
+GO
+
+ALTER TABLE [inventory].[ShortageDocuments]
+    ADD CONSTRAINT [DF_ShortageDocuments_Lines] DEFAULT ((0)) FOR [TotalLines];
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Date]
+    ON [inventory].[ShortageDocuments]([DocumentDate] DESC);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Supplier]
+    ON [inventory].[ShortageDocuments]([SupplierId] ASC);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Warehouse]
+    ON [inventory].[ShortageDocuments]([WarehouseId] ASC, [Status] ASC);
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]
@@ -81,35 +109,7 @@ ALTER TABLE [inventory].[ShortageDocuments]
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_Status] DEFAULT ((1)) FOR [Status];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_History] DEFAULT ((3)) FOR [MonthsOfHistory];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_Required] DEFAULT ((0)) FOR [TotalRequiredBase];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_Lines] DEFAULT ((0)) FOR [TotalLines];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_Containers] DEFAULT ((0)) FOR [TotalContainers];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_ContainersRounded] DEFAULT ((0)) FOR [ContainersRounded];
-GO
-
-ALTER TABLE [inventory].[ShortageDocuments]
-    ADD CONSTRAINT [DF_ShortageDocuments_Shortage] DEFAULT ((0)) FOR [TotalShortageBase];
+    ADD CONSTRAINT [CK_ShortageDocuments_Status] CHECK ([Status]=(2) OR [Status]=(1));
 GO
 
 ALTER TABLE [inventory].[ShortageDocuments]

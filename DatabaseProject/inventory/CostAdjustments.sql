@@ -15,6 +15,10 @@ CREATE TABLE [inventory].[CostAdjustments] (
 );
 GO
 
+ALTER TABLE [inventory].[CostAdjustments]
+    ADD CONSTRAINT [PK_CostAdjustments] PRIMARY KEY CLUSTERED ([Id] ASC);
+GO
+
 CREATE NONCLUSTERED INDEX [IX_CostAdjustments_Source]
     ON [inventory].[CostAdjustments]([SourceKind] ASC, [SourceId] ASC);
 GO
@@ -24,15 +28,11 @@ CREATE NONCLUSTERED INDEX [IX_CostAdjustments_ItemDate]
 GO
 
 ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [DF_CostAdjustments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
-GO
-
-ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [PK_CostAdjustments] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
-ALTER TABLE [inventory].[CostAdjustments]
     ADD CONSTRAINT [FK_CostAdjustments_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]);
+GO
+
+ALTER TABLE [inventory].[CostAdjustments]
+    ADD CONSTRAINT [FK_CostAdjustments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
 GO
 
 ALTER TABLE [inventory].[CostAdjustments]
@@ -40,7 +40,7 @@ ALTER TABLE [inventory].[CostAdjustments]
 GO
 
 ALTER TABLE [inventory].[CostAdjustments]
-    ADD CONSTRAINT [FK_CostAdjustments_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
+    ADD CONSTRAINT [DF_CostAdjustments_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
 GO
 
 ALTER TABLE [inventory].[CostAdjustments]

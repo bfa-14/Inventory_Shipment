@@ -13,10 +13,11 @@ BEGIN
         BEGIN TRANSACTION;
 
         DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE,
-                @BranchId INT, @SupplierId INT, @Rate DECIMAL(18,6), @SourceId INT;
+                @BranchId INT, @SupplierId INT, @Rate DECIMAL(18,6), @SourceId INT, @ReceiptMode TINYINT;
 
         SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
-               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @SupplierId = d.SupplierId, @Rate = d.ExchangeRate, @SourceId = d.SourceDocumentId
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @SupplierId = d.SupplierId, @Rate = d.ExchangeRate,
+               @SourceId = d.SourceDocumentId, @ReceiptMode = d.ReceiptMode
         FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
         WHERE d.Id = @Id;
@@ -29,6 +30,9 @@ BEGIN
             THROW 65009, 'The document has no lines. Add at least one item before posting.', 1;
         IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
             THROW 65008, 'The supplier is inactive.', 1;
+
+        -- Imports: the goods are received by the container, not by this posting.
+        DECLARE @ReceiveNow BIT = CASE WHEN @TypeCode = N'PINV' AND @ReceiptMode = 2 THEN 0 ELSE 1 END;
 
         DECLARE @Msg NVARCHAR(400);
         SELECT TOP (1) @Msg =
@@ -112,7 +116,7 @@ BEGIN
             UPDATE l SET UnitCostBase = ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
             FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
 
-        IF @Direction = 1
+        IF @Direction = 1 AND @ReceiveNow = 1
         BEGIN
             DECLARE @R inventory.tvp_ItemReceipt;
             INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
@@ -120,7 +124,7 @@ BEGIN
             EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId, 1;
         END
 
-        IF @Direction <> 0
+        IF @Direction <> 0 AND @ReceiveNow = 1
         BEGIN
             DECLARE @MovementDate DATETIME2(3) =
                 DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
@@ -131,6 +135,9 @@ BEGIN
                    N'Purchase', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
             FROM purchase.PurchaseDocumentLines l
             WHERE l.DocumentId = @Id;
+
+            IF @Direction = 1
+                UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = QuantityBase WHERE DocumentId = @Id;
         END
 
         IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
@@ -160,7 +167,9 @@ BEGIN
         DECLARE @LineCount INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id);
         INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
         VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
-                                + CASE WHEN @Direction <> 0 THEN N' written to the stock ledger' ELSE N' (order confirmed)' END
+                                + CASE WHEN @Direction <> 0 AND @ReceiveNow = 1 THEN N' written to the stock ledger'
+                                       WHEN @ReceiveNow = 0 THEN N'; stock will be received when the container is offloaded'
+                                       ELSE N' (order confirmed)' END
                                 + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END, @UserId);
 
         COMMIT TRANSACTION;

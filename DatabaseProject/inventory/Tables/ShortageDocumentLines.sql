@@ -24,40 +24,9 @@ CREATE TABLE [inventory].[ShortageDocumentLines] (
     [MinQuantity]                INT             NULL,
     [MaxQuantity]                INT             NULL,
     [LastCost]                   DECIMAL (18, 6) NULL,
-    [Notes]                      NVARCHAR (300)  NULL
+    [Notes]                      NVARCHAR (300)  NULL,
+    [PcPerContainerFromUnit]     BIT             NOT NULL
 );
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [FK_ShortageDocumentLines_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]);
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [FK_ShortageDocumentLines_Unit] FOREIGN KEY ([PurchaseItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]);
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [FK_ShortageDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [inventory].[ShortageDocuments] ([Id]);
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [CK_ShortageDocumentLines_Required] CHECK ([RequiredQty]>=(0));
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [CK_ShortageDocumentLines_Container] CHECK ([PcPerContainer] IS NULL OR [PcPerContainer]>(0));
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [CK_ShortageDocumentLines_Sales] CHECK ([ExpectedMonthlySalesManual] IS NULL OR [ExpectedMonthlySalesManual]>=(0));
-GO
-
-ALTER TABLE [inventory].[ShortageDocumentLines]
-    ADD CONSTRAINT [PK_ShortageDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_ShortageDocumentLines_Document]
-    ON [inventory].[ShortageDocumentLines]([DocumentId] ASC);
 GO
 
 ALTER TABLE [inventory].[ShortageDocumentLines]
@@ -69,6 +38,42 @@ ALTER TABLE [inventory].[ShortageDocumentLines]
 GO
 
 ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [CK_ShortageDocumentLines_Sales] CHECK ([ExpectedMonthlySalesManual] IS NULL OR [ExpectedMonthlySalesManual]>=(0));
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [CK_ShortageDocumentLines_Required] CHECK ([RequiredQty]>=(0));
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [CK_ShortageDocumentLines_Container] CHECK ([PcPerContainer] IS NULL OR [PcPerContainer]>(0));
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [DF_ShortageDocumentLines_PcFromUnit] DEFAULT ((0)) FOR [PcPerContainerFromUnit];
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
     ADD CONSTRAINT [DF_ShortageDocumentLines_Required] DEFAULT ((0)) FOR [RequiredQty];
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [FK_ShortageDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [inventory].[ShortageDocuments] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [FK_ShortageDocumentLines_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [FK_ShortageDocumentLines_Unit] FOREIGN KEY ([PurchaseItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]);
+GO
+
+ALTER TABLE [inventory].[ShortageDocumentLines]
+    ADD CONSTRAINT [PK_ShortageDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ShortageDocumentLines_Document]
+    ON [inventory].[ShortageDocumentLines]([DocumentId] ASC);
 GO
 

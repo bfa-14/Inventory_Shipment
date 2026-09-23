@@ -1,3 +1,11 @@
+/* ================================================================== 11. Shortage plans: expected stock follows the invoices and the containers
+
+   Until now only open purchase orders counted, so the quantity vanished from the plan as soon as the order
+   became an invoice, while the goods were still at sea. From now on:
+     Outstanding = open PO remaining + posted invoices (ReceiptMode 2) not yet received - what is in transit
+     Transit     = quantity loaded on containers In Transit / At Port / Cleared and not yet received
+   ================================================================== */
+
 CREATE   FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
 RETURNS TABLE
 AS
@@ -7,8 +15,9 @@ RETURN
            i.DefaultSupplierId, i.LastSupplierId, i.MinQuantity, i.MaxQuantity, i.LastCost, i.AverageCost, i.LeadTimeDays,
            ItemPcPerContainer = i.PcPerContainer,
            CurrentInventoryBase     = inventory.fn_StockOnHand(i.Id, @WarehouseId),
-           TransitBase              = ISNULL(po.Transit, 0),
-           OutstandingOrderBase     = ISNULL(po.Outstanding, 0),
+           TransitBase              = ISNULL(tr.Transit, 0),
+           OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
+                                           THEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) ELSE 0 END,
            ExpectedMonthlySalesBase = CONVERT(DECIMAL(18,2), CAST(ISNULL(s.Sold, 0) AS DECIMAL(18,4)) / NULLIF(@MonthsOfHistory, 0)),
            SoldInPeriodBase         = ISNULL(s.Sold, 0),
            PurchaseItemUnitId       = pu.ItemUnitId,
@@ -17,14 +26,27 @@ RETURN
     FROM inventory.Items i
     OUTER APPLY
     (
-        SELECT Transit     = SUM(CASE WHEN l.ShippedQuantityBase > l.ReceivedQuantityBase THEN l.ShippedQuantityBase - l.ReceivedQuantityBase ELSE 0 END),
-               Outstanding = SUM((l.QuantityBase - l.ReceivedQuantityBase)
-                                 - CASE WHEN l.ShippedQuantityBase > l.ReceivedQuantityBase THEN l.ShippedQuantityBase - l.ReceivedQuantityBase ELSE 0 END)
+        -- open purchase orders + invoices whose goods are still travelling
+        SELECT PoOpen     = SUM(CASE WHEN dt.Code = N'PO'   THEN l.QuantityBase - l.ReceivedQuantityBase ELSE 0 END),
+               InvPending = SUM(CASE WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReceivedQuantityBase ELSE 0 END)
         FROM purchase.PurchaseDocumentLines l
         INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
-        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-        WHERE dt.Code = N'PO' AND d.Status = 2 AND l.ItemId = i.Id AND l.WarehouseId = @WarehouseId AND l.QuantityBase > l.ReceivedQuantityBase
+        INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+        WHERE l.ItemId = i.Id AND l.WarehouseId = @WarehouseId AND l.QuantityBase > l.ReceivedQuantityBase
+          AND ((dt.Code = N'PO'   AND d.Status = 2)
+            OR (dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 2))
     ) po
+    OUTER APPLY
+    (
+        -- loaded into a container that has left the supplier and is not offloaded yet
+        SELECT Transit = SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0))
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+        INNER JOIN purchase.PurchaseDocumentLines pl  ON pl.Id = cl.PurchaseLineId
+        WHERE cl.ItemId = i.Id AND c.Status IN (3, 4, 5)
+          AND ISNULL(c.WarehouseId, pl.WarehouseId) = @WarehouseId
+          AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
+    ) tr
     OUTER APPLY
     (
         SELECT Sold = SUM(-m.QuantityBase)

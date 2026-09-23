@@ -22,31 +22,7 @@ CREATE TABLE [purchase].[PurchaseCharges] (
 GO
 
 ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [FK_PurchaseCharges_Provider] FOREIGN KEY ([ProviderPartyId]) REFERENCES [masterdata].[Parties] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [FK_PurchaseCharges_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [FK_PurchaseCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]);
-GO
-
-ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [PK_PurchaseCharges] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseCharges_Document]
-    ON [purchase].[PurchaseCharges]([DocumentKind] ASC, [DocumentId] ASC);
-GO
-
-ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [DF_PurchaseCharges_InSupplierInvoice] DEFAULT ((0)) FOR [IncludedInSupplierInvoice];
-GO
-
-ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [DF_PurchaseCharges_RateType] DEFAULT ((1)) FOR [RateType];
+    ADD CONSTRAINT [DF_PurchaseCharges_Rate] DEFAULT ((1)) FOR [ExchangeRate];
 GO
 
 ALTER TABLE [purchase].[PurchaseCharges]
@@ -54,15 +30,11 @@ ALTER TABLE [purchase].[PurchaseCharges]
 GO
 
 ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [DF_PurchaseCharges_Rate] DEFAULT ((1)) FOR [ExchangeRate];
+    ADD CONSTRAINT [DF_PurchaseCharges_RateType] DEFAULT ((1)) FOR [RateType];
 GO
 
 ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [UQ_PurchaseCharges_Line] UNIQUE NONCLUSTERED ([DocumentKind] ASC, [DocumentId] ASC, [LineNumber] ASC);
-GO
-
-ALTER TABLE [purchase].[PurchaseCharges]
-    ADD CONSTRAINT [CK_PurchaseCharges_Amount] CHECK ([Amount]>=(0));
+    ADD CONSTRAINT [DF_PurchaseCharges_InSupplierInvoice] DEFAULT ((0)) FOR [IncludedInSupplierInvoice];
 GO
 
 ALTER TABLE [purchase].[PurchaseCharges]
@@ -71,5 +43,33 @@ GO
 
 ALTER TABLE [purchase].[PurchaseCharges]
     ADD CONSTRAINT [CK_PurchaseCharges_Kind] CHECK ([DocumentKind]=N'LCA' OR [DocumentKind]=N'PINV');
+GO
+
+ALTER TABLE [purchase].[PurchaseCharges]
+    ADD CONSTRAINT [CK_PurchaseCharges_Amount] CHECK ([Amount]>=(0));
+GO
+
+ALTER TABLE [purchase].[PurchaseCharges]
+    ADD CONSTRAINT [UQ_PurchaseCharges_Line] UNIQUE NONCLUSTERED ([DocumentKind] ASC, [DocumentId] ASC, [LineNumber] ASC);
+GO
+
+ALTER TABLE [purchase].[PurchaseCharges]
+    ADD CONSTRAINT [FK_PurchaseCharges_Provider] FOREIGN KEY ([ProviderPartyId]) REFERENCES [masterdata].[Parties] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseCharges]
+    ADD CONSTRAINT [FK_PurchaseCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseCharges]
+    ADD CONSTRAINT [FK_PurchaseCharges_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]);
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseCharges_Document]
+    ON [purchase].[PurchaseCharges]([DocumentKind] ASC, [DocumentId] ASC);
+GO
+
+ALTER TABLE [purchase].[PurchaseCharges]
+    ADD CONSTRAINT [PK_PurchaseCharges] PRIMARY KEY CLUSTERED ([Id] ASC);
 GO
 

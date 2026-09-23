@@ -8,16 +8,8 @@ CREATE TABLE [purchase].[PurchaseChargeAllocations] (
 );
 GO
 
-ALTER TABLE [purchase].[PurchaseChargeAllocations]
-    ADD CONSTRAINT [PK_PurchaseChargeAllocations] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
-ALTER TABLE [purchase].[PurchaseChargeAllocations]
-    ADD CONSTRAINT [UQ_PurchaseChargeAllocations] UNIQUE NONCLUSTERED ([ChargeId] ASC, [PurchaseLineId] ASC);
-GO
-
-ALTER TABLE [purchase].[PurchaseChargeAllocations]
-    ADD CONSTRAINT [FK_PurchaseChargeAllocations_Charge] FOREIGN KEY ([ChargeId]) REFERENCES [purchase].[PurchaseCharges] ([Id]);
+CREATE NONCLUSTERED INDEX [IX_PurchaseChargeAllocations_Line]
+    ON [purchase].[PurchaseChargeAllocations]([PurchaseLineId] ASC);
 GO
 
 ALTER TABLE [purchase].[PurchaseChargeAllocations]
@@ -25,10 +17,18 @@ ALTER TABLE [purchase].[PurchaseChargeAllocations]
 GO
 
 ALTER TABLE [purchase].[PurchaseChargeAllocations]
+    ADD CONSTRAINT [FK_PurchaseChargeAllocations_Charge] FOREIGN KEY ([ChargeId]) REFERENCES [purchase].[PurchaseCharges] ([Id]);
+GO
+
+ALTER TABLE [purchase].[PurchaseChargeAllocations]
     ADD CONSTRAINT [DF_PurchaseChargeAllocations_Manual] DEFAULT ((0)) FOR [IsManual];
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseChargeAllocations_Line]
-    ON [purchase].[PurchaseChargeAllocations]([PurchaseLineId] ASC);
+ALTER TABLE [purchase].[PurchaseChargeAllocations]
+    ADD CONSTRAINT [PK_PurchaseChargeAllocations] PRIMARY KEY CLUSTERED ([Id] ASC);
+GO
+
+ALTER TABLE [purchase].[PurchaseChargeAllocations]
+    ADD CONSTRAINT [UQ_PurchaseChargeAllocations] UNIQUE NONCLUSTERED ([ChargeId] ASC, [PurchaseLineId] ASC);
 GO
 

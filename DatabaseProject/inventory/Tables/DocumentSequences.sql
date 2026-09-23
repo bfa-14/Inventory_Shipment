@@ -7,15 +7,7 @@ CREATE TABLE [inventory].[DocumentSequences] (
 GO
 
 ALTER TABLE [inventory].[DocumentSequences]
-    ADD CONSTRAINT [DF_DocumentSequences_Year] DEFAULT ((0)) FOR [Year];
-GO
-
-ALTER TABLE [inventory].[DocumentSequences]
-    ADD CONSTRAINT [DF_DocumentSequences_Next] DEFAULT ((1)) FOR [NextNumber];
-GO
-
-ALTER TABLE [inventory].[DocumentSequences]
-    ADD CONSTRAINT [FK_DocumentSequences_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
+    ADD CONSTRAINT [PK_DocumentSequences] PRIMARY KEY CLUSTERED ([DocumentTypeId] ASC, [BranchId] ASC, [Year] ASC);
 GO
 
 ALTER TABLE [inventory].[DocumentSequences]
@@ -23,6 +15,14 @@ ALTER TABLE [inventory].[DocumentSequences]
 GO
 
 ALTER TABLE [inventory].[DocumentSequences]
-    ADD CONSTRAINT [PK_DocumentSequences] PRIMARY KEY CLUSTERED ([DocumentTypeId] ASC, [BranchId] ASC, [Year] ASC);
+    ADD CONSTRAINT [FK_DocumentSequences_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
+GO
+
+ALTER TABLE [inventory].[DocumentSequences]
+    ADD CONSTRAINT [DF_DocumentSequences_Next] DEFAULT ((1)) FOR [NextNumber];
+GO
+
+ALTER TABLE [inventory].[DocumentSequences]
+    ADD CONSTRAINT [DF_DocumentSequences_Year] DEFAULT ((0)) FOR [Year];
 GO
 

@@ -86,6 +86,15 @@ public sealed class PurchaseDocumentListDto
     public byte DecimalPlaces { get; init; }
     public decimal ExchangeRate { get; init; }
     public string? SupplierReference { get; init; }
+
+    /// <summary>Filled once usp_PurchaseDocument_Search returns it; null before.</summary>
+    public string? ExporterReference { get; init; }
+
+    public string? CommercialInvoiceNo { get; init; }
+
+    /// <summary>1 = on posting, 2 = on container offload.</summary>
+    public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
+
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
     public int TotalItems { get; init; }
     public decimal TotalQuantity { get; init; }
@@ -153,8 +162,17 @@ public sealed class PurchaseDocumentLineDto
     /// <summary>Orders: what the supplier has shipped so far (base units), recorded with "Mark as shipped".</summary>
     public decimal ShippedQuantityBase { get; init; }
 
-    /// <summary>Shipped and not yet received — the quantity on its way. The shortage plan counts it as Transit.</summary>
+    /// <summary>
+    /// Invoices: loaded on containers In Transit / At Port / Cleared and not yet received — the
+    /// quantity on its way, which the shortage plan counts as Transit.
+    /// </summary>
     public decimal TransitBase { get; init; }
+
+    /// <summary>Invoices: what containers that are not cancelled hold of this line, in base units.</summary>
+    public int AllocatedToContainersBase { get; init; }
+
+    /// <summary>Invoices: what is still free to load into a container (QuantityBase − allocated); null on orders and returns.</summary>
+    public int? AvailableForContainerBase { get; init; }
 
     public int? ImportRowNumber { get; init; }
     public string? Notes { get; init; }
@@ -199,6 +217,40 @@ public sealed class LinkedPurchaseDocumentDto
     public string CurrencyCode { get; init; } = string.Empty;
 }
 
+/// <summary>A container carrying (part of) this invoice — the 7th result set of usp_PurchaseDocument_Get.</summary>
+public sealed class PurchaseInvoiceContainerDto
+{
+    public int Id { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+
+    /// <summary>The container status code 1–8 (see Logistics.ContainerStatus).</summary>
+    public byte Status { get; init; }
+
+    public string StatusName => Logistics.ContainerStatus.Name(Status);
+    public DateTime? DispatchDate { get; init; }
+    public DateTime? Eta { get; init; }
+    public DateTime? OffloadedDate { get; init; }
+    public string? CurrentLocation { get; init; }
+    public string? WarehouseCode { get; init; }
+    public string? WarehouseName { get; init; }
+
+    /// <summary>Of THIS invoice, loaded on that container.</summary>
+    public int AllocatedBase { get; init; }
+
+    public int ReceivedBase { get; init; }
+}
+
+/// <summary>When a purchase invoice puts its goods into stock.</summary>
+public static class PurchaseReceiptModes
+{
+    /// <summary>Stock enters when the invoice is posted (local purchases).</summary>
+    public const byte OnPosting = 1;
+
+    /// <summary>Stock enters when the container carrying it is offloaded (imports). Forced once the invoice is loaded.</summary>
+    public const byte OnContainerOffload = 2;
+}
+
 public sealed class PurchaseDocumentDto
 {
     public int Id { get; init; }
@@ -236,6 +288,16 @@ public sealed class PurchaseDocumentDto
     public string? BaseCurrencyCode { get; init; }
 
     public string? SupplierReference { get; init; }
+
+    /// <summary>The exporter's reference on the supplier's paperwork (invoices).</summary>
+    public string? ExporterReference { get; init; }
+
+    /// <summary>The supplier's commercial invoice number — what the container list and the forwarder quote.</summary>
+    public string? CommercialInvoiceNo { get; init; }
+
+    /// <summary>1 = stock on posting, 2 = stock on container offload (see <see cref="PurchaseReceiptModes"/>).</summary>
+    public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
+
     public string? Notes { get; init; }
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
     public int TotalItems { get; init; }
@@ -314,6 +376,9 @@ public sealed class PurchaseDocumentDto
     public IReadOnlyList<PurchaseDocumentFileDto> Files { get; init; } = [];
     public IReadOnlyList<PurchaseDocumentAuditDto> Audit { get; init; } = [];
     public IReadOnlyList<LinkedPurchaseDocumentDto> Linked { get; init; } = [];
+
+    /// <summary>Invoices: the containers carrying it, with what each holds and has received.</summary>
+    public IReadOnlyList<PurchaseInvoiceContainerDto> Containers { get; init; } = [];
 }
 
 /// <summary>The answer of masterdata.usp_ExchangeRate_Resolve: a currency and its rate on a day.</summary>
@@ -401,6 +466,16 @@ public sealed class SavePurchaseDocumentRequest
 
     [StringLength(100)]
     public string? SupplierReference { get; init; }
+
+    /// <summary>Invoices only: 1 = on posting, 2 = on container offload. Null = unchanged (1 on creation); forced to 2 once the invoice is in a container.</summary>
+    [Range(1, 2)]
+    public byte? ReceiptMode { get; init; }
+
+    [StringLength(50)]
+    public string? ExporterReference { get; init; }
+
+    [StringLength(50)]
+    public string? CommercialInvoiceNo { get; init; }
 
     [StringLength(1000)]
     public string? Notes { get; init; }
