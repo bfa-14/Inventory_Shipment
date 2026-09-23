@@ -8,5 +8,6 @@ BEGIN
         THROW 69004, 'This port was modified by another user. Reload the page and try again.', 1;
     UPDATE masterdata.Ports SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
 END
+
 GO
 

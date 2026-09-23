@@ -8,5 +8,6 @@ BEGIN
         THROW 68005, 'This charge type was used in transactions and cannot be deleted. Deactivate it instead.', 1;
     DELETE FROM purchase.ChargeTypes WHERE Id = @Id;
 END
+
 GO
 

@@ -18,5 +18,6 @@ BEGIN
     SET Attempts = Attempts + 1, NextAttemptAtUtc = DATEADD(MINUTE, @LeaseMinutes, SYSUTCDATETIME())
     OUTPUT inserted.Id;          -- the worker then reads each claimed email with usp_Email_Get
 END
+
 GO
 

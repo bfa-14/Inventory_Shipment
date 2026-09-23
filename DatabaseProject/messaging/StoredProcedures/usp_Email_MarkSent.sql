@@ -6,5 +6,6 @@ BEGIN
     SET NOCOUNT ON;
     UPDATE messaging.EmailOutbox SET Status = 2, SentAtUtc = SYSUTCDATETIME(), LastError = NULL WHERE Id = @Id;
 END
+
 GO
 

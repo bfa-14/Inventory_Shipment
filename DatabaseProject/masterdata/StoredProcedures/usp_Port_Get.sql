@@ -6,5 +6,6 @@ BEGIN
     SELECT Id, PortCode, PortName, CountryCode, Kind, IsActive, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
     FROM masterdata.Ports WHERE Id = @Id;
 END
+
 GO
 

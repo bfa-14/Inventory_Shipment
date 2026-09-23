@@ -6,5 +6,7 @@ CREATE TYPE [logistics].[tvp_ContainerLine] AS TABLE (
     [OilQtyPerUnit]  DECIMAL (9, 2) NULL,
     [Notes]          NVARCHAR (300) NULL,
     PRIMARY KEY CLUSTERED ([LineNumber] ASC));
+
+
 GO
 

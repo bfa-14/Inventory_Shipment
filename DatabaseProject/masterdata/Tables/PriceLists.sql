@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[PriceLists] (
+CREATE TABLE [masterdata].[PriceLists] (
     [Id]            INT            IDENTITY (1, 1) NOT NULL,
     [PriceListCode] NVARCHAR (20)  NOT NULL,
     [PriceListName] NVARCHAR (100) NOT NULL,
@@ -19,4 +19,7 @@
     CONSTRAINT [UQ_PriceLists_Code] UNIQUE NONCLUSTERED ([PriceListCode] ASC),
     CONSTRAINT [UQ_PriceLists_Name] UNIQUE NONCLUSTERED ([PriceListName] ASC)
 );
+
+
+GO
 

@@ -33,5 +33,6 @@ BEGIN
         c.TypeCode ASC
     OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
 END
+
 GO
 

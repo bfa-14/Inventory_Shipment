@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[StockDocumentAudit] (
+CREATE TABLE [inventory].[StockDocumentAudit] (
     [Id]         BIGINT         IDENTITY (1, 1) NOT NULL,
     [DocumentId] INT            NOT NULL,
     [Action]     NVARCHAR (20)  NOT NULL,
@@ -11,6 +11,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_StockDocumentAudit_Document]
     ON [inventory].[StockDocumentAudit]([DocumentId] ASC, [AtUtc] ASC);
+
+
+GO
 

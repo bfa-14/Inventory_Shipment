@@ -14,5 +14,6 @@ BEGIN
     WHERE Id = @Id;
     INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId) VALUES (@Id, N'Closed', N'Container closed', @UserId);
 END
+
 GO
 

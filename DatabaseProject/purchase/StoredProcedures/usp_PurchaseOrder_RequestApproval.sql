@@ -79,5 +79,6 @@ BEGIN
     SELECT a.UserId, a.FullName, a.Email, Token = CONVERT(VARCHAR(64), a.Token, 2), ExpiresAtUtc = @Expires, RequestNo = @RequestNo
     FROM @Approvers a ORDER BY a.FullName;
 END
+
 GO
 

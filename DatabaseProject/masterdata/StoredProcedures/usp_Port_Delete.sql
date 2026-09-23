@@ -9,5 +9,6 @@ BEGIN
         THROW 69014, 'This port is used by containers and cannot be deleted. Deactivate it instead.', 1;
     DELETE FROM masterdata.Ports WHERE Id = @Id;
 END
+
 GO
 

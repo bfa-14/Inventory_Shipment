@@ -1,4 +1,4 @@
-﻿/* ================================================================== 5. Price resolution (for sales / invoices later) */
+/* ================================================================== 5. Price resolution (for sales / invoices later) */
 
 -- Selling price for a unit on a price list at a branch:
 -- 1. active branch-specific price  2. active "All Branches" price  3. NULL (no price defined).
@@ -23,3 +23,6 @@ BEGIN
 
     RETURN @Price;
 END
+
+GO
+

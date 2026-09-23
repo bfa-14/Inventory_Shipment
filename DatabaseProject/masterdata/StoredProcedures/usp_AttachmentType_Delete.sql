@@ -8,5 +8,6 @@ BEGIN
         THROW 69014, 'This attachment type is used by documents and cannot be deleted. Deactivate it instead.', 1;
     DELETE FROM masterdata.AttachmentTypes WHERE Id = @Id;
 END
+
 GO
 

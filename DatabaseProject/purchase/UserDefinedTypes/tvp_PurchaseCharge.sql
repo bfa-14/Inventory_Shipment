@@ -12,5 +12,7 @@ CREATE TYPE [purchase].[tvp_PurchaseCharge] AS TABLE (
     [IncludedInSupplierInvoice] BIT             NULL,
     [Notes]                     NVARCHAR (300)  NULL,
     PRIMARY KEY CLUSTERED ([LineNumber] ASC));
+
+
 GO
 

@@ -62,5 +62,6 @@ RETURN
     ) pu
     WHERE i.IsActive = 1
 );
+
 GO
 

@@ -1,4 +1,4 @@
-﻿CREATE TABLE [security].[UserRoles] (
+CREATE TABLE [security].[UserRoles] (
     [UserId]        INT           NOT NULL,
     [RoleId]        INT           NOT NULL,
     [AssignedAtUtc] DATETIME2 (3) CONSTRAINT [DF_UserRoles_AssignedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
@@ -10,6 +10,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_UserRoles_RoleId]
     ON [security].[UserRoles]([RoleId] ASC);
+
+
+GO
 

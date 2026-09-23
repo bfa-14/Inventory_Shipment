@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[Branches] (
+CREATE TABLE [masterdata].[Branches] (
     [Id]           INT            IDENTITY (1, 1) NOT NULL,
     [BranchCode]   NVARCHAR (20)  NOT NULL,
     [BranchName]   NVARCHAR (150) NOT NULL,
@@ -21,11 +21,16 @@
 
 
 GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Branches_ActiveMainBranch]
+    ON [masterdata].[Branches]([IsMainBranch] ASC) WHERE ([IsMainBranch]=(1) AND [IsActive]=(1));
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_Branches_BranchName]
     ON [masterdata].[Branches]([BranchName] ASC);
 
 
 GO
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Branches_ActiveMainBranch]
-    ON [masterdata].[Branches]([IsMainBranch] ASC) WHERE ([IsMainBranch]=(1) AND [IsActive]=(1));
 

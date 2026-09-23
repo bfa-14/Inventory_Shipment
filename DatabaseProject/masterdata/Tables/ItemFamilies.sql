@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[ItemFamilies] (
+CREATE TABLE [masterdata].[ItemFamilies] (
     [Id]           INT            IDENTITY (1, 1) NOT NULL,
     [ParentId]     INT            NULL,
     [FamilyCode]   NVARCHAR (50)  NOT NULL,
@@ -24,11 +24,16 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_ItemFamilies_ParentId]
     ON [masterdata].[ItemFamilies]([ParentId] ASC);
 
 
 GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemFamilies_Parent_FamilyName]
     ON [masterdata].[ItemFamilies]([ParentId] ASC, [FamilyName] ASC);
+
+
+GO
 

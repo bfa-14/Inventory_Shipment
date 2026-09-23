@@ -17,7 +17,10 @@ CREATE TABLE [masterdata].[UnitTypes] (
 
 
 GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_UnitTypes_Container]
     ON [masterdata].[UnitTypes]([IsContainer] ASC) WHERE ([IsContainer]=(1));
+
+
 GO
 

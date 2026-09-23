@@ -26,5 +26,6 @@ BEGIN
     LEFT  JOIN security.Users ru ON ru.Id = a.RequestedBy
     WHERE a.Id = @ApprovalId;
 END
+
 GO
 

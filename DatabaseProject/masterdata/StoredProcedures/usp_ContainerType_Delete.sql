@@ -8,5 +8,6 @@ BEGIN
         THROW 69014, 'This container type is used by containers and cannot be deleted. Deactivate it instead.', 1;
     DELETE FROM masterdata.ContainerTypes WHERE Id = @Id;
 END
+
 GO
 

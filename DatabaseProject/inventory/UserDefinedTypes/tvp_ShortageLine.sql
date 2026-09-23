@@ -6,5 +6,7 @@ CREATE TYPE [inventory].[tvp_ShortageLine] AS TABLE (
     [PcPerContainer]             INT             NULL,
     [Notes]                      NVARCHAR (300)  NULL,
     PRIMARY KEY CLUSTERED ([LineNumber] ASC));
+
+
 GO
 

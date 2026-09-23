@@ -8,36 +8,21 @@ CREATE TABLE [logistics].[ContainerFiles] (
     [Content]          VARBINARY (MAX) NOT NULL,
     [Note]             NVARCHAR (300)  NULL,
     [DocumentDate]     DATE            NULL,
-    [CreatedAtUtc]     DATETIME2 (3)   NOT NULL,
-    [CreatedBy]        INT             NULL
+    [CreatedAtUtc]     DATETIME2 (3)   CONSTRAINT [DF_ContainerFiles_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
+    [CreatedBy]        INT             NULL,
+    CONSTRAINT [PK_ContainerFiles] PRIMARY KEY CLUSTERED ([Id] ASC),
+    CONSTRAINT [CK_ContainerFiles_Size] CHECK ([SizeBytes]>(0)),
+    CONSTRAINT [FK_ContainerFiles_Container] FOREIGN KEY ([ContainerId]) REFERENCES [logistics].[Containers] ([Id]),
+    CONSTRAINT [FK_ContainerFiles_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_ContainerFiles_Type] FOREIGN KEY ([AttachmentTypeId]) REFERENCES [masterdata].[AttachmentTypes] ([Id])
 );
-GO
 
-ALTER TABLE [logistics].[ContainerFiles]
-    ADD CONSTRAINT [PK_ContainerFiles] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
 
-ALTER TABLE [logistics].[ContainerFiles]
-    ADD CONSTRAINT [DF_ContainerFiles_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
 GO
 
 CREATE NONCLUSTERED INDEX [IX_ContainerFiles_Container]
     ON [logistics].[ContainerFiles]([ContainerId] ASC);
-GO
 
-ALTER TABLE [logistics].[ContainerFiles]
-    ADD CONSTRAINT [FK_ContainerFiles_Container] FOREIGN KEY ([ContainerId]) REFERENCES [logistics].[Containers] ([Id]);
-GO
 
-ALTER TABLE [logistics].[ContainerFiles]
-    ADD CONSTRAINT [FK_ContainerFiles_Type] FOREIGN KEY ([AttachmentTypeId]) REFERENCES [masterdata].[AttachmentTypes] ([Id]);
-GO
-
-ALTER TABLE [logistics].[ContainerFiles]
-    ADD CONSTRAINT [FK_ContainerFiles_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [logistics].[ContainerFiles]
-    ADD CONSTRAINT [CK_ContainerFiles_Size] CHECK ([SizeBytes]>(0));
 GO
 

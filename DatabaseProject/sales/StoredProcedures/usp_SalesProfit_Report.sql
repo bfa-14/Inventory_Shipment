@@ -85,5 +85,6 @@ BEGIN
     GROUP BY k.GroupKey, k.GroupLabel
     ORDER BY CASE WHEN @GroupBy IN (N'Invoice', N'Month') THEN k.GroupKey END DESC, k.GroupLabel;
 END
+
 GO
 

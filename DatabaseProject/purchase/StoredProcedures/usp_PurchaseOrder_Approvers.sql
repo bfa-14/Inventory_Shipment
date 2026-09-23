@@ -15,5 +15,6 @@ BEGIN
     WHERE u.IsActive = 1 AND NULLIF(LTRIM(RTRIM(u.Email)), N'') IS NOT NULL
     ORDER BY u.FullName;
 END
+
 GO
 

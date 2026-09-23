@@ -26,5 +26,6 @@ BEGIN
     INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
     VALUES (@ContainerId, N'Updated', N'Attachment added: ' + @FileName, @UserId);
 END
+
 GO
 

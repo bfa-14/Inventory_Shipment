@@ -48,5 +48,6 @@ BEGIN
     WHERE a.DocumentId = @Id
     ORDER BY a.AtUtc DESC, a.Id DESC;
 END
+
 GO
 

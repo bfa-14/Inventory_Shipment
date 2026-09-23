@@ -75,5 +75,6 @@ BEGIN
     INNER JOIN purchase.PurchaseCharges pc ON pc.DocumentKind = @DocumentKind AND pc.DocumentId = @DocumentId AND pc.LineNumber = m.ChargeLineNumber
     WHERE pc.IncludeInLandedCost = 1;
 END
+
 GO
 

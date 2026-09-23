@@ -8,5 +8,6 @@ BEGIN
            Category, RelatedDocumentId, Status, Attempts, NextAttemptAtUtc, LastError, CreatedAtUtc, SentAtUtc
     FROM messaging.EmailOutbox WHERE Id = @Id;
 END
+
 GO
 

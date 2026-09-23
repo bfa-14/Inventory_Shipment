@@ -8,5 +8,6 @@ BEGIN
     WHERE @ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId
     ORDER BY ChargeName;
 END
+
 GO
 

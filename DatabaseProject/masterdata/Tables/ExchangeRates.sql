@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[ExchangeRates] (
+CREATE TABLE [masterdata].[ExchangeRates] (
     [Id]           INT             IDENTITY (1, 1) NOT NULL,
     [CurrencyId]   INT             NOT NULL,
     [RateType]     TINYINT         NOT NULL,
@@ -20,12 +20,17 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_ExchangeRates_RateDate]
     ON [masterdata].[ExchangeRates]([RateDate] ASC);
 
 
 GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_ExchangeRates_Currency_Type_Date]
     ON [masterdata].[ExchangeRates]([CurrencyId] ASC, [RateType] ASC, [RateDate] DESC)
     INCLUDE([Rate]);
+
+
+GO
 

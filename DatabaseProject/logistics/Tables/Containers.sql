@@ -9,7 +9,7 @@ CREATE TABLE [logistics].[Containers] (
     [Description]         NVARCHAR (500)  NULL,
     [OrderDate]           DATE            NOT NULL,
     [OrderMonthKey]       AS              (datepart(year,[OrderDate])*(100)+datepart(month,[OrderDate])) PERSISTED,
-    [ShippingMethod]      NVARCHAR (10)   NOT NULL,
+    [ShippingMethod]      NVARCHAR (10)   CONSTRAINT [DF_Containers_Method] DEFAULT (N'Sea') NOT NULL,
     [CountryOfOrigin]     NCHAR (2)       NULL,
     [ForwarderId]         INT             NULL,
     [TransporterId]       INT             NULL,
@@ -30,10 +30,10 @@ CREATE TABLE [logistics].[Containers] (
     [BlDate]              DATE            NULL,
     [BlNotes]             NVARCHAR (500)  NULL,
     [MaxUnits]            INT             NULL,
-    [TotalLines]          INT             NOT NULL,
-    [TotalAllocatedBase]  INT             NOT NULL,
-    [TotalReceivedBase]   INT             NOT NULL,
-    [TotalOilQty]         DECIMAL (18, 2) NOT NULL,
+    [TotalLines]          INT             CONSTRAINT [DF_Containers_Lines] DEFAULT ((0)) NOT NULL,
+    [TotalAllocatedBase]  INT             CONSTRAINT [DF_Containers_Allocated] DEFAULT ((0)) NOT NULL,
+    [TotalReceivedBase]   INT             CONSTRAINT [DF_Containers_Received] DEFAULT ((0)) NOT NULL,
+    [TotalOilQty]         DECIMAL (18, 2) CONSTRAINT [DF_Containers_Oil] DEFAULT ((0)) NOT NULL,
     [UtilizationPct]      AS              (case when [MaxUnits]>(0) then CONVERT([decimal](9,2),((100.0)*[TotalAllocatedBase])/[MaxUnits])  end) PERSISTED,
     [BranchId]            INT             NOT NULL,
     [WarehouseId]         INT             NULL,
@@ -48,7 +48,7 @@ CREATE TABLE [logistics].[Containers] (
     [OffloadedDate]       DATE            NULL,
     [OffloadedAtUtc]      DATETIME2 (3)   NULL,
     [OffloadedBy]         INT             NULL,
-    [Status]              TINYINT         NOT NULL,
+    [Status]              TINYINT         CONSTRAINT [DF_Containers_Status] DEFAULT ((1)) NOT NULL,
     [StatusNote]          NVARCHAR (200)  NULL,
     [CurrentLocation]     NVARCHAR (100)  NULL,
     [ConfirmedAtUtc]      DATETIME2 (3)   NULL,
@@ -59,139 +59,58 @@ CREATE TABLE [logistics].[Containers] (
     [CancelledBy]         INT             NULL,
     [CancelReason]        NVARCHAR (300)  NULL,
     [Notes]               NVARCHAR (1000) NULL,
-    [CreatedAtUtc]        DATETIME2 (3)   NOT NULL,
+    [CreatedAtUtc]        DATETIME2 (3)   CONSTRAINT [DF_Containers_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
     [CreatedBy]           INT             NULL,
     [UpdatedAtUtc]        DATETIME2 (3)   NULL,
     [UpdatedBy]           INT             NULL,
-    [RowVersion]          ROWVERSION      NOT NULL
+    [RowVersion]          ROWVERSION      NOT NULL,
+    CONSTRAINT [PK_Containers] PRIMARY KEY CLUSTERED ([Id] ASC),
+    CONSTRAINT [CK_Containers_FreeDays] CHECK ([FreeDays] IS NULL OR [FreeDays]>=(0)),
+    CONSTRAINT [CK_Containers_MaxUnits] CHECK ([MaxUnits] IS NULL OR [MaxUnits]>(0)),
+    CONSTRAINT [CK_Containers_Method] CHECK ([ShippingMethod]=N'Road' OR [ShippingMethod]=N'Air' OR [ShippingMethod]=N'Sea'),
+    CONSTRAINT [CK_Containers_Status] CHECK ([Status]>=(1) AND [Status]<=(8)),
+    CONSTRAINT [FK_Containers_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]),
+    CONSTRAINT [FK_Containers_Cancelled] FOREIGN KEY ([CancelledBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_Closed] FOREIGN KEY ([ClosedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_Confirmed] FOREIGN KEY ([ConfirmedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_CtType] FOREIGN KEY ([ContainerTypeId]) REFERENCES [masterdata].[ContainerTypes] ([Id]),
+    CONSTRAINT [FK_Containers_FinalDest] FOREIGN KEY ([FinalDestinationId]) REFERENCES [masterdata].[Ports] ([Id]),
+    CONSTRAINT [FK_Containers_Forwarder] FOREIGN KEY ([ForwarderId]) REFERENCES [masterdata].[Parties] ([Id]),
+    CONSTRAINT [FK_Containers_Offloaded] FOREIGN KEY ([OffloadedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_PortDest] FOREIGN KEY ([PortOfDestinationId]) REFERENCES [masterdata].[Ports] ([Id]),
+    CONSTRAINT [FK_Containers_PortLoad] FOREIGN KEY ([PortOfLoadingId]) REFERENCES [masterdata].[Ports] ([Id]),
+    CONSTRAINT [FK_Containers_Transporter] FOREIGN KEY ([TransporterId]) REFERENCES [masterdata].[Parties] ([Id]),
+    CONSTRAINT [FK_Containers_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]),
+    CONSTRAINT [FK_Containers_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]),
+    CONSTRAINT [UQ_Containers_Ref] UNIQUE NONCLUSTERED ([ContainerRef] ASC)
 );
-GO
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_PortLoad] FOREIGN KEY ([PortOfLoadingId]) REFERENCES [masterdata].[Ports] ([Id]);
-GO
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Transporter] FOREIGN KEY ([TransporterId]) REFERENCES [masterdata].[Parties] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Cancelled] FOREIGN KEY ([CancelledBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_CtType] FOREIGN KEY ([ContainerTypeId]) REFERENCES [masterdata].[ContainerTypes] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_FinalDest] FOREIGN KEY ([FinalDestinationId]) REFERENCES [masterdata].[Ports] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_PortDest] FOREIGN KEY ([PortOfDestinationId]) REFERENCES [masterdata].[Ports] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Branch] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Offloaded] FOREIGN KEY ([OffloadedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Forwarder] FOREIGN KEY ([ForwarderId]) REFERENCES [masterdata].[Parties] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Closed] FOREIGN KEY ([ClosedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [FK_Containers_Confirmed] FOREIGN KEY ([ConfirmedBy]) REFERENCES [security].[Users] ([Id]);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_Containers_Warehouse]
-    ON [logistics].[Containers]([WarehouseId] ASC, [Status] ASC);
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Containers_ContainerNo]
-    ON [logistics].[Containers]([ContainerNo] ASC) WHERE ([ContainerNo] IS NOT NULL AND [Status]<(7));
-GO
-
-CREATE NONCLUSTERED INDEX [IX_Containers_Status]
-    ON [logistics].[Containers]([Status] ASC, [OrderDate] DESC);
 GO
 
 CREATE NONCLUSTERED INDEX [IX_Containers_OrderMonth]
     ON [logistics].[Containers]([OrderMonthKey] ASC);
+
+
 GO
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [UQ_Containers_Ref] UNIQUE NONCLUSTERED ([ContainerRef] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Containers_ContainerNo]
+    ON [logistics].[Containers]([ContainerNo] ASC) WHERE ([ContainerNo] IS NOT NULL AND [Status]<(7));
+
+
 GO
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_Method] DEFAULT (N'Sea') FOR [ShippingMethod];
+CREATE NONCLUSTERED INDEX [IX_Containers_Warehouse]
+    ON [logistics].[Containers]([WarehouseId] ASC, [Status] ASC);
+
+
 GO
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_Received] DEFAULT ((0)) FOR [TotalReceivedBase];
-GO
+CREATE NONCLUSTERED INDEX [IX_Containers_Status]
+    ON [logistics].[Containers]([Status] ASC, [OrderDate] DESC);
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_CreatedAtUtc] DEFAULT (sysutcdatetime()) FOR [CreatedAtUtc];
-GO
 
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_Allocated] DEFAULT ((0)) FOR [TotalAllocatedBase];
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_Oil] DEFAULT ((0)) FOR [TotalOilQty];
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_Lines] DEFAULT ((0)) FOR [TotalLines];
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [DF_Containers_Status] DEFAULT ((1)) FOR [Status];
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [PK_Containers] PRIMARY KEY CLUSTERED ([Id] ASC);
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [CK_Containers_MaxUnits] CHECK ([MaxUnits] IS NULL OR [MaxUnits]>(0));
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [CK_Containers_Status] CHECK ([Status]>=(1) AND [Status]<=(8));
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [CK_Containers_Method] CHECK ([ShippingMethod]=N'Road' OR [ShippingMethod]=N'Air' OR [ShippingMethod]=N'Sea');
-GO
-
-ALTER TABLE [logistics].[Containers]
-    ADD CONSTRAINT [CK_Containers_FreeDays] CHECK ([FreeDays] IS NULL OR [FreeDays]>=(0));
 GO
 

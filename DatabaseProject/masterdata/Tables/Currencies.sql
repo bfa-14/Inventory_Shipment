@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[Currencies] (
+CREATE TABLE [masterdata].[Currencies] (
     [Id]             INT            IDENTITY (1, 1) NOT NULL,
     [CurrencyCode]   NVARCHAR (3)   NOT NULL,
     [CurrencyName]   NVARCHAR (100) NOT NULL,
@@ -23,11 +23,16 @@
 
 
 GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Currencies_ActiveBaseCurrency]
+    ON [masterdata].[Currencies]([IsBaseCurrency] ASC) WHERE ([IsBaseCurrency]=(1) AND [IsActive]=(1));
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_Currencies_CurrencyName]
     ON [masterdata].[Currencies]([CurrencyName] ASC);
 
 
 GO
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Currencies_ActiveBaseCurrency]
-    ON [masterdata].[Currencies]([IsBaseCurrency] ASC) WHERE ([IsBaseCurrency]=(1) AND [IsActive]=(1));
 

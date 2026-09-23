@@ -25,5 +25,6 @@ BEGIN
             @AttachmentContent, @Category, @RelatedDocumentId, @UserId);
     SET @NewId = SCOPE_IDENTITY();
 END
+
 GO
 

@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[UnitPriceHistory] (
+CREATE TABLE [masterdata].[UnitPriceHistory] (
     [Id]            BIGINT          IDENTITY (1, 1) NOT NULL,
     [UnitPriceId]   INT             NULL,
     [BranchId]      INT             NULL,
@@ -24,6 +24,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_UnitPriceHistory_Key]
     ON [masterdata].[UnitPriceHistory]([ItemUnitId] ASC, [PriceListId] ASC, [BranchId] ASC, [ChangedAtUtc] DESC);
+
+
+GO
 

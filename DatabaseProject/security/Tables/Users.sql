@@ -1,4 +1,4 @@
-﻿CREATE TABLE [security].[Users] (
+CREATE TABLE [security].[Users] (
     [Id]                  INT            IDENTITY (1, 1) NOT NULL,
     [Username]            NVARCHAR (50)  NOT NULL,
     [Email]               NVARCHAR (256) NOT NULL,
@@ -14,4 +14,7 @@
     CONSTRAINT [UQ_Users_Email] UNIQUE NONCLUSTERED ([Email] ASC),
     CONSTRAINT [UQ_Users_Username] UNIQUE NONCLUSTERED ([Username] ASC)
 );
+
+
+GO
 

@@ -68,25 +68,37 @@ CREATE TABLE [purchase].[PurchaseDocuments] (
     CONSTRAINT [FK_PurchaseDocuments_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_PurchaseDocuments_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id])
 );
-GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
-    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
-GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
-    ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
-    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
 GO
 
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeDate]
     ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
+    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
+    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
+
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
     ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
+
+
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
+    ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+
+
 GO
 

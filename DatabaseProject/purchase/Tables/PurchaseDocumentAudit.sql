@@ -1,4 +1,4 @@
-﻿CREATE TABLE [purchase].[PurchaseDocumentAudit] (
+CREATE TABLE [purchase].[PurchaseDocumentAudit] (
     [Id]         BIGINT         IDENTITY (1, 1) NOT NULL,
     [DocumentId] INT            NOT NULL,
     [Action]     NVARCHAR (20)  NOT NULL,
@@ -11,6 +11,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentAudit_Document]
     ON [purchase].[PurchaseDocumentAudit]([DocumentId] ASC, [AtUtc] ASC);
+
+
+GO
 

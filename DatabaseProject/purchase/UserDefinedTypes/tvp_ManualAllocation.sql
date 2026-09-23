@@ -3,5 +3,7 @@ CREATE TYPE [purchase].[tvp_ManualAllocation] AS TABLE (
     [PurchaseLineId]   INT             NOT NULL,
     [AmountBase]       DECIMAL (18, 2) NOT NULL,
     PRIMARY KEY CLUSTERED ([ChargeLineNumber] ASC, [PurchaseLineId] ASC));
+
+
 GO
 

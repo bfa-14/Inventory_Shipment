@@ -36,5 +36,6 @@ BEGIN
                  ORDER BY e.EventDate DESC, e.Id DESC) ev
     WHERE c.Id = @Id;
 END
+
 GO
 

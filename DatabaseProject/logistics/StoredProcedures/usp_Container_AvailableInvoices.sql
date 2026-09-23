@@ -40,5 +40,6 @@ BEGIN
       AND (x.Total - ISNULL(x.Allocated, 0) > 0 OR ISNULL(x.Here, 0) > 0)
     ORDER BY d.DocumentDate DESC, d.Id DESC;
 END
+
 GO
 

@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[Brands] (
+CREATE TABLE [masterdata].[Brands] (
     [Id]           INT            IDENTITY (1, 1) NOT NULL,
     [BrandCode]    NVARCHAR (20)  NOT NULL,
     [BrandName]    NVARCHAR (150) NOT NULL,
@@ -19,5 +19,10 @@
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_Brands_BrandName]
     ON [masterdata].[Brands]([BrandName] ASC);
+
+
+GO
+

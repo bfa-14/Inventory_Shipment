@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[ItemImportLogs] (
+CREATE TABLE [inventory].[ItemImportLogs] (
     [Id]            INT            IDENTITY (1, 1) NOT NULL,
     [FileName]      NVARCHAR (255) NOT NULL,
     [TotalRows]     INT            NOT NULL,
@@ -10,4 +10,7 @@
     CONSTRAINT [PK_ItemImportLogs] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [FK_ItemImportLogs_User] FOREIGN KEY ([ImportedBy]) REFERENCES [security].[Users] ([Id])
 );
+
+
+GO
 

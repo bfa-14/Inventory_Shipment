@@ -109,5 +109,6 @@ BEGIN
     LEFT  JOIN security.Users rq ON rq.Id = d.ApprovalRequestedBy
     WHERE d.Id = @DocumentId;
 END
+
 GO
 

@@ -12,5 +12,6 @@ BEGIN
         NextAttemptAtUtc = DATEADD(MINUTE, 5 * Attempts, SYSUTCDATETIME())
     WHERE Id = @Id;
 END
+
 GO
 

@@ -38,5 +38,6 @@ BEGIN
     WHERE l.AdjustmentId = @Id
     ORDER BY pl.LineNumber;
 END
+
 GO
 

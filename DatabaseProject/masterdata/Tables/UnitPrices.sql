@@ -1,4 +1,4 @@
-﻿CREATE TABLE [masterdata].[UnitPrices] (
+CREATE TABLE [masterdata].[UnitPrices] (
     [Id]           INT             IDENTITY (1, 1) NOT NULL,
     [BranchId]     INT             NULL,
     [ItemId]       INT             NOT NULL,
@@ -23,21 +23,28 @@
 
 
 GO
-CREATE NONCLUSTERED INDEX [IX_UnitPrices_Branch]
-    ON [masterdata].[UnitPrices]([BranchId] ASC);
 
-
-GO
 CREATE NONCLUSTERED INDEX [IX_UnitPrices_PriceList]
     ON [masterdata].[UnitPrices]([PriceListId] ASC);
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_UnitPrices_Item]
     ON [masterdata].[UnitPrices]([ItemId] ASC);
 
 
 GO
+
+CREATE NONCLUSTERED INDEX [IX_UnitPrices_Branch]
+    ON [masterdata].[UnitPrices]([BranchId] ASC);
+
+
+GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_UnitPrices_Key]
     ON [masterdata].[UnitPrices]([ItemUnitId] ASC, [PriceListId] ASC, [BranchId] ASC);
+
+
+GO
 

@@ -6,5 +6,6 @@ BEGIN
     SELECT Id, Category, SubType, SortOrder, IsActive, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
     FROM masterdata.AttachmentTypes WHERE Id = @Id;
 END
+
 GO
 

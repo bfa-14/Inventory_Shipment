@@ -5,5 +5,6 @@ AS
            InventoryValue = CAST(b.OnHandBase * i.AverageCost AS DECIMAL(18,2))
     FROM inventory.vw_StockBalance b
     INNER JOIN inventory.Items i ON i.Id = b.ItemId;
+
 GO
 

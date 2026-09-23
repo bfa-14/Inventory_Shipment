@@ -7,5 +7,6 @@ BEGIN
            CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
     FROM masterdata.ContainerTypes WHERE Id = @Id;
 END
+
 GO
 

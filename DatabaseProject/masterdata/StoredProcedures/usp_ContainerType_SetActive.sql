@@ -8,5 +8,6 @@ BEGIN
         THROW 69004, 'This container type was modified by another user. Reload the page and try again.', 1;
     UPDATE masterdata.ContainerTypes SET IsActive = @IsActive, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
 END
+
 GO
 
