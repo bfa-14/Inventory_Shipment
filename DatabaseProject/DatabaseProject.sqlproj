@@ -65,6 +65,7 @@
     <Delete Files="$(BaseIntermediateOutputPath)\project.assets.json" />
   </Target>
   <ItemGroup>
+    <Folder Include="DatabaseSecurity\" />
     <Folder Include="inventory\" />
     <Folder Include="inventory\Functions\" />
     <Folder Include="inventory\StoredProcedures\" />
@@ -91,10 +92,16 @@
     <Folder Include="sales\Tables\" />
     <Folder Include="sales\UserDefinedTypes\" />
     <Folder Include="security\" />
-    <Folder Include="Security\" />
     <Folder Include="security\Functions\" />
     <Folder Include="security\StoredProcedures\" />
     <Folder Include="security\Tables\" />
+    <Build Include="DatabaseSecurity\inventory.sql" />
+    <Build Include="DatabaseSecurity\logistics.sql" />
+    <Build Include="DatabaseSecurity\masterdata.sql" />
+    <Build Include="DatabaseSecurity\messaging.sql" />
+    <Build Include="DatabaseSecurity\purchase.sql" />
+    <Build Include="DatabaseSecurity\sales.sql" />
+    <Build Include="DatabaseSecurity\security.sql" />
     <Build Include="inventory\Functions\fn_AverageCost.sql" />
     <Build Include="inventory\Functions\fn_Shortage_Live.sql" />
     <Build Include="inventory\Functions\fn_StockOnHand.sql" />
@@ -383,13 +390,6 @@
     <Build Include="security\Functions\fn_UserHasPermission.sql" />
     <Build Include="security\Functions\fn_UserPermissions.sql" />
     <Build Include="security\Functions\fn_UserRoles.sql" />
-    <Build Include="Security\inventory.sql" />
-    <Build Include="Security\logistics.sql" />
-    <Build Include="Security\masterdata.sql" />
-    <Build Include="Security\messaging.sql" />
-    <Build Include="Security\purchase.sql" />
-    <Build Include="Security\sales.sql" />
-    <Build Include="Security\security.sql" />
     <Build Include="security\StoredProcedures\usp_Permission_SyncCatalog.sql" />
     <Build Include="security\StoredProcedures\usp_Role_Delete.sql" />
     <Build Include="security\StoredProcedures\usp_Role_SetPermissions.sql" />
