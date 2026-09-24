@@ -90,8 +90,8 @@
     <Folder Include="sales\StoredProcedures\" />
     <Folder Include="sales\Tables\" />
     <Folder Include="sales\UserDefinedTypes\" />
-    <Folder Include="Security\" />
     <Folder Include="security\" />
+    <Folder Include="Security\" />
     <Folder Include="security\Functions\" />
     <Folder Include="security\StoredProcedures\" />
     <Folder Include="security\Tables\" />
