@@ -3,14 +3,14 @@ using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Logistics;
 using Inventory_Shipment.Model.Security;
-using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Inventory_Shipment.API.Controllers.Logistics;
 
 /// <summary>
-/// Containers — the import shipment between the purchase invoice and the warehouse.
+/// Containers — the import shipment between the purchase order and the warehouse: loaded from
+/// order lines, invoiced from their lines, offloaded at the real cost.
 ///
 /// [HasPermission] ON EVERY ACTION AND THE CHECK AGAIN IN THE SERVICE: the permission of a
 /// container action does not depend on the container, so the attribute can say it up front; the
@@ -22,12 +22,14 @@ namespace Inventory_Shipment.API.Controllers.Logistics;
 [Produces("application/json")]
 public sealed class ContainersController : ControllerBase
 {
+    /// <summary>PDF, images and office files — what a forwarder, a customs agent or a supplier sends.</summary>
     private static readonly HashSet<string> AllowedFileTypes = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+        ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff",
+        ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".csv", ".txt",
     };
 
-    private const long MaxFileBytes = 10 * 1024 * 1024;
+    private const long MaxFileBytes = 20 * 1024 * 1024;
     private const string SpreadsheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private readonly IContainerService _containers;
@@ -57,7 +59,7 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    /// <summary>Creates a draft; the reference (KTG-yyyy-nnnn) is assigned now and MaxUnits copied from the type.</summary>
+    /// <summary>Creates a draft from an approved order (purchaseOrderId); the reference (KTG-yyyy-nnnn) is assigned now and MaxUnits copied from the type.</summary>
     [HttpPost]
     [HasPermission(Permissions.Containers.Create)]
     [ProducesResponseType<ContainerDto>(StatusCodes.Status201Created)]
@@ -98,19 +100,10 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    [HttpPost("{id:int}/events")]
-    [HasPermission(Permissions.Containers.Create)]
-    [ProducesResponseType<ContainerDto>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<ContainerDto>> AddEvent(
-        int id, [FromBody] AddEventRequest request, CancellationToken cancellationToken)
-    {
-        var result = await _containers.AddEventAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
-        return result.ToActionResult(this);
-    }
-
-    /// <summary>The goods enter stock at the invoice landed cost. No lines = everything received as loaded.</summary>
+    /// <summary>
+    /// The goods enter stock at the real cost: FOB of the posted invoices + posted charges per piece
+    /// received. No lines = everything received as loaded. 409 NOT_FULLY_INVOICED / INVALID_STATUS.
+    /// </summary>
     [HttpPost("{id:int}/offload")]
     [HasPermission(Permissions.Containers.Offload)]
     [ProducesResponseType<ContainerDto>(StatusCodes.Status200OK)]
@@ -147,6 +140,18 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    [HttpPost("{id:int}/reopen")]
+    [HasPermission(Permissions.Containers.Close)]
+    [ProducesResponseType<ContainerDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ContainerDto>> Reopen(
+        int id, [FromBody] ContainerActionRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.ReopenAsync(
+            id, request ?? new ContainerActionRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpPost("{id:int}/cancel")]
     [HasPermission(Permissions.Containers.Cancel)]
     [ProducesResponseType<ContainerDto>(StatusCodes.Status200OK)]
@@ -168,6 +173,7 @@ public sealed class ContainersController : ControllerBase
         return result.ToNoContentResult(this);
     }
 
+    /// <summary>The container, its invoices and its lines with FOB / charges / landed per unit.</summary>
     [HttpGet("{id:int}/export")]
     [HasPermission(Permissions.Containers.View)]
     [Produces(SpreadsheetContentType)]
@@ -181,42 +187,60 @@ public sealed class ContainersController : ControllerBase
             : this.ToProblem(result);
     }
 
-    /* ── loading: the invoices and their lines ────────────────────────────────────────────────── */
+    /* ── loading from orders, invoicing from containers ─────────────────────────────────────────── */
 
-    /// <summary>Purchase invoices (draft or posted, not cancelled) with something left to load.</summary>
-    [HttpGet("available-invoices")]
+    /// <summary>Approved order lines that can still be loaded; containerId = the container being edited.</summary>
+    [HttpGet("available-po-lines")]
     [HasPermission(Permissions.Containers.Create)]
-    [ProducesResponseType<IReadOnlyList<AvailableInvoiceDto>>(StatusCodes.Status200OK)]
-    public async Task<ActionResult<IReadOnlyList<AvailableInvoiceDto>>> AvailableInvoices(
-        [FromQuery] AvailableInvoiceQuery query, CancellationToken cancellationToken)
+    [ProducesResponseType<IReadOnlyList<AvailablePoLineDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<AvailablePoLineDto>>> AvailablePoLines(
+        [FromQuery] AvailablePoLineQuery query, CancellationToken cancellationToken)
     {
-        var result = await _containers.GetAvailableInvoicesAsync(query, User.GetPermissions(), cancellationToken);
+        var result = await _containers.GetAvailablePoLinesAsync(query, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
-    /// <summary>The lines of one invoice for the loading grid; containerId = the container being edited.</summary>
-    [HttpGet("available-invoices/{invoiceId:int}/lines")]
-    [HasPermission(Permissions.Containers.Create)]
-    [ProducesResponseType<IReadOnlyList<AvailableInvoiceLineDto>>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<IReadOnlyList<AvailableInvoiceLineDto>>> InvoiceLines(
-        int invoiceId, [FromQuery] int? containerId, CancellationToken cancellationToken)
+    /// <summary>Container lines still to invoice (purchaseOrderId or containerId required; includeAll = the fully invoiced too).</summary>
+    [HttpGet("invoice-candidates")]
+    [HasPermission(Permissions.Containers.View)]
+    [ProducesResponseType<IReadOnlyList<InvoiceCandidateDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<IReadOnlyList<InvoiceCandidateDto>>> InvoiceCandidates(
+        [FromQuery] InvoiceCandidateQuery query, CancellationToken cancellationToken)
     {
-        var result = await _containers.GetInvoiceLinesAsync(invoiceId, containerId, User.GetPermissions(), cancellationToken);
+        var result = await _containers.GetInvoiceCandidatesAsync(query, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /* ── tracking ─────────────────────────────────────────────────────────────────────────────── */
+
+    /// <summary>The tracking board: { containers, legs } — open containers and those offloaded during the last offloadedDays days.</summary>
+    [HttpGet("tracking")]
+    [HasPermission(Permissions.Containers.View)]
+    [ProducesResponseType<TrackingDto>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<TrackingDto>> Tracking([FromQuery] TrackingQuery query, CancellationToken cancellationToken)
+    {
+        var result = await _containers.GetTrackingAsync(query, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
-    /// <summary>Multipart: file, and optionally attachmentTypeId, note and documentDate (yyyy-MM-dd).</summary>
-    [HttpPost("{id:int}/files")]
-    [HasPermission(Permissions.Containers.Create)]
+    /// <summary>
+    /// Multipart: file, containerIds (repeated), and optionally movementId, chargeId, attachmentTypeId,
+    /// note and documentDate (yyyy-MM-dd). The file is stored ONCE and recorded on every container;
+    /// the answer is the created records (201).
+    /// </summary>
+    [HttpPost("attachments")]
+    [HasPermission(Permissions.Containers.AttachmentsManage)]
     [Consumes("multipart/form-data")]
-    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType<IReadOnlyList<ContainerAttachmentCreatedDto>>(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [RequestSizeLimit(MaxFileBytes * 2)]
-    public async Task<IActionResult> AddFile(
-        int id, IFormFile file, [FromForm] int? attachmentTypeId, [FromForm] string? note, [FromForm] DateOnly? documentDate,
+    [RequestSizeLimit(MaxFileBytes + 1024 * 1024)]
+    [RequestFormLimits(MultipartBodyLengthLimit = MaxFileBytes + 1024 * 1024)]
+    public async Task<IActionResult> AddAttachment(
+        IFormFile file, [FromForm] List<int>? containerIds, [FromForm] int? movementId, [FromForm] int? chargeId,
+        [FromForm] int? attachmentTypeId, [FromForm] string? note, [FromForm] DateOnly? documentDate,
         CancellationToken cancellationToken)
     {
         if (file is null || file.Length == 0)
@@ -231,7 +255,7 @@ public sealed class ContainersController : ControllerBase
 
         if (!AllowedFileTypes.Contains(Path.GetExtension(file.FileName)))
         {
-            return Invalid("Only PDF, Excel, Word and image files can be attached.");
+            return Invalid("Only PDF, image and office files (Word, Excel, PowerPoint, CSV, text) can be attached.");
         }
 
         if (note is { Length: > 300 })
@@ -242,43 +266,48 @@ public sealed class ContainersController : ControllerBase
         using var buffer = new MemoryStream();
         await file.CopyToAsync(buffer, cancellationToken);
 
-        var upload = new ContainerFileUpload
+        var upload = new ContainerAttachmentUpload
         {
-            FileName = file.FileName,
+            ContainerIds = containerIds ?? [],
+            MovementId = movementId,
+            ChargeId = chargeId,
+            AttachmentTypeId = attachmentTypeId,
+            FileName = Path.GetFileName(file.FileName),
             ContentType = file.ContentType,
             Content = buffer.ToArray(),
-            AttachmentTypeId = attachmentTypeId,
             Note = note,
             DocumentDate = documentDate,
         };
 
-        var result = await _containers.AddFileAsync(id, upload, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _containers.AddAttachmentAsync(upload, User.GetUserId(), User.GetPermissions(), cancellationToken);
 
         return result.IsSuccess
-            ? StatusCode(StatusCodes.Status201Created, new { id = result.Value })
+            ? StatusCode(StatusCodes.Status201Created, result.Value)
             : this.ToProblem(result);
     }
 
-    [HttpGet("files/{fileId:int}")]
+    [HttpGet("attachments/{id:int}/download")]
     [HasPermission(Permissions.Containers.View)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
-    public async Task<IActionResult> GetFile(int fileId, CancellationToken cancellationToken)
+    public async Task<IActionResult> DownloadAttachment(int id, CancellationToken cancellationToken)
     {
-        var result = await _containers.GetFileAsync(fileId, User.GetPermissions(), cancellationToken);
+        var result = await _containers.GetAttachmentFileAsync(id, User.GetPermissions(), cancellationToken);
 
         return result.IsSuccess
             ? File(result.Value!.Content, result.Value.ContentType, result.Value.FileName)
             : this.ToProblem(result);
     }
 
-    [HttpDelete("files/{fileId:int}")]
-    [HasPermission(Permissions.Containers.Create)]
+    /// <summary>allShared = true removes the file from every container holding it.</summary>
+    [HttpDelete("attachments/{id:int}")]
+    [HasPermission(Permissions.Containers.AttachmentsManage)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult> DeleteFile(int fileId, CancellationToken cancellationToken)
+    public async Task<ActionResult> DeleteAttachment(
+        int id, [FromQuery] bool allShared = false, CancellationToken cancellationToken = default)
     {
-        var result = await _containers.DeleteFileAsync(fileId, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _containers.DeleteAttachmentAsync(id, allShared, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToNoContentResult(this);
     }
 

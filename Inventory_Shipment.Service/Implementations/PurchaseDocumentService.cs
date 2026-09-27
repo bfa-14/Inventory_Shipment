@@ -372,6 +372,50 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         return await ReadAsync(newId, cancellationToken);
     }
 
+    /// <summary>
+    /// AN INVOICE FROM CONTAINERS IS AN INVOICE: the right is purchase.invoices.create, and seeing the
+    /// order is checked too because the draft copies its prices. The answer is the new id only — the
+    /// page opens the draft next.
+    /// </summary>
+    public async Task<Result<int>> CreateFromContainersAsync(
+        int purchaseOrderId, InvoiceFromContainersRequest request, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Invoices.Create))
+        {
+            return Forbidden<int>(Invoices.Create);
+        }
+
+        var duplicate = request.Lines.GroupBy(l => l.ContainerLineId).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            return Result<int>.Failure(
+                ErrorType.Validation, $"Container line {duplicate.Key} appears more than once.", "VALIDATION");
+        }
+
+        var order = await AllowAsync(purchaseOrderId, s => s.View, permissions, cancellationToken);
+        if (order.IsFailure)
+        {
+            return Result<int>.Failure(order.ErrorType, order.Error ?? string.Empty, order.Code ?? "ERROR");
+        }
+
+        int newId;
+        try
+        {
+            newId = await _documents.CreateFromContainersAsync(
+                purchaseOrderId, request.Lines, request.DocumentDate, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<int>(ex);
+        }
+
+        _logger.LogInformation("Purchase invoice {DocumentId} created from the containers of {OrderNumber} by user {UserId}",
+            newId, order.Value!.DocumentNumber, userId);
+
+        return Result<int>.Success(newId);
+    }
+
     public Task<BulkActionResult> BulkPostAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
         => BulkDocumentActions.RunAsync(ids, async id =>
@@ -817,6 +861,13 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         // Script 24: an invoice a container carries cannot be edited, cancelled or deleted from here.
         SqlErrors.ContainerInvoiceInUse => new RuleFailure(ErrorType.Conflict, exception.Message, "INVOICE_IN_USE"),
+
+        // Script 27: imports are invoiced from their containers and carry their charges there.
+        SqlErrors.PurchaseExporterReferenceRequired => new RuleFailure(ErrorType.Validation, exception.Message, "EXPORTER_REFERENCE_REQUIRED"),
+        SqlErrors.PurchaseContainerLineInvalid => new RuleFailure(ErrorType.Conflict, exception.Message, "CONTAINER_LINE_INVALID"),
+        SqlErrors.PurchaseChargesOnContainer => new RuleFailure(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
+        SqlErrors.PurchaseOrderInContainers => new RuleFailure(ErrorType.Conflict, exception.Message, "PO_IN_CONTAINERS"),
+        SqlErrors.ContainerLineInvoiced => new RuleFailure(ErrorType.Conflict, exception.Message, "LINE_INVOICED"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 

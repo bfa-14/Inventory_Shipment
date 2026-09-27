@@ -40,6 +40,11 @@ public interface IPurchaseDocumentRepository
         int sourceId, string targetTypeCode, DateOnly? documentDate, int userId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>purchase.usp_PurchaseDocument_CreateFromContainers — a draft invoice from container lines of one order; the new id.</summary>
+    Task<int> CreateFromContainersAsync(
+        int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate, int userId,
+        CancellationToken cancellationToken = default);
+
     Task<PurchaseRateResolutionDto?> ResolveRateAsync(
         int currencyId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);
 

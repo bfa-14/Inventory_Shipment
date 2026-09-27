@@ -8,7 +8,8 @@ namespace Inventory_Shipment.Repository.Database;
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
 /// Each module owns a block: 50xxx security, 56xxx inventory, 51xxx-55xxx + 57xxx-60xxx master data,
 /// 61xxx sales imports, 62xxx inventory documents, 64xxx sales documents, 65xxx-68xxx purchase
-/// and shortage plans, and 69xxx logistics (containers).
+/// and shortage plans, 69xxx logistics (containers) and 70xxx logistics (movements, container charges,
+/// attachments, movement types).
 /// </summary>
 public static class SqlErrors
 {
@@ -158,6 +159,18 @@ public static class SqlErrors
     /// <summary>The chain is broken: wrong source kind, source not open, more than remains, or a posted child in the way.</summary>
     public const int PurchaseDocumentSourceInvalid = 65011;
 
+    /// <summary>An imported invoice (from containers) is posted without the exporter reference.</summary>
+    public const int PurchaseExporterReferenceRequired = 65018;
+
+    /// <summary>An invoice line and its container line disagree: missing, another order, or more than is loaded.</summary>
+    public const int PurchaseContainerLineInvalid = 65019;
+
+    /// <summary>Charges typed on an imported invoice: an import's charges are entered on its containers.</summary>
+    public const int PurchaseChargesOnContainer = 65020;
+
+    /// <summary>The order is shipped in containers: invoiced from them, not from the order; not cancelled or closed while loaded.</summary>
+    public const int PurchaseOrderInContainers = 65021;
+
     // ----- 66xxx: inventory - shortage planning documents -----
     public const int ShortageDocumentValidation = 66000;
     public const int ShortageDocumentConcurrency = 66004;
@@ -181,6 +194,9 @@ public static class SqlErrors
 
     /// <summary>The source invoice is missing, not a purchase invoice, not posted, or still carries a posted adjustment.</summary>
     public const int LandedCostSourceInvalid = 67011;
+
+    /// <summary>A landed cost adjustment on an imported invoice: its late charges go on the containers.</summary>
+    public const int LandedCostImportedInvoice = 67012;
 
     // ----- 68xxx: purchase - charge types (US-MD-008) -----
     public const int ChargeTypeValidation = 68000;
@@ -224,11 +240,36 @@ public static class SqlErrors
     /// <summary>Reversing an offload would take an item below zero: the goods were already sold or moved.</summary>
     public const int ContainerInsufficientStock = 69015;
 
+    /// <summary>The offload needs every container line fully covered by POSTED invoices.</summary>
+    public const int ContainerNotFullyInvoiced = 69016;
+
+    /// <summary>A container line is invoiced: it cannot be removed, nor loaded below what is invoiced.</summary>
+    public const int ContainerLineInvoiced = 69017;
+
+    /// <summary>A charge was posted after the offload (a cost adjustment exists): the offload cannot be reversed.</summary>
+    public const int ContainerCostAdjusted = 69018;
+
+    // ----- 70xxx: logistics - movements, container charges, attachments, movement types -----
+    public const int LogisticsValidation = 70000;
+    public const int LogisticsDuplicate = 70001;
+    public const int LogisticsConcurrency = 70004;
+    public const int LogisticsNotEditable = 70005;
+    public const int LogisticsNotFound = 70006;
+    public const int LogisticsInvalidStatus = 70010;
+
+    /// <summary>The container travels with another movement in progress, or a movement still holds it.</summary>
+    public const int ContainerBusy = 70012;
+
+    /// <summary>A charge cannot be allocated: no weight, no volume, a zero basis, or manual shares that do not add up.</summary>
+    public const int ChargeAllocationDataMissing = 70013;
+
+    public const int LogisticsInUse = 70014;
+
     private const int FirstBusinessRule = 50000;
 
-    // The ceiling moves with the newest block (69xxx is logistics): a ceiling left behind
+    // The ceiling moves with the newest block (70xxx is logistics): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 69999;
+    private const int LastBusinessRule = 70999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

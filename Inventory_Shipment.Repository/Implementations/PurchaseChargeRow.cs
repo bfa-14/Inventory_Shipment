@@ -36,6 +36,11 @@ internal sealed class PurchaseChargeRow
     public string? Notes { get; init; }
     public decimal? AllocatedBase { get; init; }
     public byte? AdjustmentStatus { get; init; }
+    public int? ContainerId { get; init; }
+    public string? ContainerRef { get; init; }
+    public DateTime? ChargeDate { get; init; }
+    public byte? ChargeStatus { get; init; }
+    public decimal? ShareBase { get; init; }
 
     public PurchaseChargeDto ToDto(string? kind = null, int? documentId = null, string? sourceNumber = null) => new()
     {
@@ -63,5 +68,10 @@ internal sealed class PurchaseChargeRow
         Notes = Notes,
         AllocatedBase = AllocatedBase,
         AdjustmentStatus = AdjustmentStatus,
+        ContainerId = ContainerId,
+        ContainerRef = ContainerRef,
+        ChargeDate = ChargeDate,
+        ChargeStatus = ChargeStatus,
+        ShareBase = ShareBase,
     };
 }

@@ -58,6 +58,14 @@ public interface IPurchaseDocumentService
         int sourceId, string targetTypeCode, CreateFromSourceRequest request, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// A draft purchase invoice from container lines of one order (no lines = everything loaded and
+    /// not yet invoiced); the new id. Needs purchase.invoices.create, and seeing the order.
+    /// </summary>
+    Task<Result<int>> CreateFromContainersAsync(
+        int purchaseOrderId, InvoiceFromContainersRequest request, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     Task<BulkActionResult> BulkPostAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 

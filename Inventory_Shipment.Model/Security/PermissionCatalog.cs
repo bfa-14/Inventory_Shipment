@@ -104,6 +104,7 @@ public static class Permissions
         public const string ContainerTypesManage = "masterdata.containertypes.manage";
         public const string PortsManage = "masterdata.ports.manage";
         public const string AttachmentTypesManage = "masterdata.attachmenttypes.manage";
+        public const string MovementTypesManage = "masterdata.movementtypes.manage";
     }
 
     public static class Inventory
@@ -192,6 +193,15 @@ public static class Permissions
         public const string Close = "containers.close";
         public const string Delete = "containers.delete";
         public const string OverCapacity = "containers.overcapacity";
+
+        /* Script 27: the route, the costs and the documents of containers. Charges have their own
+           view / create / post / cancel, because posting one moves the cost of the items. */
+        public const string MovementsManage = "containers.movements.manage";
+        public const string ChargesView = "containers.charges.view";
+        public const string ChargesCreate = "containers.charges.create";
+        public const string ChargesPost = "containers.charges.post";
+        public const string ChargesCancel = "containers.charges.cancel";
+        public const string AttachmentsManage = "containers.attachments.manage";
     }
 
     private const string SecurityModule = "Security";
@@ -412,6 +422,22 @@ public static class Permissions
             "Define ports, borders and inland destinations.", 1390),
         new(MasterData.AttachmentTypesManage, "Manage attachment types", MasterDataModule,
             "Define the document types used by attachments.", 1400),
+
+        // Names, descriptions and sort orders match script 27's MERGE, so the start-up sync changes nothing.
+        new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
+            "Plan, start, complete and cancel movements of containers.", 1410),
+        new(Containers.ChargesView, "View Container Charges", ContainersModule,
+            "See the charges of containers and how they are divided over the items.", 1420),
+        new(Containers.ChargesCreate, "Create Container Charges", ContainersModule,
+            "Enter, edit and delete draft charges on containers.", 1430),
+        new(Containers.ChargesPost, "Post Container Charges", ContainersModule,
+            "Post container charges: they enter the cost of the items.", 1440),
+        new(Containers.ChargesCancel, "Cancel Container Charges", ContainersModule,
+            "Cancel posted container charges (the item costs are adjusted back).", 1450),
+        new(Containers.AttachmentsManage, "Manage Container Documents", ContainersModule,
+            "Add and remove documents on containers and movements.", 1460),
+        new(MasterData.MovementTypesManage, "Manage movement types", MasterDataModule,
+            "Define the movement types and the stage each one represents.", 1470),
 
         new(Sales.InvoicesImport, "Import invoice items", SalesModule,
             "Import invoice lines from an Excel file.", 600),

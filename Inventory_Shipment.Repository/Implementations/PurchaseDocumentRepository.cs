@@ -12,6 +12,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     /// <summary>Matched by TYPE NAME on the server; a wrong one fails with a message that never mentions the type.</summary>
     private const string LineTypeName = "purchase.tvp_PurchaseDocumentLine";
     private const string ShippedLineTypeName = "purchase.tvp_ShippedLine";
+    private const string LineContainerTypeName = "purchase.tvp_LineContainer";
+    private const string ContainerLineQtyTypeName = "logistics.tvp_ContainerLineQty";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the document date.</summary>
     private static readonly string[] SortColumns =
@@ -192,6 +194,14 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public byte ReceiptMode { get; init; }
         public string? Notes { get; init; }
         public byte Status { get; init; }
+        public bool IsContainerBound { get; init; }
+        public int ContainerCount { get; init; }
+        public int? LoadedBase { get; init; }
+        public decimal? ContainerChargesBase { get; init; }
+        public decimal? OrderedBase { get; init; }
+        public decimal? InvoicedBase { get; init; }
+        public decimal InDraftInvoicesBase { get; init; }
+        public int? InvoicingStatus { get; init; }
         public int TotalItems { get; init; }
         public decimal TotalQuantity { get; init; }
         public decimal Subtotal { get; init; }
@@ -254,6 +264,14 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal TransitBase { get; init; }
         public int AllocatedToContainersBase { get; init; }
         public int? AvailableForContainerBase { get; init; }
+        public int? InvoicedDirectBase { get; init; }
+        public int? ContainerLineId { get; init; }
+        public int? ContainerId { get; init; }
+        public string? ContainerRef { get; init; }
+        public string? ContainerNo { get; init; }
+        public byte? ContainerStatus { get; init; }
+        public decimal? ContainerChargesBase { get; init; }
+        public decimal? EstimatedLandedCostBase { get; init; }
         public int? ImportRowNumber { get; init; }
         public string? Notes { get; init; }
         public int? SourceLineId { get; init; }
@@ -295,6 +313,14 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             TransitBase = TransitBase,
             AllocatedToContainersBase = AllocatedToContainersBase,
             AvailableForContainerBase = AvailableForContainerBase,
+            InvoicedDirectBase = InvoicedDirectBase,
+            ContainerLineId = ContainerLineId,
+            ContainerId = ContainerId,
+            ContainerRef = ContainerRef,
+            ContainerNo = ContainerNo,
+            ContainerStatus = ContainerStatus,
+            ContainerChargesBase = ContainerChargesBase,
+            EstimatedLandedCostBase = EstimatedLandedCostBase,
             ImportRowNumber = ImportRowNumber,
             Notes = Notes,
             SourceLineId = SourceLineId,
@@ -335,8 +361,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     {
         await using var connection = _connectionFactory.Create();
 
-        // Seven result sets in one round trip, so the header, the lines, the chain and the charges are
-        // from the same moment — a charge allocated between two reads would otherwise not add up.
+        // Seven of the result sets in one round trip, so the header, the lines, the chain, the charges
+        // and the containers are from the same moment — a charge allocated between two reads would
+        // otherwise not add up. (The eighth, the approval requests, is not read here.)
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
             "purchase.usp_PurchaseDocument_Get", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
@@ -392,6 +419,14 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             ReceiptMode = header.ReceiptMode,
             Notes = header.Notes,
             Status = PurchaseDocumentStatus.From(header.Status),
+            IsContainerBound = header.IsContainerBound,
+            ContainerCount = header.ContainerCount,
+            LoadedBase = header.LoadedBase,
+            ContainerChargesBase = header.ContainerChargesBase,
+            OrderedBase = header.OrderedBase,
+            InvoicedBase = header.InvoicedBase,
+            InDraftInvoicesBase = header.InDraftInvoicesBase,
+            InvoicingStatus = header.InvoicingStatus,
             TotalItems = header.TotalItems,
             TotalQuantity = header.TotalQuantity,
             Subtotal = header.Subtotal,
@@ -489,6 +524,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         // Trimmed here as well as in the procedure: an all-blank value is "none", not a reference.
         parameters.Add("@ExporterReference", string.IsNullOrWhiteSpace(request.ExporterReference) ? null : request.ExporterReference.Trim(), DbType.String, size: 50);
         parameters.Add("@CommercialInvoiceNo", string.IsNullOrWhiteSpace(request.CommercialInvoiceNo) ? null : request.CommercialInvoiceNo.Trim(), DbType.String, size: 50);
+        parameters.Add("@LineContainers", ToLineContainerTable(request.Lines).AsTableValuedParameter(LineContainerTypeName));
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
         try
@@ -582,6 +618,36 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
                 await using var connection = _connectionFactory.Create();
                 await connection.ExecuteAsync(new CommandDefinition(
                     "purchase.usp_PurchaseDocument_CreateFromSource", parameters,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            }, cancellationToken);
+
+            return parameters.Get<int>("@NewId");
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>An EMPTY selection is the procedure's "everything loaded and not yet invoiced"; the table is sent either way.</summary>
+    public async Task<int> CreateFromContainersAsync(
+        int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@PurchaseOrderId", purchaseOrderId, DbType.Int32);
+        parameters.Add("@Selection", ToContainerLineQtyTable(lines).AsTableValuedParameter(ContainerLineQtyTypeName));
+        parameters.Add("@DocumentDate", documentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        try
+        {
+            await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "purchase.usp_PurchaseDocument_CreateFromContainers", parameters,
                     commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
 
@@ -696,6 +762,44 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
                 (object?)line.ImportRowNumber ?? DBNull.Value,
                 (object?)line.Notes ?? DBNull.Value,
                 (object?)line.SourceLineId ?? DBNull.Value);
+        }
+
+        return table;
+    }
+
+    /// <summary>
+    /// purchase.tvp_LineContainer (LineNumber, ContainerLineId): the lines that carry a container
+    /// line, numbered like <see cref="ToLineTable"/> — by position — so both tables name the same line.
+    /// Empty for a local document.
+    /// </summary>
+    private static DataTable ToLineContainerTable(IReadOnlyList<SavePurchaseDocumentLineRequest> lines)
+    {
+        var table = new DataTable();
+        table.Columns.Add("LineNumber", typeof(int));
+        table.Columns.Add("ContainerLineId", typeof(int));
+
+        var lineNumber = 0;
+        foreach (var line in lines)
+        {
+            lineNumber++;
+            if (line.ContainerLineId is { } containerLineId)
+            {
+                table.Rows.Add(lineNumber, containerLineId);
+            }
+        }
+
+        return table;
+    }
+
+    /// <summary>logistics.tvp_ContainerLineQty (ContainerLineId, QuantityBase).</summary>
+    private static DataTable ToContainerLineQtyTable(IReadOnlyList<ContainerLineQuantityRequest> lines)
+    {
+        var table = new DataTable();
+        table.Columns.Add("ContainerLineId", typeof(int));
+        table.Columns.Add("QuantityBase", typeof(int));
+        foreach (var line in lines)
+        {
+            table.Rows.Add(line.ContainerLineId, line.QuantityBase);
         }
 
         return table;

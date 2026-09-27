@@ -10,8 +10,8 @@ namespace Inventory_Shipment.Repository.Implementations;
 public sealed class ContainerRepository : IContainerRepository
 {
     /// <summary>Matched by TYPE NAME on the server; a wrong one fails with a message that never mentions the type.</summary>
-    private const string InvoiceTypeName = "logistics.tvp_ContainerInvoice";
-    private const string LineTypeName = "logistics.tvp_ContainerLine";
+    private const string LineTypeName = "logistics.tvp_ContainerLoadLine";
+    private const string IdListTypeName = "logistics.tvp_IdList";
     private const string ReceiptTypeName = "logistics.tvp_ContainerReceipt";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the order date.</summary>
@@ -43,6 +43,7 @@ public sealed class ContainerRepository : IContainerRepository
             ContainerNo = Trimmed(query.ContainerNo),
             query.SupplierId,
             query.PurchaseDocumentId,
+            query.PurchaseOrderId,
             CommercialInvoiceNo = Trimmed(query.CommercialInvoiceNo),
             query.ItemId,
             BlNo = Trimmed(query.BlNo),
@@ -50,6 +51,7 @@ public sealed class ContainerRepository : IContainerRepository
             query.PortId,
             query.WarehouseId,
             query.BranchId,
+            query.MovementId,
             query.OrderMonthKey,
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
@@ -72,8 +74,9 @@ public sealed class ContainerRepository : IContainerRepository
     {
         await using var connection = _connectionFactory.Create();
 
-        // Six result sets in one round trip, so the capacity on the header and the lines under it are
-        // from the same moment — a line saved between two reads would make the bar disagree with the grid.
+        // Eight result sets in one round trip, so the capacity on the header, the lines under it and
+        // the charges split over them are from the same moment — a line saved between two reads
+        // would make the bar disagree with the grid.
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
             "logistics.usp_Container_Get", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
@@ -84,18 +87,22 @@ public sealed class ContainerRepository : IContainerRepository
             return null;
         }
 
-        var invoices = (await multi.ReadAsync<ContainerInvoiceDto>()).AsList();
         var lines = (await multi.ReadAsync<ContainerLineDto>()).AsList();
-        var events = (await multi.ReadAsync<ContainerEventDto>()).AsList();
-        var files = (await multi.ReadAsync<ContainerFileDto>()).AsList();
+        var invoices = (await multi.ReadAsync<ContainerInvoiceDto>()).AsList();
+        var movements = (await multi.ReadAsync<ContainerMovementDto>()).AsList();
+        var charges = (await multi.ReadAsync<ContainerChargeRowDto>()).AsList();
+        var allocations = (await multi.ReadAsync<ContainerChargeAllocationDto>()).AsList();
+        var attachments = (await multi.ReadAsync<ContainerAttachmentDto>()).AsList();
         var audit = (await multi.ReadAsync<ContainerAuditDto>()).AsList();
 
         return header with
         {
-            Invoices = invoices,
             Lines = lines,
-            Events = events,
-            Files = files,
+            Invoices = invoices,
+            Movements = movements,
+            Charges = charges,
+            Allocations = allocations,
+            Attachments = attachments,
             Audit = audit,
         };
     }
@@ -110,67 +117,56 @@ public sealed class ContainerRepository : IContainerRepository
             sql, new { Id = id }, cancellationToken: cancellationToken));
     }
 
-    public async Task<IReadOnlyList<AvailableInvoiceDto>> GetAvailableInvoicesAsync(
-        AvailableInvoiceQuery query, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<AvailablePoLineDto>> GetAvailablePoLinesAsync(
+        AvailablePoLineQuery query, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        var rows = await connection.QueryAsync<AvailableInvoiceDto>(new CommandDefinition(
-            "logistics.usp_Container_AvailableInvoices",
-            new { Search = Trimmed(query.Search), query.SupplierId, query.ContainerId, query.Top },
+        var rows = await connection.QueryAsync<AvailablePoLineDto>(new CommandDefinition(
+            "logistics.usp_Container_AvailablePoLines",
+            new { query.PurchaseOrderId, query.SupplierId, Search = Trimmed(query.Search), query.ContainerId, query.Top },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
         return rows.AsList();
     }
 
-    /// <summary>
-    /// The loading grid of one invoice. NOT A PROCEDURE because none answers it: usp_PurchaseDocument_Get
-    /// counts this container's own allocation as "allocated", which is wrong for the container being
-    /// edited, and it has no model or oil figure. The rules match logistics.usp_Container_Save — what
-    /// cancelled containers hold is free, what this container holds is its own.
-    /// </summary>
-    public async Task<IReadOnlyList<AvailableInvoiceLineDto>?> GetInvoiceLinesAsync(
-        int invoiceId, int? containerId, CancellationToken cancellationToken = default)
+    /// <summary>69000 when neither an order nor a container is given — the service asks for one first.</summary>
+    public async Task<IReadOnlyList<InvoiceCandidateDto>> GetInvoiceCandidatesAsync(
+        InvoiceCandidateQuery query, CancellationToken cancellationToken = default)
     {
-        const string sql = """
-            SELECT CAST(CASE WHEN EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d
-                                          INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-                                          WHERE d.Id = @InvoiceId AND dt.Code = N'PINV') THEN 1 ELSE 0 END AS BIT);
-
-            SELECT PurchaseLineId = pl.Id, PurchaseDocumentId = pl.DocumentId, pl.LineNumber,
-                   pl.ItemId, i.ItemCode, i.ItemName, i.Model, pl.ItemUnitId, ut.UnitTypeName, pl.PackingFormula,
-                   pl.Quantity, pl.QuantityBase,
-                   AllocatedElsewhereBase = ISNULL(o.Qty, 0),
-                   AllocatedHereBase      = ISNULL(h.Qty, 0),
-                   AvailableBase          = pl.QuantityBase - ISNULL(o.Qty, 0),
-                   i.OilQtyPerUnit
-            FROM purchase.PurchaseDocumentLines pl
-            INNER JOIN inventory.Items i        ON i.Id = pl.ItemId
-            INNER JOIN inventory.ItemUnits iu   ON iu.Id = pl.ItemUnitId
-            INNER JOIN masterdata.UnitTypes ut  ON ut.Id = iu.UnitTypeId
-            OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
-                         INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
-                         WHERE cl.PurchaseLineId = pl.Id AND c.Status <> 8
-                           AND (@ContainerId IS NULL OR cl.ContainerId <> @ContainerId)) o
-            OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
-                         WHERE cl.PurchaseLineId = pl.Id AND cl.ContainerId = @ContainerId) h
-            WHERE pl.DocumentId = @InvoiceId
-            ORDER BY pl.LineNumber;
-            """;
-
         await using var connection = _connectionFactory.Create();
-        using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
-            sql, new { InvoiceId = invoiceId, ContainerId = containerId }, cancellationToken: cancellationToken));
+        try
+        {
+            var rows = await connection.QueryAsync<InvoiceCandidateDto>(new CommandDefinition(
+                "logistics.usp_Container_InvoiceCandidates",
+                new { query.PurchaseOrderId, query.ContainerId, query.IncludeAll },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
-        var isInvoice = await multi.ReadSingleAsync<bool>();
-        var lines = (await multi.ReadAsync<AvailableInvoiceLineDto>()).AsList();
-        return isInvoice ? lines : null;
+            return rows.AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
     }
 
-    public async Task<ContainerFileContent?> GetFileAsync(int fileId, CancellationToken cancellationToken = default)
+    public async Task<TrackingDto> GetTrackingAsync(TrackingQuery query, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        return await connection.QuerySingleOrDefaultAsync<ContainerFileContent>(new CommandDefinition(
-            "logistics.usp_ContainerFile_Get", new { Id = fileId },
+        using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+            "logistics.usp_Container_Tracking",
+            new { query.ContainerId, Search = Trimmed(query.Search), query.OffloadedDays },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        var containers = (await multi.ReadAsync<TrackingContainerDto>()).AsList();
+        var legs = (await multi.ReadAsync<TrackingLegDto>()).AsList();
+        return new TrackingDto { Containers = containers, Legs = legs };
+    }
+
+    public async Task<ContainerAttachmentFile?> GetAttachmentFileAsync(int id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<ContainerAttachmentFile>(new CommandDefinition(
+            "logistics.usp_ContainerAttachment_GetFile", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
 
@@ -181,6 +177,7 @@ public sealed class ContainerRepository : IContainerRepository
     {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
+        parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
         parameters.Add("@ContainerNo", request.ContainerNo, DbType.String, size: 20);
         parameters.Add("@ContainerTypeId", request.ContainerTypeId, DbType.Int32);
         parameters.Add("@SealNo", request.SealNo, DbType.String, size: 30);
@@ -219,7 +216,6 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@CustomsReleaseDate", ToDate(request.CustomsReleaseDate), DbType.Date);
         parameters.Add("@StatusNote", request.StatusNote, DbType.String, size: 200);
         parameters.Add("@Notes", request.Notes, DbType.String, size: 1000);
-        parameters.Add("@Invoices", ToInvoiceTable(request.Invoices).AsTableValuedParameter(InvoiceTypeName));
         parameters.Add("@Lines", ToLineTable(request.Lines).AsTableValuedParameter(LineTypeName));
         parameters.Add("@AllowOverCapacity", request.AllowOverCapacity, DbType.Boolean);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
@@ -248,20 +244,6 @@ public sealed class ContainerRepository : IContainerRepository
         => ExecuteAsync("logistics.usp_Container_Confirm",
             new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
-    public Task AddEventAsync(int id, AddEventRequest request, int userId, CancellationToken cancellationToken = default)
-    {
-        var parameters = new DynamicParameters();
-        parameters.Add("@ContainerId", id, DbType.Int32);
-        parameters.Add("@EventType", ContainerEventTypes.Normalize(request.EventType) ?? request.EventType, DbType.String, size: 20);
-        parameters.Add("@EventDate", request.EventDate.ToDateTime(TimeOnly.MinValue), DbType.Date);
-        parameters.Add("@PortId", request.PortId, DbType.Int32);
-        parameters.Add("@LocationText", request.LocationText, DbType.String, size: 100);
-        parameters.Add("@Notes", request.Notes, DbType.String, size: 300);
-        parameters.Add("@UserId", userId, DbType.Int32);
-
-        return ExecuteAsync("logistics.usp_Container_AddEvent", parameters, cancellationToken);
-    }
-
     /// <summary>An EMPTY table is the procedure's "everything received as loaded"; the table is sent either way, never null.</summary>
     public Task OffloadAsync(
         int id, OffloadRequest request, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
@@ -285,6 +267,10 @@ public sealed class ContainerRepository : IContainerRepository
         => ExecuteAsync("logistics.usp_Container_Close",
             new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
+    public Task ReopenAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("logistics.usp_Container_Reopen",
+            new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_Container_Cancel",
             new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
@@ -292,11 +278,13 @@ public sealed class ContainerRepository : IContainerRepository
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_Container_Delete", new { Id = id, UserId = userId }, cancellationToken);
 
-    public async Task<int> AddFileAsync(
-        int containerId, ContainerFileUpload upload, int userId, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<ContainerAttachmentCreatedDto>> AddAttachmentAsync(
+        ContainerAttachmentUpload upload, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
-        parameters.Add("@ContainerId", containerId, DbType.Int32);
+        parameters.Add("@ContainerIds", MovementRepository.ToIdTable(upload.ContainerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@MovementId", upload.MovementId, DbType.Int32);
+        parameters.Add("@ChargeId", upload.ChargeId, DbType.Int32);
         parameters.Add("@AttachmentTypeId", upload.AttachmentTypeId, DbType.Int32);
         parameters.Add("@FileName", upload.FileName, DbType.String, size: 255);
         parameters.Add("@ContentType", upload.ContentType, DbType.String, size: 100);
@@ -305,16 +293,15 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@Note", upload.Note, DbType.String, size: 300);
         parameters.Add("@DocumentDate", ToDate(upload.DocumentDate), DbType.Date);
         parameters.Add("@UserId", userId, DbType.Int32);
-        parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
         await using var connection = _connectionFactory.Create();
         try
         {
-            await connection.ExecuteAsync(new CommandDefinition(
-                "logistics.usp_ContainerFile_Add", parameters,
+            var rows = await connection.QueryAsync<ContainerAttachmentCreatedDto>(new CommandDefinition(
+                "logistics.usp_ContainerAttachment_Add", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
-            return parameters.Get<int>("@NewId");
+            return rows.AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -322,8 +309,9 @@ public sealed class ContainerRepository : IContainerRepository
         }
     }
 
-    public Task DeleteFileAsync(int fileId, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("logistics.usp_ContainerFile_Delete", new { Id = fileId, UserId = userId }, cancellationToken);
+    public Task DeleteAttachmentAsync(int id, bool allShared, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("logistics.usp_ContainerAttachment_Delete",
+            new { Id = id, AllShared = allShared, UserId = userId }, cancellationToken);
 
     /// <summary>
     /// One procedure call, run again if SQL Server made it the deadlock victim: the offload and its
@@ -350,30 +338,17 @@ public sealed class ContainerRepository : IContainerRepository
     /* ── plumbing ─────────────────────────────────────────────────────────────────────────────── */
 
     /* COLUMN ORDER IS THE TYPE'S ORDER AND IS LOAD-BEARING — a table-valued parameter is sent
-       positionally. Each table below repeats its CREATE TYPE from script 24 column by column; types
+       positionally. Each table below repeats its CREATE TYPE from scripts 24 / 27 column by column; types
        are declared, not inferred, because an all-null column infers as string and the server
        refuses the batch. */
 
-    /// <summary>logistics.tvp_ContainerInvoice (PurchaseDocumentId). Duplicates dropped: the column is the primary key.</summary>
-    private static DataTable ToInvoiceTable(IReadOnlyList<int> invoiceIds)
-    {
-        var table = new DataTable();
-        table.Columns.Add("PurchaseDocumentId", typeof(int));
-        foreach (var invoiceId in invoiceIds.Distinct())
-        {
-            table.Rows.Add(invoiceId);
-        }
-
-        return table;
-    }
-
-    /// <summary>logistics.tvp_ContainerLine (LineNumber, PurchaseLineId, Quantity, OilIncluded, OilQtyPerUnit, Notes).</summary>
+    /// <summary>logistics.tvp_ContainerLoadLine (LineNumber, PoLineId, QuantityBase, OilIncluded, OilQtyPerUnit, Notes).</summary>
     private static DataTable ToLineTable(IReadOnlyList<SaveContainerLineRequest> lines)
     {
         var table = new DataTable();
         table.Columns.Add("LineNumber", typeof(int));
-        table.Columns.Add("PurchaseLineId", typeof(int));
-        table.Columns.Add("Quantity", typeof(int));
+        table.Columns.Add("PoLineId", typeof(int));
+        table.Columns.Add("QuantityBase", typeof(int));
         table.Columns.Add("OilIncluded", typeof(bool));
         table.Columns.Add("OilQtyPerUnit", typeof(decimal));
         table.Columns.Add("Notes", typeof(string));
@@ -384,8 +359,8 @@ public sealed class ContainerRepository : IContainerRepository
         {
             table.Rows.Add(
                 lineNumber++,
-                line.PurchaseLineId,
-                line.Quantity,
+                line.PoLineId,
+                line.QuantityBase,
                 line.OilIncluded,
                 (object?)line.OilQtyPerUnit ?? DBNull.Value,
                 (object?)line.Notes ?? DBNull.Value);
