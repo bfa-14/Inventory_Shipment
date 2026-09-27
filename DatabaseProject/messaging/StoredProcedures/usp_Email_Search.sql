@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE messaging.usp_Email_Search
     @Search            NVARCHAR(200) = NULL,    -- recipient or subject
     @Status            TINYINT       = NULL,

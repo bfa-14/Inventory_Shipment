@@ -1,11 +1,4 @@
-/* ================================================================== 11. Shortage plans: expected stock follows the invoices and the containers
-
-   Until now only open purchase orders counted, so the quantity vanished from the plan as soon as the order
-   became an invoice, while the goods were still at sea. From now on:
-     Outstanding = open PO remaining + posted invoices (ReceiptMode 2) not yet received - what is in transit
-     Transit     = quantity loaded on containers In Transit / At Port / Cleared and not yet received
-   ================================================================== */
-
+-- "pending" once its container is offloaded (short-shipped quantities do not stay expected forever).
 CREATE   FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
 RETURNS TABLE
 AS
@@ -13,7 +6,8 @@ RETURN
 (
     SELECT i.Id AS ItemId, i.ItemCode, i.ItemName, i.BrandId, i.ItemFamilyId, i.IsBivac,
            i.DefaultSupplierId, i.LastSupplierId, i.MinQuantity, i.MaxQuantity, i.LastCost, i.AverageCost, i.LeadTimeDays,
-           ItemPcPerContainer = i.PcPerContainer,
+           ItemPcPerContainer = cnt.PackingFormula,                         -- the item's Container unit, NULL when none
+           PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
            CurrentInventoryBase     = inventory.fn_StockOnHand(i.Id, @WarehouseId),
            TransitBase              = ISNULL(tr.Transit, 0),
            OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
@@ -34,7 +28,9 @@ RETURN
         INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
         WHERE l.ItemId = i.Id AND l.WarehouseId = @WarehouseId AND l.QuantityBase > l.ReceivedQuantityBase
           AND ((dt.Code = N'PO'   AND d.Status = 2)
-            OR (dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 2))
+            OR (dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 2
+                AND NOT EXISTS (SELECT 1 FROM logistics.ContainerLines xcl INNER JOIN logistics.Containers xc ON xc.Id = xcl.ContainerId
+                                WHERE xcl.Id = l.ContainerLineId AND xc.Status IN (6, 7))))
     ) po
     OUTER APPLY
     (
@@ -42,9 +38,9 @@ RETURN
         SELECT Transit = SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0))
         FROM logistics.ContainerLines cl
         INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
-        INNER JOIN purchase.PurchaseDocumentLines pl  ON pl.Id = cl.PurchaseLineId
+        INNER JOIN purchase.PurchaseDocumentLines pl  ON pl.Id = cl.PoLineId
         WHERE cl.ItemId = i.Id AND c.Status IN (3, 4, 5)
-          AND ISNULL(c.WarehouseId, pl.WarehouseId) = @WarehouseId
+          AND pl.WarehouseId = @WarehouseId                  -- the order's warehouse, like the open order / invoice quantities
           AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
     ) tr
     OUTER APPLY
@@ -60,6 +56,12 @@ RETURN
         FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
         WHERE u.ItemId = i.Id ORDER BY u.IsPurchaseUnit DESC, u.IsBaseUnit DESC
     ) pu
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.PackingFormula
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id AND t.IsContainer = 1
+    ) cnt
     WHERE i.IsActive = 1
 );
 

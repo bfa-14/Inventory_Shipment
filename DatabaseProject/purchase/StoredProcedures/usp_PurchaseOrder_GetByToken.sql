@@ -1,5 +1,3 @@
-
--- Resolves an emailed token (for the public approval page). Throws 65014 when it cannot be used.
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_GetByToken
     @Token VARCHAR(64)
 AS

@@ -3,7 +3,7 @@ CREATE   PROCEDURE masterdata.usp_UnitType_Get
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT Id, UnitTypeName, IsActive, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
+    SELECT Id, UnitTypeName, IsActive, IsContainer, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
     FROM masterdata.UnitTypes WHERE Id = @Id;
 END
 

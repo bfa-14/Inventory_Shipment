@@ -48,14 +48,14 @@ CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Date]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Warehouse]
-    ON [inventory].[ShortageDocuments]([WarehouseId] ASC, [Status] ASC);
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Supplier]
+    ON [inventory].[ShortageDocuments]([SupplierId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Supplier]
-    ON [inventory].[ShortageDocuments]([SupplierId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Warehouse]
+    ON [inventory].[ShortageDocuments]([WarehouseId] ASC, [Status] ASC);
 
 
 GO

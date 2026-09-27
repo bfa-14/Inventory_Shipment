@@ -1,5 +1,3 @@
-
--- Pending approval -> Draft again (the requester changed their mind); the emailed links stop working.
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_Withdraw
     @Id     INT,
     @UserId INT = NULL

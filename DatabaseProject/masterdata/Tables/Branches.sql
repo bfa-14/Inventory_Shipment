@@ -22,14 +22,14 @@ CREATE TABLE [masterdata].[Branches] (
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Branches_ActiveMainBranch]
-    ON [masterdata].[Branches]([IsMainBranch] ASC) WHERE ([IsMainBranch]=(1) AND [IsActive]=(1));
+CREATE NONCLUSTERED INDEX [IX_Branches_BranchName]
+    ON [masterdata].[Branches]([BranchName] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Branches_BranchName]
-    ON [masterdata].[Branches]([BranchName] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Branches_ActiveMainBranch]
+    ON [masterdata].[Branches]([IsMainBranch] ASC) WHERE ([IsMainBranch]=(1) AND [IsActive]=(1));
 
 
 GO

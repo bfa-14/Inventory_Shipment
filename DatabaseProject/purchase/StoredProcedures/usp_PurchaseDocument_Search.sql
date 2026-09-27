@@ -1,12 +1,11 @@
-/* ================================================================== 3. Search / Get */
-
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
-    @Search           NVARCHAR(100) = NULL,    -- number, supplier reference, supplier code/name, notes
+    @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes
     @BranchId         INT          = NULL,
     @WarehouseId      INT          = NULL,
     @SupplierId       INT          = NULL,
-    @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted | 3 Cancelled | 4 Closed
+    @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted (PO: approved) | 3 Cancelled | 4 Closed | 5 Pending approval
+    @InvoicingStatus  TINYINT      = NULL,     -- purchase orders: 0 not invoiced | 1 partially | 2 fully
     @DateFrom         DATE         = NULL,
     @DateTo           DATE         = NULL,
     @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | SupplierName | Status | TotalAmount | CreatedAtUtc
@@ -30,10 +29,15 @@ BEGIN
            d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.BranchId, b.BranchName, d.WarehouseId, w.WarehouseName,
            d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
            d.CurrencyId, c.CurrencyCode, c.Symbol AS CurrencySymbol, c.DecimalPlaces, d.ExchangeRate,
-           d.SupplierReference, d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode,
+           d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
-           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND d.TotalQuantity > 0
-                                  THEN CAST(100.0 * (SELECT SUM(ReceivedQuantityBase) FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) / d.TotalQuantity AS DECIMAL(5,1)) END,
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,
+           DraftInvoiceCount = CASE WHEN dt.Code = N'PO' THEN (SELECT COUNT(*) FROM purchase.PurchaseDocuments x WHERE x.SourceDocumentId = d.Id AND x.Status = 1) END,
+           d.ApprovalRequestedAtUtc, d.ApprovedAtUtc, apu.FullName AS ApprovedByName,
            d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
            d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
            COUNT(*) OVER () AS TotalCount
@@ -46,14 +50,20 @@ BEGIN
     LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
     LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
     LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    OUTER APPLY (SELECT Ordered = SUM(QuantityBase), Invoiced = SUM(ReceivedQuantityBase)
+                 FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) prog
     WHERE dt.Family = N'Purchase'
       AND (@DocumentTypeCode IS NULL OR dt.Code = @DocumentTypeCode)
       AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.SupplierReference LIKE N'%' + @Search + N'%'
+           OR d.ExporterReference LIKE N'%' + @Search + N'%' OR d.CommercialInvoiceNo LIKE N'%' + @Search + N'%'
            OR sp.PartyCode LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%' OR d.Notes LIKE N'%' + @Search + N'%')
       AND (@BranchId IS NULL OR d.BranchId = @BranchId)
       AND (@WarehouseId IS NULL OR d.WarehouseId = @WarehouseId)
       AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)
       AND (@Status IS NULL OR d.Status = @Status)
+      AND (@InvoicingStatus IS NULL OR (dt.Code = N'PO' AND
+           CASE WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0 WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END = @InvoicingStatus))
       AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
       AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
     ORDER BY

@@ -1,5 +1,3 @@
-
--- Approve or reject, either with an emailed token (public page) or as a logged-in approver (@Id + @UserId).
 -- Approve posts the order (number assigned). Returns the data the API needs for the follow-up emails.
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_Decide
     @Token   VARCHAR(64)   = NULL,

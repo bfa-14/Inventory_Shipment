@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE messaging.usp_Email_Enqueue
     @ToAddresses           NVARCHAR(1000),
     @CcAddresses           NVARCHAR(1000) = NULL,

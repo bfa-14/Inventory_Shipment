@@ -1,4 +1,3 @@
-
 /* ================================================================== 6. Approval procedures */
 
 -- Who receives approval requests: active users of a NON-system role holding purchase.orders.approve, with an email.

@@ -24,8 +24,8 @@ CREATE TABLE [masterdata].[UnitPrices] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_UnitPrices_PriceList]
-    ON [masterdata].[UnitPrices]([PriceListId] ASC);
+CREATE NONCLUSTERED INDEX [IX_UnitPrices_Branch]
+    ON [masterdata].[UnitPrices]([BranchId] ASC);
 
 
 GO
@@ -36,8 +36,8 @@ CREATE NONCLUSTERED INDEX [IX_UnitPrices_Item]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_UnitPrices_Branch]
-    ON [masterdata].[UnitPrices]([BranchId] ASC);
+CREATE NONCLUSTERED INDEX [IX_UnitPrices_PriceList]
+    ON [masterdata].[UnitPrices]([PriceListId] ASC);
 
 
 GO
