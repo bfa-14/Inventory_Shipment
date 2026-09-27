@@ -1,5 +1,3 @@
-
--- Makes this unit type THE container unit (the previous one is released).
 CREATE   PROCEDURE masterdata.usp_UnitType_SetContainer
     @Id     INT,
     @UserId INT = NULL

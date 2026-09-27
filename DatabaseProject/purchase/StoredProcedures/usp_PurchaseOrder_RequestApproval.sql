@@ -1,5 +1,3 @@
-
--- Draft PO -> Pending approval. Returns one row per approver with the personal token (shown ONCE, only its hash is kept).
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_RequestApproval
     @Id         INT,
     @RowVersion BINARY(8) = NULL,

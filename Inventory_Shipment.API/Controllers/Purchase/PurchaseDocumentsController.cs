@@ -186,6 +186,26 @@ public sealed class PurchaseDocumentsController : ControllerBase
         int id, [FromBody] CreateFromSourceRequest? request, CancellationToken cancellationToken)
         => CreateFromSource(id, PurchaseDocumentTypes.Return, request, cancellationToken);
 
+    /// <summary>
+    /// A draft purchase invoice from container lines of the order: body { documentDate?, lines?:
+    /// [{ containerLineId, quantityBase }] } — no lines = everything loaded and not yet invoiced.
+    /// Answers { id } of the new draft (purchase.invoices.create).
+    /// </summary>
+    [HttpPost("{id:int}/invoice-from-containers")]
+    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> InvoiceFromContainers(
+        int id, [FromBody] InvoiceFromContainersRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.CreateFromContainersAsync(
+            id, request ?? new InvoiceFromContainersRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.IsSuccess
+            ? CreatedAtAction(nameof(GetById), new { id = result.Value }, new { id = result.Value })
+            : this.ToProblem(result);
+    }
+
     private async Task<ActionResult<PurchaseDocumentDto>> CreateFromSource(
         int id, string targetTypeCode, CreateFromSourceRequest? request, CancellationToken cancellationToken)
     {

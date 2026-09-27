@@ -15,6 +15,9 @@ BEGIN
     IF @Status IS NULL THROW 65006, 'Document not found.', 1;
     IF @TypeCode <> N'PINV' THROW 65010, 'Charges are entered on purchase invoices only (use a Landed Cost Adjustment after posting).', 1;
     IF @Status <> 1 THROW 65005, 'Charges can only be changed on a draft invoice.', 1;
+    IF EXISTS (SELECT 1 FROM @Charges)
+       AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @DocumentId AND ContainerLineId IS NOT NULL)
+        THROW 65020, 'This invoice comes from containers: its charges are entered on the containers (Container Charges).', 1;
     IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @DocumentId AND RowVersion = @RowVersion)
         THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
 

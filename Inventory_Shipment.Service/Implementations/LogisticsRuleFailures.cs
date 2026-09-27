@@ -5,8 +5,8 @@ using Inventory_Shipment.Repository.Exceptions;
 namespace Inventory_Shipment.Service.Implementations;
 
 /// <summary>
-/// The 69xxx THROWs of script 24, classified once for the container service and the three master
-/// data services. THE MESSAGE IS ALWAYS THE PROCEDURE'S — "Line 2: MOTO-01 - 90 base units allocated
+/// The 69xxx / 70xxx THROWs of scripts 24 and 27, classified once for the container, movement and
+/// container charge services and the logistics master data services. THE MESSAGE IS ALWAYS THE PROCEDURE'S — "Line 2: MOTO-01 - 90 base units allocated
 /// but only 70 remain on invoice line 1 of PINV-2026-0003." — and only the code is added.
 ///
 /// Refusals that come from the state of the world rather than from the request are 409: over
@@ -34,6 +34,23 @@ internal static class LogisticsRuleFailures
             SqlErrors.ContainerDuplicate => new(ErrorType.Conflict, exception.Message, duplicateCode),
             SqlErrors.LogisticsMasterInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
             SqlErrors.ContainerInsufficientStock => new(ErrorType.Conflict, exception.Message, "INSUFFICIENT_STOCK"),
+            SqlErrors.ContainerNotFullyInvoiced => new(ErrorType.Conflict, exception.Message, "NOT_FULLY_INVOICED"),
+            SqlErrors.ContainerLineInvoiced => new(ErrorType.Conflict, exception.Message, "LINE_INVOICED"),
+            SqlErrors.ContainerCostAdjusted => new(ErrorType.Conflict, exception.Message, "COST_ADJUSTED"),
+            SqlErrors.LogisticsValidation => new(ErrorType.Validation, exception.Message, "VALIDATION"),
+            SqlErrors.LogisticsDuplicate => new(ErrorType.Conflict, exception.Message, "DUPLICATE"),
+            SqlErrors.LogisticsConcurrency => new(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
+            SqlErrors.LogisticsNotEditable => new(ErrorType.Conflict, exception.Message, "NOT_EDITABLE"),
+            SqlErrors.LogisticsNotFound => new(ErrorType.NotFound, exception.Message, "NOT_FOUND"),
+            SqlErrors.LogisticsInvalidStatus => new(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
+            SqlErrors.ContainerBusy => new(ErrorType.Conflict, exception.Message, "CONTAINER_BUSY"),
+            SqlErrors.ChargeAllocationDataMissing => new(ErrorType.Conflict, exception.Message, "ALLOCATION_DATA_MISSING"),
+            SqlErrors.LogisticsInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
+            SqlErrors.PurchaseExporterReferenceRequired => new(ErrorType.Validation, exception.Message, "EXPORTER_REFERENCE_REQUIRED"),
+            SqlErrors.PurchaseContainerLineInvalid => new(ErrorType.Conflict, exception.Message, "CONTAINER_LINE_INVALID"),
+            SqlErrors.PurchaseChargesOnContainer => new(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
+            SqlErrors.PurchaseOrderInContainers => new(ErrorType.Conflict, exception.Message, "PO_IN_CONTAINERS"),
+            SqlErrors.LandedCostImportedInvoice => new(ErrorType.Conflict, exception.Message, "IMPORTED_INVOICE"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),
         };
 

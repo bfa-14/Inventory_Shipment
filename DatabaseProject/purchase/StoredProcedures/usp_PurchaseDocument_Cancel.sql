@@ -1,4 +1,4 @@
--- and a cancelled invoice releases its own received quantities.
+-- A cancelled invoice releases its own received quantities and its container lines.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
@@ -31,16 +31,17 @@ BEGIN
         IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @Id AND Status = 2)
             THROW 65011, 'This invoice cannot be cancelled: posted landed cost adjustments refer to it. Cancel those first.', 1;
 
-        DECLARE @Ct NVARCHAR(200);
-        SELECT TOP (1) @Ct = c.ContainerRef
-        FROM logistics.ContainerLines cl
-        INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
-        WHERE cl.PurchaseDocumentId = @Id AND c.Status NOT IN (1, 8)
+        DECLARE @Ct NVARCHAR(400);
+        IF @TypeCode = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                         WHERE cl.PurchaseOrderId = @Id AND c.Status <> 8)
+            THROW 65021, 'This purchase order is loaded into containers. Cancel those containers (or remove its lines from them) first.', 1;
+        SELECT TOP (1) @Ct = N'This invoice cannot be cancelled: container ' + c.ContainerRef + N' was already offloaded with it. Reverse the offload first.'
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        WHERE l.DocumentId = @Id AND c.Status IN (6, 7)
         ORDER BY c.ContainerRef;
-        IF @Ct IS NOT NULL
-            THROW 69012, 'This invoice cannot be cancelled: its quantities are loaded into a container that has left the supplier. Cancel the container first.', 1;
-        IF EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE PurchaseDocumentId = @Id AND ISNULL(ReceivedQuantityBase, 0) > 0)
-            THROW 69012, 'This invoice cannot be cancelled: part of it was already received by a container offload.', 1;
+        IF @Ct IS NOT NULL THROW 69012, @Ct, 1;
 
         DECLARE @Msg NVARCHAR(400);
         IF @Direction = 1 AND @ReceiptMode = 1
@@ -84,10 +85,6 @@ BEGIN
             INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
         END
 
-        -- A cancelled invoice is removed from the containers that were still being prepared.
-        DELETE FROM logistics.ContainerLines WHERE PurchaseDocumentId = @Id;
-        DELETE FROM logistics.ContainerInvoices WHERE PurchaseDocumentId = @Id;
-
         UPDATE purchase.PurchaseDocuments
         SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
@@ -108,6 +105,24 @@ BEGIN
             END
             CLOSE items; DEALLOCATE items;
         END
+
+        -- containers of an import: the value basis of their charges changed
+        DECLARE @Cid INT;
+        DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+            SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+            WHERE l.DocumentId = @Id;
+        OPEN cts;
+        FETCH NEXT FROM cts INTO @Cid;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@Cid, N'Updated', LEFT(N'Purchase invoice ' + ISNULL(@Number, N'') + N' cancelled: ' + @Reason, 500), @UserId);
+            FETCH NEXT FROM cts INTO @Cid;
+        END
+        CLOSE cts;
+        DEALLOCATE cts;
 
         COMMIT TRANSACTION;
     END TRY

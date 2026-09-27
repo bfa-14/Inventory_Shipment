@@ -64,6 +64,8 @@ CREATE TABLE [logistics].[Containers] (
     [UpdatedAtUtc]        DATETIME2 (3)   NULL,
     [UpdatedBy]           INT             NULL,
     [RowVersion]          ROWVERSION      NOT NULL,
+    [PurchaseOrderId]     INT             NULL,
+    [DatesFromMovements]  BIT             CONSTRAINT [DF_Containers_DatesFromMovements] DEFAULT ((0)) NOT NULL,
     CONSTRAINT [PK_Containers] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_Containers_FreeDays] CHECK ([FreeDays] IS NULL OR [FreeDays]>=(0)),
     CONSTRAINT [CK_Containers_MaxUnits] CHECK ([MaxUnits] IS NULL OR [MaxUnits]>(0)),
@@ -78,6 +80,7 @@ CREATE TABLE [logistics].[Containers] (
     CONSTRAINT [FK_Containers_FinalDest] FOREIGN KEY ([FinalDestinationId]) REFERENCES [masterdata].[Ports] ([Id]),
     CONSTRAINT [FK_Containers_Forwarder] FOREIGN KEY ([ForwarderId]) REFERENCES [masterdata].[Parties] ([Id]),
     CONSTRAINT [FK_Containers_Offloaded] FOREIGN KEY ([OffloadedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_Containers_Order] FOREIGN KEY ([PurchaseOrderId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]),
     CONSTRAINT [FK_Containers_PortDest] FOREIGN KEY ([PortOfDestinationId]) REFERENCES [masterdata].[Ports] ([Id]),
     CONSTRAINT [FK_Containers_PortLoad] FOREIGN KEY ([PortOfLoadingId]) REFERENCES [masterdata].[Ports] ([Id]),
     CONSTRAINT [FK_Containers_Transporter] FOREIGN KEY ([TransporterId]) REFERENCES [masterdata].[Parties] ([Id]),
@@ -102,14 +105,20 @@ CREATE UNIQUE NONCLUSTERED INDEX [UX_Containers_ContainerNo]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Containers_Warehouse]
-    ON [logistics].[Containers]([WarehouseId] ASC, [Status] ASC);
+CREATE NONCLUSTERED INDEX [IX_Containers_Order]
+    ON [logistics].[Containers]([PurchaseOrderId] ASC);
 
 
 GO
 
 CREATE NONCLUSTERED INDEX [IX_Containers_Status]
     ON [logistics].[Containers]([Status] ASC, [OrderDate] DESC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Containers_Warehouse]
+    ON [logistics].[Containers]([WarehouseId] ASC, [Status] ASC);
 
 
 GO

@@ -53,6 +53,9 @@ public static class DependencyInjection
         services.TryAddScoped<IContainerService, ContainerService>();
         services.TryAddScoped<IContainerTypeService, ContainerTypeService>();
         services.TryAddScoped<IPortService, PortService>();
+        services.TryAddScoped<IMovementTypeService, MovementTypeService>();
+        services.TryAddScoped<IMovementService, MovementService>();
+        services.TryAddScoped<IContainerChargeService, ContainerChargeService>();
         services.TryAddScoped<IAttachmentTypeService, AttachmentTypeService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();

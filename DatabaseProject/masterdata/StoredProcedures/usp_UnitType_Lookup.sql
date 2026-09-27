@@ -4,7 +4,7 @@ CREATE   PROCEDURE masterdata.usp_UnitType_Lookup
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT Id, UnitTypeName, IsActive
+    SELECT Id, UnitTypeName, IsActive, IsContainer
     FROM masterdata.UnitTypes
     WHERE (@ActiveOnly = 0 OR IsActive = 1 OR Id = @IncludeId)
     ORDER BY UnitTypeName;

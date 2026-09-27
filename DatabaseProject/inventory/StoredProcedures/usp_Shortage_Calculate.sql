@@ -26,7 +26,7 @@ BEGIN
                                  THEN CONVERT(DECIMAL(9,2), (x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase) / x.ExpectedMonthlySalesBase) END,
            x.PurchaseItemUnitId, x.PurchaseUnitName, x.PurchasePackingFormula,
            SuggestedRequiredQty = CASE WHEN c.ShortageBase > 0 THEN CEILING(CAST(c.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) ELSE 0 END,
-           PcPerContainer = x.ItemPcPerContainer,
+           PcPerContainer = x.ItemPcPerContainer, PcPerContainerFromUnit = x.PcPerContainerFromUnit,
            ContainerRequirement = CASE WHEN x.ItemPcPerContainer > 0 AND c.ShortageBase > 0
                                        THEN CONVERT(DECIMAL(9,2), CEILING(CAST(c.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) * x.PurchasePackingFormula * 1.0 / x.ItemPcPerContainer) END,
            x.MinQuantity, x.MaxQuantity, x.LastCost, x.AverageCost, x.LeadTimeDays,

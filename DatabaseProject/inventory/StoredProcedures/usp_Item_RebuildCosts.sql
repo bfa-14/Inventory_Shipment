@@ -1,4 +1,9 @@
--- LastCost / FobCost from the latest posted purchase invoice. @ItemId NULL = every item (maintenance).
+/* ================================================================== 17. Costs, shortage plans */
+
+-- Re-created (27): replays the ledger (documents without reversal, matched by family + TYPE + id) + inventory cost
+-- adjustments in date order -> exact moving average; LastCost / FobCost / last supplier from the latest RECEIPT:
+-- a local invoice received at posting or a container offload (landed cost of the container line).
+-- @ItemId NULL = every item (maintenance).
 CREATE   PROCEDURE inventory.usp_Item_RebuildCosts
     @ItemId INT = NULL
 AS
@@ -13,7 +18,9 @@ BEGIN
         SELECT m.ItemId, EventDate = m.MovementDate, Src = 1, SrcId = m.Id, Qty = m.QuantityBase, Cost = m.UnitCostBase, Amount = CAST(NULL AS DECIMAL(18,2))
         FROM inventory.StockMovements m
         WHERE (@ItemId IS NULL OR m.ItemId = @ItemId)
-          AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentId = m.DocumentId AND r.IsReversal = 1)
+          AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                                                                     AND r.DocumentId = m.DocumentId AND r.IsReversal = 1
+                                                                     AND (m.DocumentTypeCode <> N'CNT' OR r.DocumentNumber = m.DocumentNumber))
         UNION ALL
         SELECT c.ItemId, c.AdjustmentDate, 2, CAST(c.Id AS INT), 0, NULL, c.AmountBase
         FROM inventory.CostAdjustments c
@@ -58,14 +65,21 @@ BEGIN
     WHERE (@ItemId IS NULL OR i.Id = @ItemId);
 
     UPDATE i
-    SET LastCost = x.Landed, FobCost = x.Fob, LastSupplierId = x.SupplierId, LastPurchaseAtUtc = x.PostedAtUtc
+    SET LastCost = x.Landed, FobCost = x.Fob, LastSupplierId = x.SupplierId, LastPurchaseAtUtc = x.ReceivedAtUtc
     FROM inventory.Items i
-    OUTER APPLY (SELECT TOP (1) Landed = l.UnitCostBase, Fob = l.FobCostBase, d.SupplierId, d.PostedAtUtc
-                 FROM purchase.PurchaseDocumentLines l
-                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
-                 INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-                 WHERE dt.Code = N'PINV' AND d.Status = 2 AND l.ItemId = i.Id
-                 ORDER BY d.PostedAtUtc DESC, l.Id DESC) x
+    OUTER APPLY (SELECT TOP (1) r.Landed, r.Fob, r.SupplierId, r.ReceivedAtUtc
+                 FROM (SELECT Landed = l.UnitCostBase, Fob = l.FobCostBase, d.SupplierId, ReceivedAtUtc = d.PostedAtUtc, Tie = l.Id
+                       FROM purchase.PurchaseDocumentLines l
+                       INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+                       INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                       WHERE dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 1 AND l.ItemId = i.Id
+                       UNION ALL
+                       SELECT cl.LandedCostBase, cl.FobCostBase, po.SupplierId, c.OffloadedAtUtc, cl.Id
+                       FROM logistics.ContainerLines cl
+                       INNER JOIN logistics.Containers c        ON c.Id = cl.ContainerId
+                       INNER JOIN purchase.PurchaseDocuments po ON po.Id = cl.PurchaseOrderId
+                       WHERE c.Status IN (6, 7) AND cl.ItemId = i.Id AND cl.ReceivedQuantityBase > 0) r
+                 ORDER BY r.ReceivedAtUtc DESC, r.Tie DESC) x
     WHERE (@ItemId IS NULL OR i.Id = @ItemId);
 END
 

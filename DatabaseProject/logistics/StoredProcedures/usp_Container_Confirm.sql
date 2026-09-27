@@ -1,3 +1,5 @@
+/* ================================================================== 11. Containers: confirm, close, reopen, cancel, delete */
+
 CREATE   PROCEDURE logistics.usp_Container_Confirm
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -13,7 +15,7 @@ BEGIN
     IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
         THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
     IF NOT EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE ContainerId = @Id)
-        THROW 69009, 'The container has no items. Load at least one invoice line before confirming.', 1;
+        THROW 69009, 'The container has no items. Load at least one order line before confirming.', 1;
 
     BEGIN TRY
         BEGIN TRANSACTION;

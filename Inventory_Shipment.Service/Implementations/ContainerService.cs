@@ -62,35 +62,51 @@ public sealed class ContainerService : IContainerService
         return await ReadAsync(id, cancellationToken);
     }
 
-    public async Task<Result<IReadOnlyList<AvailableInvoiceDto>>> GetAvailableInvoicesAsync(
-        AvailableInvoiceQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<AvailablePoLineDto>>> GetAvailablePoLinesAsync(
+        AvailablePoLineQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Containers.Create))
         {
-            return Forbidden<IReadOnlyList<AvailableInvoiceDto>>(Permissions.Containers.Create);
+            return Forbidden<IReadOnlyList<AvailablePoLineDto>>(Permissions.Containers.Create);
         }
 
-        return Result<IReadOnlyList<AvailableInvoiceDto>>.Success(
-            await _containers.GetAvailableInvoicesAsync(query, cancellationToken));
+        return Result<IReadOnlyList<AvailablePoLineDto>>.Success(
+            await _containers.GetAvailablePoLinesAsync(query, cancellationToken));
     }
 
-    public async Task<Result<IReadOnlyList<AvailableInvoiceLineDto>>> GetInvoiceLinesAsync(
-        int invoiceId, int? containerId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<InvoiceCandidateDto>>> GetInvoiceCandidatesAsync(
+        InvoiceCandidateQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.Create))
+        if (!permissions.Contains(Permissions.Containers.View))
         {
-            return Forbidden<IReadOnlyList<AvailableInvoiceLineDto>>(Permissions.Containers.Create);
+            return Forbidden<IReadOnlyList<InvoiceCandidateDto>>(Permissions.Containers.View);
         }
 
-        var lines = await _containers.GetInvoiceLinesAsync(invoiceId, containerId, cancellationToken);
-        return lines is null
-            ? Result<IReadOnlyList<AvailableInvoiceLineDto>>.Failure(ErrorType.NotFound, "Purchase invoice not found.", "NOT_FOUND")
-            : Result<IReadOnlyList<AvailableInvoiceLineDto>>.Success(lines);
+        // Said here rather than by the procedure's 69000: without either filter it would be every
+        // open container line of the company, which no page asks for.
+        if (query.PurchaseOrderId is null && query.ContainerId is null)
+        {
+            return Result<IReadOnlyList<InvoiceCandidateDto>>.Failure(
+                ErrorType.Validation, "Give a purchaseOrderId or a containerId.", "VALIDATION");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<InvoiceCandidateDto>>.Success(
+                await _containers.GetInvoiceCandidatesAsync(query, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<InvoiceCandidateDto>>(ex);
+        }
     }
 
     /* ── writing ──────────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
+    /// A NEW CONTAINER NEEDS ITS ORDER: said here so the page hears it as a 400 on the field rather
+    /// than the procedure's sentence; on an update the order is the container's and is not sent.
+    ///
     /// OVER CAPACITY IS A WARNING WITH AN OVERRIDE, NEVER A BLOCK — but the override is a right. A
     /// save without allowOverCapacity that goes over comes back 409 OVER_CAPACITY with the figures in
     /// the message and data.canOverride telling the page whether to offer the confirmation; a save
@@ -119,6 +135,21 @@ public sealed class ContainerService : IContainerService
             return Result<ContainerDto>.Failure(ErrorType.Validation, "Shipping method must be Sea, Air or Road.", "VALIDATION");
         }
 
+        if (id is null && request.PurchaseOrderId is null)
+        {
+            return Result<ContainerDto>.Failure(
+                ErrorType.Validation, "purchaseOrderId is required: a container is created from a purchase order.", "VALIDATION");
+        }
+
+        // Said here with the order line; the table type would refuse it too, as a constraint
+        // violation nobody on the page has heard of.
+        var twice = request.Lines.GroupBy(l => l.PoLineId).FirstOrDefault(g => g.Count() > 1);
+        if (twice is not null)
+        {
+            return Result<ContainerDto>.Failure(
+                ErrorType.Validation, $"Order line {twice.Key} appears more than once in the container.", "VALIDATION");
+        }
+
         int savedId;
         try
         {
@@ -143,23 +174,6 @@ public sealed class ContainerService : IContainerService
         CancellationToken cancellationToken = default)
         => ChangeAsync(id, Permissions.Containers.Confirm, permissions, userId, "confirmed", cancellationToken,
             () => _containers.ConfirmAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken));
-
-    /// <summary>RECORDING THE ROUTE IS EDITING THE CONTAINER, so it is the create right — the same person follows the shipment.</summary>
-    public Task<Result<ContainerDto>> AddEventAsync(
-        int id, AddEventRequest request, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default)
-    {
-        if (ContainerEventTypes.Normalize(request.EventType) is null)
-        {
-            return Task.FromResult(Result<ContainerDto>.Failure(
-                ErrorType.Validation,
-                $"Event type must be one of {string.Join(", ", ContainerEventTypes.UserRecordable)} (the offload writes its own event).",
-                "VALIDATION"));
-        }
-
-        return ChangeAsync(id, Permissions.Containers.Create, permissions, userId, $"event {request.EventType}", cancellationToken,
-            () => _containers.AddEventAsync(id, request, userId, cancellationToken));
-    }
 
     public Task<Result<ContainerDto>> OffloadAsync(
         int id, OffloadRequest request, int userId, IReadOnlySet<string> permissions,
@@ -191,6 +205,13 @@ public sealed class ContainerService : IContainerService
         => ChangeAsync(id, Permissions.Containers.Close, permissions, userId, "closed", cancellationToken,
             () => _containers.CloseAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken));
 
+    /// <summary>REOPENING UNDOES A CLOSE, so it is the close right — a late charge is the usual reason.</summary>
+    public Task<Result<ContainerDto>> ReopenAsync(
+        int id, ContainerActionRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+        => ChangeAsync(id, Permissions.Containers.Close, permissions, userId, "reopened", cancellationToken,
+            () => _containers.ReopenAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken));
+
     public Task<Result<ContainerDto>> CancelAsync(
         int id, CancelRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
@@ -218,58 +239,84 @@ public sealed class ContainerService : IContainerService
         return Result.Success();
     }
 
-    /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
+    /* ── tracking and attachments ─────────────────────────────────────────────────────────────── */
 
-    public async Task<Result<int>> AddFileAsync(
-        int id, ContainerFileUpload upload, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default)
-    {
-        if (!permissions.Contains(Permissions.Containers.Create))
-        {
-            return Forbidden<int>(Permissions.Containers.Create);
-        }
-
-        try
-        {
-            return Result<int>.Success(await _containers.AddFileAsync(id, upload, userId, cancellationToken));
-        }
-        catch (BusinessRuleException ex)
-        {
-            return Failure<int>(ex);
-        }
-    }
-
-    public async Task<Result<ContainerFileContent>> GetFileAsync(
-        int fileId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    public async Task<Result<TrackingDto>> GetTrackingAsync(
+        TrackingQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Containers.View))
         {
-            return Forbidden<ContainerFileContent>(Permissions.Containers.View);
+            return Forbidden<TrackingDto>(Permissions.Containers.View);
         }
 
-        var file = await _containers.GetFileAsync(fileId, cancellationToken);
-        return file is null
-            ? Result<ContainerFileContent>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
-            : Result<ContainerFileContent>.Success(file);
+        return Result<TrackingDto>.Success(await _containers.GetTrackingAsync(query, cancellationToken));
     }
 
-    public async Task<Result> DeleteFileAsync(
-        int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    public async Task<Result<IReadOnlyList<ContainerAttachmentCreatedDto>>> AddAttachmentAsync(
+        ContainerAttachmentUpload upload, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.Create))
+        if (!permissions.Contains(Permissions.Containers.AttachmentsManage))
         {
-            return Forbidden<ContainerDto>(Permissions.Containers.Create);
+            return Forbidden<IReadOnlyList<ContainerAttachmentCreatedDto>>(Permissions.Containers.AttachmentsManage);
+        }
+
+        // A charge alone is enough (the procedure takes its container); otherwise at least one container.
+        if (upload.ContainerIds.Count == 0 && upload.ChargeId is null)
+        {
+            return Result<IReadOnlyList<ContainerAttachmentCreatedDto>>.Failure(
+                ErrorType.Validation, "Select at least one container.", "VALIDATION");
+        }
+
+        IReadOnlyList<ContainerAttachmentCreatedDto> created;
+        try
+        {
+            created = await _containers.AddAttachmentAsync(upload, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<ContainerAttachmentCreatedDto>>(ex);
+        }
+
+        _logger.LogInformation("Attachment {FileName} added to {Count} container(s) by user {UserId}",
+            upload.FileName, created.Count, userId);
+        return Result<IReadOnlyList<ContainerAttachmentCreatedDto>>.Success(created);
+    }
+
+    public async Task<Result<ContainerAttachmentFile>> GetAttachmentFileAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.View))
+        {
+            return Forbidden<ContainerAttachmentFile>(Permissions.Containers.View);
+        }
+
+        var file = await _containers.GetAttachmentFileAsync(id, cancellationToken);
+        return file is null
+            ? Result<ContainerAttachmentFile>.Failure(ErrorType.NotFound, "Attachment not found.", "NOT_FOUND")
+            : Result<ContainerAttachmentFile>.Success(file);
+    }
+
+    public async Task<Result> DeleteAttachmentAsync(
+        int id, bool allShared, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.AttachmentsManage))
+        {
+            return Forbidden<ContainerDto>(Permissions.Containers.AttachmentsManage);
         }
 
         try
         {
-            await _containers.DeleteFileAsync(fileId, userId, cancellationToken);
-            return Result.Success();
+            await _containers.DeleteAttachmentAsync(id, allShared, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
             return Failure(ex);
         }
+
+        _logger.LogInformation("Attachment {AttachmentId} deleted{Shared} by user {UserId}",
+            id, allShared ? " from every container" : string.Empty, userId);
+        return Result.Success();
     }
 
     /* ── export ───────────────────────────────────────────────────────────────────────────────── */
@@ -289,8 +336,9 @@ public sealed class ContainerService : IContainerService
 
     /// <summary>
     /// Three sheets, the way the forwarder's file is read: the container (identification, shipping,
-    /// B/L, capacity, operations), the invoices it carries, and the lines loaded — with what was
-    /// received once it has been offloaded.
+    /// B/L, capacity, cost, operations), the invoices covering it, and the lines loaded — with the
+    /// real cost of each item (FOB, charges and landed per unit) and what was received once it has
+    /// been offloaded.
     /// </summary>
     private static byte[] BuildWorkbook(ContainerDto container)
     {
@@ -312,6 +360,7 @@ public sealed class ContainerService : IContainerService
             ("Customs Seal No.", container.CustomsSealNo ?? string.Empty),
             ("Order Date", Day(container.OrderDate)),
             ("Order Month", container.OrderMonth),
+            ("Purchase Order", container.PurchaseOrderNumber ?? string.Empty),
             ("Suppliers", string.Join(", ", container.Suppliers.Select(s => s.SupplierName))),
             ("Shipping Method", container.ShippingMethod),
             ("Country of Origin", container.CountryOfOrigin ?? string.Empty),
@@ -340,6 +389,11 @@ public sealed class ContainerService : IContainerService
             ("Allocated Units", container.TotalAllocatedBase.ToString()),
             ("Utilization", container.UtilizationPct is { } pct ? $"{pct:0.##} %" : string.Empty),
             ("Total Oil", container.TotalOilQty.ToString("0.##")),
+            ("Invoiced (posted / draft)", $"{container.InvoicedPostedBase} / {container.InvoicedDraftBase}"),
+            ("FOB Total (base)", container.FobTotalBase?.ToString("#,##0.00") ?? string.Empty),
+            ("Charges Posted (base)", container.ChargesPostedBase.ToString("#,##0.00")),
+            ("Charges Draft (base)", container.ChargesDraftBase.ToString("#,##0.00")),
+            ("Landed Total (base)", container.LandedTotalBase?.ToString("#,##0.00") ?? string.Empty),
             ("Notes", container.Notes ?? string.Empty),
         };
 
@@ -355,22 +409,25 @@ public sealed class ContainerService : IContainerService
         sheet.Columns().AdjustToContents();
 
         WriteTable(workbook.AddWorksheet("Invoices"),
-            ["PI No.", "PI Date", "Supplier", "Commercial Invoice No.", "Exporter Ref.", "Currency", "PI Qty", "Loaded Here", "Loaded (all)", "Remaining", "Total Amount"],
+            ["PI No.", "PI Date", "Status", "Order", "Supplier", "Commercial Invoice No.", "Exporter Ref.", "Currency", "Qty in Container", "Amount in Container", "Amount in Container (base)"],
             container.Invoices.Select(i => new XLCellValue[]
             {
-                i.DocumentNumber ?? "DRAFT", Day(i.DocumentDate), i.SupplierName, i.CommercialInvoiceNo ?? string.Empty,
-                i.ExporterReference ?? string.Empty, i.CurrencyCode, i.TotalQtyBase, i.AllocatedHereBase,
-                i.AllocatedTotalBase, i.RemainingBase, i.TotalAmount,
+                i.DocumentNumber ?? "DRAFT", Day(i.DocumentDate), InvoiceStatusName(i.InvoiceStatus), i.PurchaseOrderNumber ?? string.Empty,
+                i.SupplierName, i.CommercialInvoiceNo ?? string.Empty, i.ExporterReference ?? string.Empty, i.CurrencyCode,
+                i.QtyInContainerBase, i.AmountInContainer, i.AmountInContainerBase,
             }));
 
         WriteTable(workbook.AddWorksheet("Lines"),
-            ["#", "PI No.", "Supplier", "Item Code", "Item Name", "Model", "Unit", "Qty", "Qty (base)", "Oil", "Oil / Unit", "Total Oil", "Received (base)", "Variance Reason", "Notes"],
+            ["#", "PO No.", "Supplier", "Item Code", "Item Name", "Model", "Qty (pcs)", "Invoiced (posted)", "Invoiced (draft)", "PI No.",
+             "FOB / Unit", "FOB Source", "Charges", "Charges / Unit", "Landed / Unit", "Landed Final", "Oil", "Oil / Unit", "Total Oil",
+             "Received (pcs)", "Variance Reason", "Notes"],
             container.Lines.Select(l => new XLCellValue[]
             {
-                l.LineNumber, l.InvoiceNumber ?? string.Empty, l.SupplierName, l.ItemCode, l.ItemName, l.Model ?? string.Empty,
-                l.PackingFormula > 1 ? $"{l.UnitTypeName} (x{l.PackingFormula})" : l.UnitTypeName,
-                l.Quantity, l.QuantityBase, l.OilIncluded ? "Yes" : "No",
-                l.OilQtyPerUnit is { } oil ? oil : Blank.Value, l.TotalOilQty,
+                l.LineNumber, l.PurchaseOrderNumber ?? string.Empty, l.SupplierName, l.ItemCode, l.ItemName, l.Model ?? string.Empty,
+                l.QuantityBase, l.InvoicedPostedBase, l.InvoicedDraftBase, l.InvoiceNumbers ?? string.Empty,
+                Money(l.UnitFobBase), l.FobSource, l.ChargesBase, Money(l.ChargesPerUnitBase), Money(l.LandedCostBase),
+                l.IsLandedFinal ? "Yes" : "Estimate",
+                l.OilIncluded ? "Yes" : "No", l.OilQtyPerUnit is { } oil ? oil : Blank.Value, l.TotalOilQty,
                 l.ReceivedQuantityBase is { } received ? received : Blank.Value,
                 l.VarianceReason ?? string.Empty, l.Notes ?? string.Empty,
             }));
@@ -407,6 +464,18 @@ public sealed class ContainerService : IContainerService
 
     private static string Day(DateTime? value) => value?.ToString("dd/MM/yyyy") ?? string.Empty;
 
+    /// <summary>Per-unit costs rounded to the cent for the sheet; the page keeps the full precision.</summary>
+    private static XLCellValue Money(decimal? value) => value is { } v ? Math.Round(v, 2) : Blank.Value;
+
+    private static string InvoiceStatusName(byte status) => status switch
+    {
+        1 => "Draft",
+        2 => "Posted",
+        3 => "Cancelled",
+        4 => "Closed",
+        _ => status.ToString(),
+    };
+
     /* ── the shared shapes ────────────────────────────────────────────────────────────────────── */
 
     private async Task<Result<ContainerDto>> ReadAsync(int id, CancellationToken cancellationToken)
@@ -418,8 +487,8 @@ public sealed class ContainerService : IContainerService
     }
 
     /// <summary>
-    /// Permission, then the procedure, then a re-read: an event moves the derived status and the
-    /// location, an offload writes the received quantities — the answer is the server's container,
+    /// Permission, then the procedure, then a re-read: a confirm moves the derived status, an offload
+    /// writes the received quantities and freezes the costs — the answer is the server's container,
     /// not a patch of what was sent.
     /// </summary>
     private async Task<Result<ContainerDto>> ChangeAsync(

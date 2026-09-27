@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE messaging.usp_Email_MarkFailed
     @Id          BIGINT,
     @Error       NVARCHAR(1000),

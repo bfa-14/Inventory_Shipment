@@ -171,8 +171,26 @@ public sealed class PurchaseDocumentLineDto
     /// <summary>Invoices: what containers that are not cancelled hold of this line, in base units.</summary>
     public int AllocatedToContainersBase { get; init; }
 
-    /// <summary>Invoices: what is still free to load into a container (QuantityBase − allocated); null on orders and returns.</summary>
+    /// <summary>Orders: what is still free to load into a container (ordered − loaded − invoiced directly); null on invoices and returns.</summary>
     public int? AvailableForContainerBase { get; init; }
+
+    /// <summary>Orders: in invoices made straight from the order, without a container (draft or posted).</summary>
+    public int? InvoicedDirectBase { get; init; }
+
+    /* Invoices from containers: every line points to ONE container line. */
+    public int? ContainerLineId { get; init; }
+    public int? ContainerId { get; init; }
+    public string? ContainerRef { get; init; }
+    public string? ContainerNo { get; init; }
+
+    /// <summary>The container status code 1–8 (see Logistics.ContainerStatus).</summary>
+    public byte? ContainerStatus { get; init; }
+
+    /// <summary>The posted container charges that fall on this invoice line (its share of the container line's).</summary>
+    public decimal? ContainerChargesBase { get; init; }
+
+    /// <summary>FOB + container charges per unit; final once the container is offloaded.</summary>
+    public decimal? EstimatedLandedCostBase { get; init; }
 
     public int? ImportRowNumber { get; init; }
     public string? Notes { get; init; }
@@ -217,7 +235,10 @@ public sealed class LinkedPurchaseDocumentDto
     public string CurrencyCode { get; init; } = string.Empty;
 }
 
-/// <summary>A container carrying (part of) this invoice — the 7th result set of usp_PurchaseDocument_Get.</summary>
+/// <summary>
+/// A container of the document — the 7th result set of usp_PurchaseDocument_Get: for an order the
+/// containers carrying its lines, for an invoice the containers its lines come from.
+/// </summary>
 public sealed class PurchaseInvoiceContainerDto
 {
     public int Id { get; init; }
@@ -235,10 +256,19 @@ public sealed class PurchaseInvoiceContainerDto
     public string? WarehouseCode { get; init; }
     public string? WarehouseName { get; init; }
 
-    /// <summary>Of THIS invoice, loaded on that container.</summary>
+    /// <summary>Of THIS document, loaded on that container.</summary>
     public int AllocatedBase { get; init; }
 
     public int ReceivedBase { get; init; }
+
+    /// <summary>Of this document's quantity on the container, what POSTED invoices cover.</summary>
+    public int InvoicedBase { get; init; }
+
+    public int ContainerTypeId { get; init; }
+    public string ContainerTypeCode { get; init; } = string.Empty;
+
+    /// <summary>The order the container was created from.</summary>
+    public int? PurchaseOrderId { get; init; }
 }
 
 /// <summary>When a purchase invoice puts its goods into stock.</summary>
@@ -295,11 +325,31 @@ public sealed class PurchaseDocumentDto
     /// <summary>The supplier's commercial invoice number — what the container list and the forwarder quote.</summary>
     public string? CommercialInvoiceNo { get; init; }
 
-    /// <summary>1 = stock on posting, 2 = stock on container offload (see <see cref="PurchaseReceiptModes"/>).</summary>
+    /// <summary>1 = stock on posting, 2 = stock on container offload (see <see cref="PurchaseReceiptModes"/>). Automatic on invoices.</summary>
     public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
 
     public string? Notes { get; init; }
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
+
+    /// <summary>Invoices: created from containers (its lines point to container lines). The exporter reference is then required to post.</summary>
+    public bool IsContainerBound { get; init; }
+
+    /// <summary>Orders: containers carrying its lines (not cancelled); invoices: containers its lines come from.</summary>
+    public int ContainerCount { get; init; }
+
+    /// <summary>Orders: loaded in containers that are not cancelled, in base units; null on invoices and returns.</summary>
+    public int? LoadedBase { get; init; }
+
+    /// <summary>Invoices from containers: the posted container charges (in the landed cost) falling on its lines.</summary>
+    public decimal? ContainerChargesBase { get; init; }
+
+    /* Orders: invoicing progress (script 26), in base units. */
+    public decimal? OrderedBase { get; init; }
+    public decimal? InvoicedBase { get; init; }
+    public decimal InDraftInvoicesBase { get; init; }
+
+    /// <summary>Orders: 0 not, 1 partially, 2 fully invoiced (posted invoices); null on invoices and returns.</summary>
+    public int? InvoicingStatus { get; init; }
     public int TotalItems { get; init; }
     public decimal TotalQuantity { get; init; }
     public decimal Subtotal { get; init; }
@@ -347,19 +397,28 @@ public sealed class PurchaseDocumentDto
     /// <summary>Only an open (posted) order can be closed by hand.</summary>
     public bool CanClose => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
 
-    /// <summary>Charges are typed on a DRAFT invoice; after posting they arrive as a landed cost adjustment instead.</summary>
-    public bool CanEditCharges => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Draft;
+    /// <summary>
+    /// Charges are typed on a DRAFT invoice; after posting they arrive as a landed cost adjustment
+    /// instead. Never on an invoice from containers: an import's charges go on its containers (65020).
+    /// </summary>
+    public bool CanEditCharges
+        => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Draft && !IsContainerBound;
 
-    /// <summary>A posted invoice can receive charges that arrived late, through a landed cost adjustment.</summary>
-    public bool CanAdjustLandedCost => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Posted;
+    /// <summary>A posted local invoice can receive charges that arrived late, through a landed cost adjustment (67012 on an import).</summary>
+    public bool CanAdjustLandedCost
+        => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Posted && !IsContainerBound;
 
     /// <summary>Shipped quantities are recorded on an open order only — the procedure refuses anything else.</summary>
     public bool CanMarkShipped => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
 
-    /// <summary>An open order with something left to receive becomes a purchase invoice.</summary>
+    /// <summary>
+    /// An open order with something left to receive becomes a purchase invoice — unless it is
+    /// shipped in containers: then its invoices are made from the containers (65021).
+    /// </summary>
     public bool CanCreateInvoice
         => DocumentTypeCode == PurchaseDocumentTypes.Order
            && Status == PurchaseDocumentStatus.Posted
+           && ContainerCount == 0
            && Lines.Any(l => (l.RemainingBase ?? 0) > 0);
 
     /// <summary>A posted invoice with something not yet returned becomes a purchase return.</summary>
@@ -377,7 +436,7 @@ public sealed class PurchaseDocumentDto
     public IReadOnlyList<PurchaseDocumentAuditDto> Audit { get; init; } = [];
     public IReadOnlyList<LinkedPurchaseDocumentDto> Linked { get; init; } = [];
 
-    /// <summary>Invoices: the containers carrying it, with what each holds and has received.</summary>
+    /// <summary>The containers of the order or of the invoice, with what each holds, has invoiced and has received.</summary>
     public IReadOnlyList<PurchaseInvoiceContainerDto> Containers { get; init; } = [];
 }
 
@@ -432,6 +491,12 @@ public sealed class SavePurchaseDocumentLineRequest
 
     /// <summary>The order line an invoice line receives, or the invoice line a return line gives back.</summary>
     public int? SourceLineId { get; init; }
+
+    /// <summary>
+    /// Invoices from containers: the container line this line invoices. When the invoice comes from
+    /// containers EVERY line must send it back on save (the procedure refuses otherwise).
+    /// </summary>
+    public int? ContainerLineId { get; init; }
 }
 
 public sealed class SavePurchaseDocumentRequest
@@ -467,7 +532,7 @@ public sealed class SavePurchaseDocumentRequest
     [StringLength(100)]
     public string? SupplierReference { get; init; }
 
-    /// <summary>Invoices only: 1 = on posting, 2 = on container offload. Null = unchanged (1 on creation); forced to 2 once the invoice is in a container.</summary>
+    /// <summary>Ignored for invoices since script 27: the receipt mode is automatic (2 from containers, 1 otherwise).</summary>
     [Range(1, 2)]
     public byte? ReceiptMode { get; init; }
 
@@ -524,6 +589,25 @@ public sealed class MarkShippedRequest
 {
     public IReadOnlyList<ShippedLineRequest> Lines { get; init; } = [];
     public string? RowVersion { get; init; }
+}
+
+/// <summary>One container line of an invoice from containers, and the pieces to invoice.</summary>
+public sealed class ContainerLineQuantityRequest
+{
+    [Range(1, int.MaxValue)]
+    public int ContainerLineId { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int QuantityBase { get; init; }
+}
+
+/// <summary>A draft purchase invoice from container lines of one order. NO LINES = everything loaded and not yet invoiced.</summary>
+public sealed class InvoiceFromContainersRequest
+{
+    /// <summary>Null = today.</summary>
+    public DateOnly? DocumentDate { get; init; }
+
+    public IReadOnlyList<ContainerLineQuantityRequest> Lines { get; init; } = [];
 }
 
 /// <summary>Make the next document of the chain (order → invoice, invoice → return) from a posted one.</summary>

@@ -16,7 +16,7 @@ BEGIN
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
     SET @SortDirection = UPPER(@SortDirection);
 
-    SELECT u.Id, u.UnitTypeName, u.IsActive, u.CreatedAtUtc, u.CreatedBy, u.UpdatedAtUtc, u.UpdatedBy, u.RowVersion,
+    SELECT u.Id, u.UnitTypeName, u.IsActive, u.IsContainer, u.CreatedAtUtc, u.CreatedBy, u.UpdatedAtUtc, u.UpdatedBy, u.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM masterdata.UnitTypes u
     WHERE (@Search IS NULL OR u.UnitTypeName LIKE N'%' + @Search + N'%')

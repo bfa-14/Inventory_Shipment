@@ -1,4 +1,20 @@
--- invoice is allocated to a container).
+/* ================================================================== 16. Purchase documents re-created for the container model
+
+   Save        + @LineContainers (invoice from containers), receipt mode automatic (2 with containers, 1 without),
+                 returns of imported goods carry the container landed cost; the value basis of the container charges follows.
+   Post        imported invoice: exporter reference required (65018), every line on a container line within what is
+                 loaded (65019), no invoice charges (65020).
+   Cancel      an order loaded into containers cannot be cancelled (65021); an invoice whose container is offloaded neither.
+   Delete      nothing to clean on the containers any more.
+   Get         lines: container of the line, loaded / transit per order line, container charges share and estimated landed
+                 cost per invoice line; set 6 adds the container charges (kind CNT, read-only) with the share of this invoice;
+                 set 7 = containers of the order / invoice.
+   CreateFromSource  refused for an order shipped in containers (65021): use CreateFromContainers.
+   SetCharges / LandedCostAdjustment_Save  refused on an imported invoice (65020 / 67012).
+   Close       an order whose containers are not fully invoiced cannot be closed (65021).
+   ================================================================== */
+
+-- Re-created (27): invoice from containers (@LineContainers), automatic receipt mode, landed cost of imported returns.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @Id                  INT            = NULL,
     @DocumentTypeCode    NVARCHAR(20),
@@ -20,6 +36,7 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @ReceiptMode         TINYINT        = NULL,    -- NULL = unchanged (1 on creation)
     @ExporterReference   NVARCHAR(50)   = NULL,
     @CommercialInvoiceNo NVARCHAR(50)   = NULL,
+    @LineContainers      purchase.tvp_LineContainer READONLY,   -- invoice from containers: the container line of every line
     @NewId               INT OUTPUT
 AS
 BEGIN
@@ -49,15 +66,61 @@ BEGIN
             THROW 65000, 'The document type cannot be changed.', 1;
         IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND ISNULL(SourceDocumentId, 0) <> ISNULL(@SourceDocumentId, 0))
             THROW 65000, 'The source document cannot be changed.', 1;
-        -- An invoice already loaded into a container is always received at offload.
-        IF EXISTS (SELECT 1 FROM logistics.ContainerInvoices ci INNER JOIN logistics.Containers c ON c.Id = ci.ContainerId
-                   WHERE ci.PurchaseDocumentId = @Id AND c.Status <> 8)
-            SET @ReceiptMode = 2;
-        -- Lines that are allocated to a container cannot be replaced.
-        IF EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
-                   WHERE cl.PurchaseDocumentId = @Id AND c.Status <> 8)
-            THROW 69012, 'This invoice has quantities loaded into a container. Remove them from the container before changing the lines.', 1;
+        IF NOT EXISTS (SELECT 1 FROM @LineContainers)
+           AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL)
+            THROW 65019, 'This invoice comes from containers: every line must keep its container line.', 1;
     END
+
+    -- Invoice from containers (imports): every line points to a container line of the same order line and item, within
+    -- what is loaded and not yet invoiced elsewhere. Receipt mode is automatic: 2 with containers, 1 without.
+    IF EXISTS (SELECT 1 FROM @LineContainers)
+    BEGIN
+        IF @DocumentTypeCode <> N'PINV' THROW 65019, 'Only purchase invoices can be linked to containers.', 1;
+        IF @SourceDocumentId IS NULL THROW 65019, 'An invoice from containers must refer to its purchase order.', 1;
+        IF EXISTS (SELECT 1 FROM @Lines l WHERE NOT EXISTS (SELECT 1 FROM @LineContainers x WHERE x.LineNumber = l.LineNumber))
+           OR EXISTS (SELECT 1 FROM @LineContainers x WHERE NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.LineNumber = x.LineNumber))
+            THROW 65019, 'Every line of an invoice from containers must come from a container line.', 1;
+        IF @Id IS NOT NULL AND EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+            THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+
+        DECLARE @CtMsg NVARCHAR(400);
+        SELECT TOP (1) @CtMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN cl.Id IS NULL THEN N'the container line no longer exists.'
+                 WHEN c.Status IN (6, 7, 8) THEN N'container ' + c.ContainerRef + N' is already offloaded, closed or cancelled.'
+                 WHEN cl.PurchaseOrderId <> @SourceDocumentId THEN N'the container line belongs to another purchase order.'
+                 WHEN cl.ItemId <> l.ItemId THEN N'the item differs from the container line.'
+                 ELSE N'the order line differs from the container line.' END
+        FROM @Lines l
+        INNER JOIN @LineContainers x          ON x.LineNumber = l.LineNumber
+        LEFT  JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+        LEFT  JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        WHERE cl.Id IS NULL OR c.Status IN (6, 7, 8) OR cl.PurchaseOrderId <> @SourceDocumentId
+           OR cl.ItemId <> l.ItemId OR ISNULL(l.SourceLineId, 0) <> cl.PoLineId
+        ORDER BY l.LineNumber;
+        IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+
+        SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                + CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Other, 0) AS NVARCHAR(20))
+                                + N' in other invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.'
+        FROM (SELECT x.ContainerLineId, Here = SUM(l.Quantity * iu.PackingFormula)
+              FROM @Lines l
+              INNER JOIN @LineContainers x      ON x.LineNumber = l.LineNumber
+              INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+              GROUP BY x.ContainerLineId) q
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+        OUTER APPLY (SELECT Other = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3 AND (@Id IS NULL OR pd.Id <> @Id)) o
+        WHERE q.Here + ISNULL(o.Other, 0) > cl.QuantityBase
+        ORDER BY c.ContainerRef, cl.LineNumber;
+        IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+
+        SET @ReceiptMode = 2;
+    END
+    ELSE IF @DocumentTypeCode = N'PINV'
+        SET @ReceiptMode = 1;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -91,11 +154,6 @@ BEGIN
                 UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
             WHERE Id = @Id;
 
-            -- Lines of cancelled containers protect nothing: they are cleaned up first.
-            DELETE cl FROM logistics.ContainerLines cl
-            INNER JOIN logistics.Containers c2 ON c2.Id = cl.ContainerId
-            WHERE cl.PurchaseDocumentId = @Id AND c2.Status = 8;
-
             -- Lines are replaced: manual charge allocations pointing at the old lines are dropped (the charges stay).
             DELETE a FROM purchase.PurchaseChargeAllocations a
             INNER JOIN purchase.PurchaseCharges c ON c.Id = a.ChargeId
@@ -111,13 +169,19 @@ BEGIN
         SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
                ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
                ISNULL(l.DiscountPercent, 0),
-               CASE WHEN @DocumentTypeCode = N'PRET' THEN src.UnitCostBase END,      -- returns carry the invoice LANDED cost
-               CASE WHEN @DocumentTypeCode = N'PRET' THEN src.FobCostBase END,
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.LandedCostBase, src.UnitCostBase) END,   -- returns carry the LANDED cost (the container's for imports)
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.FobCostBase, src.FobCostBase) END,
                l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N''), l.SourceLineId
         FROM @Lines l
         INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
         INNER JOIN inventory.Items i ON i.Id = l.ItemId
-        LEFT  JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId;
+        LEFT  JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId
+        LEFT  JOIN logistics.ContainerLines scl       ON scl.Id = src.ContainerLineId;
+
+        UPDATE pl SET ContainerLineId = x.ContainerLineId
+        FROM purchase.PurchaseDocumentLines pl
+        INNER JOIN @LineContainers x ON x.LineNumber = pl.LineNumber
+        WHERE pl.DocumentId = @Id;
 
         UPDATE d
         SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
@@ -127,6 +191,23 @@ BEGIN
                             ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
                      FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
         WHERE d.Id = @Id;
+
+        -- the value basis of the container charges follows the invoice prices
+        IF EXISTS (SELECT 1 FROM @LineContainers)
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM @LineContainers x INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
 
         SET @NewId = @Id;
         COMMIT TRANSACTION;

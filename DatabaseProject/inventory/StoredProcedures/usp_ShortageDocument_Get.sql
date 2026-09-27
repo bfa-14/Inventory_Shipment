@@ -25,7 +25,7 @@ BEGIN
            l.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, l.EffectiveMonthlySales, l.LeadTimeMonths,
            l.ExpectedRequirementBase, l.ShortageBase, l.CoverageMonths,
            l.PurchaseItemUnitId, ut.UnitTypeName AS PurchaseUnitName, l.PurchasePackingFormula,
-           l.RequiredQty, l.RequiredBase, l.PcPerContainer, l.ContainerRequirement,
+           l.RequiredQty, l.RequiredBase, l.PcPerContainer, l.PcPerContainerFromUnit, l.ContainerRequirement,
            l.MinQuantity, l.MaxQuantity, l.LastCost, l.Notes
     FROM inventory.ShortageDocumentLines l
     INNER JOIN inventory.Items i ON i.Id = l.ItemId

@@ -19,7 +19,8 @@ BEGIN
     SET @SortDirection = UPPER(@SortDirection);
 
     SELECT c.Id, c.ChargeCode, c.ChargeName, c.AllocationMethod, c.IncludeInLandedCost, c.IsRecoverableTax, c.Description, c.IsActive,
-           UsageCount = (SELECT COUNT(*) FROM purchase.PurchaseCharges pc WHERE pc.ChargeTypeId = c.Id),
+           UsageCount = (SELECT COUNT(*) FROM purchase.PurchaseCharges pc WHERE pc.ChargeTypeId = c.Id)
+                      + (SELECT COUNT(*) FROM logistics.ContainerCharges cc WHERE cc.ChargeTypeId = c.Id),
            c.CreatedAtUtc, c.UpdatedAtUtc, c.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM purchase.ChargeTypes c

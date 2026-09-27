@@ -1,8 +1,9 @@
--- logistics.usp_Container_Offload writes the movements when the container arrives.
+-- has no charges of its own. Purchase orders are posted only by their approval (@FromApproval = 1).
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Post
     @Id         INT,
-    @RowVersion BINARY(8) = NULL,
-    @UserId     INT       = NULL
+    @RowVersion   BINARY(8) = NULL,
+    @UserId       INT       = NULL,
+    @FromApproval BIT       = 0      -- 1 = called by the approval: purchase orders are only posted that way
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -22,7 +23,10 @@ BEGIN
         WHERE d.Id = @Id;
 
         IF @Status IS NULL THROW 65006, 'Document not found.', 1;
-        IF @Status <> 1 THROW 65010, 'Only draft documents can be posted.', 1;
+        IF @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 0
+            THROW 65013, 'A purchase order is posted by its approval. Send it for approval instead.', 1;
+        IF @TypeCode = N'PO' AND @Status <> 5 THROW 65010, 'Only a purchase order waiting for approval can be approved.', 1;
+        IF @TypeCode <> N'PO' AND @Status <> 1 THROW 65010, 'Only draft documents can be posted.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
         IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
@@ -32,6 +36,35 @@ BEGIN
 
         -- Imports: the goods are received by the container, not by this posting.
         DECLARE @ReceiveNow BIT = CASE WHEN @TypeCode = N'PINV' AND @ReceiptMode = 2 THEN 0 ELSE 1 END;
+
+        DECLARE @FromContainers BIT = CASE WHEN @TypeCode = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
+                                                                                WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END;
+        IF @FromContainers = 1
+        BEGIN
+            IF NULLIF(LTRIM(RTRIM((SELECT ExporterReference FROM purchase.PurchaseDocuments WHERE Id = @Id))), N'') IS NULL
+                THROW 65018, 'The exporter reference is required on an imported invoice. Enter it before posting.', 1;
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND ContainerLineId IS NULL)
+                THROW 65019, 'Every line of an invoice from containers must come from a container line.', 1;
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+                THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+
+            DECLARE @CtMsg NVARCHAR(400);
+            SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                    + CASE WHEN c.Status IN (6, 7, 8) THEN N'the container is already offloaded, closed or cancelled.'
+                                           ELSE CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Posted, 0) AS NVARCHAR(20))
+                                                + N' in posted invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.' END
+            FROM (SELECT ContainerLineId, Here = SUM(QuantityBase) FROM purchase.PurchaseDocumentLines
+                  WHERE DocumentId = @Id GROUP BY ContainerLineId) q
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+            INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+            INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+            OUTER APPLY (SELECT Posted = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                         INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                         WHERE pil.ContainerLineId = cl.Id AND pd.Status IN (2, 4) AND pd.Id <> @Id) o
+            WHERE c.Status IN (6, 7, 8) OR q.Here + ISNULL(o.Posted, 0) > cl.QuantityBase
+            ORDER BY c.ContainerRef, cl.LineNumber;
+            IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+        END
 
         DECLARE @Msg NVARCHAR(400);
         SELECT TOP (1) @Msg =
@@ -168,11 +201,32 @@ BEGIN
         VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
                                 + CASE WHEN @Direction <> 0 AND @ReceiveNow = 1 THEN N' written to the stock ledger'
                                        WHEN @ReceiveNow = 0 THEN N'; stock will be received when the container is offloaded'
-                                       ELSE N' (order confirmed)' END
+                                       ELSE N' (order approved)' END
                                 + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END, @UserId);
 
+        -- containers of an import: the invoice is known now (value basis of the charges, history)
+        IF @FromContainers = 1
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+                INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                WHERE l.DocumentId = @Id;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                VALUES (@Cid, N'Updated', N'Purchase invoice ' + @Number + N' posted', @UserId);
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
+
         COMMIT TRANSACTION;
-        SELECT @Number AS DocumentNumber;
+        IF ISNULL(@FromApproval, 0) = 0 SELECT @Number AS DocumentNumber;
     END TRY
     BEGIN CATCH
         IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;

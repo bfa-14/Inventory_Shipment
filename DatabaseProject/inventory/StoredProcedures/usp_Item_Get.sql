@@ -1,3 +1,6 @@
+/* ================================================================== 3. Item details show the container unit */
+
+-- Re-created: PcPerContainer comes from the container unit; the units result set flags it.
 CREATE   PROCEDURE inventory.usp_Item_Get
     @Id INT
 AS
@@ -14,7 +17,9 @@ BEGIN
            AverageCost = CAST(i.AverageCost AS DECIMAL(18,2)),
            InventoryValue = CAST(inventory.fn_StockOnHand(i.Id, NULL) * i.AverageCost AS DECIMAL(18,2)),
            LastPurchaseCost = CAST(i.FobCost AS DECIMAL(18,2)),      -- kept for the current API mapping (= FOB)
-           i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays, i.PcPerContainer,
+           i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays,
+           PcPerContainer = cnt.PackingFormula,      -- from the item's Container unit
+           PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
            i.WeightKg, i.VolumeCbm, i.OilQtyPerUnit,
            i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
@@ -27,10 +32,16 @@ BEGIN
     LEFT  JOIN masterdata.Parties ls     ON ls.Id = i.LastSupplierId
     LEFT  JOIN security.Users cu ON cu.Id = i.CreatedBy
     LEFT  JOIN security.Users uu ON uu.Id = i.UpdatedBy
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.PackingFormula
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id AND t.IsContainer = 1
+    ) cnt
     WHERE i.Id = @Id;
 
     SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,
-           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, u.RowVersion
+           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, IsContainerUnit = ut.IsContainer, u.RowVersion
     FROM inventory.ItemUnits u
     INNER JOIN masterdata.UnitTypes ut ON ut.Id = u.UnitTypeId
     WHERE u.ItemId = @Id

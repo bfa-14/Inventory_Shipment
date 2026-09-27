@@ -1,5 +1,3 @@
-
--- Takes the next due emails for the background sender (safe with several API instances: READPAST + lease).
 CREATE   PROCEDURE messaging.usp_Email_Claim
     @BatchSize    INT = 10,
     @LeaseMinutes INT = 5

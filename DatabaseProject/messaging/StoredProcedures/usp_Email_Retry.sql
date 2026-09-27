@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE messaging.usp_Email_Retry
     @Id BIGINT
 AS

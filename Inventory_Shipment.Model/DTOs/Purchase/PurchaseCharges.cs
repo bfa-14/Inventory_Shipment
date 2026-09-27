@@ -7,6 +7,9 @@ public static class ChargeDocumentKinds
 {
     public const string Invoice = "PINV";
     public const string Adjustment = "LCA";
+
+    /// <summary>A charge of the invoice's containers, shown read-only on an imported invoice.</summary>
+    public const string Container = "CNT";
 }
 
 /// <summary>
@@ -71,6 +74,17 @@ public sealed class PurchaseChargeDto
 
     /// <summary>On a charge of an adjustment: that adjustment's status (1 Draft, 2 Posted, 3 Cancelled). Null on the invoice's own.</summary>
     public byte? AdjustmentStatus { get; init; }
+
+    /* Container charges (kind CNT) only — read-only on the invoice: they are entered on the containers. */
+    public int? ContainerId { get; init; }
+    public string? ContainerRef { get; init; }
+    public DateTime? ChargeDate { get; init; }
+
+    /// <summary>The container charge's status (1 Draft, 2 Posted, 3 Cancelled).</summary>
+    public byte? ChargeStatus { get; init; }
+
+    /// <summary>The part of the container charge that falls on this invoice's lines, in the base currency.</summary>
+    public decimal? ShareBase { get; init; }
 }
 
 /// <summary>One charge as the page sends it. What is left null is taken from the type or the document.</summary>

@@ -22,11 +22,13 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
     [ShippedQuantityBase]  INT             CONSTRAINT [DF_PurchaseDocumentLines_Shipped] DEFAULT ((0)) NOT NULL,
     [FobCostBase]          DECIMAL (18, 6) NULL,
     [AllocatedChargesBase] DECIMAL (18, 2) CONSTRAINT [DF_PurchaseDocumentLines_Charges] DEFAULT ((0)) NOT NULL,
+    [ContainerLineId]      INT             NULL,
     CONSTRAINT [PK_PurchaseDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_PurchaseDocumentLines_Discount] CHECK ([DiscountPercent]>=(0) AND [DiscountPercent]<=(100)),
     CONSTRAINT [CK_PurchaseDocumentLines_Formula] CHECK ([PackingFormula]>=(1)),
     CONSTRAINT [CK_PurchaseDocumentLines_Price] CHECK ([UnitPrice]>=(0)),
     CONSTRAINT [CK_PurchaseDocumentLines_Qty] CHECK ([Quantity]>(0)),
+    CONSTRAINT [FK_PurchaseDocumentLines_ContainerLine] FOREIGN KEY ([ContainerLineId]) REFERENCES [logistics].[ContainerLines] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_Document] FOREIGN KEY ([DocumentId]) REFERENCES [purchase].[PurchaseDocuments] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_Item] FOREIGN KEY ([ItemId]) REFERENCES [inventory].[Items] ([Id]),
     CONSTRAINT [FK_PurchaseDocumentLines_ItemUnit] FOREIGN KEY ([ItemUnitId]) REFERENCES [inventory].[ItemUnits] ([Id]),
@@ -34,12 +36,6 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
     CONSTRAINT [FK_PurchaseDocumentLines_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]),
     CONSTRAINT [UQ_PurchaseDocumentLines_LineNo] UNIQUE NONCLUSTERED ([DocumentId] ASC, [LineNumber] ASC)
 );
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Item]
-    ON [purchase].[PurchaseDocumentLines]([ItemId] ASC);
 
 
 GO
@@ -52,6 +48,18 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
     ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Item]
+    ON [purchase].[PurchaseDocumentLines]([ItemId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_ContainerLine]
+    ON [purchase].[PurchaseDocumentLines]([ContainerLineId] ASC) WHERE ([ContainerLineId] IS NOT NULL);
 
 
 GO

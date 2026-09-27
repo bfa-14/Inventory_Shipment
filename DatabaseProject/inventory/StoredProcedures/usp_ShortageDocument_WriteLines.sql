@@ -1,6 +1,3 @@
-/* ------------------------------------------------------------------ 4c. Save (draft) / Recalculate */
-
--- Shared: replace the lines of a draft with fresh live figures for the given items (manual values from the TVP).
 CREATE   PROCEDURE inventory.usp_ShortageDocument_WriteLines
     @Id     INT,
     @Lines  inventory.tvp_ShortageLine READONLY
@@ -26,14 +23,15 @@ BEGIN
 
     INSERT INTO inventory.ShortageDocumentLines (DocumentId, LineNumber, ItemId, CurrentInventoryBase, TransitBase, OutstandingOrderBase,
                                                  ExpectedMonthlySalesBase, ExpectedMonthlySalesManual, LeadTimeMonths,
-                                                 PurchaseItemUnitId, PurchasePackingFormula, RequiredQty, PcPerContainer,
+                                                 PurchaseItemUnitId, PurchasePackingFormula, RequiredQty, PcPerContainer, PcPerContainerFromUnit,
                                                  MinQuantity, MaxQuantity, LastCost, Notes)
     SELECT @Id, l.LineNumber, l.ItemId, x.CurrentInventoryBase, x.TransitBase, x.OutstandingOrderBase,
            x.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, @LeadTime,
            x.PurchaseItemUnitId, x.PurchasePackingFormula,
            RequiredQty = ISNULL(l.RequiredQty,
                                 CASE WHEN s.ShortageBase > 0 THEN CEILING(CAST(s.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) ELSE 0 END),
-           ISNULL(l.PcPerContainer, x.ItemPcPerContainer),
+           COALESCE(x.ItemPcPerContainer, l.PcPerContainer),            -- the Container unit always wins; else what the user typed
+           CAST(CASE WHEN x.ItemPcPerContainer IS NOT NULL THEN 1 ELSE 0 END AS BIT),
            x.MinQuantity, x.MaxQuantity, x.LastCost, NULLIF(LTRIM(RTRIM(l.Notes)), N'')
     FROM @Lines l
     INNER JOIN inventory.fn_Shortage_Live(@WarehouseId, @Months) x ON x.ItemId = l.ItemId
