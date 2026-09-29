@@ -13,6 +13,9 @@ public sealed class ContainerRepository : IContainerRepository
     private const string LineTypeName = "logistics.tvp_ContainerLoadLine";
     private const string IdListTypeName = "logistics.tvp_IdList";
     private const string ReceiptTypeName = "logistics.tvp_ContainerReceipt";
+    private const string PlanLineTypeName = "logistics.tvp_ContainerPlanLine";
+    private const string ItemCapacityTypeName = "logistics.tvp_ItemCapacity";
+    private const string ContainerNumberTypeName = "logistics.tvp_ContainerNumber";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the order date.</summary>
     private static readonly string[] SortColumns =
@@ -313,6 +316,116 @@ public sealed class ContainerRepository : IContainerRepository
         => ExecuteAsync("logistics.usp_ContainerAttachment_Delete",
             new { Id = id, AllShared = allShared, UserId = userId }, cancellationToken);
 
+    /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
+
+    public async Task<AutoPlanDto> PlanFromOrderAsync(AutoPlanRequest request, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
+        parameters.Add("@ContainerTypeId", request.ContainerTypeId, DbType.Int32);
+        parameters.Add("@MixRemainders", request.MixRemainders, DbType.Boolean);
+        parameters.Add("@Capacities", ToCapacityTable(request.Capacities).AsTableValuedParameter(ItemCapacityTypeName));
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+                "logistics.usp_Container_PlanFromOrder", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            var containers = (await multi.ReadAsync<PlannedContainerDto>()).AsList();
+            var lines = (await multi.ReadAsync<PlannedContainerLineDto>()).AsList();
+            var orderLines = (await multi.ReadAsync<PlanOrderLineDto>()).AsList();
+            return new AutoPlanDto { Containers = containers, Lines = lines, OrderLines = orderLines };
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<CreatedContainerDto>> CreateBatchAsync(
+        CreateContainersFromPlanRequest request, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
+        parameters.Add("@ContainerTypeId", request.ContainerTypeId, DbType.Int32);
+        parameters.Add("@OrderDate", ToDate(request.OrderDate), DbType.Date);
+        parameters.Add("@BranchId", request.BranchId, DbType.Int32);
+        parameters.Add("@WarehouseId", request.WarehouseId, DbType.Int32);
+
+        // Left out when not given, so the procedure's own default (Sea) applies.
+        if (request.ShippingMethod is not null)
+        {
+            parameters.Add("@ShippingMethod", ShippingMethods.Normalize(request.ShippingMethod) ?? request.ShippingMethod, DbType.String, size: 10);
+        }
+
+        parameters.Add("@CountryOfOrigin", Trimmed(request.CountryOfOrigin)?.ToUpperInvariant(), DbType.StringFixedLength, size: 2);
+        parameters.Add("@ForwarderId", request.ForwarderId, DbType.Int32);
+        parameters.Add("@ShippingLine", Trimmed(request.ShippingLine), DbType.String, size: 100);
+        parameters.Add("@PortOfLoadingId", request.PortOfLoadingId, DbType.Int32);
+        parameters.Add("@PortOfDestinationId", request.PortOfDestinationId, DbType.Int32);
+        parameters.Add("@FinalDestinationId", request.FinalDestinationId, DbType.Int32);
+        parameters.Add("@Eta", ToDate(request.Eta), DbType.Date);
+        parameters.Add("@FreeDays", request.FreeDays, DbType.Int32);
+        parameters.Add("@Plan", ToPlanTable(request.Containers).AsTableValuedParameter(PlanLineTypeName));
+        parameters.Add("@Capacities", ToCapacityTable(request.Capacities).AsTableValuedParameter(ItemCapacityTypeName));
+        parameters.Add("@AllowOverCapacity", request.AllowOverCapacity, DbType.Boolean);
+        parameters.Add("@Confirm", request.Confirm, DbType.Boolean);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return await QueryAsync<CreatedContainerDto>("logistics.usp_Container_CreateBatch", parameters, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ContainerNumberDto>> SetNumbersAsync(
+        IReadOnlyList<ContainerNumberRequest> items, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Items", ToNumberTable(items).AsTableValuedParameter(ContainerNumberTypeName));
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return QueryAsync<ContainerNumberDto>("logistics.usp_Container_SetNumbers", parameters, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<ContainerConfirmedDto>> ConfirmManyAsync(
+        IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Ids", MovementRepository.ToIdTable(ids).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return QueryAsync<ContainerConfirmedDto>("logistics.usp_Container_ConfirmMany", parameters, cancellationToken);
+    }
+
+    public async Task<int> DeleteManyAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Ids", MovementRepository.ToIdTable(ids).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        var rows = await QueryAsync<ContainersDeletedDto>("logistics.usp_Container_DeleteMany", parameters, cancellationToken);
+        return rows.Count > 0 ? rows[0].Deleted : 0;
+    }
+
+    /// <summary>A write that answers with rows: all or nothing in the procedure, so a deadlock victim is simply run again.</summary>
+    private async Task<IReadOnlyList<T>> QueryAsync<T>(string procedure, DynamicParameters parameters, CancellationToken cancellationToken)
+    {
+        try
+        {
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                var rows = await connection.QueryAsync<T>(new CommandDefinition(
+                    procedure, parameters, commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+                return (IReadOnlyList<T>)rows.AsList();
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     /// <summary>
     /// One procedure call, run again if SQL Server made it the deadlock victim: the offload and its
     /// reversal touch the ledger, the item costs and the invoice lines of every supplier on board.
@@ -338,7 +451,7 @@ public sealed class ContainerRepository : IContainerRepository
     /* ── plumbing ─────────────────────────────────────────────────────────────────────────────── */
 
     /* COLUMN ORDER IS THE TYPE'S ORDER AND IS LOAD-BEARING — a table-valued parameter is sent
-       positionally. Each table below repeats its CREATE TYPE from scripts 24 / 27 column by column; types
+       positionally. Each table below repeats its CREATE TYPE from scripts 24 / 27 / 28 column by column; types
        are declared, not inferred, because an all-null column infers as string and the server
        refuses the batch. */
 
@@ -379,6 +492,54 @@ public sealed class ContainerRepository : IContainerRepository
         foreach (var line in lines)
         {
             table.Rows.Add(line.LineId, line.ReceivedQuantityBase, (object?)line.VarianceReason ?? DBNull.Value);
+        }
+
+        return table;
+    }
+
+    /// <summary>logistics.tvp_ContainerPlanLine (Seq, PoLineId, QuantityBase, OilIncluded) — containers[].lines[] flattened.</summary>
+    private static DataTable ToPlanTable(IReadOnlyList<PlanContainerRequest> containers)
+    {
+        var table = new DataTable();
+        table.Columns.Add("Seq", typeof(int));
+        table.Columns.Add("PoLineId", typeof(int));
+        table.Columns.Add("QuantityBase", typeof(int));
+        table.Columns.Add("OilIncluded", typeof(bool));
+        foreach (var container in containers)
+        {
+            foreach (var line in container.Lines)
+            {
+                table.Rows.Add(container.Seq, line.PoLineId, line.QuantityBase, (object?)line.OilIncluded ?? DBNull.Value);
+            }
+        }
+
+        return table;
+    }
+
+    /// <summary>logistics.tvp_ItemCapacity (ItemId, PcsPerContainer); empty when none was typed.</summary>
+    private static DataTable ToCapacityTable(IReadOnlyList<ItemCapacityRequest>? capacities)
+    {
+        var table = new DataTable();
+        table.Columns.Add("ItemId", typeof(int));
+        table.Columns.Add("PcsPerContainer", typeof(int));
+        foreach (var capacity in capacities ?? [])
+        {
+            table.Rows.Add(capacity.ItemId, capacity.PcsPerContainer);
+        }
+
+        return table;
+    }
+
+    /// <summary>logistics.tvp_ContainerNumber (ContainerId, ContainerNo, SealNo).</summary>
+    private static DataTable ToNumberTable(IReadOnlyList<ContainerNumberRequest> items)
+    {
+        var table = new DataTable();
+        table.Columns.Add("ContainerId", typeof(int));
+        table.Columns.Add("ContainerNo", typeof(string));
+        table.Columns.Add("SealNo", typeof(string));
+        foreach (var item in items)
+        {
+            table.Rows.Add(item.ContainerId, (object?)item.ContainerNo ?? DBNull.Value, (object?)item.SealNo ?? DBNull.Value);
         }
 
         return table;

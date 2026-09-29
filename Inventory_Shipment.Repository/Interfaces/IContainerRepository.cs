@@ -56,6 +56,26 @@ public interface IContainerRepository
 
     /// <summary>One record, or (allShared) the file from every container holding it.</summary>
     Task DeleteAttachmentAsync(int id, bool allShared, int userId, CancellationToken cancellationToken = default);
+
+    /* ── many containers per order (script 28) ── */
+
+    /// <summary>The proposed containers, their lines and the order lines (logistics.usp_Container_PlanFromOrder); nothing is saved.</summary>
+    Task<AutoPlanDto> PlanFromOrderAsync(AutoPlanRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>Creates every container of the plan in one transaction; the containers[].lines[] are flattened into the plan table.</summary>
+    Task<IReadOnlyList<CreatedContainerDto>> CreateBatchAsync(
+        CreateContainersFromPlanRequest request, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Container no. and seal no. of several containers; both written, null clears.</summary>
+    Task<IReadOnlyList<ContainerNumberDto>> SetNumbersAsync(
+        IReadOnlyList<ContainerNumberRequest> items, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Confirms the drafts among the ids (the others are returned unchanged), all or nothing.</summary>
+    Task<IReadOnlyList<ContainerConfirmedDto>> ConfirmManyAsync(
+        IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes drafts only (69005 names the first that is not), all or nothing; returns the count.</summary>
+    Task<int> DeleteManyAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
 }
 
 public sealed class ContainerStub

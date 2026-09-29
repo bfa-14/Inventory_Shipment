@@ -77,4 +77,31 @@ public interface IContainerService
     /// <summary>allShared = the file from every container holding it. Needs containers.attachments.manage.</summary>
     Task<Result> DeleteAttachmentAsync(
         int id, bool allShared, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /* ── many containers per order ── */
+
+    /// <summary>The proposed containers of an approved order for one container type; nothing is saved. Needs containers.create.</summary>
+    Task<Result<AutoPlanDto>> AutoPlanAsync(
+        AutoPlanRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// Creates the (edited) plan, all or nothing. Needs containers.create; allowOverCapacity needs
+    /// containers.overcapacity and confirm needs containers.confirm (403 before anything is created).
+    /// </summary>
+    Task<Result<IReadOnlyList<CreatedContainerDto>>> CreateFromPlanAsync(
+        CreateContainersFromPlanRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Container no. and seal no. of several containers. Needs containers.create.</summary>
+    Task<Result<IReadOnlyList<ContainerNumberDto>>> SetNumbersAsync(
+        ContainerNumbersRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>Confirms the drafts among the selected containers. Needs containers.confirm.</summary>
+    Task<Result<IReadOnlyList<ContainerConfirmedDto>>> ConfirmManyAsync(
+        IdsRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>Deletes the selected drafts. Needs containers.delete.</summary>
+    Task<Result<ContainersDeletedDto>> DeleteManyAsync(
+        IdsRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 }

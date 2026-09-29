@@ -36,6 +36,14 @@ public interface IMovementService
     /// <summary>Planned movements only.</summary>
     Task<Result> DeleteAsync(int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// One movement for the chosen containers, started at once unless startNow is false. Needs
+    /// containers.movements.manage; the drafts are confirmed only for a caller with containers.confirm.
+    /// </summary>
+    Task<Result<ShippedMovementDto>> ShipContainersAsync(
+        ShipContainersRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     /// <summary>The filtered list (every page) as a workbook.</summary>
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         MovementQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

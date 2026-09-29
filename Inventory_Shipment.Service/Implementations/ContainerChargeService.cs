@@ -168,6 +168,79 @@ public sealed class ContainerChargeService : IContainerChargeService
         return Result.Success();
     }
 
+    /* ── a charge copied to other containers ──────────────────────────────────────────────────── */
+
+    public async Task<Result<IReadOnlyList<ChargeCopyCandidateDto>>> GetCopyCandidatesAsync(
+        int id, ChargeCopyCandidateQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.ChargesCreate))
+        {
+            return Forbidden<IReadOnlyList<ChargeCopyCandidateDto>>(Permissions.Containers.ChargesCreate);
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<ChargeCopyCandidateDto>>.Success(
+                await _charges.GetCopyCandidatesAsync(id, query, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<ChargeCopyCandidateDto>>(ex);
+        }
+    }
+
+    /// <summary>
+    /// POSTING THE COPIES IS THE POST RIGHT, like posting any draft: refused here before a draft is
+    /// made. "Already has this charge" is the procedure's 70001 (409 DUPLICATE) naming the container.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<CopiedContainerChargeDto>>> CopyToContainersAsync(
+        int id, CopyContainerChargeRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.ChargesCreate))
+        {
+            return Forbidden<IReadOnlyList<CopiedContainerChargeDto>>(Permissions.Containers.ChargesCreate);
+        }
+
+        if (request.Post && !permissions.Contains(Permissions.Containers.ChargesPost))
+        {
+            return Result<IReadOnlyList<CopiedContainerChargeDto>>.Failure(
+                ErrorType.Forbidden,
+                $"Posting the copies needs the {Permissions.Containers.ChargesPost} permission; copy them as drafts instead.",
+                "FORBIDDEN");
+        }
+
+        if (request.ContainerIds is null or { Count: 0 } || request.ContainerIds.Any(c => c <= 0))
+        {
+            return Result<IReadOnlyList<CopiedContainerChargeDto>>.Failure(
+                ErrorType.Validation, "Select at least one other container.", "VALIDATION");
+        }
+
+        // Manual is the one method of a charge that cannot be copied: its split is typed per line.
+        if (request.AllocationMethod is not null
+            && ContainerChargeMethods.Normalize(request.AllocationMethod) is not ("Value" or "Quantity" or "Weight" or "Volume"))
+        {
+            return Result<IReadOnlyList<CopiedContainerChargeDto>>.Failure(
+                ErrorType.Validation,
+                "Allocation method of the copies must be Value, Quantity, Weight or Volume (a manual split can be typed on each draft afterwards).",
+                "VALIDATION");
+        }
+
+        IReadOnlyList<CopiedContainerChargeDto> created;
+        try
+        {
+            created = await _charges.CopyToContainersAsync(id, request, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<CopiedContainerChargeDto>>(ex);
+        }
+
+        _logger.LogInformation("Container charge {ChargeId} copied to {Count} container(s) by user {UserId}{Posted}",
+            id, created.Count, userId, request.Post ? " and posted" : string.Empty);
+        return Result<IReadOnlyList<CopiedContainerChargeDto>>.Success(created);
+    }
+
     /* ── export ───────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(

@@ -159,6 +159,61 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_ContainerCharge_Delete", new { Id = id, UserId = userId }, cancellationToken);
 
+    /// <summary>70006 when the charge does not exist.</summary>
+    public async Task<IReadOnlyList<ChargeCopyCandidateDto>> GetCopyCandidatesAsync(
+        int chargeId, ChargeCopyCandidateQuery query, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var rows = await connection.QueryAsync<ChargeCopyCandidateDto>(new CommandDefinition(
+                "logistics.usp_ContainerCharge_CopyCandidates",
+                new
+                {
+                    ChargeId = chargeId,
+                    Search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+                    query.SameOrder,
+                },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            return rows.AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<CopiedContainerChargeDto>> CopyToContainersAsync(
+        int chargeId, CopyContainerChargeRequest request, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@ChargeId", chargeId, DbType.Int32);
+        parameters.Add("@ContainerIds", MovementRepository.ToIdTable(request.ContainerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@Amount", request.Amount, DbType.Decimal, precision: 18, scale: 2);
+        parameters.Add("@ChargeDate", request.ChargeDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@AllocationMethod", ContainerChargeMethods.Normalize(request.AllocationMethod) ?? request.AllocationMethod, DbType.String, size: 10);
+        parameters.Add("@Post", request.Post, DbType.Boolean);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        try
+        {
+            // All or nothing in the procedure (the posting of the copies too), so a deadlock victim is simply run again.
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                var rows = await connection.QueryAsync<CopiedContainerChargeDto>(new CommandDefinition(
+                    "logistics.usp_ContainerCharge_CopyToContainers", parameters,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+                return (IReadOnlyList<CopiedContainerChargeDto>)rows.AsList();
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     /// <summary>
     /// One procedure call, run again if SQL Server made it the deadlock victim: posting or cancelling
     /// a charge after the offload writes cost adjustments and moves the average cost of every item on

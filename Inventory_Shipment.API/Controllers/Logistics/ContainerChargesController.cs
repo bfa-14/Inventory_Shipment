@@ -125,6 +125,38 @@ public sealed class ContainerChargesController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>The containers that can receive a copy: isSource = the charge's own, hasThisCharge = already in its group.</summary>
+    [HttpGet("{id:int}/copy-candidates")]
+    [HasPermission(Permissions.Containers.ChargesCreate)]
+    [ProducesResponseType<IReadOnlyList<ChargeCopyCandidateDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<ChargeCopyCandidateDto>>> CopyCandidates(
+        int id, [FromQuery] ChargeCopyCandidateQuery query, CancellationToken cancellationToken)
+    {
+        var result = await _charges.GetCopyCandidatesAsync(id, query, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The charge on other containers: one draft each in its group (201 with the created rows).
+    /// post = true needs containers.charges.post. 409 DUPLICATE when a container already has it.
+    /// </summary>
+    [HttpPost("{id:int}/copy")]
+    [HasPermission(Permissions.Containers.ChargesCreate)]
+    [ProducesResponseType<IReadOnlyList<CopiedContainerChargeDto>>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<IActionResult> Copy(
+        int id, [FromBody] CopyContainerChargeRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _charges.CopyToContainersAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.IsSuccess
+            ? StatusCode(StatusCodes.Status201Created, result.Value)
+            : this.ToProblem(result);
+    }
+
     /// <summary>Drafts only.</summary>
     [HttpDelete("{id:int}")]
     [HasPermission(Permissions.Containers.ChargesCreate)]

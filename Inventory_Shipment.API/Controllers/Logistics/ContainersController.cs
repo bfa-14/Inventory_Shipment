@@ -212,6 +212,79 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /* ── many containers per order ────────────────────────────────────────────────────────────── */
+    /* Literal routes: the existing {id:int} routes cannot take "auto-plan" or "bulk". */
+
+    /// <summary>The proposed containers of an approved order for one container type (containers, lines, orderLines); nothing is saved.</summary>
+    [HttpPost("auto-plan")]
+    [HasPermission(Permissions.Containers.Create)]
+    [ProducesResponseType<AutoPlanDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<AutoPlanDto>> AutoPlan(
+        [FromBody] AutoPlanRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.AutoPlanAsync(request, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Creates the (edited) plan, all or nothing (201 with the created rows). Send the same capacities
+    /// as the proposal. allowOverCapacity needs containers.overcapacity, confirm needs containers.confirm.
+    /// 409 OVER_CAPACITY ("Container 3 of 30: ...", data.canOverride) or when an order line is exceeded.
+    /// </summary>
+    [HttpPost("auto-plan/create")]
+    [HasPermission(Permissions.Containers.Create)]
+    [ProducesResponseType<IReadOnlyList<CreatedContainerDto>>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<IReadOnlyList<CreatedContainerDto>>> CreateFromPlan(
+        [FromBody] CreateContainersFromPlanRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.CreateFromPlanAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.IsSuccess
+            ? StatusCode(StatusCodes.Status201Created, result.Value)
+            : this.ToProblem(result);
+    }
+
+    /// <summary>Container no. and seal no. of the selected containers (both sent for each; empty clears). 409 DUPLICATE_CONTAINER_NO.</summary>
+    [HttpPut("bulk/numbers")]
+    [HasPermission(Permissions.Containers.Create)]
+    [ProducesResponseType<IReadOnlyList<ContainerNumberDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<IReadOnlyList<ContainerNumberDto>>> SetNumbers(
+        [FromBody] ContainerNumbersRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.SetNumbersAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>Confirms the drafts among the selected containers; confirmedNow is false for those already confirmed.</summary>
+    [HttpPost("bulk/confirm")]
+    [HasPermission(Permissions.Containers.Confirm)]
+    [ProducesResponseType<IReadOnlyList<ContainerConfirmedDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<IReadOnlyList<ContainerConfirmedDto>>> ConfirmMany(
+        [FromBody] IdsRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.ConfirmManyAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>Deletes the selected drafts, all or nothing: 409 NOT_EDITABLE names the first that is not a draft.</summary>
+    [HttpPost("bulk/delete")]
+    [HasPermission(Permissions.Containers.Delete)]
+    [ProducesResponseType<ContainersDeletedDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ContainersDeletedDto>> DeleteMany(
+        [FromBody] IdsRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.DeleteManyAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /* ── tracking ─────────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>The tracking board: { containers, legs } — open containers and those offloaded during the last offloadedDays days.</summary>

@@ -14,6 +14,9 @@ public sealed class ContainerService : IContainerService
 {
     private const string NotFoundMessage = "Container not found.";
 
+    /// <summary>usp_Container_CreateBatch's own limit, said before the call.</summary>
+    private const int MaxContainersPerPlan = 200;
+
     private readonly IContainerRepository _containers;
     private readonly ILogger<ContainerService> _logger;
 
@@ -318,6 +321,300 @@ public sealed class ContainerService : IContainerService
             id, allShared ? " from every container" : string.Empty, userId);
         return Result.Success();
     }
+
+    /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
+
+    public async Task<Result<AutoPlanDto>> AutoPlanAsync(
+        AutoPlanRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Create))
+        {
+            return Forbidden<AutoPlanDto>(Permissions.Containers.Create);
+        }
+
+        if (CheckCapacities(request.Capacities) is { } invalid)
+        {
+            return Result<AutoPlanDto>.Failure(ErrorType.Validation, invalid, "VALIDATION");
+        }
+
+        try
+        {
+            return Result<AutoPlanDto>.Success(await _containers.PlanFromOrderAsync(request, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<AutoPlanDto>(ex);
+        }
+    }
+
+    /// <summary>
+    /// THE RIGHTS FIRST, THEN THE SHAPE, THEN SQL: the override and the confirmation are refused
+    /// before anything is created, and a plan the procedure would refuse halfway is refused here with
+    /// the container's place in the list ("Container 3 of 30: ..."), which is how the page numbers them.
+    /// Over capacity comes back like a single save: 409 OVER_CAPACITY with data.canOverride.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<CreatedContainerDto>>> CreateFromPlanAsync(
+        CreateContainersFromPlanRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Create))
+        {
+            return Forbidden<IReadOnlyList<CreatedContainerDto>>(Permissions.Containers.Create);
+        }
+
+        var canOverride = permissions.Contains(Permissions.Containers.OverCapacity);
+        if (request.AllowOverCapacity && !canOverride)
+        {
+            return Result<IReadOnlyList<CreatedContainerDto>>.Failure(
+                ErrorType.Forbidden,
+                $"Creating containers above their capacity needs the {Permissions.Containers.OverCapacity} permission.",
+                "FORBIDDEN");
+        }
+
+        if (request.Confirm && !permissions.Contains(Permissions.Containers.Confirm))
+        {
+            return Result<IReadOnlyList<CreatedContainerDto>>.Failure(
+                ErrorType.Forbidden,
+                $"Confirming the new containers needs the {Permissions.Containers.Confirm} permission.",
+                "FORBIDDEN");
+        }
+
+        if (request.ShippingMethod is not null && ShippingMethods.Normalize(request.ShippingMethod) is null)
+        {
+            return Result<IReadOnlyList<CreatedContainerDto>>.Failure(
+                ErrorType.Validation, "Shipping method must be Sea, Air or Road.", "VALIDATION");
+        }
+
+        if ((CheckPlan(request.Containers) ?? CheckCapacities(request.Capacities)) is { } invalid)
+        {
+            return Result<IReadOnlyList<CreatedContainerDto>>.Failure(ErrorType.Validation, invalid, "VALIDATION");
+        }
+
+        IReadOnlyList<CreatedContainerDto> created;
+        try
+        {
+            created = await _containers.CreateBatchAsync(request, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return failure.Code == "OVER_CAPACITY"
+                ? Result<IReadOnlyList<CreatedContainerDto>>.Failure(failure.Type, failure.Message, failure.Code, new { canOverride })
+                : Result<IReadOnlyList<CreatedContainerDto>>.Failure(failure.Type, failure.Message, failure.Code);
+        }
+
+        _logger.LogInformation("{Count} container(s) created from the plan of order {PurchaseOrderId} by user {UserId}{Confirmed}{Override}",
+            created.Count, request.PurchaseOrderId, userId,
+            request.Confirm ? " (confirmed)" : string.Empty,
+            request.AllowOverCapacity ? " (over capacity confirmed)" : string.Empty);
+        return Result<IReadOnlyList<CreatedContainerDto>>.Success(created);
+    }
+
+    /// <summary>
+    /// Both numbers are sent for every container and both are written, so an empty value is a clear:
+    /// trimmed here, empty becomes null. A number typed twice or used by another container is the
+    /// procedure's 69013 (409 DUPLICATE_CONTAINER_NO): it alone sees the other containers.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<ContainerNumberDto>>> SetNumbersAsync(
+        ContainerNumbersRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Create))
+        {
+            return Forbidden<IReadOnlyList<ContainerNumberDto>>(Permissions.Containers.Create);
+        }
+
+        if (request.Items is null or { Count: 0 })
+        {
+            return NumbersInvalid("Select at least one container.");
+        }
+
+        if (request.Items.FirstOrDefault(i => i.ContainerId <= 0) is not null)
+        {
+            return NumbersInvalid("Every row needs its containerId.");
+        }
+
+        if (request.Items.GroupBy(i => i.ContainerId).FirstOrDefault(g => g.Count() > 1) is { } twice)
+        {
+            return NumbersInvalid($"Container {twice.Key} appears more than once.");
+        }
+
+        var items = request.Items
+            .Select(i => new ContainerNumberRequest
+            {
+                ContainerId = i.ContainerId,
+                ContainerNo = Cleaned(i.ContainerNo)?.ToUpperInvariant(),
+                SealNo = Cleaned(i.SealNo),
+            })
+            .ToList();
+
+        if (items.FirstOrDefault(i => i.ContainerNo is { Length: > 20 }) is { } longNo)
+        {
+            return NumbersInvalid($"Container number {longNo.ContainerNo} is longer than 20 characters.");
+        }
+
+        if (items.FirstOrDefault(i => i.SealNo is { Length: > 30 }) is { } longSeal)
+        {
+            return NumbersInvalid($"Seal number {longSeal.SealNo} is longer than 30 characters.");
+        }
+
+        IReadOnlyList<ContainerNumberDto> saved;
+        try
+        {
+            saved = await _containers.SetNumbersAsync(items, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<ContainerNumberDto>>(ex);
+        }
+
+        _logger.LogInformation("Numbers of {Count} container(s) saved by user {UserId}", saved.Count, userId);
+        return Result<IReadOnlyList<ContainerNumberDto>>.Success(saved);
+    }
+
+    public async Task<Result<IReadOnlyList<ContainerConfirmedDto>>> ConfirmManyAsync(
+        IdsRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Confirm))
+        {
+            return Forbidden<IReadOnlyList<ContainerConfirmedDto>>(Permissions.Containers.Confirm);
+        }
+
+        if (CheckIds(request) is { } invalid)
+        {
+            return Result<IReadOnlyList<ContainerConfirmedDto>>.Failure(ErrorType.Validation, invalid, "VALIDATION");
+        }
+
+        IReadOnlyList<ContainerConfirmedDto> rows;
+        try
+        {
+            rows = await _containers.ConfirmManyAsync(request.Ids, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<ContainerConfirmedDto>>(ex);
+        }
+
+        _logger.LogInformation("{Confirmed} of {Count} selected container(s) confirmed by user {UserId}",
+            rows.Count(r => r.ConfirmedNow), rows.Count, userId);
+        return Result<IReadOnlyList<ContainerConfirmedDto>>.Success(rows);
+    }
+
+    public async Task<Result<ContainersDeletedDto>> DeleteManyAsync(
+        IdsRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Delete))
+        {
+            return Forbidden<ContainersDeletedDto>(Permissions.Containers.Delete);
+        }
+
+        if (CheckIds(request) is { } invalid)
+        {
+            return Result<ContainersDeletedDto>.Failure(ErrorType.Validation, invalid, "VALIDATION");
+        }
+
+        int deleted;
+        try
+        {
+            deleted = await _containers.DeleteManyAsync(request.Ids, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<ContainersDeletedDto>(ex);
+        }
+
+        _logger.LogInformation("{Count} container(s) deleted by user {UserId}", deleted, userId);
+        return Result<ContainersDeletedDto>.Success(new ContainersDeletedDto { Deleted = deleted });
+    }
+
+    /// <summary>
+    /// Containers numbered 1..N in the order shown, every one with a line; within a container an
+    /// order line at most once and every quantity above zero. The plan table's primary key
+    /// (Seq, PoLineId) would refuse a line twice too, but as a constraint violation — a 500.
+    /// </summary>
+    private static string? CheckPlan(IReadOnlyList<PlanContainerRequest>? containers)
+    {
+        if (containers is null || containers.All(c => c.Lines is null or { Count: 0 }))
+        {
+            return "The plan has no container with a line to create.";
+        }
+
+        var total = containers.Count;
+        if (total > MaxContainersPerPlan)
+        {
+            return $"At most {MaxContainersPerPlan} containers can be created at once; the plan has {total}.";
+        }
+
+        for (var position = 1; position <= total; position++)
+        {
+            var container = containers[position - 1];
+            var name = $"Container {position} of {total}";
+
+            if (container.Seq != position)
+            {
+                return $"{name}: the containers must be numbered 1 to {total} in the order shown (seq {container.Seq} was sent).";
+            }
+
+            if (container.Lines is null or { Count: 0 })
+            {
+                return $"{name}: it has no line. Remove it from the plan or add a line.";
+            }
+
+            if (container.Lines.FirstOrDefault(l => l.PoLineId <= 0) is not null)
+            {
+                return $"{name}: every line needs its order line (poLineId).";
+            }
+
+            if (container.Lines.FirstOrDefault(l => l.QuantityBase <= 0) is { } empty)
+            {
+                return $"{name}: the quantity of order line {empty.PoLineId} must be greater than zero.";
+            }
+
+            if (container.Lines.GroupBy(l => l.PoLineId).FirstOrDefault(g => g.Count() > 1) is { } twice)
+            {
+                return $"{name}: order line {twice.Key} appears more than once.";
+            }
+        }
+
+        return null;
+    }
+
+    private static string? CheckCapacities(IReadOnlyList<ItemCapacityRequest>? capacities)
+    {
+        if (capacities is null)
+        {
+            return null;
+        }
+
+        if (capacities.FirstOrDefault(c => c.ItemId <= 0) is not null)
+        {
+            return "Every capacity needs its item (itemId).";
+        }
+
+        if (capacities.FirstOrDefault(c => c.PcsPerContainer <= 0) is { } zero)
+        {
+            return $"Pieces per container must be greater than zero (item {zero.ItemId}).";
+        }
+
+        return capacities.GroupBy(c => c.ItemId).FirstOrDefault(g => g.Count() > 1) is { } twice
+            ? $"Item {twice.Key} appears more than once in the capacities."
+            : null;
+    }
+
+    private static string? CheckIds(IdsRequest request)
+    {
+        if (request.Ids is null or { Count: 0 })
+        {
+            return "Select at least one container.";
+        }
+
+        return request.Ids.Any(id => id <= 0) ? "A container id must be greater than zero." : null;
+    }
+
+    private static Result<IReadOnlyList<ContainerNumberDto>> NumbersInvalid(string message)
+        => Result<IReadOnlyList<ContainerNumberDto>>.Failure(ErrorType.Validation, message, "VALIDATION");
+
+    private static string? Cleaned(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     /* ── export ───────────────────────────────────────────────────────────────────────────────── */
 

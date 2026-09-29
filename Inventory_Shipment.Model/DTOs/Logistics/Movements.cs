@@ -379,6 +379,72 @@ public sealed class MovementStatusRequest
     public string? RowVersion { get; init; }
 }
 
+/// <summary>
+/// One movement for the chosen containers (logistics.usp_Movement_ShipContainers): the drafts
+/// confirmed, the movement created and started, the shipping details copied to the containers — in
+/// one transaction.
+/// </summary>
+public sealed class ShipContainersRequest
+{
+    /// <summary>At least one.</summary>
+    public IReadOnlyList<int> ContainerIds { get; init; } = [];
+
+    /// <summary>Null = SEA.</summary>
+    public int? MovementTypeId { get; init; }
+
+    /// <summary>Null = the containers' common port of loading (Sea only).</summary>
+    public int? FromPlaceId { get; init; }
+
+    /// <summary>Null = the containers' common port of destination (Sea only).</summary>
+    public int? ToPlaceId { get; init; }
+
+    /// <summary>Null = today (the planned date when startNow is false).</summary>
+    public DateOnly? StartDate { get; init; }
+
+    public DateOnly? Eta { get; init; }
+    public int? CarrierPartyId { get; init; }
+
+    [StringLength(100)]
+    public string? VehicleOrVessel { get; init; }
+
+    [StringLength(30)]
+    public string? VoyageNo { get; init; }
+
+    /// <summary>Booking, waybill, declaration...</summary>
+    [StringLength(50)]
+    public string? Reference { get; init; }
+
+    [StringLength(30)]
+    public string? BlNo { get; init; }
+
+    public DateOnly? BlDate { get; init; }
+
+    [StringLength(1000)]
+    public string? Notes { get; init; }
+
+    /// <summary>False = the movement stays planned.</summary>
+    public bool StartNow { get; init; } = true;
+
+    /// <summary>Confirm the drafts among the containers. Only honoured with containers.confirm.</summary>
+    public bool ConfirmDrafts { get; init; } = true;
+
+    /// <summary>Copy vessel, voyage, shipping line, B/L and ETA (and the ports when missing) to the containers.</summary>
+    public bool UpdateContainers { get; init; } = true;
+}
+
+/// <summary>The movement created for the chosen containers.</summary>
+public sealed class ShippedMovementDto
+{
+    public int Id { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+    public byte Status { get; init; }
+    public DateTime? StartDate { get; init; }
+    public DateTime? PlannedDate { get; init; }
+    public DateTime? Eta { get; init; }
+    public int ContainerCount { get; init; }
+    public byte[] RowVersion { get; init; } = [];
+}
+
 public sealed class MovementQuery
 {
     /// <summary>Movement no., vessel / truck, voyage, reference, container ref / no. (contains).</summary>

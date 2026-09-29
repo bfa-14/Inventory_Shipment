@@ -38,6 +38,18 @@ public interface IContainerChargeService
 
     Task<Result> DeleteAsync(int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>The containers that can receive a copy of the charge. Needs containers.charges.create.</summary>
+    Task<Result<IReadOnlyList<ChargeCopyCandidateDto>>> GetCopyCandidatesAsync(
+        int id, ChargeCopyCandidateQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The charge copied to other containers, one draft each in its group. Needs containers.charges.create;
+    /// post = true needs containers.charges.post (403 before anything is created).
+    /// </summary>
+    Task<Result<IReadOnlyList<CopiedContainerChargeDto>>> CopyToContainersAsync(
+        int id, CopyContainerChargeRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     /// <summary>The filtered list (every page) with its total, as a workbook.</summary>
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         ContainerChargeQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

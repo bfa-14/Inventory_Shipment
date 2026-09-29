@@ -83,6 +83,9 @@ public abstract record ContainerChargeFlags
     public bool CanPost => Status == ContainerChargeStatus.Draft && ContainerOpen;
     public bool CanCancel => Status == ContainerChargeStatus.Posted && ContainerStatus != Logistics.ContainerStatus.Closed;
 
+    /// <summary>"Apply to other containers": a draft or posted charge whose container is still open.</summary>
+    public bool CanCopy => Status is ContainerChargeStatus.Draft or ContainerChargeStatus.Posted && ContainerOpen;
+
     private bool ContainerOpen
         => ContainerStatus is not (Logistics.ContainerStatus.Closed or Logistics.ContainerStatus.Cancelled);
 }
@@ -390,6 +393,76 @@ public sealed class PostChargesRequest
 public sealed class ChargeActionRequest
 {
     public string? RowVersion { get; init; }
+}
+
+/* ── a charge copied to other containers ──────────────────────────────────────────────────── */
+
+public sealed class ChargeCopyCandidateQuery
+{
+    /// <summary>Container ref or no. (contains).</summary>
+    public string? Search { get; init; }
+
+    /// <summary>Only the containers of the original's purchase order.</summary>
+    public bool SameOrder { get; init; } = true;
+}
+
+/// <summary>A container that can receive a copy of the charge (logistics.usp_ContainerCharge_CopyCandidates): not closed, not cancelled.</summary>
+public sealed class ChargeCopyCandidateDto
+{
+    public int ContainerId { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+    public string ContainerTypeCode { get; init; } = string.Empty;
+    public byte Status { get; init; }
+    public string? CurrentLocation { get; init; }
+    public int? PurchaseOrderId { get; init; }
+    public string? PurchaseOrderNumber { get; init; }
+    public int TotalAllocatedBase { get; init; }
+    public string? ItemSummary { get; init; }
+
+    /// <summary>The original's container.</summary>
+    public bool IsSource { get; init; }
+
+    /// <summary>The original's container, or one already carrying a (not cancelled) charge of the same group.</summary>
+    public bool HasThisCharge { get; init; }
+}
+
+/// <summary>
+/// One DRAFT per container in the same group as the original: same type, provider, reference,
+/// currency and rate. Null values = the original's (a Manual original gives the charge type's method).
+/// </summary>
+public sealed class CopyContainerChargeRequest
+{
+    /// <summary>At least one other container.</summary>
+    public IReadOnlyList<int> ContainerIds { get; init; } = [];
+
+    /// <summary>Per container, in the charge's currency.</summary>
+    [Range(0, 9999999999999999.99)]
+    public decimal? Amount { get; init; }
+
+    public DateOnly? ChargeDate { get; init; }
+
+    /// <summary>Value, Quantity, Weight or Volume.</summary>
+    [StringLength(10)]
+    public string? AllocationMethod { get; init; }
+
+    /// <summary>Post the copies at once. Needs containers.charges.post.</summary>
+    public bool Post { get; init; }
+}
+
+/// <summary>A charge created by the copy.</summary>
+public sealed class CopiedContainerChargeDto
+{
+    public int Id { get; init; }
+    public int ContainerId { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+    public Guid? GroupId { get; init; }
+    public decimal Amount { get; init; }
+    public decimal AmountBase { get; init; }
+    public string AllocationMethod { get; init; } = string.Empty;
+    public byte Status { get; init; }
+    public byte[] RowVersion { get; init; } = [];
 }
 
 public sealed class ContainerChargeQuery

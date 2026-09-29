@@ -30,4 +30,12 @@ public interface IContainerChargeRepository
 
     /// <summary>Drafts only.</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>The containers that can receive a copy of the charge (logistics.usp_ContainerCharge_CopyCandidates).</summary>
+    Task<IReadOnlyList<ChargeCopyCandidateDto>> GetCopyCandidatesAsync(
+        int chargeId, ChargeCopyCandidateQuery query, CancellationToken cancellationToken = default);
+
+    /// <summary>One draft per container in the original's group, optionally posted at once; the created charges.</summary>
+    Task<IReadOnlyList<CopiedContainerChargeDto>> CopyToContainersAsync(
+        int chargeId, CopyContainerChargeRequest request, int userId, CancellationToken cancellationToken = default);
 }

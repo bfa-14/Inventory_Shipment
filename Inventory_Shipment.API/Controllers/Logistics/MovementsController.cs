@@ -76,6 +76,27 @@ public sealed class MovementsController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>
+    /// One movement for the chosen containers: drafts confirmed (with containers.confirm), the movement
+    /// created (default SEA, from their common port of loading to their common port of destination) and
+    /// started unless startNow is false; vessel, voyage, B/L and ETA copied to the containers.
+    /// 409 CONTAINER_BUSY names a container travelling with another movement.
+    /// </summary>
+    [HttpPost("ship-containers")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<ShippedMovementDto>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ShippedMovementDto>> ShipContainers(
+        [FromBody] ShipContainersRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _movements.ShipContainersAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.IsSuccess
+            ? CreatedAtAction(nameof(GetById), new { id = result.Value!.Id }, result.Value)
+            : this.ToProblem(result);
+    }
+
     [HttpPut("{id:int}")]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]

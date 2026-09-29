@@ -110,6 +110,46 @@ public sealed class MovementRepository : IMovementRepository
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_Movement_Delete", new { Id = id, UserId = userId }, cancellationToken);
 
+    public async Task<ShippedMovementDto> ShipContainersAsync(
+        ShipContainersRequest request, bool confirmDrafts, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@ContainerIds", ToIdTable(request.ContainerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@MovementTypeId", request.MovementTypeId, DbType.Int32);
+        parameters.Add("@FromPlaceId", request.FromPlaceId, DbType.Int32);
+        parameters.Add("@ToPlaceId", request.ToPlaceId, DbType.Int32);
+        parameters.Add("@StartDate", ToDate(request.StartDate), DbType.Date);
+        parameters.Add("@Eta", ToDate(request.Eta), DbType.Date);
+        parameters.Add("@CarrierPartyId", request.CarrierPartyId, DbType.Int32);
+        parameters.Add("@VehicleOrVessel", request.VehicleOrVessel, DbType.String, size: 100);
+        parameters.Add("@VoyageNo", request.VoyageNo, DbType.String, size: 30);
+        parameters.Add("@Reference", request.Reference, DbType.String, size: 50);
+        parameters.Add("@BlNo", request.BlNo, DbType.String, size: 30);
+        parameters.Add("@BlDate", ToDate(request.BlDate), DbType.Date);
+        parameters.Add("@Notes", request.Notes, DbType.String, size: 1000);
+        parameters.Add("@StartNow", request.StartNow, DbType.Boolean);
+        parameters.Add("@ConfirmDrafts", confirmDrafts, DbType.Boolean);
+        parameters.Add("@UpdateContainers", request.UpdateContainers, DbType.Boolean);
+        parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        try
+        {
+            // All or nothing in the procedure, so a deadlock victim is simply run again.
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                return await connection.QuerySingleAsync<ShippedMovementDto>(new CommandDefinition(
+                    "logistics.usp_Movement_ShipContainers", parameters,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     /// <summary>
     /// One procedure call, run again if SQL Server made it the deadlock victim: starting or completing
     /// a movement refreshes every container it carries, and a container page reading one of them at

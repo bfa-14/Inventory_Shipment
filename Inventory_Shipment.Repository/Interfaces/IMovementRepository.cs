@@ -24,4 +24,11 @@ public interface IMovementRepository
 
     /// <summary>Planned only (70005 otherwise).</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// One movement for the chosen containers (logistics.usp_Movement_ShipContainers), in one transaction; the movement row.
+    /// confirmDrafts is the one the service allows, not the request's.
+    /// </summary>
+    Task<ShippedMovementDto> ShipContainersAsync(
+        ShipContainersRequest request, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
 }

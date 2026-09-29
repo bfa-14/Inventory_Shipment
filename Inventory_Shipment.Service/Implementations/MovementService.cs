@@ -137,6 +137,48 @@ public sealed class MovementService : IMovementService
         return Result.Success();
     }
 
+    /// <summary>
+    /// CONFIRMING IS A RIGHT OF ITS OWN: a caller without containers.confirm ships only what is
+    /// already confirmed — confirmDrafts goes to the procedure as false, and it refuses a draft by
+    /// name ("... is a draft: confirm it first ..."), which says more than a 403 would.
+    /// </summary>
+    public async Task<Result<ShippedMovementDto>> ShipContainersAsync(
+        ShipContainersRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<ShippedMovementDto>(Permissions.Containers.MovementsManage);
+        }
+
+        if (request.ContainerIds is null or { Count: 0 })
+        {
+            return Result<ShippedMovementDto>.Failure(ErrorType.Validation, "Select at least one container.", "VALIDATION");
+        }
+
+        if (request.ContainerIds.Any(id => id <= 0))
+        {
+            return Result<ShippedMovementDto>.Failure(
+                ErrorType.Validation, "A container id must be greater than zero.", "VALIDATION");
+        }
+
+        var confirmDrafts = request.ConfirmDrafts && permissions.Contains(Permissions.Containers.Confirm);
+
+        ShippedMovementDto movement;
+        try
+        {
+            movement = await _movements.ShipContainersAsync(request, confirmDrafts, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<ShippedMovementDto>(ex);
+        }
+
+        _logger.LogInformation("Movement {MovementNo} created for {Count} container(s) by user {UserId}{Started}",
+            movement.MovementNo, movement.ContainerCount, userId, request.StartNow ? " and started" : string.Empty);
+        return Result<ShippedMovementDto>.Success(movement);
+    }
+
     /* ── export ───────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(
