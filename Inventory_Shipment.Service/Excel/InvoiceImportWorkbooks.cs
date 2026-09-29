@@ -36,20 +36,6 @@ public sealed class InvoiceImportWorkbooks
     private static readonly string[] TemplateHeaders =
         ["Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity", "Unit Price / Cost", "Discount %", "Expiry Date", "Notes"];
 
-    /// <summary>
-    /// Three rows showing the three shapes a line takes: everything defaulted, a unit and warehouse
-    /// named, and a price with a discount and an expiry. The type code is filled in per request.
-    ///
-    /// EXAMPLES RATHER THAN AN EMPTY GRID. "Unit: blank means the family's unit" is a sentence people
-    /// skip; a row with the column visibly empty and a working import behind it is not.
-    /// </summary>
-    private static object?[][] ExampleRows(string typeCode) =>
-    [
-        [typeCode, "OIL-001", null, null, 10, null, null, null, "Unit, warehouse and price left blank: the defaults are used."],
-        [typeCode, "BAT-001", "Box", "WH-001", 5, null, 5, null, "A unit and a warehouse named explicitly — a second warehouse makes a second document."],
-        [typeCode, "SPK-001", "PC", null, 24, 12.5, 10, new DateTime(2027, 12, 31), "A price / cost typed in. On a sales document it needs the price-override permission."],
-    ];
-
     /// <summary>Column, whether it is required, and what happens when it is left blank.</summary>
     private static (string Column, string Required, string Behaviour)[] Instructions(DocumentTypeDto type, IReadOnlyList<DocumentTypeDto> types)
     {
@@ -80,7 +66,14 @@ public sealed class InvoiceImportWorkbooks
         ];
     }
 
-    /// <summary>The blank template for one type: headings, three examples with the type filled in, and the instructions.</summary>
+    /// <summary>
+    /// The blank template for one type: the headings and nothing else, plus the instructions sheet.
+    ///
+    /// NO EXAMPLE ROWS. A template that arrives with rows in it is a file someone has to empty
+    /// before they can use it, and the rows get imported by whoever does not - three invented items
+    /// posted as real ones. What each column means is on the Instructions sheet, where it can be
+    /// read without being deleted afterwards.
+    /// </summary>
     public byte[] GenerateTemplate(DocumentTypeDto type, IReadOnlyList<DocumentTypeDto> types)
     {
         using var workbook = new XLWorkbook();
@@ -96,24 +89,17 @@ public sealed class InvoiceImportWorkbooks
         header.Style.Fill.BackgroundColor = XLColor.FromArgb(0xE8, 0xEE, 0xF7);
         header.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
 
-        var examples = ExampleRows(type.Code);
-        for (var rowIndex = 0; rowIndex < examples.Length; rowIndex++)
-        {
-            var values = examples[rowIndex];
-            for (var columnIndex = 0; columnIndex < values.Length; columnIndex++)
-            {
-                SetCell(sheet.Cell(rowIndex + 2, columnIndex + 1), values[columnIndex]);
-            }
-        }
-
-        // Formatted rather than left to the reader's locale: an American Excel would otherwise show
-        // 31/12/2027 as 12/31/2027, and the next person to type a row would copy that shape back in.
+        // Set on the empty column so a date TYPED into it reads back as dd/MM/yyyy: an American
+        // Excel would otherwise show 31/12/2027 as 12/31/2027, and the next person to fill a row
+        // would copy that shape back in.
         sheet.Column(8).Style.DateFormat.Format = DateFormat;
 
         // Frozen so the headings stay visible on row 400, which is where a mistake gets made.
         sheet.SheetView.FreezeRows(1);
+        // Sized to the headings, there being nothing else in the sheet. Notes is widened by hand:
+        // left at the width of the word "Notes" it would be a column nobody could type a note into.
         sheet.Columns().AdjustToContents();
-        sheet.Column(9).Width = 70;
+        sheet.Column(9).Width = 40;
 
         AddInstructions(workbook, type, types);
 
