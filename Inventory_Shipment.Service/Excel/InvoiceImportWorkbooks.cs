@@ -34,7 +34,7 @@ public sealed class InvoiceImportWorkbooks
 
     /// <summary>The headings, in the order the template lays them out. The parser matches on the text, not the order.</summary>
     private static readonly string[] TemplateHeaders =
-        ["Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity", "Unit Price / Cost", "Discount %", "Expiry Date", "Notes"];
+        ["Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity", "Unit Price / Cost", "Discount %", "Notes"];
 
     /// <summary>Column, whether it is required, and what happens when it is left blank.</summary>
     private static (string Column, string Required, string Behaviour)[] Instructions(DocumentTypeDto type, IReadOnlyList<DocumentTypeDto> types)
@@ -59,8 +59,6 @@ public sealed class InvoiceImportWorkbooks
                 + "On Inventory In and purchase documents: the unit cost. Ignored on Inventory Out, which takes the moving average cost."),
             ("Discount %", "Optional",
                 "Sales and purchase documents only. Blank is 0; it must be between 0 and the maximum the system allows. Both 5 and 5% are read as five percent."),
-            ("Expiry Date", "Optional",
-                "A date cell, or text as dd/MM/yyyy or yyyy-MM-dd. A date in the past is imported with a warning."),
             ("Notes", "Optional",
                 "Free text kept on the line. Rows are only merged together when their notes match as well."),
         ];
@@ -89,17 +87,12 @@ public sealed class InvoiceImportWorkbooks
         header.Style.Fill.BackgroundColor = XLColor.FromArgb(0xE8, 0xEE, 0xF7);
         header.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
 
-        // Set on the empty column so a date TYPED into it reads back as dd/MM/yyyy: an American
-        // Excel would otherwise show 31/12/2027 as 12/31/2027, and the next person to fill a row
-        // would copy that shape back in.
-        sheet.Column(8).Style.DateFormat.Format = DateFormat;
-
         // Frozen so the headings stay visible on row 400, which is where a mistake gets made.
         sheet.SheetView.FreezeRows(1);
         // Sized to the headings, there being nothing else in the sheet. Notes is widened by hand:
         // left at the width of the word "Notes" it would be a column nobody could type a note into.
         sheet.Columns().AdjustToContents();
-        sheet.Column(9).Width = 40;
+        sheet.Column(8).Width = 40;
 
         AddInstructions(workbook, type, types);
 
@@ -122,7 +115,7 @@ public sealed class InvoiceImportWorkbooks
         string[] headers =
         [
             "Row", "Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity",
-            "Unit Price / Cost", "Discount %", "Expiry Date", "Status", "Message"
+            "Unit Price / Cost", "Discount %", "Status", "Message"
         ];
 
         for (var index = 0; index < headers.Length; index++)
@@ -153,9 +146,8 @@ public sealed class InvoiceImportWorkbooks
             SetCell(sheet.Cell(rowNumber, 6), row.Quantity);
             SetCell(sheet.Cell(rowNumber, 7), row.UnitPrice);
             SetCell(sheet.Cell(rowNumber, 8), row.DiscountPercent);
-            SetCell(sheet.Cell(rowNumber, 9), row.ExpiryDate);
-            sheet.Cell(rowNumber, 10).Value = row.Status;
-            SetCell(sheet.Cell(rowNumber, 11), row.Message);
+            sheet.Cell(rowNumber, 9).Value = row.Status;
+            SetCell(sheet.Cell(rowNumber, 10), row.Message);
 
             var colour = row.Status switch
             {
@@ -172,11 +164,10 @@ public sealed class InvoiceImportWorkbooks
             rowNumber++;
         }
 
-        sheet.Column(9).Style.DateFormat.Format = DateFormat;
         sheet.SheetView.FreezeRows(1);
         sheet.Columns().AdjustToContents();
-        sheet.Column(11).Width = 80;
-        sheet.Column(11).Style.Alignment.WrapText = true;
+        sheet.Column(10).Width = 80;
+        sheet.Column(10).Style.Alignment.WrapText = true;
 
         return ToBytes(workbook);
     }
@@ -210,7 +201,7 @@ public sealed class InvoiceImportWorkbooks
 
         rowNumber++;
         sheet.Cell(rowNumber, 1).Value = "Rows that are identical in item, unit, warehouse, price, "
-            + "discount, expiry date and notes are merged into one line and their quantities added up.";
+            + "discount and notes are merged into one line and their quantities added up.";
         sheet.Range(rowNumber, 1, rowNumber, 3).Merge().Style.Font.Italic = true;
 
         rowNumber++;

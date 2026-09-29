@@ -456,7 +456,7 @@ public sealed class StockDocumentService : IStockDocumentService
         }
 
         row++;
-        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Expiry", "Qty", "Unit Cost", "Amount", "Notes"];
+        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Unit Cost", "Amount", "Notes"];
         for (var i = 0; i < columns.Length; i++)
         {
             sheet.Cell(row, i + 1).Value = columns[i];
@@ -478,32 +478,27 @@ public sealed class StockDocumentService : IStockDocumentService
                 ? $"{line.UnitTypeName} (x{line.PackingFormula})"
                 : line.UnitTypeName;
             sheet.Cell(row, 5).Value = line.WarehouseCode;
-            if (line.ExpiryDate is { } expiry)
-            {
-                sheet.Cell(row, 6).Value = expiry;
-                sheet.Cell(row, 6).Style.DateFormat.Format = "dd/MM/yyyy";
-            }
-
-            sheet.Cell(row, 7).Value = line.Quantity;
-            sheet.Cell(row, 8).Value = line.UnitCost;
-            sheet.Cell(row, 9).Value = line.LineTotal;
-            sheet.Cell(row, 10).Value = line.Notes ?? string.Empty;
+            sheet.Cell(row, 6).Value = line.Quantity;
+            sheet.Cell(row, 7).Value = line.UnitCost;
+            sheet.Cell(row, 8).Value = line.LineTotal;
+            sheet.Cell(row, 9).Value = line.Notes ?? string.Empty;
         }
 
         if (document.Lines.Count > 0)
         {
-            sheet.Range(firstLineRow, 8, row, 9).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(firstLineRow, 7, row, 8).Style.NumberFormat.Format = "#,##0.00";
         }
 
+        // Shifted one column left with the table, so the totals keep their place against its right edge.
         row += 2;
-        sheet.Cell(row, 6).Value = "Total Items";
-        sheet.Cell(row, 7).Value = document.TotalItems;
-        sheet.Cell(row + 1, 6).Value = "Total Quantity";
-        sheet.Cell(row + 1, 7).Value = document.TotalQuantity;
-        sheet.Cell(row + 2, 6).Value = $"Total Cost ({document.CurrencyCode})";
-        sheet.Cell(row + 2, 7).Value = document.TotalCost;
-        sheet.Cell(row + 2, 7).Style.NumberFormat.Format = "#,##0.00";
-        sheet.Range(row, 6, row + 2, 6).Style.Font.Bold = true;
+        sheet.Cell(row, 5).Value = "Total Items";
+        sheet.Cell(row, 6).Value = document.TotalItems;
+        sheet.Cell(row + 1, 5).Value = "Total Quantity";
+        sheet.Cell(row + 1, 6).Value = document.TotalQuantity;
+        sheet.Cell(row + 2, 5).Value = $"Total Cost ({document.CurrencyCode})";
+        sheet.Cell(row + 2, 6).Value = document.TotalCost;
+        sheet.Cell(row + 2, 6).Style.NumberFormat.Format = "#,##0.00";
+        sheet.Range(row, 5, row + 2, 5).Style.Font.Bold = true;
 
         sheet.Columns().AdjustToContents();
         sheet.Column(3).Width = 40;

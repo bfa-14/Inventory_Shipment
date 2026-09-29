@@ -69,8 +69,6 @@ public sealed class InvoiceImportParser
         ["discount%"] = ColumnDiscount,
         ["discount"] = ColumnDiscount,
         ["discountpercent"] = ColumnDiscount,
-        ["expirydate"] = ColumnExpiry,
-        ["expiry"] = ColumnExpiry,
         ["notes"] = ColumnNotes,
         ["note"] = ColumnNotes,
         ["documenttype"] = ColumnDocumentType,
@@ -89,20 +87,8 @@ public sealed class InvoiceImportParser
     internal const string ColumnQuantity = "Quantity";
     internal const string ColumnPrice = "Price";
     internal const string ColumnDiscount = "Discount";
-    internal const string ColumnExpiry = "Expiry";
     internal const string ColumnNotes = "Notes";
     internal const string ColumnDocumentType = "DocumentType";
-
-    /// <summary>
-    /// Date formats accepted from a TEXT cell.
-    ///
-    /// A real date cell is read as a date and never reaches these. This list is for the columns
-    /// somebody formatted as text, where "05/09/2026" is ambiguous and the day-first reading is the
-    /// one this application's users mean. Anything else is passed on unparsed and the procedure
-    /// names it, rather than being guessed at into the wrong year.
-    /// </summary>
-    private static readonly string[] DateFormats =
-        ["dd/MM/yyyy", "d/M/yyyy", "yyyy-MM-dd", "dd-MM-yyyy", "d-M-yyyy", "dd.MM.yyyy"];
 
     /// <summary>
     /// Reads the first worksheet of an .xlsx.
@@ -214,7 +200,6 @@ public sealed class InvoiceImportParser
             var (quantity, rawQuantity) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnQuantity));
             var (price, _) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnPrice));
             var (discount, _) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnDiscount), allowPercent: true);
-            var (expiry, rawExpiry) = ReadDate(Cell(sheet, rowNumber, columns, ColumnExpiry));
 
             rows.Add(new InvoiceImportRow
             {
@@ -228,8 +213,12 @@ public sealed class InvoiceImportParser
                 RawQuantity = rawQuantity,
                 UnitPrice = price,
                 DiscountPercent = discount,
-                ExpiryDate = expiry,
-                RawExpiryDate = rawExpiry,
+                /* EXPIRY IS NOT READ ANY MORE, and leaving both of these null is what silences its
+                   validation: the rules are "parsed to nothing but the cell had text" (an error)
+                   and "a date in the past" (a warning), and neither can fire on a null. The column
+                   is gone from the template too, so a file carrying one is simply ignored. */
+                ExpiryDate = null,
+                RawExpiryDate = null,
                 Notes = Text(sheet, rowNumber, columns, ColumnNotes),
                 DocumentTypeCode = Text(sheet, rowNumber, columns, ColumnDocumentType),
             });
@@ -294,31 +283,6 @@ public sealed class InvoiceImportParser
         }
 
         return (null, text);
-    }
-
-    /// <summary>A date from a date cell, or from text in one of the accepted formats. Empty is not a failure.</summary>
-    private static (DateTime? Value, string? Raw) ReadDate(IXLCell? cell)
-    {
-        if (cell is null || cell.IsEmpty())
-        {
-            return (null, null);
-        }
-
-        if (cell.DataType == XLDataType.DateTime)
-        {
-            return (cell.GetDateTime().Date, null);
-        }
-
-        var text = cell.GetString().Trim();
-        if (text.Length == 0)
-        {
-            return (null, null);
-        }
-
-        return DateTime.TryParseExact(text, DateFormats, CultureInfo.InvariantCulture,
-            DateTimeStyles.None, out var parsed)
-            ? (parsed.Date, null)
-            : (null, text);
     }
 
     /// <summary>Lower-cased with every space removed, so "Discount %" and "discount%" are one heading.</summary>

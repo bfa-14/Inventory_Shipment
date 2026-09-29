@@ -719,7 +719,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             _ => "Unit Cost (base)",
         };
         string[] columns =
-            ["#", "Item Code", "Item Name", "Unit", "Qty", "Unit Price", "Disc %", "Discount", "Line Total", progressLabel, "Expiry", "Notes"];
+            ["#", "Item Code", "Item Name", "Unit", "Qty", "Unit Price", "Disc %", "Discount", "Line Total", progressLabel, "Notes"];
         for (var i = 0; i < columns.Length; i++)
         {
             sheet.Cell(row, i + 1).Value = columns[i];
@@ -749,8 +749,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 PurchaseDocumentTypes.Invoice => line.ReturnedQuantityBase,
                 _ => line.UnitCostBase ?? 0m,
             };
-            sheet.Cell(row, 11).Value = line.ExpiryDate?.ToString("dd/MM/yyyy") ?? string.Empty;
-            sheet.Cell(row, 12).Value = line.Notes ?? string.Empty;
+            sheet.Cell(row, 11).Value = line.Notes ?? string.Empty;
         }
 
         if (document.Lines.Count > 0)
@@ -791,7 +790,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         sheet.Columns().AdjustToContents();
         sheet.Column(3).Width = 40;
-        sheet.Column(12).Width = 30;
+        // Notes, which moved up one when Expiry came out.
+        sheet.Column(11).Width = 30;
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
