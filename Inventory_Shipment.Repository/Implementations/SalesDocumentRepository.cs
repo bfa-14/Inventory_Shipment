@@ -219,6 +219,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public string? SkuCode { get; init; }
         public string? Barcode { get; init; }
         public int PackingFormula { get; init; }
+        public string? Specification { get; init; }
         public int WarehouseId { get; init; }
         public string WarehouseCode { get; init; } = string.Empty;
         public string WarehouseName { get; init; } = string.Empty;
@@ -257,6 +258,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             SkuCode = SkuCode,
             Barcode = Barcode,
             PackingFormula = PackingFormula,
+            Specification = Specification,
             WarehouseId = WarehouseId,
             WarehouseCode = WarehouseCode,
             WarehouseName = WarehouseName,
@@ -371,8 +373,24 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         };
     }
 
+    /// <summary>
+    /// The specifications already used for one item on sales lines, newest first.
+    ///
+    /// THE SUGGESTIONS ARE HISTORY, not a master list: the column is free text, and this only saves
+    /// somebody retyping what the last invoice for the same item said.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ItemSpecificationsAsync(
+        int itemId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<string>(new CommandDefinition(
+            "sales.usp_SalesDocument_ItemSpecifications", new { ItemId = itemId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        return rows.AsList();
+    }
+
     public async Task<RateResolutionDto?> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default)
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         return await connection.QuerySingleOrDefaultAsync<RateResolutionDto>(new CommandDefinition(
@@ -382,6 +400,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
                 PriceListId = priceListId,
                 RateType = rateType,
                 AsOfDate = asOfDate?.ToDateTime(TimeOnly.MinValue),
+                CurrencyId = currencyId,
             },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
@@ -402,6 +421,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         parameters.Add("@ClientId", request.ClientId, DbType.Int32);
         parameters.Add("@SalesmanId", request.SalesmanId, DbType.Int32);
         parameters.Add("@PriceListId", request.PriceListId, DbType.Int32);
+        parameters.Add("@CurrencyId", request.CurrencyId, DbType.Int32);
         parameters.Add("@RateType", request.RateType, DbType.Byte);
         parameters.Add("@ExchangeRate", request.ExchangeRate, DbType.Decimal);
         parameters.Add("@ReferenceNo", request.ReferenceNo, DbType.String, size: 100);
@@ -542,6 +562,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         table.Columns.Add("ItemId", typeof(int));
         table.Columns.Add("ItemUnitId", typeof(int));
         table.Columns.Add("WarehouseId", typeof(int));
+        table.Columns.Add("Specification", typeof(string));
         table.Columns.Add("ExpiryDate", typeof(DateTime));
         table.Columns.Add("Quantity", typeof(int));
         table.Columns.Add("UnitPrice", typeof(decimal));
@@ -558,6 +579,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
                 line.ItemId,
                 line.ItemUnitId,
                 line.WarehouseId,
+                (object?)line.Specification ?? DBNull.Value,
                 line.ExpiryDate is { } expiry ? expiry.ToDateTime(TimeOnly.MinValue) : DBNull.Value,
                 line.Quantity,
                 (object?)line.UnitPrice ?? DBNull.Value,

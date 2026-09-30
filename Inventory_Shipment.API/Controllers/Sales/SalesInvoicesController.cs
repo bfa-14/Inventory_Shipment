@@ -63,9 +63,24 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<RateResolutionDto>> GetRate(
         [FromQuery] int priceListId, [FromQuery] byte rateType = RateTypes.Official,
-        [FromQuery] DateOnly? date = null, CancellationToken cancellationToken = default)
+        [FromQuery] DateOnly? date = null, [FromQuery] int? currencyId = null, CancellationToken cancellationToken = default)
     {
-        var result = await _invoices.ResolveRateAsync(priceListId, rateType, date, cancellationToken);
+        var result = await _invoices.ResolveRateAsync(priceListId, rateType, date, currencyId, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The specifications already typed for this item on sales lines, newest first — what the line's
+    /// Specification box offers. The box is free text; these are only suggestions, so an item nobody
+    /// has sold yet answers an empty list rather than an error.
+    /// </summary>
+    [HttpGet("item-specifications")]
+    [HasPermission(Permissions.Sales.InvoicesView)]
+    [ProducesResponseType<IReadOnlyList<string>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<string>>> GetItemSpecifications(
+        [FromQuery] int itemId, CancellationToken cancellationToken = default)
+    {
+        var result = await _invoices.ItemSpecificationsAsync(itemId, cancellationToken);
         return result.ToActionResult(this);
     }
 

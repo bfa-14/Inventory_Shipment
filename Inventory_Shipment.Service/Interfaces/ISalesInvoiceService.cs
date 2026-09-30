@@ -83,9 +83,12 @@ public interface ISalesInvoiceService
         ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>The specifications already used for an item on sales lines, newest first.</summary>
+    Task<Result<IReadOnlyList<string>>> ItemSpecificationsAsync(int itemId, CancellationToken cancellationToken = default);
+
     /// <summary>The rate the page pre-fills. Rate is null when none is defined — a warning, not an error.</summary>
     Task<Result<RateResolutionDto>> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
 
     /// <summary>The invoice as a workbook: header incl. client, currency and rate; the lines; totals in both currencies.</summary>
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(int id, CancellationToken cancellationToken = default);

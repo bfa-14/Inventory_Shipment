@@ -109,6 +109,9 @@ public sealed class SalesInvoiceLineDto
     /// <summary>Base units per unit — a snapshot, so a later change to the item cannot restate a posted invoice.</summary>
     public int PackingFormula { get; init; }
 
+    /// <summary>The specification the line was sold as — a snapshot on the line, not joined to the unit.</summary>
+    public string? Specification { get; init; }
+
     public int WarehouseId { get; init; }
     public string WarehouseCode { get; init; } = string.Empty;
     public string WarehouseName { get; init; } = string.Empty;
@@ -369,6 +372,10 @@ public sealed class SaveSalesInvoiceLineRequest
     [Range(1, int.MaxValue)]
     public int WarehouseId { get; init; }
 
+    /// <summary>Chosen from the specifications of the item's units. Blank is stored as null.</summary>
+    [StringLength(100)]
+    public string? Specification { get; init; }
+
     public DateOnly? ExpiryDate { get; init; }
 
     [Range(1, int.MaxValue)]
@@ -419,6 +426,13 @@ public sealed class SaveSalesInvoiceRequest
 
     [Range(1, int.MaxValue)]
     public int PriceListId { get; init; }
+
+    /// <summary>
+    /// The currency the customer is billed in. Null is the price list's, which is how it has always
+    /// worked; a different one converts every list price into it using the two currencies' rates.
+    /// </summary>
+    [Range(1, int.MaxValue)]
+    public int? CurrencyId { get; init; }
 
     /// <summary>1 Official (default), 2 Non-official, 3 Market.</summary>
     [Range(1, 3)]

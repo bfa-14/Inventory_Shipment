@@ -180,8 +180,15 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         ItemAverageCost = null,
     };
 
+    public async Task<Result<IReadOnlyList<string>>> ItemSpecificationsAsync(
+        int itemId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _invoices.ItemSpecificationsAsync(itemId, cancellationToken);
+        return Result<IReadOnlyList<string>>.Success(rows);
+    }
+
     public async Task<Result<RateResolutionDto>> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default)
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
     {
         if (!RateTypes.IsKnown(rateType))
         {
@@ -189,7 +196,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
                 ErrorType.Validation, "rateType must be 1 (Official), 2 (Non-official) or 3 (Market).", "VALIDATION");
         }
 
-        var rate = await _invoices.ResolveRateAsync(priceListId, rateType, asOfDate, cancellationToken);
+        var rate = await _invoices.ResolveRateAsync(priceListId, rateType, asOfDate, currencyId, cancellationToken);
 
         // No row means no such price list — that IS an error. A row with a null Rate is not: it is the
         // answer "nothing is defined for that day", which the page turns into a warning and a box.
