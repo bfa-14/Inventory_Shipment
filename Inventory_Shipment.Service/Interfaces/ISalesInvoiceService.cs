@@ -76,7 +76,7 @@ public interface ISalesInvoiceService
     Task<BulkActionResult> BulkDeleteAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// One invoice per warehouse found in the imported lines, each posted at once when asked. The
+    /// ONE invoice holding every imported line, each in the warehouse it names; posted at once when asked. The
     /// caller needs sales.invoices.create, and sales.invoices.post as well when posting.
     /// </summary>
     Task<Result<ImportCreateResult>> ImportCreateAsync(

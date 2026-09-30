@@ -51,7 +51,7 @@ public sealed class InvoiceImportWorkbooks
             ("Unit", "Optional",
                 "The unit type name (PC, Box) or the unit's SKU. Blank uses the family's unit: the sales unit on a sales document, the purchase unit on a purchase document, the base unit on an inventory document."),
             ("Warehouse", "Optional",
-                "The warehouse code or name; it must belong to the document's branch. Blank uses the header warehouse. ONE DOCUMENT IS CREATED PER WAREHOUSE found in the file."),
+                "The warehouse code or name; it must belong to the document's branch. EVERY ROW KEEPS ITS OWN, so one file may name several: they become ONE document whose lines sit in different warehouses. Blank uses the document's."),
             ("Quantity", "Required",
                 "A whole number of units, greater than zero."),
             ("Unit Price / Cost", "Optional",
@@ -196,7 +196,7 @@ public sealed class InvoiceImportWorkbooks
 
         rowNumber++;
         sheet.Cell(rowNumber, 1).Value = $"This template was downloaded for {type.Name} ({type.Code}). "
-            + "One document is created per warehouse found in the file; rows with the Warehouse column blank go to the header warehouse.";
+            + "The file becomes ONE document, however many warehouses it names: every row keeps the warehouse in its Warehouse column, and a blank one uses the document's.";
         sheet.Range(rowNumber, 1, rowNumber, 3).Merge().Style.Font.Italic = true;
 
         rowNumber++;

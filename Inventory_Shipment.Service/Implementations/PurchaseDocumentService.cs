@@ -437,8 +437,9 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         });
 
     /// <summary>
-    /// The imported file's lines, sorted into one document per warehouse and saved one by one. A
-    /// refused posting leaves its document as a draft: the lines are worth more than a clean failure.
+    /// The imported file's lines, saved as ONE document whatever warehouses they name — the warehouse
+    /// is a line's, so a file naming several becomes one document whose rows each keep their own. A
+    /// refused posting leaves the document as a draft: the lines are worth more than a clean failure.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreatePurchaseDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
@@ -465,48 +466,49 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
 
-        foreach (var (warehouseId, lines) in WarehouseGrouping.GroupLinesByWarehouse(request.Lines, line => line.WarehouseId))
+        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
+
+        var draft = new SavePurchaseDocumentRequest
         {
-            var draft = new SavePurchaseDocumentRequest
+            DocumentTypeCode = request.DocumentTypeCode,
+            DocumentDate = request.DocumentDate,
+            ExpectedDate = request.ExpectedDate,
+            BranchId = request.BranchId,
+            // Left for the database, which takes the first line's: the header warehouse is only a label.
+            WarehouseId = null,
+            SupplierId = request.SupplierId,
+            CurrencyId = request.CurrencyId,
+            RateType = request.RateType,
+            ExchangeRate = request.ExchangeRate,
+            SupplierReference = request.SupplierReference,
+            Notes = request.Notes,
+            Lines = request.Lines.Select((line, index) => new SavePurchaseDocumentLineRequest
             {
-                DocumentTypeCode = request.DocumentTypeCode,
-                DocumentDate = request.DocumentDate,
-                ExpectedDate = request.ExpectedDate,
-                BranchId = request.BranchId,
-                WarehouseId = warehouseId,
-                SupplierId = request.SupplierId,
-                CurrencyId = request.CurrencyId,
-                RateType = request.RateType,
-                ExchangeRate = request.ExchangeRate,
-                SupplierReference = request.SupplierReference,
-                Notes = request.Notes,
-                Lines = lines.Select((line, index) => new SavePurchaseDocumentLineRequest
-                {
-                    LineNo = index + 1,
-                    ItemId = line.ItemId,
-                    ItemUnitId = line.ItemUnitId,
-                    WarehouseId = warehouseId,
-                    ExpiryDate = line.ExpiryDate,
-                    Quantity = line.Quantity,
-                    UnitPrice = line.UnitPrice,
-                    DiscountPercent = line.DiscountPercent,
-                    ImportRowNumber = line.ImportRowNumber,
-                    Notes = line.Notes,
-                }).ToList(),
-            };
+                LineNo = index + 1,
+                ItemId = line.ItemId,
+                ItemUnitId = line.ItemUnitId,
+                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                WarehouseId = line.WarehouseId,
+                ExpiryDate = line.ExpiryDate,
+                Quantity = line.Quantity,
+                UnitPrice = line.UnitPrice,
+                DiscountPercent = line.DiscountPercent,
+                ImportRowNumber = line.ImportRowNumber,
+                Notes = line.Notes,
+            }).ToList(),
+        };
 
-            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-            if (saved.IsFailure || saved.Value is null)
+        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+        if (saved.IsFailure || saved.Value is null)
+        {
+            failed.Add(new ImportCreateFailure
             {
-                failed.Add(new ImportCreateFailure
-                {
-                    WarehouseId = warehouseId,
-                    Code = saved.Code ?? "ERROR",
-                    Message = saved.Error ?? "The document could not be created.",
-                });
-                continue;
-            }
-
+                Code = saved.Code ?? "ERROR",
+                Message = saved.Error ?? "The document could not be created.",
+            });
+        }
+        else
+        {
             var document = saved.Value;
             if (request.PostImmediately)
             {
@@ -520,7 +522,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = warehouseId,
+                        WarehouseId = document.WarehouseId,
                         WarehouseName = document.WarehouseName,
                         Code = result.Code ?? "ERROR",
                         Message = result.Error ?? "The document could not be posted.",
@@ -532,16 +534,17 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             {
                 Id = document.Id,
                 DocumentNumber = document.DocumentNumber,
-                WarehouseId = warehouseId,
+                WarehouseId = document.WarehouseId,
                 WarehouseName = document.WarehouseName,
+                WarehouseCount = warehouseCount,
                 LineCount = document.Lines.Count,
                 Status = document.Status,
             });
         }
 
         _logger.LogInformation(
-            "Import created {Created} {Kind}(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, set.Label, userId, posted, failed.Count);
+            "Import created {Created} {Kind}(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, set.Label, warehouseCount, userId, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {

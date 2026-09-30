@@ -29,7 +29,7 @@ public interface IStockDocumentService
     Task<BulkActionResult> BulkDeleteAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    /// <summary>One document per warehouse found in the imported lines, each posted at once when asked.</summary>
+    /// <summary>ONE document holding every imported line, each in the warehouse it names; posted at once when asked.</summary>
     Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);

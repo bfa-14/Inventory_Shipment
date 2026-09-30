@@ -450,10 +450,9 @@ public sealed class SaveSalesInvoiceRequest
 }
 
 /// <summary>
-/// An imported file becoming invoices: the header every invoice shares, and the lines the server
-/// sorts into one invoice per warehouse. The draft reference goes on the FIRST invoice only — the
-/// import logs written before the invoices existed are attached to it; the others get their own
-/// "Imported" audit rows through the log endpoint, called with their ids.
+/// An imported file becoming ONE invoice: the header it takes, and the lines — each keeping the
+/// warehouse the file named on it, so the invoice may span several. The draft reference goes on that
+/// invoice, so the import logs written before it existed are attached to it as its "Imported" row.
 /// </summary>
 public sealed class ImportCreateSalesInvoicesRequest
 {

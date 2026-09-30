@@ -210,8 +210,8 @@ public sealed class SalesInvoicesController : ControllerBase
         => Ok(await _invoices.BulkDeleteAsync(request.Ids, User.GetUserId(), cancellationToken));
 
     /// <summary>
-    /// An imported file becoming invoices: one per warehouse found in the lines, each posted at once
-    /// when asked (which also needs the post permission, checked in the service).
+    /// An imported file becoming ONE invoice holding every line, each in the warehouse it names,
+    /// posted at once when asked (which also needs the post permission, checked in the service).
     /// </summary>
     [HttpPost("import-create")]
     [HasPermission(Permissions.Sales.InvoicesCreate)]

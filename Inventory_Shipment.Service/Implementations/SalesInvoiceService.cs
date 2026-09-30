@@ -378,12 +378,12 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         });
 
     /// <summary>
-    /// The imported file's lines, sorted into one invoice per warehouse and saved one by one.
+    /// The imported file's lines, saved as ONE invoice whatever warehouses they name — the warehouse
+    /// is a line's, so a file naming several becomes one invoice whose rows each keep their own.
     ///
-    /// THE DRAFT REFERENCE GOES ON THE FIRST INVOICE ONLY. The import logs written while no invoice
-    /// existed are attached to it by the save; the page then logs the import once more against each
-    /// of the others, which gives every invoice its own "Imported" audit row. A refused posting
-    /// leaves its invoice as a draft: the lines are worth more than a clean failure.
+    /// THE DRAFT REFERENCE GOES ON THAT INVOICE. The import logs written while no invoice existed are
+    /// attached to it by the save, which gives it its "Imported" audit row. A refused posting leaves
+    /// the invoice as a draft: the lines are worth more than a clean failure.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
@@ -404,52 +404,50 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         var documents = new List<ImportCreateDocument>();
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
-        var first = true;
+        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
 
-        foreach (var (warehouseId, lines) in WarehouseGrouping.GroupLinesByWarehouse(request.Lines, line => line.WarehouseId))
+        var draft = new SaveSalesInvoiceRequest
         {
-            var draft = new SaveSalesInvoiceRequest
+            DocumentDate = request.DocumentDate,
+            DueDate = request.DueDate,
+            BranchId = request.BranchId,
+            // Left for the database, which takes the first line's: the header warehouse is only a label.
+            WarehouseId = null,
+            ClientId = request.ClientId,
+            SalesmanId = request.SalesmanId,
+            PriceListId = request.PriceListId,
+            RateType = request.RateType,
+            ExchangeRate = request.ExchangeRate,
+            ReferenceNo = request.ReferenceNo,
+            Notes = request.Notes,
+            DraftReference = request.DraftReference,
+            Lines = request.Lines.Select((line, index) => new SaveSalesInvoiceLineRequest
             {
-                DocumentDate = request.DocumentDate,
-                DueDate = request.DueDate,
-                BranchId = request.BranchId,
-                WarehouseId = warehouseId,
-                ClientId = request.ClientId,
-                SalesmanId = request.SalesmanId,
-                PriceListId = request.PriceListId,
-                RateType = request.RateType,
-                ExchangeRate = request.ExchangeRate,
-                ReferenceNo = request.ReferenceNo,
-                Notes = request.Notes,
-                DraftReference = first ? request.DraftReference : null,
-                Lines = lines.Select((line, index) => new SaveSalesInvoiceLineRequest
-                {
-                    LineNo = index + 1,
-                    ItemId = line.ItemId,
-                    ItemUnitId = line.ItemUnitId,
-                    WarehouseId = warehouseId,
-                    ExpiryDate = line.ExpiryDate,
-                    Quantity = line.Quantity,
-                    UnitPrice = line.UnitPrice,
-                    DiscountPercent = line.DiscountPercent,
-                    ImportRowNumber = line.ImportRowNumber,
-                    Notes = line.Notes,
-                }).ToList(),
-            };
-            first = false;
+                LineNo = index + 1,
+                ItemId = line.ItemId,
+                ItemUnitId = line.ItemUnitId,
+                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                WarehouseId = line.WarehouseId,
+                ExpiryDate = line.ExpiryDate,
+                Quantity = line.Quantity,
+                UnitPrice = line.UnitPrice,
+                DiscountPercent = line.DiscountPercent,
+                ImportRowNumber = line.ImportRowNumber,
+                Notes = line.Notes,
+            }).ToList(),
+        };
 
-            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-            if (saved.IsFailure || saved.Value is null)
+        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+        if (saved.IsFailure || saved.Value is null)
+        {
+            failed.Add(new ImportCreateFailure
             {
-                failed.Add(new ImportCreateFailure
-                {
-                    WarehouseId = warehouseId,
-                    Code = saved.Code ?? "ERROR",
-                    Message = saved.Error ?? "The invoice could not be created.",
-                });
-                continue;
-            }
-
+                Code = saved.Code ?? "ERROR",
+                Message = saved.Error ?? "The invoice could not be created.",
+            });
+        }
+        else
+        {
             var invoice = saved.Value;
             if (request.PostImmediately)
             {
@@ -463,7 +461,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = warehouseId,
+                        WarehouseId = invoice.WarehouseId,
                         WarehouseName = invoice.WarehouseName,
                         Code = result.Code ?? "ERROR",
                         Message = result.Error ?? "The invoice could not be posted.",
@@ -475,16 +473,17 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             {
                 Id = invoice.Id,
                 DocumentNumber = invoice.DocumentNumber,
-                WarehouseId = warehouseId,
+                WarehouseId = invoice.WarehouseId,
                 WarehouseName = invoice.WarehouseName,
+                WarehouseCount = warehouseCount,
                 LineCount = invoice.Lines.Count,
                 Status = invoice.Status,
             });
         }
 
         _logger.LogInformation(
-            "Import created {Created} sales invoice(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, userId, posted, failed.Count);
+            "Import created {Created} sales invoice(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, warehouseCount, userId, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {
