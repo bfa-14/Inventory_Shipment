@@ -456,7 +456,9 @@ public sealed class StockDocumentService : IStockDocumentService
         }
 
         row++;
-        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Unit Cost", "Amount", "Notes"];
+        // "Total Cost" rather than "Amount", so the download and the Document Details grid it came
+        // from call the same figure the same thing.
+        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Unit Cost", "Total Cost", "Notes"];
         for (var i = 0; i < columns.Length; i++)
         {
             sheet.Cell(row, i + 1).Value = columns[i];
