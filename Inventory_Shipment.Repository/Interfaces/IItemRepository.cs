@@ -50,9 +50,11 @@ public interface IItemRepository
     /// <summary>
     /// inventory.usp_Item_Lookup - the items an Item picker offers, each with the SKU of its base unit.
     /// <paramref name="includeId"/> keeps one extra item in the list even when it is inactive.
+    /// <paramref name="salesOnly"/> keeps only the items with a unit that may be sold, and reports
+    /// that unit rather than the base one — for the sales invoice, which cannot sell the others.
     /// </summary>
     Task<IReadOnlyList<ItemLookup>> LookupAsync(
-        bool activeOnly, int? includeId, CancellationToken cancellationToken = default);
+        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// inventory.usp_ItemUnit_Create - returns the new id. Throws 56000 / 56002 / 56005 / 56006 /

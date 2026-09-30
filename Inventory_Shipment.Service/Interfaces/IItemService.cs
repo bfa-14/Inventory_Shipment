@@ -19,9 +19,12 @@ public interface IItemService
 
     Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default);
 
-    /// <summary>Items for a dropdown; <paramref name="includeId"/> keeps one inactive item visible.</summary>
+    /// <summary>
+    /// Items for a dropdown; <paramref name="includeId"/> keeps one inactive item visible, and
+    /// <paramref name="salesOnly"/> keeps only those with a unit that may be sold.
+    /// </summary>
     Task<Result<IReadOnlyList<ItemLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, CancellationToken cancellationToken = default);
+        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default);
 
     /// <summary>Adds a unit and returns the item's refreshed unit list.</summary>
     Task<Result<IReadOnlyList<ItemUnitDto>>> AddUnitAsync(

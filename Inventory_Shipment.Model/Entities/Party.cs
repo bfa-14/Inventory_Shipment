@@ -96,4 +96,7 @@ public sealed class PartyLookup
     public int? DefaultCurrencyId { get; set; }
     public int? UserId { get; set; }
     public bool IsActive { get; set; }
+
+    /// <summary>The address as Parties holds it, for a document header that shows it.</summary>
+    public string? Address { get; set; }
 }

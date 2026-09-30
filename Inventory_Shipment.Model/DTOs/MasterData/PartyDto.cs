@@ -75,4 +75,7 @@ public sealed class PartyLookupDto
     public int? DefaultCurrencyId { get; init; }
     public int? UserId { get; init; }
     public bool IsActive { get; init; }
+
+    /// <summary>The party's address as Parties holds it, so a document header can show it.</summary>
+    public string? Address { get; init; }
 }
