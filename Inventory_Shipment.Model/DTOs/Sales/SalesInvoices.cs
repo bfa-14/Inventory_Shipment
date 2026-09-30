@@ -406,8 +406,11 @@ public sealed class SaveSalesInvoiceRequest
     [Range(1, int.MaxValue)]
     public int BranchId { get; init; }
 
-    [Range(1, int.MaxValue)]
-    public int WarehouseId { get; init; }
+    /// <summary>
+    /// Optional. The warehouse now lives on each LINE; the header keeps one only so that document
+    /// lists, filters, reports and exports have one to show. Null = the first line's warehouse.
+    /// </summary>
+    public int? WarehouseId { get; init; }
 
     [Range(1, int.MaxValue)]
     public int ClientId { get; init; }

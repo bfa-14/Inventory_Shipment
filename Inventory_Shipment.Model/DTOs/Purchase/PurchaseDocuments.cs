@@ -469,7 +469,7 @@ public sealed class SavePurchaseDocumentLineRequest
     [Range(1, int.MaxValue)]
     public int ItemUnitId { get; init; }
 
-    /// <summary>Ignored by the engine: one document = one warehouse, the header's. Accepted so a page can send what it shows.</summary>
+    /// <summary>The warehouse this line moves stock in. Null falls back to the header's, for callers that send only one.</summary>
     public int? WarehouseId { get; init; }
 
     public DateOnly? ExpiryDate { get; init; }
@@ -513,8 +513,11 @@ public sealed class SavePurchaseDocumentRequest
     [Range(1, int.MaxValue)]
     public int BranchId { get; init; }
 
-    [Range(1, int.MaxValue)]
-    public int WarehouseId { get; init; }
+    /// <summary>
+    /// Optional. The warehouse now lives on each LINE; the header keeps one only so that document
+    /// lists, filters, reports and exports have one to show. Null = the first line's warehouse.
+    /// </summary>
+    public int? WarehouseId { get; init; }
 
     [Range(1, int.MaxValue)]
     public int SupplierId { get; init; }
