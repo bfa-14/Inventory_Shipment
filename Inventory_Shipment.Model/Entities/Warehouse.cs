@@ -18,6 +18,22 @@ public class Warehouse
     public string BranchName { get; set; } = string.Empty;
 
     public string? Address { get; set; }
+
+    /// <summary>The warehouse this one stands under; null for a root. It need not share the branch.</summary>
+    public int? ParentId { get; set; }
+
+    /// <summary>Code of the parent. Read-only: it comes from the join, never from the caller.</summary>
+    public string? ParentCode { get; set; }
+
+    /// <summary>Name of the parent. Read-only: it comes from the join, never from the caller.</summary>
+    public string? ParentName { get; set; }
+
+    /// <summary>Depth in the tree, 1 for a root. Maintained by the procedures, never sent in.</summary>
+    public int Level { get; set; } = 1;
+
+    /// <summary>Warehouses standing directly under this one; 0 means a leaf, which is where stock lives.</summary>
+    public int ChildCount { get; set; }
+
     public bool IsMainWarehouse { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; }

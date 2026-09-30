@@ -40,6 +40,9 @@ public static class SqlErrors
     public const int WarehouseNotFound = 52006;
     public const int WarehouseBranchInactive = 52007;
 
+    /// <summary>A warehouse moved under itself, or under one of its own descendants.</summary>
+    public const int WarehouseCircular = 52008;
+
     // ----- 53xxx: master data - currencies and exchange rates -----
     public const int CurrencyValidation = 53000;
     public const int CurrencyDuplicateCode = 53001;

@@ -159,6 +159,7 @@ public sealed class WarehouseService : IWarehouseService
         WarehouseName = request.WarehouseName.Trim(),
         BranchId = request.BranchId,
         Address = string.IsNullOrWhiteSpace(request.Address) ? null : request.Address.Trim(),
+        ParentId = request.ParentId,
         IsMainWarehouse = request.IsMainWarehouse,
         IsActive = request.IsActive
     };
@@ -218,6 +219,11 @@ public sealed class WarehouseService : IWarehouseService
 
             case SqlErrors.WarehouseBranchInactive:
                 return new RuleFailure(ErrorType.Validation, exception.Message, "BRANCH_INACTIVE", null);
+
+            // A move that would have put the warehouse under itself. The procedure's message names
+            // the parent that was picked, which is the thing the reader has to change.
+            case SqlErrors.WarehouseCircular:
+                return new RuleFailure(ErrorType.Validation, exception.Message, "CIRCULAR_HIERARCHY", null);
 
             case SqlErrors.WarehouseValidation:
             default:

@@ -23269,7 +23269,7 @@ BEGIN
 END
 GO
 
-IF OBJECT_ID(N'FK_Warehouses_Parent', N'F') IS NULL
+IF OBJECT_ID(N'masterdata.FK_Warehouses_Parent', N'F') IS NULL
 BEGIN
     -- No cascade: a parent with children is refused rather than taking them down with it.
     ALTER TABLE masterdata.Warehouses
@@ -23278,7 +23278,7 @@ BEGIN
 END
 GO
 
-IF OBJECT_ID(N'CK_Warehouses_NotOwnParent', N'C') IS NULL
+IF OBJECT_ID(N'masterdata.CK_Warehouses_NotOwnParent', N'C') IS NULL
 BEGIN
     ALTER TABLE masterdata.Warehouses
         ADD CONSTRAINT CK_Warehouses_NotOwnParent CHECK (ParentId IS NULL OR ParentId <> Id);
@@ -23286,7 +23286,7 @@ BEGIN
 END
 GO
 
-IF OBJECT_ID(N'CK_Warehouses_Level', N'C') IS NULL
+IF OBJECT_ID(N'masterdata.CK_Warehouses_Level', N'C') IS NULL
 BEGIN
     ALTER TABLE masterdata.Warehouses ADD CONSTRAINT CK_Warehouses_Level CHECK ([Level] >= 1);
     PRINT 'Warehouses: added CK_Warehouses_Level';
