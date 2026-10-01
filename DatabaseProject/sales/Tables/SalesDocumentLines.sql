@@ -25,6 +25,7 @@ CREATE TABLE [sales].[SalesDocumentLines] (
     [GrossProfitBase]      DECIMAL (18, 2) NULL,
     [GrossProfitPct]       DECIMAL (9, 2)  NULL,
     [ReturnedQuantityBase] INT             CONSTRAINT [DF_SalesDocumentLines_Returned] DEFAULT ((0)) NOT NULL,
+    [Specification]        NVARCHAR (100)  NULL,
     CONSTRAINT [PK_SalesDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_SalesDocumentLines_Discount] CHECK ([DiscountPercent]>=(0) AND [DiscountPercent]<=(100)),
     CONSTRAINT [CK_SalesDocumentLines_Formula] CHECK ([PackingFormula]>=(1)),

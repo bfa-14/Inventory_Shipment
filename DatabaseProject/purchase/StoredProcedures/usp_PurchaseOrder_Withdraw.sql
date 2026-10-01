@@ -11,8 +11,13 @@ BEGIN
 
     BEGIN TRY
         BEGIN TRANSACTION;
-        UPDATE purchase.PurchaseOrderApprovals SET Status = 4, DecidedAtUtc = SYSUTCDATETIME() WHERE DocumentId = @Id AND Status = 1;
-        UPDATE purchase.PurchaseDocuments SET Status = 1, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
+        UPDATE purchase.PurchaseDocuments SET Status = 1, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id AND Status = 5;
+        IF @@ROWCOUNT = 0 THROW 65010, 'Only a purchase order waiting for approval can be withdrawn.', 1;
+        INSERT INTO purchase.PurchaseOrderApprovalEvents (PurchaseDocumentId, EventType, UserId)
+        VALUES (@Id, 6, @UserId);
+        DECLARE @EventId BIGINT = SCOPE_IDENTITY();
+        UPDATE purchase.PurchaseOrderApprovals SET Status = 4, DecidedAtUtc = SYSUTCDATETIME(), ClosedByEventId = @EventId
+        WHERE DocumentId = @Id AND Status = 1;
         INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
         VALUES (@Id, N'Updated', N'Approval request withdrawn', @UserId);
         COMMIT TRANSACTION;

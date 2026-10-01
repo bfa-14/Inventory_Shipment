@@ -1,4 +1,3 @@
--- unless @ActiveOnly = 0 or they are the @IncludeId.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Lookup
     @ActiveOnly BIT = 1,
     @BranchId   INT = NULL,
@@ -6,7 +5,9 @@ CREATE   PROCEDURE masterdata.usp_Warehouse_Lookup
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT w.Id, w.WarehouseCode, w.WarehouseName, w.BranchId, b.BranchCode, b.BranchName, w.IsMainWarehouse, w.IsActive
+    SELECT w.Id, w.WarehouseCode, w.WarehouseName, w.BranchId, b.BranchCode, b.BranchName,
+           w.IsMainWarehouse, w.IsActive, w.ParentId, w.[Level], w.AllowOutOfStockOverride,
+           ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id)
     FROM masterdata.Warehouses w
     INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
     WHERE (@ActiveOnly = 0 OR w.IsActive = 1 OR w.Id = @IncludeId)

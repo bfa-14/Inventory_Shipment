@@ -3,7 +3,7 @@ CREATE   PROCEDURE masterdata.usp_AttachmentType_Get
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT Id, Category, SubType, SortOrder, IsActive, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
+    SELECT Id, Category, SubType, AppliesTo, SortOrder, IsActive, CreatedAtUtc, CreatedBy, UpdatedAtUtc, UpdatedBy, RowVersion
     FROM masterdata.AttachmentTypes WHERE Id = @Id;
 END
 

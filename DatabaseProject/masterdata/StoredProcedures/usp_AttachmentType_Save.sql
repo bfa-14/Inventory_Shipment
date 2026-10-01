@@ -6,21 +6,26 @@ CREATE   PROCEDURE masterdata.usp_AttachmentType_Save
     @IsActive   BIT          = 1,
     @RowVersion BINARY(8)    = NULL,
     @UserId     INT          = NULL,
-    @NewId      INT OUTPUT
+    @NewId      INT OUTPUT,
+    /* NULL = leave it alone on an update, and Logistics on an insert: every caller that predates the
+       column keeps doing exactly what it did. */
+    @AppliesTo  NVARCHAR(12) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
     SET @Category = NULLIF(LTRIM(RTRIM(@Category)), N'');
     SET @SubType = NULLIF(LTRIM(RTRIM(@SubType)), N'');
+    SET @AppliesTo = NULLIF(LTRIM(RTRIM(@AppliesTo)), N'');
     IF @Category IS NULL THROW 69000, 'Category is required.', 1;
     IF @SubType IS NULL THROW 69000, 'Sub type is required.', 1;
+    IF @AppliesTo IS NOT NULL AND @AppliesTo NOT IN (N'Logistics', N'Receipt') THROW 69000, 'Applies to must be Logistics or Receipt.', 1;
     IF EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Category = @Category AND SubType = @SubType AND (@Id IS NULL OR Id <> @Id))
         THROW 69013, 'This category and sub type already exist.', 1;
 
     IF @Id IS NULL
     BEGIN
-        INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, IsActive, CreatedBy)
-        VALUES (@Category, @SubType, ISNULL(@SortOrder, 0), ISNULL(@IsActive, 1), @UserId);
+        INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, IsActive, AppliesTo, CreatedBy)
+        VALUES (@Category, @SubType, ISNULL(@SortOrder, 0), ISNULL(@IsActive, 1), ISNULL(@AppliesTo, N'Logistics'), @UserId);
         SET @NewId = SCOPE_IDENTITY();
     END
     ELSE
@@ -30,6 +35,7 @@ BEGIN
             THROW 69004, 'This attachment type was modified by another user. Reload the page and try again.', 1;
         UPDATE masterdata.AttachmentTypes
         SET Category = @Category, SubType = @SubType, SortOrder = ISNULL(@SortOrder, 0), IsActive = ISNULL(@IsActive, 1),
+            AppliesTo = ISNULL(@AppliesTo, AppliesTo),
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
         WHERE Id = @Id;
         SET @NewId = @Id;

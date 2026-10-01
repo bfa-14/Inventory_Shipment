@@ -3,6 +3,7 @@ CREATE TYPE [sales].[tvp_SalesDocumentLine] AS TABLE (
     [ItemId]          INT             NOT NULL,
     [ItemUnitId]      INT             NOT NULL,
     [WarehouseId]     INT             NOT NULL,
+    [Specification]   NVARCHAR (100)  NULL,
     [ExpiryDate]      DATE            NULL,
     [Quantity]        INT             NOT NULL,
     [UnitPrice]       DECIMAL (18, 4) NULL,

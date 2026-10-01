@@ -27,6 +27,28 @@ BEGIN
         IF EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE SourceDocumentId = @Id AND Status = 2)
             THROW 64010, 'This invoice cannot be cancelled: posted returns refer to it. Cancel those first.', 1;
 
+        /* A CANCELLED INVOICE CANNOT KEEP MONEY APPLIED TO IT. Receipts allocated to it would be paying
+           an invoice that no longer exists, and the customer's balance would quietly be wrong. The
+           receipt has to be reversed (or its allocation removed) first, so somebody decides what
+           happens to the money. Only receipts that are POSTED count: a draft allocates nothing yet. */
+        /* THE AUTOMATIC RECEIPT OF A CASH INVOICE IS THE ONE EXCEPTION: it was made with the invoice,
+           so it is undone with it - reversed here, in this transaction, with the reason. Money any
+           OTHER receipt has put on the invoice is still somebody's decision and still blocks. */
+        DECLARE @AutoReceiptId INT = (SELECT TOP (1) Id FROM sales.Receipts WHERE SourceSalesDocumentId = @Id AND Status = 2);
+        IF EXISTS (SELECT 1 FROM sales.ReceiptAllocations a
+                   INNER JOIN sales.Receipts r ON r.Id = a.ReceiptId
+                   WHERE a.SalesDocumentId = @Id AND a.RemovedAtUtc IS NULL AND r.Status = 2
+                     AND r.Id <> ISNULL(@AutoReceiptId, 0))
+            THROW 64010, 'This invoice cannot be cancelled: receipts have been applied to it. Reverse those receipts first.', 1;
+
+        IF @AutoReceiptId IS NOT NULL
+        BEGIN
+            DECLARE @RcReason NVARCHAR(500) = N'Invoice cancelled: ' + @Reason;
+            EXEC sales.usp_Receipt_Reverse @Id = @AutoReceiptId, @Reason = @RcReason, @RowVersion = NULL, @UserId = @UserId, @FromInvoiceCancel = 1;
+            INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'ReceiptReversed', N'Cash sale: receipt ' + (SELECT ReceiptNumber FROM sales.Receipts WHERE Id = @AutoReceiptId) + N' reversed', @UserId);
+        END
+
         IF @Direction = 1
         BEGIN
             DECLARE @Msg NVARCHAR(400);

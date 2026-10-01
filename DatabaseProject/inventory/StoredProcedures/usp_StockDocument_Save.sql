@@ -3,7 +3,7 @@ CREATE   PROCEDURE inventory.usp_StockDocument_Save
     @DocumentTypeCode NVARCHAR(20),
     @DocumentDate     DATE,
     @BranchId         INT,
-    @WarehouseId      INT,
+    @WarehouseId      INT = NULL,
     @ReasonId         INT            = NULL,
     @ReferenceNo      NVARCHAR(100)  = NULL,
     @Notes            NVARCHAR(1000) = NULL,
@@ -15,6 +15,12 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
+
+    /* The warehouse lives on the LINES. The header keeps one so that document lists, filters,
+       reports and exports still have a warehouse to show; when the caller does not send one it is
+       taken from the first line. */
+    IF @WarehouseId IS NULL
+        SELECT TOP (1) @WarehouseId = WarehouseId FROM @Lines ORDER BY LineNumber;
 
     SET @ReferenceNo = NULLIF(LTRIM(RTRIM(@ReferenceNo)), N'');
     SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
@@ -64,9 +70,9 @@ BEGIN
             VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
         END
 
-        -- Lines: warehouse = header warehouse; Out documents take the item's moving average cost (per unit).
+        -- Lines: each line carries its OWN warehouse; Out documents take the item's moving average cost (per unit).
         INSERT INTO inventory.StockDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula, UnitCost, Notes)
-        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
                CASE WHEN @Direction = -1 THEN ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * iu.PackingFormula ELSE ISNULL(l.UnitCost, 0) END,
                NULLIF(LTRIM(RTRIM(l.Notes)), N'')
         FROM @Lines l

@@ -7,7 +7,9 @@ CREATE   PROCEDURE masterdata.usp_Warehouse_Update
     @IsMainWarehouse      BIT           = 0,
     @IsActive             BIT           = 1,
     @ReplaceMainWarehouse BIT           = 0,
-    @RowVersion           BINARY(8)     = NULL,   -- pass the value read earlier; NULL skips the concurrency check
+    @ParentId             INT           = NULL,
+    @AllowOutOfStockOverride BIT        = NULL,   -- NULL = follow the global setting
+    @RowVersion           BINARY(8)     = NULL,
     @UserId               INT           = NULL
 AS
 BEGIN
@@ -34,7 +36,6 @@ BEGIN
     IF @BranchId IS NULL
         THROW 52000, 'Branch / Site is required.', 1;
 
-    -- Rule 3: a (new) branch assignment must point at an active branch. Keeping the current branch is always allowed.
     IF @BranchId <> @CurrentBranchId AND NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 52007, 'The selected Branch / Site does not exist or is inactive. Select an active branch.', 1;
 
@@ -44,8 +45,25 @@ BEGIN
     IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE WarehouseCode = @WarehouseCode AND Id <> @Id)
         THROW 52001, 'A warehouse with this Warehouse Code already exists.', 1;
 
+    IF @ParentId IS NOT NULL
+    BEGIN
+        IF @ParentId = @Id
+            THROW 52008, 'A warehouse cannot be its own parent.', 1;
+
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @ParentId)
+            THROW 52000, 'The selected parent warehouse does not exist.', 1;
+
+        -- The move that would swallow the mover: the chosen parent stands under this warehouse.
+        IF EXISTS (SELECT 1 FROM masterdata.fn_Warehouse_Subtree(@Id) WHERE Id = @ParentId)
+            THROW 52008, 'This would create a circular hierarchy: the selected parent stands under this warehouse.', 1;
+    END
+
     IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @Id AND RowVersion = @RowVersion)
         THROW 52004, 'This warehouse was modified by another user. Reload the page and try again.', 1;
+
+    DECLARE @NewLevel INT = 1;
+    IF @ParentId IS NOT NULL
+        SET @NewLevel = (SELECT [Level] + 1 FROM masterdata.Warehouses WHERE Id = @ParentId);
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -74,9 +92,19 @@ BEGIN
             Address         = @Address,
             IsMainWarehouse = @IsMainWarehouse,
             IsActive        = @IsActive,
+            ParentId        = @ParentId,
+            AllowOutOfStockOverride = @AllowOutOfStockOverride,
             UpdatedAtUtc    = SYSUTCDATETIME(),
             UpdatedBy       = @UserId
         WHERE Id = @Id;
+
+        /* THE WHOLE SUBTREE MOVES WITH IT. A warehouse carried to a new parent takes its
+           children along, and their Level is their depth below it - left alone they would keep
+           the depth they had under the old parent and the tree would draw at the wrong indent. */
+        UPDATE w
+        SET w.[Level] = @NewLevel + s.Depth
+        FROM masterdata.Warehouses w
+        INNER JOIN masterdata.fn_Warehouse_Subtree(@Id) s ON s.Id = w.Id;
 
         COMMIT TRANSACTION;
     END TRY

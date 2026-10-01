@@ -18,7 +18,7 @@ BEGIN
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
     SET @SortDirection = UPPER(@SortDirection);
 
-    SELECT a.Id, a.Category, a.SubType, a.SortOrder, a.IsActive,
+    SELECT a.Id, a.Category, a.SubType, a.AppliesTo, a.SortOrder, a.IsActive,
            a.CreatedAtUtc, a.CreatedBy, a.UpdatedAtUtc, a.UpdatedBy, a.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM masterdata.AttachmentTypes a

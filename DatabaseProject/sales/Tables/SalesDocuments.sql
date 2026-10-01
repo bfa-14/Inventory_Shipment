@@ -34,8 +34,13 @@ CREATE TABLE [sales].[SalesDocuments] (
     [UpdatedBy]            INT             NULL,
     [RowVersion]           ROWVERSION      NOT NULL,
     [TotalGrossProfitBase] DECIMAL (18, 2) CONSTRAINT [DF_SalesDocuments_GrossProfit] DEFAULT ((0)) NOT NULL,
+    [PaymentType]          TINYINT         NULL,
+    [ReceiptMethodId]      INT             NULL,
+    [ReceiptAccountId]     INT             NULL,
+    [PaymentReference]     NVARCHAR (100)  NULL,
     CONSTRAINT [PK_SalesDocuments] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_SalesDocuments_DueDate] CHECK ([DueDate] IS NULL OR [DueDate]>=[DocumentDate]),
+    CONSTRAINT [CK_SalesDocuments_PaymentType] CHECK ([PaymentType] IS NULL OR ([PaymentType]=(2) OR [PaymentType]=(1))),
     CONSTRAINT [CK_SalesDocuments_Rate] CHECK ([ExchangeRate]>(0)),
     CONSTRAINT [CK_SalesDocuments_RateType] CHECK ([RateType]=(3) OR [RateType]=(2) OR [RateType]=(1)),
     CONSTRAINT [CK_SalesDocuments_Status] CHECK ([Status]=(3) OR [Status]=(2) OR [Status]=(1)),
@@ -46,6 +51,8 @@ CREATE TABLE [sales].[SalesDocuments] (
     CONSTRAINT [FK_SalesDocuments_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]),
     CONSTRAINT [FK_SalesDocuments_PostedBy] FOREIGN KEY ([PostedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_SalesDocuments_PriceList] FOREIGN KEY ([PriceListId]) REFERENCES [masterdata].[PriceLists] ([Id]),
+    CONSTRAINT [FK_SalesDocuments_ReceiptAccount] FOREIGN KEY ([ReceiptAccountId]) REFERENCES [masterdata].[CashBankAccounts] ([Id]),
+    CONSTRAINT [FK_SalesDocuments_ReceiptMethod] FOREIGN KEY ([ReceiptMethodId]) REFERENCES [masterdata].[PaymentMethods] ([Id]),
     CONSTRAINT [FK_SalesDocuments_Salesman] FOREIGN KEY ([SalesmanId]) REFERENCES [masterdata].[Parties] ([Id]),
     CONSTRAINT [FK_SalesDocuments_Source] FOREIGN KEY ([SourceDocumentId]) REFERENCES [sales].[SalesDocuments] ([Id]),
     CONSTRAINT [FK_SalesDocuments_Type] FOREIGN KEY ([DocumentTypeId]) REFERENCES [inventory].[DocumentTypes] ([Id]),
@@ -56,14 +63,8 @@ CREATE TABLE [sales].[SalesDocuments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Client]
-    ON [sales].[SalesDocuments]([ClientId] ASC, [DocumentDate] DESC);
-
-
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_SalesDocuments_Number]
-    ON [sales].[SalesDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeStatus]
+    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [Status] ASC);
 
 
 GO
@@ -80,8 +81,14 @@ CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Salesman]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeStatus]
-    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [Status] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_SalesDocuments_Number]
+    ON [sales].[SalesDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Client]
+    ON [sales].[SalesDocuments]([ClientId] ASC, [DocumentDate] DESC);
 
 
 GO

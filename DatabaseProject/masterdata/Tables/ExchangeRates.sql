@@ -21,15 +21,15 @@ CREATE TABLE [masterdata].[ExchangeRates] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ExchangeRates_RateDate]
-    ON [masterdata].[ExchangeRates]([RateDate] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_ExchangeRates_Currency_Type_Date]
+    ON [masterdata].[ExchangeRates]([CurrencyId] ASC, [RateType] ASC, [RateDate] DESC)
+    INCLUDE([Rate]);
 
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_ExchangeRates_Currency_Type_Date]
-    ON [masterdata].[ExchangeRates]([CurrencyId] ASC, [RateType] ASC, [RateDate] DESC)
-    INCLUDE([Rate]);
+CREATE NONCLUSTERED INDEX [IX_ExchangeRates_RateDate]
+    ON [masterdata].[ExchangeRates]([RateDate] ASC);
 
 
 GO

@@ -1,5 +1,3 @@
-/* ================================================================== 2. Search / Get / rate helper */
-
 CREATE   PROCEDURE sales.usp_SalesDocument_Search
     @DocumentTypeCode NVARCHAR(20) = N'SINV',  -- SO | SINV | SRET | NULL = whole family
     @Search           NVARCHAR(100) = NULL,    -- number, reference, client code/name, notes
@@ -10,6 +8,8 @@ CREATE   PROCEDURE sales.usp_SalesDocument_Search
     @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted | 3 Cancelled
     @DateFrom         DATE         = NULL,
     @DateTo           DATE         = NULL,
+    @PaymentStatus    NVARCHAR(10) = NULL,     -- Unpaid | Partial | Paid (posted invoices only)
+    @PaymentType      TINYINT      = NULL,     -- 1 Cash | 2 On Account
     @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | ClientName | Status | TotalAmount | CreatedAtUtc
     @SortDirection    NVARCHAR(4)  = N'DESC',
     @PageNumber       INT          = 1,
@@ -33,6 +33,8 @@ BEGIN
            d.SalesmanId, sm.PartyName AS SalesmanName,
            d.PriceListId, pl.PriceListName, d.CurrencyId, c.CurrencyCode, c.Symbol AS CurrencySymbol, c.DecimalPlaces, d.ExchangeRate,
            d.ReferenceNo, d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           st.PaidAmount, st.OutstandingAmount, st.PaymentStatus,
+           d.PaymentType, ReceiptId = rc.Id, rc.ReceiptNumber,
            d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc,
            d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
            COUNT(*) OVER () AS TotalCount
@@ -46,6 +48,8 @@ BEGIN
     INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
     LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
     LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    OUTER APPLY sales.fn_InvoiceSettlement(d.Id) st
+    LEFT  JOIN sales.Receipts rc ON rc.SourceSalesDocumentId = d.Id
     WHERE dt.Family = N'Sales'
       AND (@DocumentTypeCode IS NULL OR dt.Code = @DocumentTypeCode)
       AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.ReferenceNo LIKE N'%' + @Search + N'%'
@@ -57,6 +61,8 @@ BEGIN
       AND (@Status IS NULL OR d.Status = @Status)
       AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
       AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
+      AND (@PaymentStatus IS NULL OR st.PaymentStatus = @PaymentStatus)
+      AND (@PaymentType IS NULL OR d.PaymentType = @PaymentType)
     ORDER BY
         CASE WHEN @SortDirection = N'ASC' THEN
             CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'ClientName' THEN cl.PartyName END

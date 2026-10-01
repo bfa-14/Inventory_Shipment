@@ -1,6 +1,24 @@
+/* ==================================================================================================
+   30: Sales invoice - client address, a day of date tolerance, sales-only units
+   --------------------------------------------------------------------------------------------------
+   Three fixes, all reached from the sales invoice:
+
+   1. masterdata.usp_Party_Lookup returns Address, so the invoice header can show the client's
+      address as the Parties page holds it. Every other caller simply gets one more column.
+
+   2. sales.usp_SalesDocument_ValidateInput allows the document date to be one day ahead. The check
+      compared a LOCAL date against a UTC one: at 00:20 in Beirut (UTC+3) it is still yesterday in
+      UTC, so saving a draft dated today was refused as being in the future.
+
+   3. inventory.usp_Item_Lookup takes @SalesOnly. With 1 it returns only items that have at least
+      one unit flagged IsSalesUnit, and reports that unit as the base one so the picker offers a
+      sellable unit first. The default is 0, so inventory and purchase are unchanged.
+   ================================================================================================== */
+
+/* ---------------------------------------------------------------- 1. Party lookup: Address */
 CREATE   PROCEDURE masterdata.usp_Party_Lookup
-    @PartyType  NVARCHAR(20)  = NULL,   -- Supplier | Client | Salesman | Employee | NULL = any
     @Search     NVARCHAR(200) = NULL,
+    @PartyType  NVARCHAR(20)  = NULL,
     @ActiveOnly BIT           = 1,
     @IncludeId  INT           = NULL,
     @Top        INT           = 50
@@ -13,7 +31,8 @@ BEGIN
     IF @Top > 500 SET @Top = 500;
 
     SELECT TOP (@Top) p.Id, p.PartyCode, p.PartyName, p.IsSupplier, p.IsClient, p.IsSalesman, p.IsEmployee,
-           p.BranchId, p.DefaultPriceListId, p.DefaultCurrencyId, p.UserId, p.IsActive
+           p.BranchId, p.DefaultPriceListId, p.DefaultCurrencyId, p.UserId, p.IsActive,
+           p.Address
     FROM masterdata.Parties p
     WHERE (@ActiveOnly = 0 OR p.IsActive = 1 OR p.Id = @IncludeId)
       AND (@PartyType IS NULL

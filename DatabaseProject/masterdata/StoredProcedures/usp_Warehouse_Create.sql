@@ -5,7 +5,9 @@ CREATE   PROCEDURE masterdata.usp_Warehouse_Create
     @Address              NVARCHAR(500) = NULL,
     @IsMainWarehouse      BIT           = 0,
     @IsActive             BIT           = 1,
-    @ReplaceMainWarehouse BIT           = 0,   -- 1 = the caller confirmed replacing the current Main Warehouse
+    @ReplaceMainWarehouse BIT           = 0,
+    @ParentId             INT           = NULL,   -- NULL = a root warehouse
+    @AllowOutOfStockOverride BIT        = NULL,   -- NULL = follow the global setting
     @UserId               INT           = NULL,
     @NewId                INT OUTPUT
 AS
@@ -31,11 +33,19 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 52007, 'The selected Branch / Site does not exist or is inactive. Select an active branch.', 1;
 
+    -- The parent need not share the branch: the tree and the branch answer different questions.
+    IF @ParentId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @ParentId)
+        THROW 52000, 'The selected parent warehouse does not exist.', 1;
+
     IF @IsMainWarehouse = 1 AND @IsActive = 0
         THROW 52005, 'The Main Warehouse must be active.', 1;
 
     IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE WarehouseCode = @WarehouseCode)
         THROW 52001, 'A warehouse with this Warehouse Code already exists.', 1;
+
+    DECLARE @Level INT = 1;
+    IF @ParentId IS NOT NULL
+        SET @Level = (SELECT [Level] + 1 FROM masterdata.Warehouses WHERE Id = @ParentId);
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -56,8 +66,8 @@ BEGIN
             END
         END
 
-        INSERT INTO masterdata.Warehouses (WarehouseCode, WarehouseName, BranchId, Address, IsMainWarehouse, IsActive, CreatedBy)
-        VALUES (@WarehouseCode, @WarehouseName, @BranchId, @Address, @IsMainWarehouse, @IsActive, @UserId);
+        INSERT INTO masterdata.Warehouses (WarehouseCode, WarehouseName, BranchId, Address, IsMainWarehouse, IsActive, ParentId, [Level], CreatedBy, AllowOutOfStockOverride)
+        VALUES (@WarehouseCode, @WarehouseName, @BranchId, @Address, @IsMainWarehouse, @IsActive, @ParentId, @Level, @UserId, @AllowOutOfStockOverride);
 
         SET @NewId = SCOPE_IDENTITY();
 

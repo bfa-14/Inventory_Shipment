@@ -1,9 +1,10 @@
--- has no charges of its own. Purchase orders are posted only by their approval (@FromApproval = 1).
+-- (@FromApproval = 0): approved by the user who posts it, event 7. One that needs approval is refused (65013) unless
+-- the approval posts it (@FromApproval = 1, from "waiting for approval").
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Post
     @Id         INT,
     @RowVersion   BINARY(8) = NULL,
     @UserId       INT       = NULL,
-    @FromApproval BIT       = 0      -- 1 = called by the approval: purchase orders are only posted that way
+    @FromApproval BIT       = 0      -- 1 = called by the approval
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -23,10 +24,15 @@ BEGIN
         WHERE d.Id = @Id;
 
         IF @Status IS NULL THROW 65006, 'Document not found.', 1;
-        IF @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 0
-            THROW 65013, 'A purchase order is posted by its approval. Send it for approval instead.', 1;
-        IF @TypeCode = N'PO' AND @Status <> 5 THROW 65010, 'Only a purchase order waiting for approval can be approved.', 1;
-        IF @TypeCode <> N'PO' AND @Status <> 1 THROW 65010, 'Only draft documents can be posted.', 1;
+        IF @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 1 AND @Status <> 5
+            THROW 65010, 'Only a purchase order waiting for approval can be approved.', 1;
+        IF (@TypeCode <> N'PO' OR ISNULL(@FromApproval, 0) = 0) AND @Status <> 1
+            THROW 65010, 'Only draft documents can be posted.', 1;
+
+        DECLARE @PostedWithoutApproval BIT = CASE WHEN @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 0 THEN 1 ELSE 0 END;
+        IF @PostedWithoutApproval = 1 AND purchase.fn_PurchaseOrder_NeedsApproval(@Id) = 1
+            THROW 65013, 'This order needs approval: send it for approval.', 1;
+
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
         IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
@@ -201,8 +207,24 @@ BEGIN
         VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
                                 + CASE WHEN @Direction <> 0 AND @ReceiveNow = 1 THEN N' written to the stock ledger'
                                        WHEN @ReceiveNow = 0 THEN N'; stock will be received when the container is offloaded'
+                                       WHEN @PostedWithoutApproval = 1 THEN N' (approval not needed)'
                                        ELSE N' (order approved)' END
                                 + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END, @UserId);
+
+        -- A purchase order posted without approval: the user who posts it is recorded as approver, as an approval does.
+        IF @PostedWithoutApproval = 1
+        BEGIN
+            UPDATE purchase.PurchaseDocuments SET ApprovedAtUtc = SYSUTCDATETIME(), ApprovedBy = @UserId WHERE Id = @Id;
+
+            DECLARE @RequireApproval BIT, @ApprovalLimit DECIMAL(19, 4);
+            SELECT @RequireApproval = RequireApproval, @ApprovalLimit = ApprovalLimitBase FROM purchase.ApprovalSettings WHERE Id = 1;
+            INSERT INTO purchase.PurchaseOrderApprovalEvents (PurchaseDocumentId, EventType, UserId, Note)
+            VALUES (@Id, 7, @UserId,
+                    CASE WHEN @RequireApproval = 0 THEN N'Approval not required'
+                         ELSE N'Under the approval limit of ' + FORMAT(@ApprovalLimit, N'N2', N'en-US')
+                              + ISNULL(N' ' + (SELECT TOP (1) CurrencyCode FROM masterdata.Currencies
+                                               WHERE IsBaseCurrency = 1 AND IsActive = 1), N'') END);
+        END
 
         -- containers of an import: the invoice is known now (value basis of the charges, history)
         IF @FromContainers = 1

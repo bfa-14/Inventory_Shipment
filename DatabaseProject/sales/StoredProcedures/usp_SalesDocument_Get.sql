@@ -14,6 +14,11 @@ BEGIN
            d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
            d.ReferenceNo, d.Notes, d.Status,
            d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalCostBase, d.TotalGrossProfitBase,
+           st.PaidAmount, st.OutstandingAmount, st.PaymentStatus,
+           d.PaymentType, d.ReceiptMethodId, ReceiptMethodName = rm.MethodName,
+           d.ReceiptAccountId, ReceiptAccountCode = ra.AccountCode, ReceiptAccountName = ra.AccountName, d.PaymentReference,
+           ReceiptId = rc.Id, rc.ReceiptNumber,
+           ReceiptStatus = CASE rc.Status WHEN 1 THEN N'Draft' WHEN 2 THEN N'Posted' WHEN 3 THEN N'Reversed' END,
            TotalGrossProfitPct = CASE WHEN d.TotalAmountBase > 0 THEN ROUND(100.0 * d.TotalGrossProfitBase / d.TotalAmountBase, 2) END,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
            d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
@@ -30,6 +35,10 @@ BEGIN
     INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
     LEFT  JOIN masterdata.Currencies bc   ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
     LEFT  JOIN sales.SalesDocuments src   ON src.Id = d.SourceDocumentId
+    OUTER APPLY sales.fn_InvoiceSettlement(d.Id) st
+    LEFT  JOIN masterdata.PaymentMethods rm   ON rm.Id = d.ReceiptMethodId
+    LEFT  JOIN masterdata.CashBankAccounts ra ON ra.Id = d.ReceiptAccountId
+    LEFT  JOIN sales.Receipts rc              ON rc.SourceSalesDocumentId = d.Id
     LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
     LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
     LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
@@ -39,7 +48,7 @@ BEGIN
     SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
            l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, iu.Barcode, l.PackingFormula,
            l.WarehouseId, w.WarehouseCode, w.WarehouseName, l.ExpiryDate,
-           l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal, l.PriceSource,
+           l.Quantity, l.QuantityBase, l.Specification, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal, l.PriceSource,
            l.UnitCostBase, l.FobCostAtSale, l.LastCostAtSale, l.NetSalesBase, l.CogsBase, l.GrossProfitBase, l.GrossProfitPct,
            l.ReturnedQuantityBase, RemainingBase = l.QuantityBase - l.ReturnedQuantityBase,
            l.ImportRowNumber, l.Notes, l.SourceLineId,

@@ -1,18 +1,14 @@
-/* ================================================================== 6. Approval procedures */
+/* ================================================================== 6. Procedures of script 26, changed */
 
--- Who receives approval requests: active users of a NON-system role holding purchase.orders.approve, with an email.
+-- 6.1 Approvers from Settings > Purchase approval: of one order, or (NULL) every active approver.
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_Approvers
+    @PurchaseDocumentId INT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT DISTINCT u.Id AS UserId, u.FullName, u.Email
-    FROM security.Users u
-    INNER JOIN security.UserRoles ur      ON ur.UserId = u.Id
-    INNER JOIN security.Roles r           ON r.Id = ur.RoleId AND r.IsSystem = 0
-    INNER JOIN security.RolePermissions rp ON rp.RoleId = r.Id
-    INNER JOIN security.Permissions p     ON p.Id = rp.PermissionId AND p.Code = N'purchase.orders.approve'
-    WHERE u.IsActive = 1 AND NULLIF(LTRIM(RTRIM(u.Email)), N'') IS NOT NULL
-    ORDER BY u.FullName;
+    SELECT a.UserId, a.FullName, a.Email, a.CanApproveInApp, a.CanApproveByEmail
+    FROM purchase.fn_PurchaseOrder_Approvers(@PurchaseDocumentId) a
+    ORDER BY a.FullName;
 END
 
 GO

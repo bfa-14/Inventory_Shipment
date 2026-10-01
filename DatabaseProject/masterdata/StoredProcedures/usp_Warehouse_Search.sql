@@ -1,12 +1,9 @@
-/* ------------------------------------------------------------------ 3. Procedures */
-
--- Paged, filtered, sorted list with the branch joined. TotalCount is repeated on every row.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Search
-    @Search          NVARCHAR(150) = NULL,          -- matches Warehouse Code or Warehouse Name (contains)
-    @BranchId        INT           = NULL,          -- NULL = all branches
-    @IsActive        BIT           = NULL,          -- NULL = all
-    @IsMainWarehouse BIT           = NULL,          -- NULL = all
-    @SortColumn      NVARCHAR(30)  = N'WarehouseCode', -- WarehouseCode | WarehouseName | BranchName | Address | IsMainWarehouse | IsActive | CreatedAtUtc
+    @Search          NVARCHAR(150) = NULL,
+    @BranchId        INT           = NULL,
+    @IsActive        BIT           = NULL,
+    @IsMainWarehouse BIT           = NULL,
+    @SortColumn      NVARCHAR(30)  = N'WarehouseCode',
     @SortDirection   NVARCHAR(4)   = N'ASC',
     @PageNumber      INT           = 1,
     @PageSize        INT           = 10
@@ -26,9 +23,14 @@ BEGIN
 
     SELECT w.Id, w.WarehouseCode, w.WarehouseName, w.BranchId, b.BranchCode, b.BranchName, w.Address,
            w.IsMainWarehouse, w.IsActive, w.CreatedAtUtc, w.CreatedBy, w.UpdatedAtUtc, w.UpdatedBy, w.RowVersion,
+           w.ParentId, w.[Level], w.AllowOutOfStockOverride,
+           ParentCode = p.WarehouseCode,
+           ParentName = p.WarehouseName,
+           ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id),
            COUNT(*) OVER () AS TotalCount
     FROM masterdata.Warehouses w
     INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
+    LEFT  JOIN masterdata.Warehouses p ON p.Id = w.ParentId
     WHERE (@Search IS NULL OR w.WarehouseCode LIKE N'%' + @Search + N'%' OR w.WarehouseName LIKE N'%' + @Search + N'%')
       AND (@BranchId IS NULL OR w.BranchId = @BranchId)
       AND (@IsActive IS NULL OR w.IsActive = @IsActive)

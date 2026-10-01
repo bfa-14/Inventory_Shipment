@@ -1,27 +1,10 @@
-/* ================================================================== 16. Purchase documents re-created for the container model
-
-   Save        + @LineContainers (invoice from containers), receipt mode automatic (2 with containers, 1 without),
-                 returns of imported goods carry the container landed cost; the value basis of the container charges follows.
-   Post        imported invoice: exporter reference required (65018), every line on a container line within what is
-                 loaded (65019), no invoice charges (65020).
-   Cancel      an order loaded into containers cannot be cancelled (65021); an invoice whose container is offloaded neither.
-   Delete      nothing to clean on the containers any more.
-   Get         lines: container of the line, loaded / transit per order line, container charges share and estimated landed
-                 cost per invoice line; set 6 adds the container charges (kind CNT, read-only) with the share of this invoice;
-                 set 7 = containers of the order / invoice.
-   CreateFromSource  refused for an order shipped in containers (65021): use CreateFromContainers.
-   SetCharges / LandedCostAdjustment_Save  refused on an imported invoice (65020 / 67012).
-   Close       an order whose containers are not fully invoiced cannot be closed (65021).
-   ================================================================== */
-
--- Re-created (27): invoice from containers (@LineContainers), automatic receipt mode, landed cost of imported returns.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @Id                  INT            = NULL,
     @DocumentTypeCode    NVARCHAR(20),
     @DocumentDate        DATE,
     @ExpectedDate        DATE           = NULL,
     @BranchId            INT,
-    @WarehouseId         INT,
+    @WarehouseId         INT = NULL,
     @SupplierId          INT,
     @CurrencyId          INT            = NULL,
     @RateType            TINYINT        = 1,
@@ -42,6 +25,12 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
+
+    /* The warehouse lives on the LINES. The header keeps one so that document lists, filters,
+       reports and exports still have a warehouse to show; when the caller does not send one it is
+       taken from the first line. */
+    IF @WarehouseId IS NULL
+        SELECT TOP (1) @WarehouseId = WarehouseId FROM @Lines ORDER BY LineNumber;
 
     SET @SupplierReference = NULLIF(LTRIM(RTRIM(@SupplierReference)), N'');
     SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
@@ -166,7 +155,7 @@ BEGIN
 
         INSERT INTO purchase.PurchaseDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
                                                     UnitPrice, DiscountPercent, UnitCostBase, FobCostBase, ImportRowNumber, Notes, SourceLineId)
-        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, @WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
                ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
                ISNULL(l.DiscountPercent, 0),
                CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.LandedCostBase, src.UnitCostBase) END,   -- returns carry the LANDED cost (the container's for imports)

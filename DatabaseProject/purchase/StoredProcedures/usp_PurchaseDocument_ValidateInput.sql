@@ -1,11 +1,9 @@
-/* ================================================================== 4. Validation helper */
-
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_ValidateInput
     @DocumentTypeCode   NVARCHAR(20),
     @DocumentDate       DATE,
     @ExpectedDate       DATE,
     @BranchId           INT,
-    @WarehouseId        INT,
+    @WarehouseId        INT = NULL,
     @SupplierId         INT,
     @CurrencyId         INT,             -- NULL = supplier default currency, else base
     @RateType           TINYINT,
@@ -26,12 +24,19 @@ BEGIN
     IF @DocumentTypeId IS NULL THROW 65008, 'Document type not found, inactive, or not a purchase document.', 1;
 
     IF @DocumentDate IS NULL THROW 65000, 'Document Date is required.', 1;
-    IF @DocumentDate > CAST(SYSUTCDATETIME() AS DATE) THROW 65000, 'Document Date cannot be in the future.', 1;
+    /* ONE DAY OF TOLERANCE, because this compares a LOCAL date against a UTC one. The date on the
+       document is the one the reader sees on their own clock; SYSUTCDATETIME() is the server's in
+       UTC. East of Greenwich the two disagree for the first hours after midnight - at 00:20 in
+       Beirut (UTC+3) it is still yesterday in UTC, so a document dated today was refused as being
+       in the future. A day covers every offset without letting a genuinely future date through by
+       more than one. */
+    IF @DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 65000, 'Document Date cannot be in the future.', 1;
     IF @ExpectedDate IS NOT NULL AND @ExpectedDate < @DocumentDate THROW 65000, 'Expected / due date cannot be before the Document Date.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 65008, 'Branch not found or inactive.', 1;
-    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
-        THROW 65008, 'The warehouse must be an active warehouse of the selected branch.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 65008, 'The default warehouse must be an active warehouse of the selected branch.', 1;
     IF @SupplierId IS NULL THROW 65000, 'Supplier is required.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1)
         THROW 65008, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
@@ -81,6 +86,8 @@ BEGIN
         CASE WHEN i.Id IS NULL THEN N'item not found.'
              WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
              WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
+             WHEN w.BranchId <> @BranchId THEN N'warehouse ' + w.WarehouseCode + N' is not available for the selected branch.'
              WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
              WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
              WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
@@ -89,7 +96,8 @@ BEGIN
     FROM @Lines l
     LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
     LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
-    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL
+    LEFT JOIN masterdata.Warehouses w  ON w.Id = l.WarehouseId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0 OR w.BranchId <> @BranchId
        OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
        OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
     ORDER BY l.LineNumber;

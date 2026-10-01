@@ -1,5 +1,3 @@
--- every future table with a foreign key to masterdata.Warehouses (stock, movements, transactions, item default
--- warehouse...) is covered automatically without changing this procedure.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Delete
     @Id INT
 AS
@@ -12,6 +10,12 @@ BEGIN
     IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @Id AND IsMainWarehouse = 1)
         THROW 52005, 'The Main Warehouse cannot be deleted. Designate another warehouse as the Main Warehouse first.', 1;
 
+    /* Said before the generic reference scan below, which would otherwise report a warehouse with
+       children as "contains inventory or is referenced by other records" - true, but not the thing
+       the reader has to fix. */
+    IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE ParentId = @Id)
+        THROW 52003, 'This warehouse has warehouses standing under it. Move or delete them first.', 1;
+
     DECLARE @sql NVARCHAR(MAX) = N'';
 
     SELECT @sql = @sql
@@ -21,7 +25,9 @@ BEGIN
     INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
     INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
     INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
-    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.Warehouses');
+    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.Warehouses')
+      -- ParentId is handled above, in its own words.
+      AND NOT (t.object_id = OBJECT_ID(N'masterdata.Warehouses') AND c.name = N'ParentId');
 
     DECLARE @Referenced BIT = 0;
 
