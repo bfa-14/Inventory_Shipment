@@ -11,7 +11,7 @@ public interface IAttachmentTypeRepository
     Task<AttachmentTypeDto?> GetAsync(int id, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<AttachmentTypeLookupDto>> LookupAsync(
-        bool activeOnly = true, int? includeId = null, CancellationToken cancellationToken = default);
+        bool activeOnly = true, int? includeId = null, string? appliesTo = null, CancellationToken cancellationToken = default);
 
     Task<int> SaveAsync(SaveAttachmentTypeRequest request, int? id, int userId, CancellationToken cancellationToken = default);
 

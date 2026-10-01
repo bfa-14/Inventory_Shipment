@@ -56,6 +56,15 @@ public static class Permissions
         public const string InvoicesCancel = "sales.invoices.cancel";
         public const string InvoicesDelete = "sales.invoices.delete";
 
+        /* Customer receipts: money coming in. View sees them; Create covers drafts and their files; the
+           rest are separate rights because they are the ones that move a customer's balance. */
+        public const string ReceiptsView = "sales.receipts.view";
+        public const string ReceiptsCreate = "sales.receipts.create";
+        public const string ReceiptsPost = "sales.receipts.post";
+        public const string ReceiptsReverse = "sales.receipts.reverse";
+        public const string ReceiptsDelete = "sales.receipts.delete";
+        public const string ReceiptsAllocate = "sales.receipts.allocate";
+
         /// <summary>Cost and margin on invoices and the profit report. A price is everybody's business; a margin is not.</summary>
         public const string ProfitView = "sales.profit.view";
     }
@@ -105,6 +114,11 @@ public static class Permissions
         public const string PortsManage = "masterdata.ports.manage";
         public const string AttachmentTypesManage = "masterdata.attachmenttypes.manage";
         public const string MovementTypesManage = "masterdata.movementtypes.manage";
+
+        /* The two lists a customer receipt line picks from. One "manage" each, like the container lists;
+           the lookups are open to any signed-in user because the receipt page reads from them. */
+        public const string PaymentMethodsManage = "masterdata.paymentmethods.manage";
+        public const string CashBankAccountsManage = "masterdata.cashbankaccounts.manage";
     }
 
     public static class Inventory
@@ -438,6 +452,10 @@ public static class Permissions
             "Add and remove documents on containers and movements.", 1460),
         new(MasterData.MovementTypesManage, "Manage movement types", MasterDataModule,
             "Define the movement types and the stage each one represents.", 1470),
+        new(MasterData.PaymentMethodsManage, "Manage payment methods", MasterDataModule,
+            "Define the payment methods a receipt line can use.", 1480),
+        new(MasterData.CashBankAccountsManage, "Manage cash / bank accounts", MasterDataModule,
+            "Define the cash boxes and bank accounts receipts are paid into.", 1490),
 
         new(Sales.InvoicesImport, "Import invoice items", SalesModule,
             "Import invoice lines from an Excel file.", 600),
@@ -456,5 +474,17 @@ public static class Permissions
             "Cancel posted sales invoices (stock reversal).", 650),
         new(Sales.InvoicesDelete, "Delete Sales Invoices", SalesModule,
             "Delete draft sales invoices.", 660),
+        new(Sales.ReceiptsView, "View Receipts", SalesModule,
+            "See customer receipts and the invoices they paid.", 700),
+        new(Sales.ReceiptsCreate, "Create Receipts", SalesModule,
+            "Create and edit draft customer receipts, and attach files to them.", 710),
+        new(Sales.ReceiptsPost, "Post Receipts", SalesModule,
+            "Post a customer receipt: it starts paying the invoices it is allocated to.", 720),
+        new(Sales.ReceiptsReverse, "Reverse Receipts", SalesModule,
+            "Reverse a posted receipt; the invoices it paid owe the money again.", 730),
+        new(Sales.ReceiptsDelete, "Delete Receipts", SalesModule,
+            "Delete draft customer receipts.", 740),
+        new(Sales.ReceiptsAllocate, "Allocate Receipts", SalesModule,
+            "Apply the unapplied credit of a posted receipt to invoices, or take an allocation back.", 750),
     ];
 }

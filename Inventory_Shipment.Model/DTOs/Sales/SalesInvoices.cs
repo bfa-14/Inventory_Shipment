@@ -82,6 +82,18 @@ public sealed class SalesInvoiceListDto
     /// <summary>The same figure in the base currency, for reporting across lists in different currencies.</summary>
     public decimal TotalAmountBase { get; init; }
 
+    /// <summary>
+    /// What receipts have paid, in the invoice currency: the sum of live allocations on POSTED receipts.
+    /// 0 on a draft or a cancelled invoice.
+    /// </summary>
+    public decimal PaidAmount { get; init; }
+
+    /// <summary>What is still owed, in the invoice currency. Null unless the invoice is posted.</summary>
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid. Null unless the invoice is a posted sales invoice.</summary>
+    public string? PaymentStatus { get; init; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime? CancelledAtUtc { get; init; }
@@ -256,6 +268,15 @@ public sealed class SalesInvoiceDto
     public decimal TotalDiscount { get; init; }
     public decimal TotalAmount { get; init; }
     public decimal TotalAmountBase { get; init; }
+
+    /// <summary>What receipts have paid, in the invoice currency. 0 on a draft or a cancelled invoice.</summary>
+    public decimal PaidAmount { get; init; }
+
+    /// <summary>What is still owed, in the invoice currency. Null unless the invoice is posted.</summary>
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid. Null unless the invoice is a posted sales invoice.</summary>
+    public string? PaymentStatus { get; init; }
 
     /// <summary>Cost of the goods that left, in the base currency. Set on posting; null without sales.profit.view.</summary>
     public decimal? TotalCostBase { get; init; }
@@ -531,6 +552,9 @@ public sealed class SalesInvoiceQuery
 
     /// <summary>Draft | Posted | Cancelled, or null for all.</summary>
     public string? Status { get; init; }
+
+    /// <summary>Unpaid | Partial | Paid, or null for all. Only posted invoices have one.</summary>
+    public string? PaymentStatus { get; init; }
 
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }

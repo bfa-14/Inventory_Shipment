@@ -39,9 +39,10 @@ public sealed class AttachmentTypesController : ControllerBase
     [Authorize]
     [ProducesResponseType<IReadOnlyList<AttachmentTypeLookupDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<AttachmentTypeLookupDto>>> Lookup(
-        [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null, CancellationToken cancellationToken = default)
+        [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null, [FromQuery] string? appliesTo = null,
+        CancellationToken cancellationToken = default)
     {
-        var result = await _attachmentTypes.LookupAsync(activeOnly, includeId, cancellationToken);
+        var result = await _attachmentTypes.LookupAsync(activeOnly, includeId, appliesTo, cancellationToken);
         return result.ToActionResult(this);
     }
 

@@ -1,39 +1,40 @@
 using System.Data;
 using Dapper;
-using Inventory_Shipment.Model.DTOs.Logistics;
+using Inventory_Shipment.Model.DTOs.Receipts;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Interfaces;
 using Microsoft.Data.SqlClient;
 
 namespace Inventory_Shipment.Repository.Implementations;
 
-public sealed class AttachmentTypeRepository : IAttachmentTypeRepository
+public sealed class CashBankAccountRepository : ICashBankAccountRepository
 {
-    /// <summary>The columns the search procedure will sort by; anything else falls back to the sort order.</summary>
-    private static readonly string[] SortColumns = ["SortOrder", "Category", "SubType", "IsActive"];
+    /// <summary>The columns the search procedure will sort by; anything else falls back to the code.</summary>
+    private static readonly string[] SortColumns = ["AccountCode", "AccountName", "AccountType", "CurrencyCode", "IsActive"];
 
     private readonly ISqlConnectionFactory _connectionFactory;
 
-    public AttachmentTypeRepository(ISqlConnectionFactory connectionFactory)
+    public CashBankAccountRepository(ISqlConnectionFactory connectionFactory)
     {
         _connectionFactory = connectionFactory;
     }
 
     /// <summary>The DTO plus the window count the procedure adds; serialized as the DTO, so the count stays out of the JSON.</summary>
-    private sealed class SearchRow : AttachmentTypeDto
+    private sealed class SearchRow : CashBankAccountDto
     {
         public int TotalCount { get; init; }
     }
 
-    public async Task<(IReadOnlyList<AttachmentTypeDto> Items, int TotalCount)> SearchAsync(
-        AttachmentTypeQuery query, CancellationToken cancellationToken = default)
+    public async Task<(IReadOnlyList<CashBankAccountDto> Items, int TotalCount)> SearchAsync(
+        CashBankAccountQuery query, CancellationToken cancellationToken = default)
     {
         var parameters = new
         {
             Search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
-            Category = string.IsNullOrWhiteSpace(query.Category) ? null : query.Category.Trim(),
+            AccountType = string.IsNullOrWhiteSpace(query.AccountType) ? null : query.AccountType.Trim(),
+            query.CurrencyId,
             query.IsActive,
-            SortColumn = SortColumns.FirstOrDefault(c => string.Equals(c, query.SortBy, StringComparison.OrdinalIgnoreCase)) ?? "SortOrder",
+            SortColumn = SortColumns.FirstOrDefault(c => string.Equals(c, query.SortBy, StringComparison.OrdinalIgnoreCase)) ?? "AccountCode",
             SortDirection = string.Equals(query.SortDir, "desc", StringComparison.OrdinalIgnoreCase) ? "DESC" : "ASC",
             PageNumber = query.Page,
             query.PageSize,
@@ -41,55 +42,59 @@ public sealed class AttachmentTypeRepository : IAttachmentTypeRepository
 
         await using var connection = _connectionFactory.Create();
         var rows = (await connection.QueryAsync<SearchRow>(new CommandDefinition(
-            "masterdata.usp_AttachmentType_Search", parameters,
+            "masterdata.usp_CashBankAccount_Search", parameters,
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
 
         return (rows, rows.Count > 0 ? rows[0].TotalCount : 0);
     }
 
-    public async Task<AttachmentTypeDto?> GetAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<CashBankAccountDto?> GetAsync(int id, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        return await connection.QuerySingleOrDefaultAsync<AttachmentTypeDto>(new CommandDefinition(
-            "masterdata.usp_AttachmentType_Get", new { Id = id },
+        return await connection.QuerySingleOrDefaultAsync<CashBankAccountDto>(new CommandDefinition(
+            "masterdata.usp_CashBankAccount_Get", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
 
-    public async Task<IReadOnlyList<AttachmentTypeLookupDto>> LookupAsync(
-        bool activeOnly = true, int? includeId = null, string? appliesTo = null, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<CashBankAccountLookupDto>> LookupAsync(
+        bool activeOnly = true, int? currencyId = null, int? branchId = null, int? includeId = null,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        var rows = await connection.QueryAsync<AttachmentTypeLookupDto>(new CommandDefinition(
-            "masterdata.usp_AttachmentType_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId, AppliesTo = appliesTo },
+        var rows = await connection.QueryAsync<CashBankAccountLookupDto>(new CommandDefinition(
+            "masterdata.usp_CashBankAccount_Lookup",
+            new { ActiveOnly = activeOnly, CurrencyId = currencyId, BranchId = branchId, IncludeId = includeId },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
         return rows.AsList();
     }
 
     public async Task<int> SaveAsync(
-        SaveAttachmentTypeRequest request, int? id, int userId, CancellationToken cancellationToken = default)
+        SaveCashBankAccountRequest request, int? id, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
-        parameters.Add("@Category", request.Category, DbType.String, size: 30);
-        parameters.Add("@SubType", request.SubType, DbType.String, size: 60);
-        parameters.Add("@AppliesTo", request.AppliesTo, DbType.String, size: 12);
-        parameters.Add("@SortOrder", request.SortOrder, DbType.Int32);
+        parameters.Add("@AccountCode", request.AccountCode, DbType.String, size: 20);
+        parameters.Add("@AccountName", request.AccountName, DbType.String, size: 100);
+        parameters.Add("@AccountType", request.AccountType, DbType.String, size: 10);
+        parameters.Add("@CurrencyId", request.CurrencyId, DbType.Int32);
+        parameters.Add("@BranchId", request.BranchId, DbType.Int32);
+        parameters.Add("@Description", request.Description, DbType.String, size: 500);
         parameters.Add("@IsActive", request.IsActive, DbType.Boolean);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
-        await ExecuteAsync("masterdata.usp_AttachmentType_Save", parameters, cancellationToken);
+        await ExecuteAsync("masterdata.usp_CashBankAccount_Save", parameters, cancellationToken);
         return parameters.Get<int>("@NewId");
     }
 
     public Task SetActiveAsync(int id, bool isActive, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("masterdata.usp_AttachmentType_SetActive",
+        => ExecuteAsync("masterdata.usp_CashBankAccount_SetActive",
             new { Id = id, IsActive = isActive, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("masterdata.usp_AttachmentType_Delete", new { Id = id, UserId = userId }, cancellationToken);
+        => ExecuteAsync("masterdata.usp_CashBankAccount_Delete", new { Id = id, UserId = userId }, cancellationToken);
 
     private async Task ExecuteAsync(string procedure, object parameters, CancellationToken cancellationToken)
     {

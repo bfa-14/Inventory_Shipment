@@ -47,8 +47,8 @@ public sealed class AttachmentTypeService : IAttachmentTypeService
     }
 
     public async Task<Result<IReadOnlyList<AttachmentTypeLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, CancellationToken cancellationToken = default)
-        => Result<IReadOnlyList<AttachmentTypeLookupDto>>.Success(await _items.LookupAsync(activeOnly, includeId, cancellationToken));
+        bool activeOnly, int? includeId, string? appliesTo = null, CancellationToken cancellationToken = default)
+        => Result<IReadOnlyList<AttachmentTypeLookupDto>>.Success(await _items.LookupAsync(activeOnly, includeId, appliesTo, cancellationToken));
 
     public async Task<Result<AttachmentTypeDto>> SaveAsync(
         int? id, SaveAttachmentTypeRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)

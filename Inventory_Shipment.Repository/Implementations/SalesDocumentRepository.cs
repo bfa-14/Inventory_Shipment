@@ -58,6 +58,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal TotalDiscount { get; init; }
         public decimal TotalAmount { get; init; }
         public decimal TotalAmountBase { get; init; }
+        public decimal PaidAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -97,6 +100,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             TotalDiscount = TotalDiscount,
             TotalAmount = TotalAmount,
             TotalAmountBase = TotalAmountBase,
+            PaidAmount = PaidAmount,
+            OutstandingAmount = OutstandingAmount,
+            PaymentStatus = PaymentStatus,
             PostedAtUtc = PostedAtUtc,
             PostedByName = PostedByName,
             CancelledAtUtc = CancelledAtUtc,
@@ -120,6 +126,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             Status = ToStatusCode(query.Status),
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
+            PaymentStatus = string.IsNullOrWhiteSpace(query.PaymentStatus) ? null : query.PaymentStatus.Trim(),
             SortColumn = ResolveSortColumn(query.SortBy),
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
@@ -189,6 +196,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal TotalDiscount { get; init; }
         public decimal TotalAmount { get; init; }
         public decimal TotalAmountBase { get; init; }
+        public decimal PaidAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
         public decimal? TotalCostBase { get; init; }
         public decimal? TotalGrossProfitBase { get; init; }
         public decimal? TotalGrossProfitPct { get; init; }
@@ -352,6 +362,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             TotalDiscount = header.TotalDiscount,
             TotalAmount = header.TotalAmount,
             TotalAmountBase = header.TotalAmountBase,
+            PaidAmount = header.PaidAmount,
+            OutstandingAmount = header.OutstandingAmount,
+            PaymentStatus = header.PaymentStatus,
             TotalCostBase = header.TotalCostBase,
             TotalGrossProfitBase = header.TotalGrossProfitBase,
             TotalGrossProfitPct = header.TotalGrossProfitPct,
