@@ -44,6 +44,9 @@ public static class Permissions
 
         /// <summary>Charge types and their allocation rules (US-MD-008): setup, not day-to-day buying.</summary>
         public const string ChargeTypesManage = "purchase.chargetypes.manage";
+
+        /// <summary>Global settings (the ViewLookup pattern): switches that change how the whole system behaves.</summary>
+        public const string SettingsManage = "configuration.settings.manage";
     }
 
     public static class Sales
@@ -359,6 +362,8 @@ public static class Permissions
             "Change numbering and behaviour of document types.", 900),
         new(Configuration.ChargeTypesManage, "Manage purchase charge types", ConfigurationModule,
             "Define charge types and their allocation rules.", 910),
+        new(Configuration.SettingsManage, "Manage global settings", ConfigurationModule,
+            "Change the system-wide settings.", 920),
 
         new(Inventory.ShortagesView, "View Shortage Plans", InventoryModule,
             "See shortage planning documents.", 950),

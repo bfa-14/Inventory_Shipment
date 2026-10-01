@@ -298,11 +298,15 @@ public static class SqlErrors
     /// <summary>A receipt created by a Cash invoice cannot be reversed on its own.</summary>
     public const int ReceiptAutomatic = 71015;
 
+    // ----- 72xxx: global settings -----
+    public const int SettingValidation = 72000;
+    public const int SettingNotFound = 72006;
+
     private const int FirstBusinessRule = 50000;
 
     // The ceiling moves with the newest block (71xxx is receipts): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 71999;
+    private const int LastBusinessRule = 72999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;
