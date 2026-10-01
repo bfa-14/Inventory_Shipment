@@ -161,7 +161,8 @@ public sealed class WarehouseService : IWarehouseService
         Address = string.IsNullOrWhiteSpace(request.Address) ? null : request.Address.Trim(),
         ParentId = request.ParentId,
         IsMainWarehouse = request.IsMainWarehouse,
-        IsActive = request.IsActive
+        IsActive = request.IsActive,
+        AllowOutOfStockOverride = request.AllowOutOfStockOverride
     };
 
     private async Task<Result<WarehouseDto>> ReadBackAsync(int id, CancellationToken cancellationToken)

@@ -162,7 +162,24 @@ public sealed class SalesInvoicesController : ControllerBase
     public async Task<ActionResult<SalesInvoiceDto>> Post(
         int id, [FromBody] PostSalesInvoiceRequest? request, CancellationToken cancellationToken)
     {
-        var result = await _invoices.PostAsync(id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _invoices.PostAsync(
+            id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken,
+            acknowledgeOutOfStock: request?.AcknowledgeOutOfStock ?? false);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// What posting this invoice would run into: every item + warehouse it asks more of than the warehouse holds,
+    /// each with the policy's verdict (warehouse override, else the global setting). The page shows the warning
+    /// from this BEFORE posting; an empty list means nothing to warn about.
+    /// </summary>
+    [HttpGet("{id:int}/stock-check")]
+    [HasPermission(Permissions.Sales.InvoicesPost)]
+    [ProducesResponseType<StockCheckDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<StockCheckDto>> StockCheck(int id, CancellationToken cancellationToken)
+    {
+        var result = await _invoices.StockCheckAsync(id, cancellationToken);
         return result.ToActionResult(this);
     }
 

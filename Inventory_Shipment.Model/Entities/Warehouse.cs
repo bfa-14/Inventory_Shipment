@@ -35,6 +35,9 @@ public class Warehouse
     public int ChildCount { get; set; }
 
     public bool IsMainWarehouse { get; set; }
+
+    /// <summary>Out-of-stock sales: true allows, false disallows, null follows the global setting.</summary>
+    public bool? AllowOutOfStockOverride { get; set; }
     public bool IsActive { get; set; } = true;
     public DateTime CreatedAtUtc { get; set; }
     public int? CreatedBy { get; set; }

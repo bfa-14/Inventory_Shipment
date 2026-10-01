@@ -140,6 +140,9 @@ public static class SqlErrors
     public const int SalesDocumentNotFound = 64006;
     public const int SalesDocumentInsufficientStock = 64007;
 
+    /// <summary>The invoice sells more than a warehouse holds, the policy allows it, and the caller has not confirmed yet.</summary>
+    public const int SalesDocumentOutOfStockConfirm = 64016;
+
     /// <summary>Branch, warehouse, client, salesman or price list missing / inactive — or no exchange rate for the date.</summary>
     public const int SalesDocumentMasterInactive = 64008;
 

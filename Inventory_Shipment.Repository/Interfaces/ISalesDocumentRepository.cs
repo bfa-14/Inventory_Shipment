@@ -29,7 +29,10 @@ public interface ISalesDocumentRepository
         int userId, CancellationToken cancellationToken = default);
 
     /// <summary>Writes the ledger, snapshots the cost of goods, assigns the number, closes the document.</summary>
-    Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+    Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false);
+
+    /// <summary>The item + warehouse pairs the document asks more of than they hold, each with its policy verdict.</summary>
+    Task<IReadOnlyList<OutOfStockLineDto>> GetOutOfStockLinesAsync(int id, CancellationToken cancellationToken = default);
 
     Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 

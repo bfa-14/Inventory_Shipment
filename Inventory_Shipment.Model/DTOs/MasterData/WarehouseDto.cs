@@ -29,6 +29,12 @@ public sealed class WarehouseDto
     /// </summary>
     public int ChildCount { get; init; }
 
+    /// <summary>
+    /// Sales invoices selling more than this warehouse holds: true allows it (after a warning), false
+    /// refuses it, null follows the global setting Sales.AllowOutOfStock.
+    /// </summary>
+    public bool? AllowOutOfStockOverride { get; init; }
+
     /// <summary>The row's ROWVERSION as Base64. Send it back on update to detect concurrent edits.</summary>
     public string RowVersion { get; init; } = string.Empty;
 }

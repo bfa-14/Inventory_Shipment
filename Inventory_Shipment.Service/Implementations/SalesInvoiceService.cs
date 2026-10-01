@@ -235,7 +235,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
     public async Task<Result<SalesInvoiceDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false)
     {
         /* A CASH INVOICE ALSO POSTS A RECEIPT, so posting it needs the receipt-posting right as well.
            Otherwise the invoice screen would be a way to take money in that the receipt screen would
@@ -254,7 +254,20 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
 
         return await ChangeAsync(id, cancellationToken,
-            version => _invoices.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted", permissions);
+            version => _invoices.PostAsync(id, version, userId, cancellationToken, acknowledgeOutOfStock), rowVersion, userId, "posted", permissions);
+    }
+
+    public async Task<Result<StockCheckDto>> StockCheckAsync(int id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var lines = await _invoices.GetOutOfStockLinesAsync(id, cancellationToken);
+            return Result<StockCheckDto>.Success(new StockCheckDto { Lines = lines });
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<StockCheckDto>(ex);
+        }
     }
 
     /// <summary>
@@ -324,7 +337,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         {
             // No row version: the draft was created a moment ago by this very call and nobody else
             // has had the chance to touch it.
-            await _invoices.PostAsync(id, null, userId, cancellationToken);
+            await _invoices.PostAsync(id, null, userId, cancellationToken, request.AcknowledgeOutOfStock);
         }
         catch (BusinessRuleException ex)
         {
@@ -801,6 +814,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         SqlErrors.SalesDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),
         SqlErrors.SalesDocumentNotFound => new RuleFailure(ErrorType.NotFound, exception.Message, "NOT_FOUND"),
         SqlErrors.SalesDocumentInsufficientStock => new RuleFailure(ErrorType.Conflict, exception.Message, "INSUFFICIENT_STOCK"),
+        SqlErrors.SalesDocumentOutOfStockConfirm => new RuleFailure(ErrorType.Conflict, exception.Message, "OUT_OF_STOCK_CONFIRM"),
         SqlErrors.SalesDocumentMasterInactive => new RuleFailure(ErrorType.Validation, exception.Message, "MASTER_INACTIVE"),
         SqlErrors.SalesDocumentNoLines => new RuleFailure(ErrorType.Validation, exception.Message, "NO_LINES"),
         SqlErrors.SalesDocumentInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),

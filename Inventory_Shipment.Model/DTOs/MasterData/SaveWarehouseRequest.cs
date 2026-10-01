@@ -35,6 +35,9 @@ public sealed class SaveWarehouseRequest
 
     public bool IsActive { get; init; } = true;
 
+    /// <summary>True allows selling out-of-stock items from this warehouse, false refuses, null follows the global setting.</summary>
+    public bool? AllowOutOfStockOverride { get; init; }
+
     /// <summary>
     /// Set to true to confirm taking the Main Warehouse flag away from the warehouse that holds it.
     /// Without it the request fails with MAIN_WAREHOUSE_EXISTS so the user can be asked first.

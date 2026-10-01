@@ -24,6 +24,7 @@ public static class WarehouseMapper
         IsActive = warehouse.IsActive,
         CreatedAtUtc = warehouse.CreatedAtUtc.AsUtc(),
         UpdatedAtUtc = warehouse.UpdatedAtUtc.AsUtc(),
+        AllowOutOfStockOverride = warehouse.AllowOutOfStockOverride,
         RowVersion = Convert.ToBase64String(warehouse.RowVersion)
     };
 

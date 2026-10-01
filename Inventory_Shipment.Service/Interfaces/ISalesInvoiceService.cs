@@ -37,9 +37,13 @@ public interface ISalesInvoiceService
         int? id, SaveSalesInvoiceRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <param name="acknowledgeOutOfStock">The user saw the out-of-stock warning and chose to proceed. Without it a shortage the policy allows is refused with OUT_OF_STOCK_CONFIRM.</param>
     Task<Result<SalesInvoiceDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false);
+
+    /// <summary>What posting this invoice would run into: the shortages and what the policy says of each. Needs the post permission.</summary>
+    Task<Result<StockCheckDto>> StockCheckAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>A sales return draft from a posted invoice, at its prices and its original COGS. Needs sales.invoices.create.</summary>
     Task<Result<SalesInvoiceDto>> CreateReturnAsync(

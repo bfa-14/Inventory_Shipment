@@ -478,6 +478,9 @@ public sealed class SaveSalesInvoiceLineRequest
 /// <summary>Creating or replacing a draft invoice. The lines are a full replace, as on every document.</summary>
 public sealed class SaveSalesInvoiceRequest
 {
+    /// <summary>Import-post only: the user has seen the out-of-stock warning and chose to proceed. Ignored by a plain save.</summary>
+    public bool AcknowledgeOutOfStock { get; init; }
+
     [Required]
     public DateOnly DocumentDate { get; init; }
 
@@ -609,6 +612,47 @@ public sealed class ImportCreateSalesInvoicesRequest
 public sealed class PostSalesInvoiceRequest
 {
     public string? RowVersion { get; init; }
+
+    /// <summary>
+    /// True once the user has seen the out-of-stock warning and chosen to proceed. Without it an invoice that
+    /// sells more than a warehouse holds is refused with OUT_OF_STOCK_CONFIRM even where the policy allows it.
+    /// </summary>
+    public bool AcknowledgeOutOfStock { get; init; }
+}
+
+/// <summary>One item + warehouse an invoice asks more of than the warehouse holds, and what the policy says about it.</summary>
+public sealed class OutOfStockLineDto
+{
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public int WarehouseId { get; init; }
+    public string WarehouseCode { get; init; } = string.Empty;
+    public string WarehouseName { get; init; } = string.Empty;
+
+    /// <summary>What the warehouse holds now, in base units.</summary>
+    public int CurrentQty { get; init; }
+
+    /// <summary>What this invoice sells from it, in base units (summed over its lines).</summary>
+    public int QuantitySold { get; init; }
+
+    /// <summary>The policy: true = may be sold after confirmation, false = the post will be refused.</summary>
+    public bool Allowed { get; init; }
+
+    /// <summary>Which level decided: Warehouse (its own override) or Global (the setting).</summary>
+    public string PolicySource { get; init; } = string.Empty;
+}
+
+/// <summary>What posting an invoice would run into, so the page can warn BEFORE it posts.</summary>
+public sealed class StockCheckDto
+{
+    public IReadOnlyList<OutOfStockLineDto> Lines { get; init; } = [];
+
+    /// <summary>At least one shortage the policy does not allow: the post would be refused.</summary>
+    public bool HasBlocked => Lines.Any(l => !l.Allowed);
+
+    /// <summary>Every shortage is allowed, so posting needs the user's confirmation.</summary>
+    public bool NeedsConfirmation => Lines.Count > 0 && !HasBlocked;
 }
 
 public sealed class CancelSalesInvoiceRequest

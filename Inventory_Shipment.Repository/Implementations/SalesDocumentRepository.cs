@@ -493,9 +493,25 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         }
     }
 
-    public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+    public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false)
         => ExecuteAsync("sales.usp_SalesDocument_Post",
-            new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+            new { Id = id, RowVersion = rowVersion, UserId = userId, AcknowledgeOutOfStock = acknowledgeOutOfStock }, cancellationToken);
+
+    public async Task<IReadOnlyList<OutOfStockLineDto>> GetOutOfStockLinesAsync(int id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var rows = await connection.QueryAsync<OutOfStockLineDto>(new CommandDefinition(
+                "sales.usp_SalesDocument_StockCheck", new { Id = id },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            return rows.AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("sales.usp_SalesDocument_Cancel",
