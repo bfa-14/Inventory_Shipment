@@ -54,6 +54,7 @@ public static class DependencyInjection
         services.TryAddScoped<IContainerTypeService, ContainerTypeService>();
         services.TryAddScoped<IPaymentMethodService, PaymentMethodService>();
         services.TryAddScoped<ISettingService, SettingService>();
+        services.TryAddScoped<IOutOfStockAuditService, OutOfStockAuditService>();
         services.TryAddScoped<ICashBankAccountService, CashBankAccountService>();
         services.TryAddScoped<IReceiptService, ReceiptService>();
         services.TryAddScoped<IPortService, PortService>();

@@ -70,6 +70,9 @@ public static class Permissions
 
         /// <summary>Cost and margin on invoices and the profit report. A price is everybody's business; a margin is not.</summary>
         public const string ProfitView = "sales.profit.view";
+
+        /// <summary>The log of out-of-stock sales users confirmed: who sold what below zero, and when.</summary>
+        public const string OutOfStockAuditView = "sales.outofstockaudit.view";
     }
 
     public static class MasterData
@@ -468,6 +471,8 @@ public static class Permissions
             "Accept a manual unit price instead of the price list price.", 610),
         new(Sales.ProfitView, "View Sales Profit", SalesModule,
             "See the sales profit report (net sales, COGS, gross profit).", 680),
+        new(Sales.OutOfStockAuditView, "View Out-of-Stock Sales log", SalesModule,
+            "See every sale confirmed below zero stock: item, warehouse, quantity, who and when.", 690),
 
         new(Sales.InvoicesView, "View Sales Invoices", SalesModule,
             "See sales invoices.", 620),
