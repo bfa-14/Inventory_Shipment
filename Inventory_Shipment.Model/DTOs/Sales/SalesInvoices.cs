@@ -20,6 +20,26 @@ public static class SalesDocumentTypes
 /// number; a Manual one is somebody's decision, made under a permission, and the invoice has to be
 /// able to say which of its lines are which when the question is asked later.
 /// </summary>
+/// <summary>
+/// How a sales invoice is paid. Cash: posting also creates and posts a receipt for the whole total,
+/// through the receipt module. On Account: no receipt; it stays unpaid until receipts are allocated.
+/// </summary>
+public static class SalesPaymentTypes
+{
+    public const byte Cash = 1;
+    public const byte OnAccount = 2;
+
+    public const string CashName = "Cash";
+    public const string OnAccountName = "On Account";
+
+    public static string? ToName(byte? code) => code switch
+    {
+        Cash => CashName,
+        OnAccount => OnAccountName,
+        _ => null,
+    };
+}
+
 public static class PriceSources
 {
     public const string PriceList = "PriceList";
@@ -93,6 +113,16 @@ public sealed class SalesInvoiceListDto
 
     /// <summary>Unpaid, Partial or Paid. Null unless the invoice is a posted sales invoice.</summary>
     public string? PaymentStatus { get; init; }
+
+    /// <summary>1 Cash, 2 On Account. Null on a draft that has not chosen yet.</summary>
+    public byte? PaymentType { get; init; }
+
+    public string? PaymentTypeName => SalesPaymentTypes.ToName(PaymentType);
+
+    /// <summary>The receipt a Cash invoice created when it was posted.</summary>
+    public int? ReceiptId { get; init; }
+
+    public string? ReceiptNumber { get; init; }
 
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
@@ -277,6 +307,28 @@ public sealed class SalesInvoiceDto
 
     /// <summary>Unpaid, Partial or Paid. Null unless the invoice is a posted sales invoice.</summary>
     public string? PaymentStatus { get; init; }
+
+    /// <summary>1 Cash, 2 On Account. Null on a draft that has not chosen yet.</summary>
+    public byte? PaymentType { get; init; }
+
+    public string? PaymentTypeName => SalesPaymentTypes.ToName(PaymentType);
+
+    /// <summary>Cash only: how and where the money is received.</summary>
+    public int? ReceiptMethodId { get; init; }
+
+    public string? ReceiptMethodName { get; init; }
+    public int? ReceiptAccountId { get; init; }
+    public string? ReceiptAccountCode { get; init; }
+    public string? ReceiptAccountName { get; init; }
+    public string? PaymentReference { get; init; }
+
+    /// <summary>The receipt this invoice created when it was posted (Cash only), with its status.</summary>
+    public int? ReceiptId { get; init; }
+
+    public string? ReceiptNumber { get; init; }
+
+    /// <summary>Draft, Posted or Reversed.</summary>
+    public string? ReceiptStatus { get; init; }
 
     /// <summary>Cost of the goods that left, in the base currency. Set on posting; null without sales.profit.view.</summary>
     public decimal? TotalCostBase { get; init; }
@@ -472,6 +524,22 @@ public sealed class SaveSalesInvoiceRequest
     public IReadOnlyList<SaveSalesInvoiceLineRequest> Lines { get; init; } = [];
 
     /// <summary>
+    /// 1 Cash, 2 On Account. May be left empty on a draft, but posting needs it. Saving never creates
+    /// a receipt: that happens once, when a Cash invoice is posted.
+    /// </summary>
+    [Range(1, 2)]
+    public byte? PaymentType { get; init; }
+
+    /// <summary>Cash only: the payment method of the automatic receipt.</summary>
+    public int? ReceiptMethodId { get; init; }
+
+    /// <summary>Cash only: the cash / bank account that receives the money. It must hold the invoice's currency.</summary>
+    public int? ReceiptAccountId { get; init; }
+
+    [StringLength(100)]
+    public string? PaymentReference { get; init; }
+
+    /// <summary>
     /// The client's draft id, sent on the FIRST save only.
     ///
     /// Excel imports run before the invoice exists log themselves under this reference; the save
@@ -526,6 +594,16 @@ public sealed class ImportCreateSalesInvoicesRequest
 
     /// <summary>True posts each created invoice at once; a refused posting leaves that one as a draft.</summary>
     public bool PostImmediately { get; init; }
+
+    /// <summary>1 Cash, 2 On Account, as on the invoice. Posting immediately needs one.</summary>
+    [Range(1, 2)]
+    public byte? PaymentType { get; init; }
+
+    public int? ReceiptMethodId { get; init; }
+    public int? ReceiptAccountId { get; init; }
+
+    [StringLength(100)]
+    public string? PaymentReference { get; init; }
 }
 
 public sealed class PostSalesInvoiceRequest
@@ -555,6 +633,10 @@ public sealed class SalesInvoiceQuery
 
     /// <summary>Unpaid | Partial | Paid, or null for all. Only posted invoices have one.</summary>
     public string? PaymentStatus { get; init; }
+
+    /// <summary>1 Cash | 2 On Account, or null for both.</summary>
+    [Range(1, 2)]
+    public int? PaymentType { get; init; }
 
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }

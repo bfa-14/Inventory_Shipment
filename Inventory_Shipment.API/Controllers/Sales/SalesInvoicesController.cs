@@ -214,7 +214,7 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<BulkActionResult>> BulkPost(
         [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
-        => Ok(await _invoices.BulkPostAsync(request.Ids, User.GetUserId(), cancellationToken));
+        => Ok(await _invoices.BulkPostAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
 
     /// <summary>Deletes several drafts; a posted invoice among them fails alone with NOT_DRAFT.</summary>
     [HttpPost("bulk-delete")]

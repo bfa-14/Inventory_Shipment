@@ -233,11 +233,29 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         return await GetAsync(savedId, permissions, cancellationToken);
     }
 
-    public Task<Result<SalesInvoiceDto>> PostAsync(
+    public async Task<Result<SalesInvoiceDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
         CancellationToken cancellationToken = default)
-        => ChangeAsync(id, cancellationToken,
+    {
+        /* A CASH INVOICE ALSO POSTS A RECEIPT, so posting it needs the receipt-posting right as well.
+           Otherwise the invoice screen would be a way to take money in that the receipt screen would
+           refuse the same person. Checked before anything is attempted; the procedure still decides
+           the rest. A null permission set means an internal caller that has already been authorised. */
+        if (permissions is not null)
+        {
+            var existing = await _invoices.GetAsync(id, cancellationToken);
+            if (existing?.PaymentType == SalesPaymentTypes.Cash && !permissions.Contains(Permissions.Sales.ReceiptsPost))
+            {
+                return Result<SalesInvoiceDto>.Failure(
+                    ErrorType.Forbidden,
+                    $"Posting a Cash invoice also posts its receipt, which needs the {Permissions.Sales.ReceiptsPost} permission.",
+                    "FORBIDDEN");
+            }
+        }
+
+        return await ChangeAsync(id, cancellationToken,
             version => _invoices.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted", permissions);
+    }
 
     /// <summary>
     /// A sales return draft from a posted invoice: what has not already come back, at the invoice's
@@ -279,6 +297,14 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         {
             return Result<ImportPostResult>.Failure(
                 ErrorType.Forbidden, "Posting an import also requires the sales.invoices.create permission.", "FORBIDDEN");
+        }
+
+        if (request.PaymentType == SalesPaymentTypes.Cash && !permissions.Contains(Permissions.Sales.ReceiptsPost))
+        {
+            return Result<ImportPostResult>.Failure(
+                ErrorType.Forbidden,
+                $"Posting a Cash invoice also posts its receipt, which needs the {Permissions.Sales.ReceiptsPost} permission.",
+                "FORBIDDEN");
         }
 
         var allowPriceOverride = permissions.Contains(Permissions.Sales.InvoicesPriceOverride);
@@ -359,17 +385,34 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
     }
 
-    public Task<Result<SalesInvoiceDto>> CancelAsync(
+    public async Task<Result<SalesInvoiceDto>> CancelAsync(
         int id, CancelSalesInvoiceRequest request, int userId, IReadOnlySet<string>? permissions = null,
         CancellationToken cancellationToken = default)
-        => ChangeAsync(id, cancellationToken,
+    {
+        /* CANCELLING A PAID CASH INVOICE REVERSES ITS RECEIPT IN THE SAME STEP, so it needs the right to
+           reverse a receipt too: this is "the authorised reversal process" of the requirement. */
+        if (permissions is not null)
+        {
+            var existing = await _invoices.GetAsync(id, cancellationToken);
+            if (existing is { ReceiptStatus: "Posted" } && !permissions.Contains(Permissions.Sales.ReceiptsReverse))
+            {
+                return Result<SalesInvoiceDto>.Failure(
+                    ErrorType.Forbidden,
+                    $"Cancelling this invoice also reverses its receipt {existing.ReceiptNumber}, which needs the {Permissions.Sales.ReceiptsReverse} permission.",
+                    "FORBIDDEN");
+            }
+        }
+
+        return await ChangeAsync(id, cancellationToken,
             version => _invoices.CancelAsync(id, request.Reason, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled", permissions);
+    }
 
-    public Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
+    public Task<BulkActionResult> BulkPostAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
         => BulkDocumentActions.RunAsync(ids, async id =>
         {
-            var posted = await PostAsync(id, null, userId, cancellationToken: cancellationToken);
+            var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
@@ -428,6 +471,10 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             ReferenceNo = request.ReferenceNo,
             Notes = request.Notes,
             DraftReference = request.DraftReference,
+            PaymentType = request.PaymentType,
+            ReceiptMethodId = request.ReceiptMethodId,
+            ReceiptAccountId = request.ReceiptAccountId,
+            PaymentReference = request.PaymentReference,
             Lines = request.Lines.Select((line, index) => new SaveSalesInvoiceLineRequest
             {
                 LineNo = index + 1,
@@ -458,7 +505,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             var invoice = saved.Value;
             if (request.PostImmediately)
             {
-                var result = await PostAsync(invoice.Id, null, userId, cancellationToken: cancellationToken);
+                var result = await PostAsync(invoice.Id, null, userId, permissions, cancellationToken);
                 if (result.IsSuccess && result.Value is not null)
                 {
                     invoice = result.Value;

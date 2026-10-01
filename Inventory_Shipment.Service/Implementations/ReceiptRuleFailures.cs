@@ -32,6 +32,7 @@ internal static class ReceiptRuleFailures
             SqlErrors.ReceiptHasAllocations => new(ErrorType.Conflict, exception.Message, "HAS_ALLOCATIONS"),
             SqlErrors.ReceiptDuplicateCode => new(ErrorType.Conflict, exception.Message, "DUPLICATE_CODE"),
             SqlErrors.ReceiptMasterInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
+            SqlErrors.ReceiptAutomatic => new(ErrorType.Conflict, exception.Message, "AUTOMATIC_RECEIPT"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),
         };
 

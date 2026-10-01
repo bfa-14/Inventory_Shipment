@@ -70,7 +70,8 @@ public interface ISalesInvoiceService
     Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>Posts each id in its own call; one refusal does not stop the others. Results keep the input order.</summary>
-    Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
+    Task<BulkActionResult> BulkPostAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>Deletes each draft in its own call; a posted invoice among the ids is a NOT_DRAFT failure for that id alone.</summary>
     Task<BulkActionResult> BulkDeleteAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);

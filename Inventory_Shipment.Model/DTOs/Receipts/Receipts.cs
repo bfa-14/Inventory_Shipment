@@ -79,6 +79,11 @@ public sealed class ReceiptListDto
 
     public string Status { get; init; } = ReceiptStatus.Draft;
 
+    /// <summary>The invoice that created this receipt automatically (a Cash sale); null for an ordinary receipt.</summary>
+    public int? SourceSalesDocumentId { get; init; }
+
+    public string? SourceInvoiceNumber { get; init; }
+
     /// <summary>What live allocations have used, in the base currency.</summary>
     public decimal AllocatedBase { get; init; }
 
@@ -214,6 +219,14 @@ public sealed class ReceiptDto
     public string? BaseCurrencyCode { get; init; }
     public string? Notes { get; init; }
     public string Status { get; init; } = ReceiptStatus.Draft;
+
+    /// <summary>
+    /// The invoice that created this receipt automatically (a Cash sale). Such a receipt cannot be
+    /// reversed on its own; cancelling that invoice reverses it.
+    /// </summary>
+    public int? SourceSalesDocumentId { get; init; }
+
+    public string? SourceInvoiceNumber { get; init; }
 
     /// <summary>What the payment lines add up to, in the base currency. Must equal <see cref="AmountBase"/> to post.</summary>
     public decimal LinesBase { get; init; }

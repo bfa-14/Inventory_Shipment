@@ -47,6 +47,8 @@ public sealed class ReceiptRepository : IReceiptRepository
         public decimal ExchangeRate { get; init; }
         public decimal AmountBase { get; init; }
         public byte Status { get; init; }
+        public int? SourceSalesDocumentId { get; init; }
+        public string? SourceInvoiceNumber { get; init; }
         public decimal AllocatedBase { get; init; }
         public decimal UnappliedBase { get; init; }
         public DateTime? PostedAtUtc { get; init; }
@@ -76,6 +78,8 @@ public sealed class ReceiptRepository : IReceiptRepository
             ExchangeRate = ExchangeRate,
             AmountBase = AmountBase,
             Status = ReceiptStatus.ToName(Status),
+            SourceSalesDocumentId = SourceSalesDocumentId,
+            SourceInvoiceNumber = SourceInvoiceNumber,
             AllocatedBase = AllocatedBase,
             UnappliedBase = UnappliedBase,
             PostedAtUtc = PostedAtUtc,
@@ -140,6 +144,8 @@ public sealed class ReceiptRepository : IReceiptRepository
         public string? BaseCurrencyCode { get; init; }
         public string? Notes { get; init; }
         public byte Status { get; init; }
+        public int? SourceSalesDocumentId { get; init; }
+        public string? SourceInvoiceNumber { get; init; }
         public decimal LinesBase { get; init; }
         public decimal AllocatedBase { get; init; }
         public decimal UnappliedBase { get; init; }
@@ -241,6 +247,8 @@ public sealed class ReceiptRepository : IReceiptRepository
             BaseCurrencyCode = header.BaseCurrencyCode,
             Notes = header.Notes,
             Status = ReceiptStatus.ToName(header.Status),
+            SourceSalesDocumentId = header.SourceSalesDocumentId,
+            SourceInvoiceNumber = header.SourceInvoiceNumber,
             LinesBase = header.LinesBase,
             AllocatedBase = header.AllocatedBase,
             UnappliedBase = header.UnappliedBase,

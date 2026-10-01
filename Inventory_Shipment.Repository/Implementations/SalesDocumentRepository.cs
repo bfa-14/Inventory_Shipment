@@ -61,6 +61,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal PaidAmount { get; init; }
         public decimal? OutstandingAmount { get; init; }
         public string? PaymentStatus { get; init; }
+        public byte? PaymentType { get; init; }
+        public int? ReceiptId { get; init; }
+        public string? ReceiptNumber { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -103,6 +106,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             PaidAmount = PaidAmount,
             OutstandingAmount = OutstandingAmount,
             PaymentStatus = PaymentStatus,
+            PaymentType = PaymentType,
+            ReceiptId = ReceiptId,
+            ReceiptNumber = ReceiptNumber,
             PostedAtUtc = PostedAtUtc,
             PostedByName = PostedByName,
             CancelledAtUtc = CancelledAtUtc,
@@ -127,6 +133,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
             PaymentStatus = string.IsNullOrWhiteSpace(query.PaymentStatus) ? null : query.PaymentStatus.Trim(),
+            query.PaymentType,
             SortColumn = ResolveSortColumn(query.SortBy),
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
@@ -199,6 +206,16 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal PaidAmount { get; init; }
         public decimal? OutstandingAmount { get; init; }
         public string? PaymentStatus { get; init; }
+        public byte? PaymentType { get; init; }
+        public int? ReceiptMethodId { get; init; }
+        public string? ReceiptMethodName { get; init; }
+        public int? ReceiptAccountId { get; init; }
+        public string? ReceiptAccountCode { get; init; }
+        public string? ReceiptAccountName { get; init; }
+        public string? PaymentReference { get; init; }
+        public int? ReceiptId { get; init; }
+        public string? ReceiptNumber { get; init; }
+        public string? ReceiptStatus { get; init; }
         public decimal? TotalCostBase { get; init; }
         public decimal? TotalGrossProfitBase { get; init; }
         public decimal? TotalGrossProfitPct { get; init; }
@@ -365,6 +382,16 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             PaidAmount = header.PaidAmount,
             OutstandingAmount = header.OutstandingAmount,
             PaymentStatus = header.PaymentStatus,
+            PaymentType = header.PaymentType,
+            ReceiptMethodId = header.ReceiptMethodId,
+            ReceiptMethodName = header.ReceiptMethodName,
+            ReceiptAccountId = header.ReceiptAccountId,
+            ReceiptAccountCode = header.ReceiptAccountCode,
+            ReceiptAccountName = header.ReceiptAccountName,
+            PaymentReference = header.PaymentReference,
+            ReceiptId = header.ReceiptId,
+            ReceiptNumber = header.ReceiptNumber,
+            ReceiptStatus = header.ReceiptStatus,
             TotalCostBase = header.TotalCostBase,
             TotalGrossProfitBase = header.TotalGrossProfitBase,
             TotalGrossProfitPct = header.TotalGrossProfitPct,
@@ -443,6 +470,10 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         parameters.Add("@AllowPriceOverride", allowPriceOverride, DbType.Boolean);
         parameters.Add("@MaxDiscountPercent", maxDiscountPercent, DbType.Decimal);
         parameters.Add("@DraftReference", request.DraftReference, DbType.String, size: 50);
+        parameters.Add("@PaymentType", request.PaymentType, DbType.Byte);
+        parameters.Add("@ReceiptMethodId", request.ReceiptMethodId, DbType.Int32);
+        parameters.Add("@ReceiptAccountId", request.ReceiptAccountId, DbType.Int32);
+        parameters.Add("@PaymentReference", request.PaymentReference, DbType.String, size: 100);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);

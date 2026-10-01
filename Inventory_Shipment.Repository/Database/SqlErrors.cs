@@ -295,6 +295,9 @@ public static class SqlErrors
     /// <summary>A payment method or cash / bank account that receipts use cannot be deleted.</summary>
     public const int ReceiptMasterInUse = 71014;
 
+    /// <summary>A receipt created by a Cash invoice cannot be reversed on its own.</summary>
+    public const int ReceiptAutomatic = 71015;
+
     private const int FirstBusinessRule = 50000;
 
     // The ceiling moves with the newest block (71xxx is receipts): a ceiling left behind
