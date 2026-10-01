@@ -41,16 +41,21 @@ public static class PurchaseDocumentStatus
     public const byte CancelledCode = 3;
     public const byte ClosedCode = 4;
 
+    /// <summary>A purchase order sent for approval (script 26): not editable, not posted yet.</summary>
+    public const byte PendingApprovalCode = 5;
+
     public const string Draft = "Draft";
     public const string Posted = "Posted";
     public const string Cancelled = "Cancelled";
     public const string Closed = "Closed";
+    public const string PendingApproval = "PendingApproval";
 
     public static string From(byte code) => code switch
     {
         PostedCode => Posted,
         CancelledCode => Cancelled,
         ClosedCode => Closed,
+        PendingApprovalCode => PendingApproval,
         _ => Draft,
     };
 
@@ -60,6 +65,7 @@ public static class PurchaseDocumentStatus
         "2" or Posted => PostedCode,
         "3" or Cancelled => CancelledCode,
         "4" or Closed => ClosedCode,
+        "5" or PendingApproval => PendingApprovalCode,
         _ => null,
     };
 }

@@ -1,3 +1,5 @@
+using System.ComponentModel.DataAnnotations;
+
 namespace Inventory_Shipment.Model.DTOs.Sales;
 
 /// <summary>
@@ -169,6 +171,9 @@ public sealed class InvoiceImportLogRequest
 
     /// <summary>Null on a stock-mode import (Inventory In / Out), where nothing was priced.</summary>
     public int? PriceListId { get; init; }
+
+    /// <summary>Explicit since the implicit [Required] on non-nullable strings was switched off: an empty name is still refused.</summary>
+    [Required]
     public string FileName { get; init; } = string.Empty;
     public int TotalRows { get; init; }
     public int ImportedRows { get; init; }

@@ -177,6 +177,35 @@ public static class SqlErrors
     /// <summary>The order is shipped in containers: invoiced from them, not from the order; not cancelled or closed while loaded.</summary>
     public const int PurchaseOrderInContainers = 65021;
 
+    // ----- 65013-65017, 65022-65024: purchase order approval (scripts 26 and 42) -----
+
+    /// <summary>A purchase order that needs approval was posted directly: send it for approval.</summary>
+    public const int PurchaseOrderApprovalRequired = 65013;
+
+    /// <summary>An emailed approval link cannot be used; the message says why (approved by, rejected, withdrawn, expired, used).</summary>
+    public const int ApprovalLinkNotUsable = 65014;
+
+    /// <summary>Nobody can approve the order: no approver is ticked in Settings > Purchase approval.</summary>
+    public const int ApprovalNoApprover = 65015;
+
+    /// <summary>The supplier has no email address while the approved order is to be emailed to it.</summary>
+    public const int ApprovalSupplierWithoutEmail = 65016;
+
+    /// <summary>The user is not (or no longer) an approver of this order, in the app or by email.</summary>
+    public const int ApprovalNotApprover = 65017;
+
+    /// <summary>The order does not need approval (settings, or under the limit): post it.</summary>
+    public const int ApprovalNotNeeded = 65022;
+
+    /// <summary>Self-approval is off and the user created or sent the order.</summary>
+    public const int ApprovalSelfApproval = 65023;
+
+    /// <summary>Settings > Purchase approval refused (limits, approvers without an address, nobody ticked...).</summary>
+    public const int ApprovalSettingsValidation = 65024;
+
+    /// <summary>Settings > Email refused (script 42): server and sender needed to send, port, security, addresses, link address.</summary>
+    public const int EmailSettingsValidation = 65025;
+
     // ----- 66xxx: inventory - shortage planning documents -----
     public const int ShortageDocumentValidation = 66000;
     public const int ShortageDocumentConcurrency = 66004;

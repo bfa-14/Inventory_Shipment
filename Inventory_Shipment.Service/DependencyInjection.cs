@@ -49,6 +49,7 @@ public static class DependencyInjection
         services.TryAddScoped<IShortageDocumentService, ShortageDocumentService>();
         services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
         services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();
+        services.TryAddScoped<ILateChargeService, LateChargeService>();
         services.TryAddScoped<ICostingReportService, CostingReportService>();
         services.TryAddScoped<IContainerService, ContainerService>();
         services.TryAddScoped<IContainerTypeService, ContainerTypeService>();
@@ -63,6 +64,18 @@ public static class DependencyInjection
         services.TryAddScoped<IContainerChargeService, ContainerChargeService>();
         services.TryAddScoped<IAttachmentTypeService, AttachmentTypeService>();
         services.TryAddScoped<ISecurityBootstrapper, SecurityBootstrapper>();
+
+        // Email: the settings are read once per 30 s for everybody (a singleton cache); the queue writes to the
+        // outbox and the outbox worker of the host sends with the SMTP sender. ISecretProtector comes from the host.
+        services.TryAddSingleton<IEmailSettingsProvider, EmailSettingsProvider>();
+        services.TryAddSingleton<IEmailSender, SmtpEmailSender>();
+        services.TryAddScoped<IEmailQueue, EmailQueue>();
+        services.TryAddScoped<IEmailSettingsService, EmailSettingsService>();
+        services.TryAddScoped<IEmailLogService, EmailLogService>();
+
+        // Purchase order approval: who approves is SQL's (Settings > Purchase approval); the mailer queues the emails.
+        services.TryAddScoped<IPurchaseApprovalMailer, LoggingPurchaseApprovalMailer>();
+        services.TryAddScoped<IPurchaseApprovalService, PurchaseApprovalService>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 
         return services;

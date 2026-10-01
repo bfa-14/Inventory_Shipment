@@ -22,6 +22,7 @@ public static class ResultExtensions
             ErrorType.NotFound => (StatusCodes.Status404NotFound, "Not found"),
             ErrorType.Conflict => (StatusCodes.Status409Conflict, "Conflict"),
             ErrorType.Locked => (StatusCodes.Status423Locked, "Account locked"),
+            ErrorType.Gone => (StatusCodes.Status410Gone, "No longer available"),
             _ => (StatusCodes.Status400BadRequest, "Request failed")
         };
 
@@ -30,7 +31,8 @@ public static class ResultExtensions
             Status = status,
             Title = title,
             Detail = result.Error,
-            Instance = controller.HttpContext.Request.Path
+            // The path of a public approval link holds its token: never echoed back.
+            Instance = JsonInputErrors.SafePath(controller.HttpContext.Request.Path)
         };
 
         if (result.Errors.Count > 0)

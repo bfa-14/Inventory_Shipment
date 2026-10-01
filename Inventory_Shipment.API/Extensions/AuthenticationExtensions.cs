@@ -16,6 +16,14 @@ public static class AuthenticationExtensions
     /// <summary>Name of the rate-limiting policy applied to login/refresh.</summary>
     public const string AuthRateLimitPolicy = "auth";
 
+    /// <summary>
+    /// Name of the policy of the public purchase approval endpoints (no sign-in): 30 requests a minute per IP,
+    /// enough for a person on the approval page, far too few to guess a token.
+    /// </summary>
+    public const string PublicApprovalRateLimitPolicy = "public-approval";
+
+    private const int PublicApprovalPermitLimit = 30;
+
     public static IServiceCollection AddJwtAuthentication(this IServiceCollection services, IConfiguration configuration)
     {
         var jwt = configuration.GetSection(JwtOptions.SectionName).Get<JwtOptions>() ?? new JwtOptions();
@@ -80,14 +88,28 @@ public static class AuthenticationExtensions
                         QueueLimit = 0
                     }));
 
+            options.AddPolicy(PublicApprovalRateLimitPolicy, httpContext =>
+                RateLimitPartition.GetFixedWindowLimiter(
+                    partitionKey: httpContext.Connection.RemoteIpAddress?.ToString() ?? "unknown",
+                    factory: _ => new FixedWindowRateLimiterOptions
+                    {
+                        PermitLimit = PublicApprovalPermitLimit,
+                        Window = TimeSpan.FromMinutes(1),
+                        QueueLimit = 0
+                    }));
+
             options.OnRejected = async (context, cancellationToken) =>
             {
-                context.HttpContext.Response.Headers.RetryAfter = limits.WindowSeconds.ToString();
+                var isPublic = context.HttpContext.Request.Path.StartsWithSegments("/api/public");
+                context.HttpContext.Response.Headers.RetryAfter = isPublic ? "60" : limits.WindowSeconds.ToString();
                 await context.HttpContext.Response.WriteAsJsonAsync(new
                 {
                     title = "Too many requests",
                     status = StatusCodes.Status429TooManyRequests,
-                    detail = "Too many sign-in attempts from this address. Please wait and try again."
+                    detail = isPublic
+                        ? "Too many attempts, try again in a minute."
+                        : "Too many sign-in attempts from this address. Please wait and try again.",
+                    code = "TOO_MANY_REQUESTS"
                 }, cancellationToken);
             };
         });

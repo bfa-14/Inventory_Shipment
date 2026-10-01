@@ -21,3 +21,6 @@ dist/
 
 *.dbmdl
 *.jfm
+
+## Data Protection keys (they encrypt the saved SMTP password) - never commit them
+App_Data/

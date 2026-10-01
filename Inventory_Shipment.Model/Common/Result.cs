@@ -8,7 +8,10 @@ public enum ErrorType
     Forbidden,
     NotFound,
     Conflict,
-    Locked
+    Locked,
+
+    /// <summary>410: what was asked for existed but can no longer be used (an approval link already used, expired, withdrawn).</summary>
+    Gone
 }
 
 /// <summary>

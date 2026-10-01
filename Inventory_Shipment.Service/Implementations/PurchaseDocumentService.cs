@@ -21,13 +21,16 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     private const string ForbiddenCode = "FORBIDDEN";
 
     private readonly IPurchaseDocumentRepository _documents;
+    private readonly IPurchaseApprovalMailer _approvalMailer;
     private readonly PurchaseOptions _options;
     private readonly ILogger<PurchaseDocumentService> _logger;
 
     public PurchaseDocumentService(
-        IPurchaseDocumentRepository documents, IOptions<PurchaseOptions> options, ILogger<PurchaseDocumentService> logger)
+        IPurchaseDocumentRepository documents, IPurchaseApprovalMailer approvalMailer, IOptions<PurchaseOptions> options,
+        ILogger<PurchaseDocumentService> logger)
     {
         _documents = documents;
+        _approvalMailer = approvalMailer;
         _options = options.Value;
         _logger = logger;
     }
@@ -207,8 +210,17 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
         }
 
-        return await ChangeAsync(id, cancellationToken,
+        var posted = await ChangeAsync(id, cancellationToken,
             version => _documents.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted");
+
+        // A PURCHASE ORDER POSTED HERE DID NOT NEED APPROVAL (the procedure refuses one that does): it goes
+        // to the supplier, with the copies, exactly as an approved one would.
+        if (posted.IsSuccess && string.Equals(allowed.Value?.DocumentTypeCode, PurchaseDocumentTypes.Order, StringComparison.OrdinalIgnoreCase))
+        {
+            await _approvalMailer.DecidedAsync(id, userId, cancellationToken);
+        }
+
+        return posted;
     }
 
     public async Task<Result<PurchaseDocumentDto>> CancelAsync(

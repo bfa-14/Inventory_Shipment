@@ -23,6 +23,9 @@ public static class DependencyInjection
         services.TryAddScoped<ILoginAuditRepository, LoginAuditRepository>();
         services.TryAddScoped<IRoleRepository, RoleRepository>();
         services.TryAddScoped<IPermissionRepository, PermissionRepository>();
+        services.TryAddScoped<IEmailOutboxRepository, EmailOutboxRepository>();
+        services.TryAddScoped<IEmailSettingsRepository, EmailSettingsRepository>();
+        services.TryAddScoped<IPurchaseApprovalRepository, PurchaseApprovalRepository>();
         services.TryAddScoped<IBranchRepository, BranchRepository>();
         services.TryAddScoped<IWarehouseRepository, WarehouseRepository>();
         services.TryAddScoped<ICurrencyRepository, CurrencyRepository>();

@@ -47,6 +47,12 @@ public static class Permissions
 
         /// <summary>Global settings (the ViewLookup pattern): switches that change how the whole system behaves.</summary>
         public const string SettingsManage = "configuration.settings.manage";
+
+        /// <summary>The Email log (script 26): what the application sent, retry the failed ones.</summary>
+        public const string EmailsView = "messaging.emails.view";
+
+        /// <summary>Settings > Email (script 42): the mail server and the sender of every email.</summary>
+        public const string EmailSettingsManage = "settings.email.manage";
     }
 
     public static class Sales
@@ -193,6 +199,15 @@ public static class Permissions
         public const string LandedCostsPost = "purchase.landedcosts.post";
         public const string LandedCostsCancel = "purchase.landedcosts.cancel";
         public const string LandedCostsDelete = "purchase.landedcosts.delete";
+
+        /// <summary>Settings > Purchase approval (script 42): whether orders need approval, and who approves them.</summary>
+        public const string ApprovalManage = "purchase.approval.manage";
+
+        /// <summary>
+        /// NOT USED since script 42: the approvers are chosen in Settings > Purchase approval. Kept in the catalog
+        /// only so that roles holding it show it as "(not used)" instead of a permission that seems to matter.
+        /// </summary>
+        public const string OrdersApproveNotUsed = "purchase.orders.approve";
     }
 
     /// <summary>
@@ -367,6 +382,11 @@ public static class Permissions
             "Define charge types and their allocation rules.", 910),
         new(Configuration.SettingsManage, "Manage global settings", ConfigurationModule,
             "Change the system-wide settings.", 920),
+        // Name, module, description and order exactly as scripts 26 / 42 write them: the sync copies these over.
+        new(Configuration.EmailsView, "View Email Log", ConfigurationModule,
+            "See the emails sent by the application and retry the failed ones.", 920),
+        new(Configuration.EmailSettingsManage, "Manage Email Settings", ConfigurationModule,
+            "Set the mail server and the sender address used for every email the application sends.", 921),
 
         new(Inventory.ShortagesView, "View Shortage Plans", InventoryModule,
             "See shortage planning documents.", 950),
@@ -387,6 +407,11 @@ public static class Permissions
             "Cancel confirmed purchase orders.", 1030),
         new(Purchase.OrdersDelete, "Delete Purchase Orders", PurchaseModule,
             "Delete draft purchase orders.", 1040),
+        // Name, description and order exactly as script 42 writes them: the sync copies these over.
+        new(Purchase.OrdersApproveNotUsed, "Approve Purchase Orders (not used)", PurchaseModule,
+            "No effect since script 42: the approvers are chosen in Settings > Purchase approval.", 1050),
+        new(Purchase.ApprovalManage, "Manage Purchase Approval Settings", PurchaseModule,
+            "Decide whether purchase orders need approval and who approves them, in the app or by email.", 1051),
 
         new(Purchase.InvoicesView, "View Purchase Invoices", PurchaseModule,
             "See purchase invoices.", 1060),
