@@ -316,8 +316,11 @@ public sealed class SaveStockDocumentRequest
     [Range(1, int.MaxValue)]
     public int BranchId { get; init; }
 
-    [Range(1, int.MaxValue)]
-    public int WarehouseId { get; init; }
+    /// <summary>
+    /// Optional. The warehouse now lives on each LINE; the header keeps one only so that document
+    /// lists, filters, reports and exports have one to show. Null = the first line's warehouse.
+    /// </summary>
+    public int? WarehouseId { get; init; }
 
     public int? ReasonId { get; init; }
 
@@ -411,8 +414,8 @@ public sealed class UpdateDocumentTypeRequest
 }
 
 /// <summary>
-/// An imported file becoming stock documents: the header every document shares, and the lines the
-/// server sorts into one document per warehouse.
+/// An imported file becoming ONE stock document: the header it takes, and the lines — each keeping
+/// the warehouse the file named on it, so the document may span several.
 /// </summary>
 public sealed class ImportCreateStockDocumentsRequest
 {

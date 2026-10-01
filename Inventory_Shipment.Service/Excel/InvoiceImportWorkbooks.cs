@@ -34,21 +34,7 @@ public sealed class InvoiceImportWorkbooks
 
     /// <summary>The headings, in the order the template lays them out. The parser matches on the text, not the order.</summary>
     private static readonly string[] TemplateHeaders =
-        ["Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity", "Unit Price / Cost", "Discount %", "Expiry Date", "Notes"];
-
-    /// <summary>
-    /// Three rows showing the three shapes a line takes: everything defaulted, a unit and warehouse
-    /// named, and a price with a discount and an expiry. The type code is filled in per request.
-    ///
-    /// EXAMPLES RATHER THAN AN EMPTY GRID. "Unit: blank means the family's unit" is a sentence people
-    /// skip; a row with the column visibly empty and a working import behind it is not.
-    /// </summary>
-    private static object?[][] ExampleRows(string typeCode) =>
-    [
-        [typeCode, "OIL-001", null, null, 10, null, null, null, "Unit, warehouse and price left blank: the defaults are used."],
-        [typeCode, "BAT-001", "Box", "WH-001", 5, null, 5, null, "A unit and a warehouse named explicitly — a second warehouse makes a second document."],
-        [typeCode, "SPK-001", "PC", null, 24, 12.5, 10, new DateTime(2027, 12, 31), "A price / cost typed in. On a sales document it needs the price-override permission."],
-    ];
+        ["Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity", "Unit Price / Cost", "Discount %", "Notes"];
 
     /// <summary>Column, whether it is required, and what happens when it is left blank.</summary>
     private static (string Column, string Required, string Behaviour)[] Instructions(DocumentTypeDto type, IReadOnlyList<DocumentTypeDto> types)
@@ -65,7 +51,7 @@ public sealed class InvoiceImportWorkbooks
             ("Unit", "Optional",
                 "The unit type name (PC, Box) or the unit's SKU. Blank uses the family's unit: the sales unit on a sales document, the purchase unit on a purchase document, the base unit on an inventory document."),
             ("Warehouse", "Optional",
-                "The warehouse code or name; it must belong to the document's branch. Blank uses the header warehouse. ONE DOCUMENT IS CREATED PER WAREHOUSE found in the file."),
+                "The warehouse code or name; it must belong to the document's branch. EVERY ROW KEEPS ITS OWN, so one file may name several: they become ONE document whose lines sit in different warehouses. Blank uses the document's."),
             ("Quantity", "Required",
                 "A whole number of units, greater than zero."),
             ("Unit Price / Cost", "Optional",
@@ -73,14 +59,19 @@ public sealed class InvoiceImportWorkbooks
                 + "On Inventory In and purchase documents: the unit cost. Ignored on Inventory Out, which takes the moving average cost."),
             ("Discount %", "Optional",
                 "Sales and purchase documents only. Blank is 0; it must be between 0 and the maximum the system allows. Both 5 and 5% are read as five percent."),
-            ("Expiry Date", "Optional",
-                "A date cell, or text as dd/MM/yyyy or yyyy-MM-dd. A date in the past is imported with a warning."),
             ("Notes", "Optional",
                 "Free text kept on the line. Rows are only merged together when their notes match as well."),
         ];
     }
 
-    /// <summary>The blank template for one type: headings, three examples with the type filled in, and the instructions.</summary>
+    /// <summary>
+    /// The blank template for one type: the headings and nothing else, plus the instructions sheet.
+    ///
+    /// NO EXAMPLE ROWS. A template that arrives with rows in it is a file someone has to empty
+    /// before they can use it, and the rows get imported by whoever does not - three invented items
+    /// posted as real ones. What each column means is on the Instructions sheet, where it can be
+    /// read without being deleted afterwards.
+    /// </summary>
     public byte[] GenerateTemplate(DocumentTypeDto type, IReadOnlyList<DocumentTypeDto> types)
     {
         using var workbook = new XLWorkbook();
@@ -96,24 +87,12 @@ public sealed class InvoiceImportWorkbooks
         header.Style.Fill.BackgroundColor = XLColor.FromArgb(0xE8, 0xEE, 0xF7);
         header.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
 
-        var examples = ExampleRows(type.Code);
-        for (var rowIndex = 0; rowIndex < examples.Length; rowIndex++)
-        {
-            var values = examples[rowIndex];
-            for (var columnIndex = 0; columnIndex < values.Length; columnIndex++)
-            {
-                SetCell(sheet.Cell(rowIndex + 2, columnIndex + 1), values[columnIndex]);
-            }
-        }
-
-        // Formatted rather than left to the reader's locale: an American Excel would otherwise show
-        // 31/12/2027 as 12/31/2027, and the next person to type a row would copy that shape back in.
-        sheet.Column(8).Style.DateFormat.Format = DateFormat;
-
         // Frozen so the headings stay visible on row 400, which is where a mistake gets made.
         sheet.SheetView.FreezeRows(1);
+        // Sized to the headings, there being nothing else in the sheet. Notes is widened by hand:
+        // left at the width of the word "Notes" it would be a column nobody could type a note into.
         sheet.Columns().AdjustToContents();
-        sheet.Column(9).Width = 70;
+        sheet.Column(8).Width = 40;
 
         AddInstructions(workbook, type, types);
 
@@ -136,7 +115,7 @@ public sealed class InvoiceImportWorkbooks
         string[] headers =
         [
             "Row", "Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity",
-            "Unit Price / Cost", "Discount %", "Expiry Date", "Status", "Message"
+            "Unit Price / Cost", "Discount %", "Status", "Message"
         ];
 
         for (var index = 0; index < headers.Length; index++)
@@ -167,9 +146,8 @@ public sealed class InvoiceImportWorkbooks
             SetCell(sheet.Cell(rowNumber, 6), row.Quantity);
             SetCell(sheet.Cell(rowNumber, 7), row.UnitPrice);
             SetCell(sheet.Cell(rowNumber, 8), row.DiscountPercent);
-            SetCell(sheet.Cell(rowNumber, 9), row.ExpiryDate);
-            sheet.Cell(rowNumber, 10).Value = row.Status;
-            SetCell(sheet.Cell(rowNumber, 11), row.Message);
+            sheet.Cell(rowNumber, 9).Value = row.Status;
+            SetCell(sheet.Cell(rowNumber, 10), row.Message);
 
             var colour = row.Status switch
             {
@@ -186,11 +164,10 @@ public sealed class InvoiceImportWorkbooks
             rowNumber++;
         }
 
-        sheet.Column(9).Style.DateFormat.Format = DateFormat;
         sheet.SheetView.FreezeRows(1);
         sheet.Columns().AdjustToContents();
-        sheet.Column(11).Width = 80;
-        sheet.Column(11).Style.Alignment.WrapText = true;
+        sheet.Column(10).Width = 80;
+        sheet.Column(10).Style.Alignment.WrapText = true;
 
         return ToBytes(workbook);
     }
@@ -219,12 +196,12 @@ public sealed class InvoiceImportWorkbooks
 
         rowNumber++;
         sheet.Cell(rowNumber, 1).Value = $"This template was downloaded for {type.Name} ({type.Code}). "
-            + "One document is created per warehouse found in the file; rows with the Warehouse column blank go to the header warehouse.";
+            + "The file becomes ONE document, however many warehouses it names: every row keeps the warehouse in its Warehouse column, and a blank one uses the document's.";
         sheet.Range(rowNumber, 1, rowNumber, 3).Merge().Style.Font.Italic = true;
 
         rowNumber++;
         sheet.Cell(rowNumber, 1).Value = "Rows that are identical in item, unit, warehouse, price, "
-            + "discount, expiry date and notes are merged into one line and their quantities added up.";
+            + "discount and notes are merged into one line and their quantities added up.";
         sheet.Range(rowNumber, 1, rowNumber, 3).Merge().Style.Font.Italic = true;
 
         rowNumber++;

@@ -180,8 +180,15 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         ItemAverageCost = null,
     };
 
+    public async Task<Result<IReadOnlyList<string>>> ItemSpecificationsAsync(
+        int itemId, CancellationToken cancellationToken = default)
+    {
+        var rows = await _invoices.ItemSpecificationsAsync(itemId, cancellationToken);
+        return Result<IReadOnlyList<string>>.Success(rows);
+    }
+
     public async Task<Result<RateResolutionDto>> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default)
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
     {
         if (!RateTypes.IsKnown(rateType))
         {
@@ -189,7 +196,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
                 ErrorType.Validation, "rateType must be 1 (Official), 2 (Non-official) or 3 (Market).", "VALIDATION");
         }
 
-        var rate = await _invoices.ResolveRateAsync(priceListId, rateType, asOfDate, cancellationToken);
+        var rate = await _invoices.ResolveRateAsync(priceListId, rateType, asOfDate, currencyId, cancellationToken);
 
         // No row means no such price list — that IS an error. A row with a null Rate is not: it is the
         // answer "nothing is defined for that day", which the page turns into a warning and a box.
@@ -226,11 +233,42 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         return await GetAsync(savedId, permissions, cancellationToken);
     }
 
-    public Task<Result<SalesInvoiceDto>> PostAsync(
+    public async Task<Result<SalesInvoiceDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
-        CancellationToken cancellationToken = default)
-        => ChangeAsync(id, cancellationToken,
-            version => _invoices.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted", permissions);
+        CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false)
+    {
+        /* A CASH INVOICE ALSO POSTS A RECEIPT, so posting it needs the receipt-posting right as well.
+           Otherwise the invoice screen would be a way to take money in that the receipt screen would
+           refuse the same person. Checked before anything is attempted; the procedure still decides
+           the rest. A null permission set means an internal caller that has already been authorised. */
+        if (permissions is not null)
+        {
+            var existing = await _invoices.GetAsync(id, cancellationToken);
+            if (existing?.PaymentType == SalesPaymentTypes.Cash && !permissions.Contains(Permissions.Sales.ReceiptsPost))
+            {
+                return Result<SalesInvoiceDto>.Failure(
+                    ErrorType.Forbidden,
+                    $"Posting a Cash invoice also posts its receipt, which needs the {Permissions.Sales.ReceiptsPost} permission.",
+                    "FORBIDDEN");
+            }
+        }
+
+        return await ChangeAsync(id, cancellationToken,
+            version => _invoices.PostAsync(id, version, userId, cancellationToken, acknowledgeOutOfStock), rowVersion, userId, "posted", permissions);
+    }
+
+    public async Task<Result<StockCheckDto>> StockCheckAsync(int id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var lines = await _invoices.GetOutOfStockLinesAsync(id, cancellationToken);
+            return Result<StockCheckDto>.Success(new StockCheckDto { Lines = lines });
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<StockCheckDto>(ex);
+        }
+    }
 
     /// <summary>
     /// A sales return draft from a posted invoice: what has not already come back, at the invoice's
@@ -274,6 +312,14 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
                 ErrorType.Forbidden, "Posting an import also requires the sales.invoices.create permission.", "FORBIDDEN");
         }
 
+        if (request.PaymentType == SalesPaymentTypes.Cash && !permissions.Contains(Permissions.Sales.ReceiptsPost))
+        {
+            return Result<ImportPostResult>.Failure(
+                ErrorType.Forbidden,
+                $"Posting a Cash invoice also posts its receipt, which needs the {Permissions.Sales.ReceiptsPost} permission.",
+                "FORBIDDEN");
+        }
+
         var allowPriceOverride = permissions.Contains(Permissions.Sales.InvoicesPriceOverride);
 
         int id;
@@ -291,7 +337,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         {
             // No row version: the draft was created a moment ago by this very call and nobody else
             // has had the chance to touch it.
-            await _invoices.PostAsync(id, null, userId, cancellationToken);
+            await _invoices.PostAsync(id, null, userId, cancellationToken, request.AcknowledgeOutOfStock);
         }
         catch (BusinessRuleException ex)
         {
@@ -352,17 +398,34 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
     }
 
-    public Task<Result<SalesInvoiceDto>> CancelAsync(
+    public async Task<Result<SalesInvoiceDto>> CancelAsync(
         int id, CancelSalesInvoiceRequest request, int userId, IReadOnlySet<string>? permissions = null,
         CancellationToken cancellationToken = default)
-        => ChangeAsync(id, cancellationToken,
+    {
+        /* CANCELLING A PAID CASH INVOICE REVERSES ITS RECEIPT IN THE SAME STEP, so it needs the right to
+           reverse a receipt too: this is "the authorised reversal process" of the requirement. */
+        if (permissions is not null)
+        {
+            var existing = await _invoices.GetAsync(id, cancellationToken);
+            if (existing is { ReceiptStatus: "Posted" } && !permissions.Contains(Permissions.Sales.ReceiptsReverse))
+            {
+                return Result<SalesInvoiceDto>.Failure(
+                    ErrorType.Forbidden,
+                    $"Cancelling this invoice also reverses its receipt {existing.ReceiptNumber}, which needs the {Permissions.Sales.ReceiptsReverse} permission.",
+                    "FORBIDDEN");
+            }
+        }
+
+        return await ChangeAsync(id, cancellationToken,
             version => _invoices.CancelAsync(id, request.Reason, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled", permissions);
+    }
 
-    public Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default)
+    public Task<BulkActionResult> BulkPostAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
         => BulkDocumentActions.RunAsync(ids, async id =>
         {
-            var posted = await PostAsync(id, null, userId, cancellationToken: cancellationToken);
+            var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
@@ -378,12 +441,12 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         });
 
     /// <summary>
-    /// The imported file's lines, sorted into one invoice per warehouse and saved one by one.
+    /// The imported file's lines, saved as ONE invoice whatever warehouses they name — the warehouse
+    /// is a line's, so a file naming several becomes one invoice whose rows each keep their own.
     ///
-    /// THE DRAFT REFERENCE GOES ON THE FIRST INVOICE ONLY. The import logs written while no invoice
-    /// existed are attached to it by the save; the page then logs the import once more against each
-    /// of the others, which gives every invoice its own "Imported" audit row. A refused posting
-    /// leaves its invoice as a draft: the lines are worth more than a clean failure.
+    /// THE DRAFT REFERENCE GOES ON THAT INVOICE. The import logs written while no invoice existed are
+    /// attached to it by the save, which gives it its "Imported" audit row. A refused posting leaves
+    /// the invoice as a draft: the lines are worth more than a clean failure.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
@@ -404,56 +467,58 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         var documents = new List<ImportCreateDocument>();
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
-        var first = true;
+        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
 
-        foreach (var (warehouseId, lines) in WarehouseGrouping.GroupLinesByWarehouse(request.Lines, line => line.WarehouseId))
+        var draft = new SaveSalesInvoiceRequest
         {
-            var draft = new SaveSalesInvoiceRequest
+            DocumentDate = request.DocumentDate,
+            DueDate = request.DueDate,
+            BranchId = request.BranchId,
+            // Left for the database, which takes the first line's: the header warehouse is only a label.
+            WarehouseId = null,
+            ClientId = request.ClientId,
+            SalesmanId = request.SalesmanId,
+            PriceListId = request.PriceListId,
+            RateType = request.RateType,
+            ExchangeRate = request.ExchangeRate,
+            ReferenceNo = request.ReferenceNo,
+            Notes = request.Notes,
+            DraftReference = request.DraftReference,
+            PaymentType = request.PaymentType,
+            ReceiptMethodId = request.ReceiptMethodId,
+            ReceiptAccountId = request.ReceiptAccountId,
+            PaymentReference = request.PaymentReference,
+            Lines = request.Lines.Select((line, index) => new SaveSalesInvoiceLineRequest
             {
-                DocumentDate = request.DocumentDate,
-                DueDate = request.DueDate,
-                BranchId = request.BranchId,
-                WarehouseId = warehouseId,
-                ClientId = request.ClientId,
-                SalesmanId = request.SalesmanId,
-                PriceListId = request.PriceListId,
-                RateType = request.RateType,
-                ExchangeRate = request.ExchangeRate,
-                ReferenceNo = request.ReferenceNo,
-                Notes = request.Notes,
-                DraftReference = first ? request.DraftReference : null,
-                Lines = lines.Select((line, index) => new SaveSalesInvoiceLineRequest
-                {
-                    LineNo = index + 1,
-                    ItemId = line.ItemId,
-                    ItemUnitId = line.ItemUnitId,
-                    WarehouseId = warehouseId,
-                    ExpiryDate = line.ExpiryDate,
-                    Quantity = line.Quantity,
-                    UnitPrice = line.UnitPrice,
-                    DiscountPercent = line.DiscountPercent,
-                    ImportRowNumber = line.ImportRowNumber,
-                    Notes = line.Notes,
-                }).ToList(),
-            };
-            first = false;
+                LineNo = index + 1,
+                ItemId = line.ItemId,
+                ItemUnitId = line.ItemUnitId,
+                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                WarehouseId = line.WarehouseId,
+                ExpiryDate = line.ExpiryDate,
+                Quantity = line.Quantity,
+                UnitPrice = line.UnitPrice,
+                DiscountPercent = line.DiscountPercent,
+                ImportRowNumber = line.ImportRowNumber,
+                Notes = line.Notes,
+            }).ToList(),
+        };
 
-            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-            if (saved.IsFailure || saved.Value is null)
+        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+        if (saved.IsFailure || saved.Value is null)
+        {
+            failed.Add(new ImportCreateFailure
             {
-                failed.Add(new ImportCreateFailure
-                {
-                    WarehouseId = warehouseId,
-                    Code = saved.Code ?? "ERROR",
-                    Message = saved.Error ?? "The invoice could not be created.",
-                });
-                continue;
-            }
-
+                Code = saved.Code ?? "ERROR",
+                Message = saved.Error ?? "The invoice could not be created.",
+            });
+        }
+        else
+        {
             var invoice = saved.Value;
             if (request.PostImmediately)
             {
-                var result = await PostAsync(invoice.Id, null, userId, cancellationToken: cancellationToken);
+                var result = await PostAsync(invoice.Id, null, userId, permissions, cancellationToken);
                 if (result.IsSuccess && result.Value is not null)
                 {
                     invoice = result.Value;
@@ -463,7 +528,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = warehouseId,
+                        WarehouseId = invoice.WarehouseId,
                         WarehouseName = invoice.WarehouseName,
                         Code = result.Code ?? "ERROR",
                         Message = result.Error ?? "The invoice could not be posted.",
@@ -475,16 +540,17 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             {
                 Id = invoice.Id,
                 DocumentNumber = invoice.DocumentNumber,
-                WarehouseId = warehouseId,
+                WarehouseId = invoice.WarehouseId,
                 WarehouseName = invoice.WarehouseName,
+                WarehouseCount = warehouseCount,
                 LineCount = invoice.Lines.Count,
                 Status = invoice.Status,
             });
         }
 
         _logger.LogInformation(
-            "Import created {Created} sales invoice(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, userId, posted, failed.Count);
+            "Import created {Created} sales invoice(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, warehouseCount, userId, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {
@@ -748,6 +814,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         SqlErrors.SalesDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),
         SqlErrors.SalesDocumentNotFound => new RuleFailure(ErrorType.NotFound, exception.Message, "NOT_FOUND"),
         SqlErrors.SalesDocumentInsufficientStock => new RuleFailure(ErrorType.Conflict, exception.Message, "INSUFFICIENT_STOCK"),
+        SqlErrors.SalesDocumentOutOfStockConfirm => new RuleFailure(ErrorType.Conflict, exception.Message, "OUT_OF_STOCK_CONFIRM"),
         SqlErrors.SalesDocumentMasterInactive => new RuleFailure(ErrorType.Validation, exception.Message, "MASTER_INACTIVE"),
         SqlErrors.SalesDocumentNoLines => new RuleFailure(ErrorType.Validation, exception.Message, "NO_LINES"),
         SqlErrors.SalesDocumentInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),

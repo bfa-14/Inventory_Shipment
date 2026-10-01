@@ -20,6 +20,26 @@ public static class SalesDocumentTypes
 /// number; a Manual one is somebody's decision, made under a permission, and the invoice has to be
 /// able to say which of its lines are which when the question is asked later.
 /// </summary>
+/// <summary>
+/// How a sales invoice is paid. Cash: posting also creates and posts a receipt for the whole total,
+/// through the receipt module. On Account: no receipt; it stays unpaid until receipts are allocated.
+/// </summary>
+public static class SalesPaymentTypes
+{
+    public const byte Cash = 1;
+    public const byte OnAccount = 2;
+
+    public const string CashName = "Cash";
+    public const string OnAccountName = "On Account";
+
+    public static string? ToName(byte? code) => code switch
+    {
+        Cash => CashName,
+        OnAccount => OnAccountName,
+        _ => null,
+    };
+}
+
 public static class PriceSources
 {
     public const string PriceList = "PriceList";
@@ -82,6 +102,28 @@ public sealed class SalesInvoiceListDto
     /// <summary>The same figure in the base currency, for reporting across lists in different currencies.</summary>
     public decimal TotalAmountBase { get; init; }
 
+    /// <summary>
+    /// What receipts have paid, in the invoice currency: the sum of live allocations on POSTED receipts.
+    /// 0 on a draft or a cancelled invoice.
+    /// </summary>
+    public decimal PaidAmount { get; init; }
+
+    /// <summary>What is still owed, in the invoice currency. Null unless the invoice is posted.</summary>
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid. Null unless the invoice is a posted sales invoice.</summary>
+    public string? PaymentStatus { get; init; }
+
+    /// <summary>1 Cash, 2 On Account. Null on a draft that has not chosen yet.</summary>
+    public byte? PaymentType { get; init; }
+
+    public string? PaymentTypeName => SalesPaymentTypes.ToName(PaymentType);
+
+    /// <summary>The receipt a Cash invoice created when it was posted.</summary>
+    public int? ReceiptId { get; init; }
+
+    public string? ReceiptNumber { get; init; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime? CancelledAtUtc { get; init; }
@@ -108,6 +150,9 @@ public sealed class SalesInvoiceLineDto
 
     /// <summary>Base units per unit — a snapshot, so a later change to the item cannot restate a posted invoice.</summary>
     public int PackingFormula { get; init; }
+
+    /// <summary>The specification the line was sold as — a snapshot on the line, not joined to the unit.</summary>
+    public string? Specification { get; init; }
 
     public int WarehouseId { get; init; }
     public string WarehouseCode { get; init; } = string.Empty;
@@ -254,6 +299,37 @@ public sealed class SalesInvoiceDto
     public decimal TotalAmount { get; init; }
     public decimal TotalAmountBase { get; init; }
 
+    /// <summary>What receipts have paid, in the invoice currency. 0 on a draft or a cancelled invoice.</summary>
+    public decimal PaidAmount { get; init; }
+
+    /// <summary>What is still owed, in the invoice currency. Null unless the invoice is posted.</summary>
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid. Null unless the invoice is a posted sales invoice.</summary>
+    public string? PaymentStatus { get; init; }
+
+    /// <summary>1 Cash, 2 On Account. Null on a draft that has not chosen yet.</summary>
+    public byte? PaymentType { get; init; }
+
+    public string? PaymentTypeName => SalesPaymentTypes.ToName(PaymentType);
+
+    /// <summary>Cash only: how and where the money is received.</summary>
+    public int? ReceiptMethodId { get; init; }
+
+    public string? ReceiptMethodName { get; init; }
+    public int? ReceiptAccountId { get; init; }
+    public string? ReceiptAccountCode { get; init; }
+    public string? ReceiptAccountName { get; init; }
+    public string? PaymentReference { get; init; }
+
+    /// <summary>The receipt this invoice created when it was posted (Cash only), with its status.</summary>
+    public int? ReceiptId { get; init; }
+
+    public string? ReceiptNumber { get; init; }
+
+    /// <summary>Draft, Posted or Reversed.</summary>
+    public string? ReceiptStatus { get; init; }
+
     /// <summary>Cost of the goods that left, in the base currency. Set on posting; null without sales.profit.view.</summary>
     public decimal? TotalCostBase { get; init; }
 
@@ -369,6 +445,10 @@ public sealed class SaveSalesInvoiceLineRequest
     [Range(1, int.MaxValue)]
     public int WarehouseId { get; init; }
 
+    /// <summary>Chosen from the specifications of the item's units. Blank is stored as null.</summary>
+    [StringLength(100)]
+    public string? Specification { get; init; }
+
     public DateOnly? ExpiryDate { get; init; }
 
     [Range(1, int.MaxValue)]
@@ -398,6 +478,9 @@ public sealed class SaveSalesInvoiceLineRequest
 /// <summary>Creating or replacing a draft invoice. The lines are a full replace, as on every document.</summary>
 public sealed class SaveSalesInvoiceRequest
 {
+    /// <summary>Import-post only: the user has seen the out-of-stock warning and chose to proceed. Ignored by a plain save.</summary>
+    public bool AcknowledgeOutOfStock { get; init; }
+
     [Required]
     public DateOnly DocumentDate { get; init; }
 
@@ -406,8 +489,11 @@ public sealed class SaveSalesInvoiceRequest
     [Range(1, int.MaxValue)]
     public int BranchId { get; init; }
 
-    [Range(1, int.MaxValue)]
-    public int WarehouseId { get; init; }
+    /// <summary>
+    /// Optional. The warehouse now lives on each LINE; the header keeps one only so that document
+    /// lists, filters, reports and exports have one to show. Null = the first line's warehouse.
+    /// </summary>
+    public int? WarehouseId { get; init; }
 
     [Range(1, int.MaxValue)]
     public int ClientId { get; init; }
@@ -416,6 +502,13 @@ public sealed class SaveSalesInvoiceRequest
 
     [Range(1, int.MaxValue)]
     public int PriceListId { get; init; }
+
+    /// <summary>
+    /// The currency the customer is billed in. Null is the price list's, which is how it has always
+    /// worked; a different one converts every list price into it using the two currencies' rates.
+    /// </summary>
+    [Range(1, int.MaxValue)]
+    public int? CurrencyId { get; init; }
 
     /// <summary>1 Official (default), 2 Non-official, 3 Market.</summary>
     [Range(1, 3)]
@@ -434,6 +527,22 @@ public sealed class SaveSalesInvoiceRequest
     public IReadOnlyList<SaveSalesInvoiceLineRequest> Lines { get; init; } = [];
 
     /// <summary>
+    /// 1 Cash, 2 On Account. May be left empty on a draft, but posting needs it. Saving never creates
+    /// a receipt: that happens once, when a Cash invoice is posted.
+    /// </summary>
+    [Range(1, 2)]
+    public byte? PaymentType { get; init; }
+
+    /// <summary>Cash only: the payment method of the automatic receipt.</summary>
+    public int? ReceiptMethodId { get; init; }
+
+    /// <summary>Cash only: the cash / bank account that receives the money. It must hold the invoice's currency.</summary>
+    public int? ReceiptAccountId { get; init; }
+
+    [StringLength(100)]
+    public string? PaymentReference { get; init; }
+
+    /// <summary>
     /// The client's draft id, sent on the FIRST save only.
     ///
     /// Excel imports run before the invoice exists log themselves under this reference; the save
@@ -447,10 +556,9 @@ public sealed class SaveSalesInvoiceRequest
 }
 
 /// <summary>
-/// An imported file becoming invoices: the header every invoice shares, and the lines the server
-/// sorts into one invoice per warehouse. The draft reference goes on the FIRST invoice only — the
-/// import logs written before the invoices existed are attached to it; the others get their own
-/// "Imported" audit rows through the log endpoint, called with their ids.
+/// An imported file becoming ONE invoice: the header it takes, and the lines — each keeping the
+/// warehouse the file named on it, so the invoice may span several. The draft reference goes on that
+/// invoice, so the import logs written before it existed are attached to it as its "Imported" row.
 /// </summary>
 public sealed class ImportCreateSalesInvoicesRequest
 {
@@ -489,11 +597,62 @@ public sealed class ImportCreateSalesInvoicesRequest
 
     /// <summary>True posts each created invoice at once; a refused posting leaves that one as a draft.</summary>
     public bool PostImmediately { get; init; }
+
+    /// <summary>1 Cash, 2 On Account, as on the invoice. Posting immediately needs one.</summary>
+    [Range(1, 2)]
+    public byte? PaymentType { get; init; }
+
+    public int? ReceiptMethodId { get; init; }
+    public int? ReceiptAccountId { get; init; }
+
+    [StringLength(100)]
+    public string? PaymentReference { get; init; }
 }
 
 public sealed class PostSalesInvoiceRequest
 {
     public string? RowVersion { get; init; }
+
+    /// <summary>
+    /// True once the user has seen the out-of-stock warning and chosen to proceed. Without it an invoice that
+    /// sells more than a warehouse holds is refused with OUT_OF_STOCK_CONFIRM even where the policy allows it.
+    /// </summary>
+    public bool AcknowledgeOutOfStock { get; init; }
+}
+
+/// <summary>One item + warehouse an invoice asks more of than the warehouse holds, and what the policy says about it.</summary>
+public sealed class OutOfStockLineDto
+{
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public int WarehouseId { get; init; }
+    public string WarehouseCode { get; init; } = string.Empty;
+    public string WarehouseName { get; init; } = string.Empty;
+
+    /// <summary>What the warehouse holds now, in base units.</summary>
+    public int CurrentQty { get; init; }
+
+    /// <summary>What this invoice sells from it, in base units (summed over its lines).</summary>
+    public int QuantitySold { get; init; }
+
+    /// <summary>The policy: true = may be sold after confirmation, false = the post will be refused.</summary>
+    public bool Allowed { get; init; }
+
+    /// <summary>Which level decided: Warehouse (its own override) or Global (the setting).</summary>
+    public string PolicySource { get; init; } = string.Empty;
+}
+
+/// <summary>What posting an invoice would run into, so the page can warn BEFORE it posts.</summary>
+public sealed class StockCheckDto
+{
+    public IReadOnlyList<OutOfStockLineDto> Lines { get; init; } = [];
+
+    /// <summary>At least one shortage the policy does not allow: the post would be refused.</summary>
+    public bool HasBlocked => Lines.Any(l => !l.Allowed);
+
+    /// <summary>Every shortage is allowed, so posting needs the user's confirmation.</summary>
+    public bool NeedsConfirmation => Lines.Count > 0 && !HasBlocked;
 }
 
 public sealed class CancelSalesInvoiceRequest
@@ -515,6 +674,13 @@ public sealed class SalesInvoiceQuery
 
     /// <summary>Draft | Posted | Cancelled, or null for all.</summary>
     public string? Status { get; init; }
+
+    /// <summary>Unpaid | Partial | Paid, or null for all. Only posted invoices have one.</summary>
+    public string? PaymentStatus { get; init; }
+
+    /// <summary>1 Cash | 2 On Account, or null for both.</summary>
+    [Range(1, 2)]
+    public int? PaymentType { get; init; }
 
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }

@@ -52,6 +52,7 @@ public static class PartyMapper
         DefaultPriceListId = party.DefaultPriceListId,
         DefaultCurrencyId = party.DefaultCurrencyId,
         UserId = party.UserId,
-        IsActive = party.IsActive
+        IsActive = party.IsActive,
+        Address = party.Address
     };
 }

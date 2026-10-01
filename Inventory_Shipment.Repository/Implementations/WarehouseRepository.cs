@@ -40,6 +40,13 @@ public sealed class WarehouseRepository : IWarehouseRepository
         public byte[] RowVersion { get; init; } = [];
         public int TotalCount { get; init; }
 
+        public int? ParentId { get; init; }
+        public string? ParentCode { get; init; }
+        public string? ParentName { get; init; }
+        public int Level { get; init; } = 1;
+        public int ChildCount { get; init; }
+        public bool? AllowOutOfStockOverride { get; init; }
+
         public Warehouse ToWarehouse() => new()
         {
             Id = Id,
@@ -49,6 +56,12 @@ public sealed class WarehouseRepository : IWarehouseRepository
             BranchCode = BranchCode,
             BranchName = BranchName,
             Address = Address,
+            ParentId = ParentId,
+            ParentCode = ParentCode,
+            ParentName = ParentName,
+            Level = Level,
+            ChildCount = ChildCount,
+            AllowOutOfStockOverride = AllowOutOfStockOverride,
             IsMainWarehouse = IsMainWarehouse,
             IsActive = IsActive,
             CreatedAtUtc = CreatedAtUtc,
@@ -151,6 +164,8 @@ public sealed class WarehouseRepository : IWarehouseRepository
         parameters.Add("@IsMainWarehouse", warehouse.IsMainWarehouse, DbType.Boolean);
         parameters.Add("@IsActive", warehouse.IsActive, DbType.Boolean);
         parameters.Add("@ReplaceMainWarehouse", replaceMainWarehouse, DbType.Boolean);
+        parameters.Add("@ParentId", warehouse.ParentId, DbType.Int32);
+        parameters.Add("@AllowOutOfStockOverride", warehouse.AllowOutOfStockOverride, DbType.Boolean);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
@@ -183,6 +198,8 @@ public sealed class WarehouseRepository : IWarehouseRepository
         parameters.Add("@IsMainWarehouse", warehouse.IsMainWarehouse, DbType.Boolean);
         parameters.Add("@IsActive", warehouse.IsActive, DbType.Boolean);
         parameters.Add("@ReplaceMainWarehouse", replaceMainWarehouse, DbType.Boolean);
+        parameters.Add("@ParentId", warehouse.ParentId, DbType.Int32);
+        parameters.Add("@AllowOutOfStockOverride", warehouse.AllowOutOfStockOverride, DbType.Boolean);
         parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
 

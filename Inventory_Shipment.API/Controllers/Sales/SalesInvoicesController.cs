@@ -63,9 +63,24 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<RateResolutionDto>> GetRate(
         [FromQuery] int priceListId, [FromQuery] byte rateType = RateTypes.Official,
-        [FromQuery] DateOnly? date = null, CancellationToken cancellationToken = default)
+        [FromQuery] DateOnly? date = null, [FromQuery] int? currencyId = null, CancellationToken cancellationToken = default)
     {
-        var result = await _invoices.ResolveRateAsync(priceListId, rateType, date, cancellationToken);
+        var result = await _invoices.ResolveRateAsync(priceListId, rateType, date, currencyId, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The specifications already typed for this item on sales lines, newest first — what the line's
+    /// Specification box offers. The box is free text; these are only suggestions, so an item nobody
+    /// has sold yet answers an empty list rather than an error.
+    /// </summary>
+    [HttpGet("item-specifications")]
+    [HasPermission(Permissions.Sales.InvoicesView)]
+    [ProducesResponseType<IReadOnlyList<string>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<string>>> GetItemSpecifications(
+        [FromQuery] int itemId, CancellationToken cancellationToken = default)
+    {
+        var result = await _invoices.ItemSpecificationsAsync(itemId, cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -147,7 +162,24 @@ public sealed class SalesInvoicesController : ControllerBase
     public async Task<ActionResult<SalesInvoiceDto>> Post(
         int id, [FromBody] PostSalesInvoiceRequest? request, CancellationToken cancellationToken)
     {
-        var result = await _invoices.PostAsync(id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _invoices.PostAsync(
+            id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken,
+            acknowledgeOutOfStock: request?.AcknowledgeOutOfStock ?? false);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// What posting this invoice would run into: every item + warehouse it asks more of than the warehouse holds,
+    /// each with the policy's verdict (warehouse override, else the global setting). The page shows the warning
+    /// from this BEFORE posting; an empty list means nothing to warn about.
+    /// </summary>
+    [HttpGet("{id:int}/stock-check")]
+    [HasPermission(Permissions.Sales.InvoicesPost)]
+    [ProducesResponseType<StockCheckDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<StockCheckDto>> StockCheck(int id, CancellationToken cancellationToken)
+    {
+        var result = await _invoices.StockCheckAsync(id, cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -199,7 +231,7 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<BulkActionResult>> BulkPost(
         [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
-        => Ok(await _invoices.BulkPostAsync(request.Ids, User.GetUserId(), cancellationToken));
+        => Ok(await _invoices.BulkPostAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
 
     /// <summary>Deletes several drafts; a posted invoice among them fails alone with NOT_DRAFT.</summary>
     [HttpPost("bulk-delete")]
@@ -210,8 +242,8 @@ public sealed class SalesInvoicesController : ControllerBase
         => Ok(await _invoices.BulkDeleteAsync(request.Ids, User.GetUserId(), cancellationToken));
 
     /// <summary>
-    /// An imported file becoming invoices: one per warehouse found in the lines, each posted at once
-    /// when asked (which also needs the post permission, checked in the service).
+    /// An imported file becoming ONE invoice holding every line, each in the warehouse it names,
+    /// posted at once when asked (which also needs the post permission, checked in the service).
     /// </summary>
     [HttpPost("import-create")]
     [HasPermission(Permissions.Sales.InvoicesCreate)]

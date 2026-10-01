@@ -37,9 +37,13 @@ public interface ISalesInvoiceService
         int? id, SaveSalesInvoiceRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <param name="acknowledgeOutOfStock">The user saw the out-of-stock warning and chose to proceed. Without it a shortage the policy allows is refused with OUT_OF_STOCK_CONFIRM.</param>
     Task<Result<SalesInvoiceDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string>? permissions = null,
-        CancellationToken cancellationToken = default);
+        CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false);
+
+    /// <summary>What posting this invoice would run into: the shortages and what the policy says of each. Needs the post permission.</summary>
+    Task<Result<StockCheckDto>> StockCheckAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>A sales return draft from a posted invoice, at its prices and its original COGS. Needs sales.invoices.create.</summary>
     Task<Result<SalesInvoiceDto>> CreateReturnAsync(
@@ -70,22 +74,26 @@ public interface ISalesInvoiceService
     Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>Posts each id in its own call; one refusal does not stop the others. Results keep the input order.</summary>
-    Task<BulkActionResult> BulkPostAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
+    Task<BulkActionResult> BulkPostAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>Deletes each draft in its own call; a posted invoice among the ids is a NOT_DRAFT failure for that id alone.</summary>
     Task<BulkActionResult> BulkDeleteAsync(IReadOnlyList<int> ids, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// One invoice per warehouse found in the imported lines, each posted at once when asked. The
+    /// ONE invoice holding every imported line, each in the warehouse it names; posted at once when asked. The
     /// caller needs sales.invoices.create, and sales.invoices.post as well when posting.
     /// </summary>
     Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>The specifications already used for an item on sales lines, newest first.</summary>
+    Task<Result<IReadOnlyList<string>>> ItemSpecificationsAsync(int itemId, CancellationToken cancellationToken = default);
+
     /// <summary>The rate the page pre-fills. Rate is null when none is defined — a warning, not an error.</summary>
     Task<Result<RateResolutionDto>> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
 
     /// <summary>The invoice as a workbook: header incl. client, currency and rate; the lines; totals in both currencies.</summary>
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(int id, CancellationToken cancellationToken = default);

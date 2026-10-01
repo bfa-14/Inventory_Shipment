@@ -157,8 +157,8 @@ public sealed class StockDocumentsController : ControllerBase
         => Ok(await _documents.BulkDeleteAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
 
     /// <summary>
-    /// An imported file becoming documents: one per warehouse found in the lines, each posted at
-    /// once when asked. A refused posting leaves that document as a draft and is listed in Failed.
+    /// An imported file becoming ONE document holding every line, each in the warehouse it names,
+    /// posted at once when asked. A refused posting leaves the document as a draft, listed in Failed.
     /// </summary>
     [HttpPost("import-create")]
     [ProducesResponseType<ImportCreateResult>(StatusCodes.Status200OK)]

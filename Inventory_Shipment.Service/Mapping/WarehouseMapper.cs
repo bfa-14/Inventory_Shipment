@@ -15,10 +15,16 @@ public static class WarehouseMapper
         BranchCode = warehouse.BranchCode,
         BranchName = warehouse.BranchName,
         Address = warehouse.Address,
+        ParentId = warehouse.ParentId,
+        ParentCode = warehouse.ParentCode,
+        ParentName = warehouse.ParentName,
+        Level = warehouse.Level,
+        ChildCount = warehouse.ChildCount,
         IsMainWarehouse = warehouse.IsMainWarehouse,
         IsActive = warehouse.IsActive,
         CreatedAtUtc = warehouse.CreatedAtUtc.AsUtc(),
         UpdatedAtUtc = warehouse.UpdatedAtUtc.AsUtc(),
+        AllowOutOfStockOverride = warehouse.AllowOutOfStockOverride,
         RowVersion = Convert.ToBase64String(warehouse.RowVersion)
     };
 
@@ -31,7 +37,11 @@ public static class WarehouseMapper
         BranchCode = warehouse.BranchCode,
         BranchName = warehouse.BranchName,
         IsMainWarehouse = warehouse.IsMainWarehouse,
-        IsActive = warehouse.IsActive
+        IsActive = warehouse.IsActive,
+        // The tree, so a picker can draw it and offer only the leaves that may hold stock.
+        ParentId = warehouse.ParentId,
+        Level = warehouse.Level,
+        ChildCount = warehouse.ChildCount
     };
 
     public static BranchLookupDto ToDto(this BranchLookup branch) => new()

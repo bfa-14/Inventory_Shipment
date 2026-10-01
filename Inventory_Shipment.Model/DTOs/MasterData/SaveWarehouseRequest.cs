@@ -21,9 +21,22 @@ public sealed class SaveWarehouseRequest
     [StringLength(500)]
     public string? Address { get; init; }
 
+    /// <summary>
+    /// The warehouse this one stands under; null makes it a root.
+    ///
+    /// It need not share the branch - the tree and the branch answer different questions. The
+    /// procedure refuses a parent that already stands under this warehouse, which is the one way a
+    /// tree can be tied in a knot.
+    /// </summary>
+    [Range(1, int.MaxValue)]
+    public int? ParentId { get; init; }
+
     public bool IsMainWarehouse { get; init; }
 
     public bool IsActive { get; init; } = true;
+
+    /// <summary>True allows selling out-of-stock items from this warehouse, false refuses, null follows the global setting.</summary>
+    public bool? AllowOutOfStockOverride { get; init; }
 
     /// <summary>
     /// Set to true to confirm taking the Main Warehouse flag away from the warehouse that holds it.

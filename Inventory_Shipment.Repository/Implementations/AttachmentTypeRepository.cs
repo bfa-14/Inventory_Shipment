@@ -56,11 +56,11 @@ public sealed class AttachmentTypeRepository : IAttachmentTypeRepository
     }
 
     public async Task<IReadOnlyList<AttachmentTypeLookupDto>> LookupAsync(
-        bool activeOnly = true, int? includeId = null, CancellationToken cancellationToken = default)
+        bool activeOnly = true, int? includeId = null, string? appliesTo = null, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         var rows = await connection.QueryAsync<AttachmentTypeLookupDto>(new CommandDefinition(
-            "masterdata.usp_AttachmentType_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId },
+            "masterdata.usp_AttachmentType_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId, AppliesTo = appliesTo },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
         return rows.AsList();
@@ -73,6 +73,7 @@ public sealed class AttachmentTypeRepository : IAttachmentTypeRepository
         parameters.Add("@Id", id, DbType.Int32);
         parameters.Add("@Category", request.Category, DbType.String, size: 30);
         parameters.Add("@SubType", request.SubType, DbType.String, size: 60);
+        parameters.Add("@AppliesTo", request.AppliesTo, DbType.String, size: 12);
         parameters.Add("@SortOrder", request.SortOrder, DbType.Int32);
         parameters.Add("@IsActive", request.IsActive, DbType.Boolean);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);

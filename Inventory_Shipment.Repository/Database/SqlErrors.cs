@@ -40,6 +40,9 @@ public static class SqlErrors
     public const int WarehouseNotFound = 52006;
     public const int WarehouseBranchInactive = 52007;
 
+    /// <summary>A warehouse moved under itself, or under one of its own descendants.</summary>
+    public const int WarehouseCircular = 52008;
+
     // ----- 53xxx: master data - currencies and exchange rates -----
     public const int CurrencyValidation = 53000;
     public const int CurrencyDuplicateCode = 53001;
@@ -136,6 +139,9 @@ public static class SqlErrors
     public const int SalesDocumentNotDraft = 64005;
     public const int SalesDocumentNotFound = 64006;
     public const int SalesDocumentInsufficientStock = 64007;
+
+    /// <summary>The invoice sells more than a warehouse holds, the policy allows it, and the caller has not confirmed yet.</summary>
+    public const int SalesDocumentOutOfStockConfirm = 64016;
 
     /// <summary>Branch, warehouse, client, salesman or price list missing / inactive — or no exchange rate for the date.</summary>
     public const int SalesDocumentMasterInactive = 64008;
@@ -265,11 +271,45 @@ public static class SqlErrors
 
     public const int LogisticsInUse = 70014;
 
+    // ----- 71xxx: customer receipts - payment methods, cash / bank accounts, receipts -----
+    public const int ReceiptValidation = 71000;
+    public const int ReceiptConcurrency = 71004;
+    public const int ReceiptNotEditable = 71005;
+    public const int ReceiptNotFound = 71006;
+
+    /// <summary>The payment lines or the allocations do not add up to the receipt amount.</summary>
+    public const int ReceiptNotBalanced = 71008;
+
+    /// <summary>An allocation is more than its invoice still owes.</summary>
+    public const int ReceiptAllocationExceeds = 71009;
+
+    /// <summary>The receipt is not in the status the action needs (post a draft, reverse a posted one...).</summary>
+    public const int ReceiptInvalidStatus = 71010;
+
+    /// <summary>More allocated than the receipt has left unapplied.</summary>
+    public const int ReceiptUnappliedExceeded = 71011;
+
+    /// <summary>A Free Receipt that has since paid invoices cannot be reversed until those allocations are removed.</summary>
+    public const int ReceiptHasAllocations = 71012;
+
+    /// <summary>A payment method or account code that already exists.</summary>
+    public const int ReceiptDuplicateCode = 71013;
+
+    /// <summary>A payment method or cash / bank account that receipts use cannot be deleted.</summary>
+    public const int ReceiptMasterInUse = 71014;
+
+    /// <summary>A receipt created by a Cash invoice cannot be reversed on its own.</summary>
+    public const int ReceiptAutomatic = 71015;
+
+    // ----- 72xxx: global settings -----
+    public const int SettingValidation = 72000;
+    public const int SettingNotFound = 72006;
+
     private const int FirstBusinessRule = 50000;
 
-    // The ceiling moves with the newest block (70xxx is logistics): a ceiling left behind
+    // The ceiling moves with the newest block (71xxx is receipts): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 70999;
+    private const int LastBusinessRule = 72999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

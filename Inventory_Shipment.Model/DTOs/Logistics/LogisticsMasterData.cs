@@ -173,6 +173,10 @@ public class AttachmentTypeDto
     public string Category { get; init; } = string.Empty;
 
     public string SubType { get; init; } = string.Empty;
+
+    /// <summary>Logistics (the container pages) or Receipt (the customer receipt page).</summary>
+    public string AppliesTo { get; init; } = "Logistics";
+
     public int SortOrder { get; init; }
     public bool IsActive { get; init; }
     public DateTime CreatedAtUtc { get; init; }
@@ -216,6 +220,10 @@ public sealed class SaveAttachmentTypeRequest
     [Required]
     [StringLength(60, MinimumLength = 1)]
     public string SubType { get; init; } = string.Empty;
+
+    /// <summary>Logistics (container pages) or Receipt (customer receipts). Null keeps the row's current value; a new row defaults to Logistics.</summary>
+    [RegularExpression("^(Logistics|Receipt)$", ErrorMessage = "Applies to must be Logistics or Receipt.")]
+    public string? AppliesTo { get; init; }
 
     public int SortOrder { get; init; }
     public bool IsActive { get; init; } = true;

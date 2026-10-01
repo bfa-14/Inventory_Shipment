@@ -58,6 +58,12 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal TotalDiscount { get; init; }
         public decimal TotalAmount { get; init; }
         public decimal TotalAmountBase { get; init; }
+        public decimal PaidAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
+        public byte? PaymentType { get; init; }
+        public int? ReceiptId { get; init; }
+        public string? ReceiptNumber { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -97,6 +103,12 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             TotalDiscount = TotalDiscount,
             TotalAmount = TotalAmount,
             TotalAmountBase = TotalAmountBase,
+            PaidAmount = PaidAmount,
+            OutstandingAmount = OutstandingAmount,
+            PaymentStatus = PaymentStatus,
+            PaymentType = PaymentType,
+            ReceiptId = ReceiptId,
+            ReceiptNumber = ReceiptNumber,
             PostedAtUtc = PostedAtUtc,
             PostedByName = PostedByName,
             CancelledAtUtc = CancelledAtUtc,
@@ -120,6 +132,8 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             Status = ToStatusCode(query.Status),
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
+            PaymentStatus = string.IsNullOrWhiteSpace(query.PaymentStatus) ? null : query.PaymentStatus.Trim(),
+            query.PaymentType,
             SortColumn = ResolveSortColumn(query.SortBy),
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
@@ -189,6 +203,19 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public decimal TotalDiscount { get; init; }
         public decimal TotalAmount { get; init; }
         public decimal TotalAmountBase { get; init; }
+        public decimal PaidAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
+        public byte? PaymentType { get; init; }
+        public int? ReceiptMethodId { get; init; }
+        public string? ReceiptMethodName { get; init; }
+        public int? ReceiptAccountId { get; init; }
+        public string? ReceiptAccountCode { get; init; }
+        public string? ReceiptAccountName { get; init; }
+        public string? PaymentReference { get; init; }
+        public int? ReceiptId { get; init; }
+        public string? ReceiptNumber { get; init; }
+        public string? ReceiptStatus { get; init; }
         public decimal? TotalCostBase { get; init; }
         public decimal? TotalGrossProfitBase { get; init; }
         public decimal? TotalGrossProfitPct { get; init; }
@@ -219,6 +246,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public string? SkuCode { get; init; }
         public string? Barcode { get; init; }
         public int PackingFormula { get; init; }
+        public string? Specification { get; init; }
         public int WarehouseId { get; init; }
         public string WarehouseCode { get; init; } = string.Empty;
         public string WarehouseName { get; init; } = string.Empty;
@@ -257,6 +285,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             SkuCode = SkuCode,
             Barcode = Barcode,
             PackingFormula = PackingFormula,
+            Specification = Specification,
             WarehouseId = WarehouseId,
             WarehouseCode = WarehouseCode,
             WarehouseName = WarehouseName,
@@ -350,6 +379,19 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             TotalDiscount = header.TotalDiscount,
             TotalAmount = header.TotalAmount,
             TotalAmountBase = header.TotalAmountBase,
+            PaidAmount = header.PaidAmount,
+            OutstandingAmount = header.OutstandingAmount,
+            PaymentStatus = header.PaymentStatus,
+            PaymentType = header.PaymentType,
+            ReceiptMethodId = header.ReceiptMethodId,
+            ReceiptMethodName = header.ReceiptMethodName,
+            ReceiptAccountId = header.ReceiptAccountId,
+            ReceiptAccountCode = header.ReceiptAccountCode,
+            ReceiptAccountName = header.ReceiptAccountName,
+            PaymentReference = header.PaymentReference,
+            ReceiptId = header.ReceiptId,
+            ReceiptNumber = header.ReceiptNumber,
+            ReceiptStatus = header.ReceiptStatus,
             TotalCostBase = header.TotalCostBase,
             TotalGrossProfitBase = header.TotalGrossProfitBase,
             TotalGrossProfitPct = header.TotalGrossProfitPct,
@@ -371,8 +413,24 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         };
     }
 
+    /// <summary>
+    /// The specifications already used for one item on sales lines, newest first.
+    ///
+    /// THE SUGGESTIONS ARE HISTORY, not a master list: the column is free text, and this only saves
+    /// somebody retyping what the last invoice for the same item said.
+    /// </summary>
+    public async Task<IReadOnlyList<string>> ItemSpecificationsAsync(
+        int itemId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<string>(new CommandDefinition(
+            "sales.usp_SalesDocument_ItemSpecifications", new { ItemId = itemId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        return rows.AsList();
+    }
+
     public async Task<RateResolutionDto?> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default)
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         return await connection.QuerySingleOrDefaultAsync<RateResolutionDto>(new CommandDefinition(
@@ -382,6 +440,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
                 PriceListId = priceListId,
                 RateType = rateType,
                 AsOfDate = asOfDate?.ToDateTime(TimeOnly.MinValue),
+                CurrencyId = currencyId,
             },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
@@ -402,6 +461,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         parameters.Add("@ClientId", request.ClientId, DbType.Int32);
         parameters.Add("@SalesmanId", request.SalesmanId, DbType.Int32);
         parameters.Add("@PriceListId", request.PriceListId, DbType.Int32);
+        parameters.Add("@CurrencyId", request.CurrencyId, DbType.Int32);
         parameters.Add("@RateType", request.RateType, DbType.Byte);
         parameters.Add("@ExchangeRate", request.ExchangeRate, DbType.Decimal);
         parameters.Add("@ReferenceNo", request.ReferenceNo, DbType.String, size: 100);
@@ -410,6 +470,10 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         parameters.Add("@AllowPriceOverride", allowPriceOverride, DbType.Boolean);
         parameters.Add("@MaxDiscountPercent", maxDiscountPercent, DbType.Decimal);
         parameters.Add("@DraftReference", request.DraftReference, DbType.String, size: 50);
+        parameters.Add("@PaymentType", request.PaymentType, DbType.Byte);
+        parameters.Add("@ReceiptMethodId", request.ReceiptMethodId, DbType.Int32);
+        parameters.Add("@ReceiptAccountId", request.ReceiptAccountId, DbType.Int32);
+        parameters.Add("@PaymentReference", request.PaymentReference, DbType.String, size: 100);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
@@ -429,9 +493,25 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         }
     }
 
-    public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+    public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false)
         => ExecuteAsync("sales.usp_SalesDocument_Post",
-            new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+            new { Id = id, RowVersion = rowVersion, UserId = userId, AcknowledgeOutOfStock = acknowledgeOutOfStock }, cancellationToken);
+
+    public async Task<IReadOnlyList<OutOfStockLineDto>> GetOutOfStockLinesAsync(int id, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var rows = await connection.QueryAsync<OutOfStockLineDto>(new CommandDefinition(
+                "sales.usp_SalesDocument_StockCheck", new { Id = id },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            return rows.AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("sales.usp_SalesDocument_Cancel",
@@ -542,6 +622,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         table.Columns.Add("ItemId", typeof(int));
         table.Columns.Add("ItemUnitId", typeof(int));
         table.Columns.Add("WarehouseId", typeof(int));
+        table.Columns.Add("Specification", typeof(string));
         table.Columns.Add("ExpiryDate", typeof(DateTime));
         table.Columns.Add("Quantity", typeof(int));
         table.Columns.Add("UnitPrice", typeof(decimal));
@@ -558,6 +639,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
                 line.ItemId,
                 line.ItemUnitId,
                 line.WarehouseId,
+                (object?)line.Specification ?? DBNull.Value,
                 line.ExpiryDate is { } expiry ? expiry.ToDateTime(TimeOnly.MinValue) : DBNull.Value,
                 line.Quantity,
                 (object?)line.UnitPrice ?? DBNull.Value,

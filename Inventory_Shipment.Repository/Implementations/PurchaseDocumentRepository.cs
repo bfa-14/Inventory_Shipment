@@ -728,10 +728,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     ///
     /// COLUMN ORDER IS THE TYPE'S ORDER AND IS LOAD-BEARING — a table-valued parameter is sent
     /// positionally. Kept in the same order as the CREATE TYPE; types declared, not inferred, because
-    /// an all-null column infers as string and the server refuses the batch. The warehouse column is
-    /// filled with the header's: one document, one warehouse, and the engine ignores it anyway.
+    /// an all-null column infers as string and the server refuses the batch. The warehouse column takes
+    /// the LINE's own warehouse, falling back to the header's for callers that do not send one.
     /// </summary>
-    private static DataTable ToLineTable(IReadOnlyList<SavePurchaseDocumentLineRequest> lines, int warehouseId)
+    private static DataTable ToLineTable(IReadOnlyList<SavePurchaseDocumentLineRequest> lines, int? warehouseId)
     {
         var table = new DataTable();
         table.Columns.Add("LineNumber", typeof(int));
@@ -754,7 +754,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
                 lineNumber++,
                 line.ItemId,
                 line.ItemUnitId,
-                warehouseId,
+                line.WarehouseId ?? warehouseId ?? 0,   // 0 fails the per-line warehouse check with a clear message
                 line.ExpiryDate is { } expiry ? expiry.ToDateTime(TimeOnly.MinValue) : DBNull.Value,
                 line.Quantity,
                 (object?)line.UnitPrice ?? DBNull.Value,

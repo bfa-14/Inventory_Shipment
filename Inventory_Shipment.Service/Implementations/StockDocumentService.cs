@@ -187,11 +187,15 @@ public sealed class StockDocumentService : IStockDocumentService
         });
 
     /// <summary>
-    /// The imported file's lines, sorted into one document per warehouse and saved one by one.
+    /// The imported file's lines, saved as ONE document whatever warehouses they name.
     ///
-    /// EACH DOCUMENT IS ITS OWN CALL, so a warehouse whose lines are refused — an inactive warehouse,
-    /// an overdraw on posting — is reported for that warehouse while the others go through. A refused
-    /// posting leaves its draft in place: the lines cost somebody a file and are worth keeping.
+    /// THE WAREHOUSE IS A LINE'S, so a file naming several no longer becomes several documents — it
+    /// becomes one document whose rows each keep the warehouse the file gave them. The header's
+    /// warehouse is left for the database to take from the first line.
+    ///
+    /// A REFUSED POSTING LEAVES THE DRAFT IN PLACE and is reported in Failed: the lines cost somebody
+    /// a file and are worth keeping. The result still carries a list because the shape is shared with
+    /// the other families and with the page that reads it; it now holds at most one document.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
@@ -218,43 +222,44 @@ public sealed class StockDocumentService : IStockDocumentService
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
 
-        foreach (var (warehouseId, lines) in WarehouseGrouping.GroupLinesByWarehouse(request.Lines, line => line.WarehouseId))
+        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
+
+        var draft = new SaveStockDocumentRequest
         {
-            var draft = new SaveStockDocumentRequest
+            DocumentTypeCode = request.DocumentTypeCode,
+            DocumentDate = request.DocumentDate,
+            BranchId = request.BranchId,
+            // Left for the database, which takes the first line's: the header warehouse is only a label.
+            WarehouseId = null,
+            ReasonId = request.ReasonId,
+            ReferenceNo = request.ReferenceNo,
+            Notes = request.Notes,
+            Lines = request.Lines.Select((line, index) => new SaveStockDocumentLineRequest
             {
-                DocumentTypeCode = request.DocumentTypeCode,
-                DocumentDate = request.DocumentDate,
-                BranchId = request.BranchId,
-                WarehouseId = warehouseId,
-                ReasonId = request.ReasonId,
-                ReferenceNo = request.ReferenceNo,
-                Notes = request.Notes,
-                Lines = lines.Select((line, index) => new SaveStockDocumentLineRequest
-                {
-                    LineNo = index + 1,
-                    ItemId = line.ItemId,
-                    ItemUnitId = line.ItemUnitId,
-                    WarehouseId = warehouseId,
-                    ExpiryDate = line.ExpiryDate,
-                    Quantity = line.Quantity,
-                    // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
-                    UnitCost = isIn ? line.UnitPrice ?? 0 : null,
-                    Notes = line.Notes,
-                }).ToList(),
-            };
+                LineNo = index + 1,
+                ItemId = line.ItemId,
+                ItemUnitId = line.ItemUnitId,
+                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                WarehouseId = line.WarehouseId,
+                ExpiryDate = line.ExpiryDate,
+                Quantity = line.Quantity,
+                // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
+                UnitCost = isIn ? line.UnitPrice ?? 0 : null,
+                Notes = line.Notes,
+            }).ToList(),
+        };
 
-            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-            if (saved.IsFailure || saved.Value is null)
+        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+        if (saved.IsFailure || saved.Value is null)
+        {
+            failed.Add(new ImportCreateFailure
             {
-                failed.Add(new ImportCreateFailure
-                {
-                    WarehouseId = warehouseId,
-                    Code = saved.Code ?? "ERROR",
-                    Message = saved.Error ?? "The document could not be created.",
-                });
-                continue;
-            }
-
+                Code = saved.Code ?? "ERROR",
+                Message = saved.Error ?? "The document could not be created.",
+            });
+        }
+        else
+        {
             var document = saved.Value;
             if (request.PostImmediately)
             {
@@ -268,7 +273,7 @@ public sealed class StockDocumentService : IStockDocumentService
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = warehouseId,
+                        WarehouseId = document.WarehouseId,
                         WarehouseName = document.WarehouseName,
                         Code = result.Code ?? "ERROR",
                         Message = result.Error ?? "The document could not be posted.",
@@ -280,16 +285,17 @@ public sealed class StockDocumentService : IStockDocumentService
             {
                 Id = document.Id,
                 DocumentNumber = document.DocumentNumber,
-                WarehouseId = warehouseId,
+                WarehouseId = document.WarehouseId,
                 WarehouseName = document.WarehouseName,
+                WarehouseCount = warehouseCount,
                 LineCount = document.Lines.Count,
                 Status = document.Status,
             });
         }
 
         _logger.LogInformation(
-            "Import created {Created} {TypeCode} document(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, request.DocumentTypeCode, userId, posted, failed.Count);
+            "Import created {Created} {TypeCode} document(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, request.DocumentTypeCode, warehouseCount, userId, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {
@@ -456,7 +462,9 @@ public sealed class StockDocumentService : IStockDocumentService
         }
 
         row++;
-        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Expiry", "Qty", "Unit Cost", "Amount", "Notes"];
+        // "Total Cost" rather than "Amount", so the download and the Document Details grid it came
+        // from call the same figure the same thing.
+        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Unit Cost", "Total Cost", "Notes"];
         for (var i = 0; i < columns.Length; i++)
         {
             sheet.Cell(row, i + 1).Value = columns[i];
@@ -478,32 +486,27 @@ public sealed class StockDocumentService : IStockDocumentService
                 ? $"{line.UnitTypeName} (x{line.PackingFormula})"
                 : line.UnitTypeName;
             sheet.Cell(row, 5).Value = line.WarehouseCode;
-            if (line.ExpiryDate is { } expiry)
-            {
-                sheet.Cell(row, 6).Value = expiry;
-                sheet.Cell(row, 6).Style.DateFormat.Format = "dd/MM/yyyy";
-            }
-
-            sheet.Cell(row, 7).Value = line.Quantity;
-            sheet.Cell(row, 8).Value = line.UnitCost;
-            sheet.Cell(row, 9).Value = line.LineTotal;
-            sheet.Cell(row, 10).Value = line.Notes ?? string.Empty;
+            sheet.Cell(row, 6).Value = line.Quantity;
+            sheet.Cell(row, 7).Value = line.UnitCost;
+            sheet.Cell(row, 8).Value = line.LineTotal;
+            sheet.Cell(row, 9).Value = line.Notes ?? string.Empty;
         }
 
         if (document.Lines.Count > 0)
         {
-            sheet.Range(firstLineRow, 8, row, 9).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(firstLineRow, 7, row, 8).Style.NumberFormat.Format = "#,##0.00";
         }
 
+        // Shifted one column left with the table, so the totals keep their place against its right edge.
         row += 2;
-        sheet.Cell(row, 6).Value = "Total Items";
-        sheet.Cell(row, 7).Value = document.TotalItems;
-        sheet.Cell(row + 1, 6).Value = "Total Quantity";
-        sheet.Cell(row + 1, 7).Value = document.TotalQuantity;
-        sheet.Cell(row + 2, 6).Value = $"Total Cost ({document.CurrencyCode})";
-        sheet.Cell(row + 2, 7).Value = document.TotalCost;
-        sheet.Cell(row + 2, 7).Style.NumberFormat.Format = "#,##0.00";
-        sheet.Range(row, 6, row + 2, 6).Style.Font.Bold = true;
+        sheet.Cell(row, 5).Value = "Total Items";
+        sheet.Cell(row, 6).Value = document.TotalItems;
+        sheet.Cell(row + 1, 5).Value = "Total Quantity";
+        sheet.Cell(row + 1, 6).Value = document.TotalQuantity;
+        sheet.Cell(row + 2, 5).Value = $"Total Cost ({document.CurrencyCode})";
+        sheet.Cell(row + 2, 6).Value = document.TotalCost;
+        sheet.Cell(row + 2, 6).Style.NumberFormat.Format = "#,##0.00";
+        sheet.Range(row, 5, row + 2, 5).Style.Font.Bold = true;
 
         sheet.Columns().AdjustToContents();
         sheet.Column(3).Width = 40;

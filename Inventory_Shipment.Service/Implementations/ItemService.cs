@@ -159,9 +159,9 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<IReadOnlyList<ItemLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, CancellationToken cancellationToken = default)
+        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default)
     {
-        var items = await _items.LookupAsync(activeOnly, includeId, cancellationToken);
+        var items = await _items.LookupAsync(activeOnly, includeId, salesOnly, cancellationToken);
         return Result<IReadOnlyList<ItemLookupDto>>.Success(items.Select(i => i.ToDto()).ToList());
     }
 

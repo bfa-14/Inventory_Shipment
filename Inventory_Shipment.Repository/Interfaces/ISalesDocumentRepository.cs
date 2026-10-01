@@ -29,7 +29,10 @@ public interface ISalesDocumentRepository
         int userId, CancellationToken cancellationToken = default);
 
     /// <summary>Writes the ledger, snapshots the cost of goods, assigns the number, closes the document.</summary>
-    Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+    Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default, bool acknowledgeOutOfStock = false);
+
+    /// <summary>The item + warehouse pairs the document asks more of than they hold, each with its policy verdict.</summary>
+    Task<IReadOnlyList<OutOfStockLineDto>> GetOutOfStockLinesAsync(int id, CancellationToken cancellationToken = default);
 
     Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
@@ -41,8 +44,11 @@ public interface ISalesDocumentRepository
         int sourceId, DateOnly? documentDate, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>The rate for a price list's currency on a date. Null when the price list does not exist; Rate null when no rate is defined.</summary>
+    /// <summary>sales.usp_SalesDocument_ItemSpecifications - what other invoices called this item.</summary>
+    Task<IReadOnlyList<string>> ItemSpecificationsAsync(int itemId, CancellationToken cancellationToken = default);
+
     Task<RateResolutionDto?> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);
+        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
 
     Task<int> AddFileAsync(
         int documentId, string fileName, string contentType, byte[] content, int userId,

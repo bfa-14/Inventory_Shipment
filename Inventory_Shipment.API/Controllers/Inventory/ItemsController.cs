@@ -44,9 +44,10 @@ public sealed class ItemsController : ControllerBase
     [Authorize]
     [ProducesResponseType<IReadOnlyList<ItemLookupDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ItemLookupDto>>> Lookup(
-        [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null, CancellationToken cancellationToken = default)
+        [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null,
+        [FromQuery] bool salesOnly = false, CancellationToken cancellationToken = default)
     {
-        var result = await _itemService.LookupAsync(activeOnly, includeId, cancellationToken);
+        var result = await _itemService.LookupAsync(activeOnly, includeId, salesOnly, cancellationToken);
         return result.ToActionResult(this);
     }
 

@@ -230,13 +230,13 @@ public sealed class ItemRepository : IItemRepository
     }
 
     public async Task<IReadOnlyList<ItemLookup>> LookupAsync(
-        bool activeOnly, int? includeId, CancellationToken cancellationToken = default)
+        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
         {
             var rows = await connection.QueryAsync<ItemLookup>(new CommandDefinition(
-                "inventory.usp_Item_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId },
+                "inventory.usp_Item_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId, SalesOnly = salesOnly },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             return rows.AsList();
         }
