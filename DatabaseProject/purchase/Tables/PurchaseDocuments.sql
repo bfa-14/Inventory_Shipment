@@ -72,14 +72,14 @@ CREATE TABLE [purchase].[PurchaseDocuments] (
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
-    ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
+    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
-    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
+    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
 
 
 GO
@@ -96,8 +96,8 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
-    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
+    ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
 
 
 GO

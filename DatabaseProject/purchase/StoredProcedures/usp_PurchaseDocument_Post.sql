@@ -1,5 +1,6 @@
--- (@FromApproval = 0): approved by the user who posts it, event 7. One that needs approval is refused (65013) unless
--- the approval posts it (@FromApproval = 1, from "waiting for approval").
+/* ================================================================== 3. Post: the same rule */
+
+-- Re-created (45) from the body of script 43 (approval of 42 kept): a draft invoice saved with several items before this script.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Post
     @Id         INT,
     @RowVersion   BINARY(8) = NULL,
@@ -37,6 +38,22 @@ BEGIN
             THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
         IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
             THROW 65009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        -- (45) A supplier invoice holds ONE item: a draft saved with several before script 45 is split first.
+        IF @TypeCode = N'PINV' AND (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) > 1
+        BEGIN
+            DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id),
+                    @ItemCodes NVARCHAR(400);
+            SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+            FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+                  FROM purchase.PurchaseDocumentLines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+                  WHERE l.DocumentId = @Id
+                  GROUP BY l.ItemId, i.ItemCode
+                  ORDER BY MIN(l.LineNumber)) x;
+            SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+            THROW 65029, @ItemCodes, 1;
+        END
         IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
             THROW 65008, 'The supplier is inactive.', 1;
 
@@ -45,14 +62,18 @@ BEGIN
 
         DECLARE @FromContainers BIT = CASE WHEN @TypeCode = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
                                                                                 WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END;
-        IF @FromContainers = 1
+        -- (43) Shipped in containers: an imported invoice, linked to its containers now or later. Lines not in a container
+        --      yet are allowed: they enter the stock at the offload of the containers they are linked to afterwards.
+        IF @TypeCode = N'PINV' AND @ReceiptMode = 2
         BEGIN
             IF NULLIF(LTRIM(RTRIM((SELECT ExporterReference FROM purchase.PurchaseDocuments WHERE Id = @Id))), N'') IS NULL
                 THROW 65018, 'The exporter reference is required on an imported invoice. Enter it before posting.', 1;
-            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND ContainerLineId IS NULL)
-                THROW 65019, 'Every line of an invoice from containers must come from a container line.', 1;
             IF EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
                 THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+        END
+
+        IF @FromContainers = 1
+        BEGIN
 
             DECLARE @CtMsg NVARCHAR(400);
             SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '

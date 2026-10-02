@@ -35,15 +35,22 @@ public interface IPurchaseDocumentRepository
         int id, IReadOnlyList<ShippedLineRequest> lines, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default);
 
-    /// <summary>A draft of the target kind holding what remains on the source; the new id.</summary>
-    Task<int> CreateFromSourceAsync(
-        int sourceId, string targetTypeCode, DateOnly? documentDate, int userId,
-        CancellationToken cancellationToken = default);
+    /// <summary>
+    /// What remains on the source as drafts of the target kind: from an order ONE INVOICE PER ITEM (script 45, the
+    /// references copied to each), from an invoice one return. The first id, and the rows of the invoices (none for a return).
+    /// </summary>
+    Task<CreatedFromSource> CreateFromSourceAsync(
+        int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
+        int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>purchase.usp_PurchaseDocument_CreateFromContainers — a draft invoice from container lines of one order; the new id.</summary>
-    Task<int> CreateFromContainersAsync(
-        int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate, int userId,
-        CancellationToken cancellationToken = default);
+    /// <summary>purchase.usp_PurchaseDocument_CreateFromContainers — draft invoices from container lines of one order, one per item.</summary>
+    Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> CreateFromContainersAsync(
+        int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate,
+        string? exporterReference, string? commercialInvoiceNo, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>purchase.usp_PurchaseDocument_SplitByItem — a draft invoice of several items into one per item; the original first.</summary>
+    Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> SplitByItemAsync(
+        int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
     Task<PurchaseRateResolutionDto?> ResolveRateAsync(
         int currencyId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);

@@ -58,6 +58,12 @@ public sealed class ImportCreateDocument
 
     /// <summary>Draft | Posted — Draft when posting was not asked for, or was refused (see Failed).</summary>
     public string Status { get; init; } = string.Empty;
+
+    /// <summary>A supplier invoice's item: it holds one (script 45), one invoice per item of the file. Null for the other kinds.</summary>
+    public int? ItemId { get; init; }
+
+    public string? ItemCode { get; init; }
+    public string? ItemName { get; init; }
 }
 
 /// <summary>The document could not be created, or was created but refused posting.</summary>
@@ -80,7 +86,8 @@ public sealed class ImportCreateFailure
 ///
 /// STILL LISTS, THOUGH THE IMPORT NOW MAKES ONE DOCUMENT. The shape is shared by the three families
 /// and by the page that reads it, and a create that fails outright returns no document and one
-/// failure — so the lists stay, holding at most one each.
+/// failure — so the lists stay, holding at most one each. Supplier invoices are the exception: they
+/// hold one item (script 45), so a file of several items lists one invoice per item.
 /// </summary>
 public sealed class ImportCreateResult
 {

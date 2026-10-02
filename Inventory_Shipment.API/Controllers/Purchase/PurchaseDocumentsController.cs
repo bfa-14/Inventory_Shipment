@@ -170,13 +170,26 @@ public sealed class PurchaseDocumentsController : ControllerBase
 
     /* ── the chain ────────────────────────────────────────────────────────────────────────────── */
 
+    /// <summary>
+    /// Draft purchase invoices holding what remains to receive on the order: ONE PER ITEM (a supplier invoice
+    /// holds one item). Body { documentDate?, exporterReference?, commercialInvoiceNo? } — the references are
+    /// copied to every invoice. Answers { firstId, id (= firstId), invoices, message }.
+    /// </summary>
     [HttpPost("{id:int}/create-invoice")]
-    [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status201Created)]
+    [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
-    public Task<ActionResult<PurchaseDocumentDto>> CreateInvoice(
+    public async Task<ActionResult<CreatedPurchaseInvoicesDto>> CreateInvoice(
         int id, [FromBody] CreateFromSourceRequest? request, CancellationToken cancellationToken)
-        => CreateFromSource(id, PurchaseDocumentTypes.Invoice, request, cancellationToken);
+    {
+        var result = await _documents.CreateInvoicesFromOrderAsync(
+            id, request ?? new CreateFromSourceRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.IsSuccess
+            ? CreatedAtAction(nameof(GetById), new { id = result.Value!.FirstId }, result.Value)
+            : this.ToProblem(result);
+    }
 
     [HttpPost("{id:int}/create-return")]
     [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status201Created)]
@@ -187,23 +200,43 @@ public sealed class PurchaseDocumentsController : ControllerBase
         => CreateFromSource(id, PurchaseDocumentTypes.Return, request, cancellationToken);
 
     /// <summary>
-    /// A draft purchase invoice from container lines of the order: body { documentDate?, lines?:
-    /// [{ containerLineId, quantityBase }] } — no lines = everything loaded and not yet invoiced.
-    /// Answers { id } of the new draft (purchase.invoices.create).
+    /// Draft purchase invoices from container lines of the order, ONE PER ITEM: body { documentDate?, lines?:
+    /// [{ containerLineId, quantityBase }], exporterReference?, commercialInvoiceNo? } — no lines = everything
+    /// loaded and not yet invoiced. Answers { firstId, id (= firstId), invoices, message } (purchase.invoices.create).
     /// </summary>
     [HttpPost("{id:int}/invoice-from-containers")]
-    [ProducesResponseType(StatusCodes.Status201Created)]
+    [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
-    public async Task<IActionResult> InvoiceFromContainers(
+    public async Task<ActionResult<CreatedPurchaseInvoicesDto>> InvoiceFromContainers(
         int id, [FromBody] InvoiceFromContainersRequest? request, CancellationToken cancellationToken)
     {
         var result = await _documents.CreateFromContainersAsync(
             id, request ?? new InvoiceFromContainersRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
 
         return result.IsSuccess
-            ? CreatedAtAction(nameof(GetById), new { id = result.Value }, new { id = result.Value })
+            ? CreatedAtAction(nameof(GetById), new { id = result.Value!.FirstId }, result.Value)
             : this.ToProblem(result);
+    }
+
+    /// <summary>
+    /// A draft purchase invoice holding several items (made before one item per invoice) into one invoice per
+    /// item: body { rowVersion }. Answers { invoices }, the original first (purchase.invoices.create).
+    /// </summary>
+    [HttpPost("{id:int}/split-by-item")]
+    [ProducesResponseType<SplitByItemResultDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<SplitByItemResultDto>> SplitByItem(
+        int id, [FromBody] SplitByItemRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.SplitByItemAsync(
+            id, request ?? new SplitByItemRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.ToActionResult(this);
     }
 
     private async Task<ActionResult<PurchaseDocumentDto>> CreateFromSource(
@@ -224,6 +257,20 @@ public sealed class PurchaseDocumentsController : ControllerBase
     public async Task<ActionResult<BulkActionResult>> BulkPost(
         [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
         => Ok(await _documents.BulkPostAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
+
+    /// <summary>
+    /// "Post selected" on an order's invoices: body { ids }. Each draft purchase invoice is posted on its own, in
+    /// order — a refusal does not stop the others. Answers [{ id, ok, documentNumber, code, message }] (purchase.invoices.post).
+    /// </summary>
+    [HttpPost("post-many")]
+    [ProducesResponseType<IReadOnlyList<BulkActionItemResult>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    public async Task<ActionResult<IReadOnlyList<BulkActionItemResult>>> PostMany(
+        [FromBody] BulkActionRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _documents.PostManyAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
 
     [HttpPost("bulk-delete")]
     [ProducesResponseType<BulkActionResult>(StatusCodes.Status200OK)]

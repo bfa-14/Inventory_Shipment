@@ -177,6 +177,22 @@ public static class SqlErrors
     /// <summary>The order is shipped in containers: invoiced from them, not from the order; not cancelled or closed while loaded.</summary>
     public const int PurchaseOrderInContainers = 65021;
 
+    // ----- 65026-65028: an invoice and its containers (script 43) -----
+
+    /// <summary>"Shipped in containers" switched off while lines are linked, or the goods would be received twice.</summary>
+    public const int PurchaseReceiptModeRefused = 65026;
+
+    /// <summary>The container has started moving (or is cancelled): it can no longer be linked to or unlinked from an invoice.</summary>
+    public const int PurchaseContainerMoving = 65027;
+
+    /// <summary>The invoice cannot be linked: not from an order, received on posting, landed cost adjustment, returns.</summary>
+    public const int PurchaseInvoiceNotLinkable = 65028;
+
+    // ----- 65029: one item per supplier invoice (script 45) -----
+
+    /// <summary>A supplier invoice holds one item: saving or posting one with lines of several items is refused.</summary>
+    public const int PurchaseInvoiceOneItem = 65029;
+
     // ----- 65013-65017, 65022-65024: purchase order approval (scripts 26 and 42) -----
 
     /// <summary>A purchase order that needs approval was posted directly: send it for approval.</summary>

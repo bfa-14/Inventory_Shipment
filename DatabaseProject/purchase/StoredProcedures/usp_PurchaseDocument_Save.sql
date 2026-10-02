@@ -1,3 +1,6 @@
+/* ================================================================== 2. Save: one item per supplier invoice */
+
+-- Re-created (45) from the body of script 43: a purchase invoice with lines of several items is refused (65029).
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @Id                  INT            = NULL,
     @DocumentTypeCode    NVARCHAR(20),
@@ -44,6 +47,20 @@ BEGIN
          @CurrencyId, @RateType, @ExchangeRate, @MaxDiscountPercent, @SourceDocumentId, @Lines,
          @TypeId OUTPUT, @Direction OUTPUT, @Cur OUTPUT, @Rate OUTPUT;
 
+    -- (45) A supplier invoice holds ONE item: any number of lines, all of the same item.
+    IF @DocumentTypeCode = N'PINV' AND (SELECT COUNT(DISTINCT ItemId) FROM @Lines) > 1
+    BEGIN
+        DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM @Lines), @ItemCodes NVARCHAR(400);
+        SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+        FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+              FROM @Lines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+              GROUP BY l.ItemId, i.ItemCode
+              ORDER BY MIN(l.LineNumber)) x;
+        SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+        THROW 65029, @ItemCodes, 1;
+    END
+
     IF @Id IS NOT NULL
     BEGIN
         DECLARE @Status TINYINT = (SELECT Status FROM purchase.PurchaseDocuments WHERE Id = @Id);
@@ -55,20 +72,26 @@ BEGIN
             THROW 65000, 'The document type cannot be changed.', 1;
         IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND ISNULL(SourceDocumentId, 0) <> ISNULL(@SourceDocumentId, 0))
             THROW 65000, 'The source document cannot be changed.', 1;
-        IF NOT EXISTS (SELECT 1 FROM @LineContainers)
-           AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL)
-            THROW 65019, 'This invoice comes from containers: every line must keep its container line.', 1;
+        -- (43) A container is unlinked from the Containers card of the invoice (usp_PurchaseInvoice_UnlinkContainer),
+        --      never by saving the invoice without the lines that are on it.
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines pl
+                   WHERE pl.DocumentId = @Id AND pl.ContainerLineId IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM @LineContainers x WHERE x.ContainerLineId = pl.ContainerLineId))
+        BEGIN
+            IF @ReceiptMode = 1 THROW 65026, 'Unlink the containers before switching off Shipped in containers.', 1;
+            THROW 65019, 'This invoice is linked to containers: keep their lines, or unlink a container from the Containers card of the invoice.', 1;
+        END
     END
 
-    -- Invoice from containers (imports): every line points to a container line of the same order line and item, within
-    -- what is loaded and not yet invoiced elsewhere. Receipt mode is automatic: 2 with containers, 1 without.
+    -- Lines linked to containers (all of them, or (43) only some: the rest is linked later) point to a container line of
+    -- the same order line and item, within what is loaded and not yet invoiced elsewhere. A linked line forces receipt
+    -- mode 2 ("shipped in containers").
     IF EXISTS (SELECT 1 FROM @LineContainers)
     BEGIN
         IF @DocumentTypeCode <> N'PINV' THROW 65019, 'Only purchase invoices can be linked to containers.', 1;
         IF @SourceDocumentId IS NULL THROW 65019, 'An invoice from containers must refer to its purchase order.', 1;
-        IF EXISTS (SELECT 1 FROM @Lines l WHERE NOT EXISTS (SELECT 1 FROM @LineContainers x WHERE x.LineNumber = l.LineNumber))
-           OR EXISTS (SELECT 1 FROM @LineContainers x WHERE NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.LineNumber = x.LineNumber))
-            THROW 65019, 'Every line of an invoice from containers must come from a container line.', 1;
+        IF EXISTS (SELECT 1 FROM @LineContainers x WHERE NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.LineNumber = x.LineNumber))
+            THROW 65019, 'A container line is given for a line that does not exist.', 1;
         IF @Id IS NOT NULL AND EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
             THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
 
@@ -106,10 +129,45 @@ BEGIN
         ORDER BY c.ContainerRef, cl.LineNumber;
         IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
 
+        IF @ReceiptMode = 1 THROW 65026, 'Unlink the containers before switching off Shipped in containers.', 1;
         SET @ReceiptMode = 2;
     END
-    ELSE IF @DocumentTypeCode = N'PINV'
-        SET @ReceiptMode = 1;
+
+    -- (43) "Shipped in containers" (receipt mode 2) is chosen on a purchase invoice: NULL = unchanged (1 on creation).
+    DECLARE @EffectiveMode TINYINT = CASE WHEN @DocumentTypeCode <> N'PINV' THEN 1
+                                          ELSE COALESCE(@ReceiptMode, (SELECT ReceiptMode FROM purchase.PurchaseDocuments WHERE Id = @Id), 1) END;
+    DECLARE @ModeMsg NVARCHAR(400);
+    IF @EffectiveMode = 2
+    BEGIN
+        -- the goods enter the stock at the offload of the containers they are linked to: lines of the order only
+        IF @SourceDocumentId IS NULL THROW 65000, 'Only an invoice created from a purchase order can be shipped in containers.', 1;
+        SELECT TOP (1) @ModeMsg = N'Line ' + CAST(LineNumber AS NVARCHAR(10)) + N': only lines of the purchase order can be shipped in containers.'
+        FROM @Lines WHERE SourceLineId IS NULL ORDER BY LineNumber;
+        IF @ModeMsg IS NOT NULL THROW 65000, @ModeMsg, 1;
+    END
+    ELSE IF @DocumentTypeCode = N'PINV' AND @SourceDocumentId IS NOT NULL
+    BEGIN
+        -- received on posting: what the containers of the order hold plus what is invoiced outside containers cannot
+        -- exceed the order line, or the same goods would be received twice
+        SELECT TOP (1) @ModeMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): the containers of the order hold '
+                                  + CAST(ct.Qty AS NVARCHAR(20)) + N' of the ' + CAST(pol.QuantityBase AS NVARCHAR(20))
+                                  + N' ordered. Keep Shipped in containers on and link the invoice to them.'
+        FROM (SELECT x.SourceLineId, Qty = SUM(x.Quantity * iu.PackingFormula), LineNumber = MIN(x.LineNumber)
+              FROM @Lines x INNER JOIN inventory.ItemUnits iu ON iu.Id = x.ItemUnitId
+              WHERE x.SourceLineId IS NOT NULL GROUP BY x.SourceLineId) l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.SourceLineId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        CROSS APPLY (SELECT Qty = ISNULL(SUM(cl.QuantityBase), 0) FROM logistics.ContainerLines cl
+                     INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                     WHERE cl.PoLineId = pol.Id AND c.Status <> 8) ct
+        OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                     INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                     WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2
+                       AND (@Id IS NULL OR xd.Id <> @Id)) dir
+        WHERE ct.Qty > 0 AND l.Qty + ISNULL(dir.Qty, 0) + ct.Qty > pol.QuantityBase
+        ORDER BY l.LineNumber;
+        IF @ModeMsg IS NOT NULL THROW 65026, @ModeMsg, 1;
+    END
 
     BEGIN TRY
         BEGIN TRANSACTION;

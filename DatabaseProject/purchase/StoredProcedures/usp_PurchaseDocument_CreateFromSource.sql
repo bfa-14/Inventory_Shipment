@@ -1,13 +1,19 @@
+/* ================================================================== 5. CreateFromSource: one invoice per item (PO -> PINV) */
+
+-- Re-created (45) from the body of script 43: PO -> PINV one draft per item (receipt mode of 43 kept), other pairs unchanged.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
     @SourceId       INT,
     @TargetTypeCode NVARCHAR(20),        -- PINV (from PO) | PRET (from PINV)
     @DocumentDate   DATE = NULL,         -- default today
     @Selection      purchase.tvp_SourceLineSelection READONLY,   -- lines + base quantities to take; empty = everything still available
     @UserId         INT  = NULL,
-    @NewId          INT OUTPUT
+    @NewId          INT OUTPUT,                       -- (45) PO -> PINV: the FIRST invoice created
+    @ExporterReference   NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL          -- (45) PO -> PINV: copied to every invoice created
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
     IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
 
     DECLARE @SrcType NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT, @RateType TINYINT, @SupplierRef NVARCHAR(100);
@@ -19,9 +25,12 @@ BEGIN
     IF @Status <> 2 THROW 65011, 'The source document must be approved / posted and still open.', 1;
     IF NOT ((@TargetTypeCode = N'PINV' AND @SrcType = N'PO') OR (@TargetTypeCode = N'PRET' AND @SrcType = N'PINV'))
         THROW 65011, 'Purchase orders become purchase invoices; purchase invoices become purchase returns.', 1;
-    IF @SrcType = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
-                                    WHERE cl.PurchaseOrderId = @SourceId AND c.Status <> 8)
-        THROW 65021, 'This purchase order is shipped in containers: create its invoices from the containers.', 1;
+    -- (43) An order with containers gives an invoice "shipped in containers" (receipt mode 2): its lines are linked to the
+    --      containers afterwards (usp_PurchaseInvoice_LinkContainers). It used to be refused (65021).
+    DECLARE @ReceiptMode TINYINT =
+        CASE WHEN @SrcType = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                               WHERE cl.PurchaseOrderId = @SourceId AND c.Status <> 8)
+             THEN 2 END;
 
     -- Several drafts may be created from the same document: what is already in another DRAFT of the target type is not
     -- offered again. A selection takes only the given lines / base quantities.
@@ -70,11 +79,64 @@ BEGIN
 
     IF NOT EXISTS (SELECT 1 FROM @Lines) THROW 65011, 'Nothing is left on the source document: everything is already in posted or draft documents.', 1;
 
-    EXEC purchase.usp_PurchaseDocument_Save
-         @Id = NULL, @DocumentTypeCode = @TargetTypeCode, @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
-         @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
-         @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
-         @Lines = @Lines, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId, @NewId = @NewId OUTPUT;
+    -- A return (any pair but PO -> PINV): one document, as before.
+    IF @TargetTypeCode <> N'PINV'
+    BEGIN
+        EXEC purchase.usp_PurchaseDocument_Save
+             @Id = NULL, @DocumentTypeCode = @TargetTypeCode, @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+             @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+             @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+             @Lines = @Lines, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
+             @ReceiptMode = @ReceiptMode, @NewId = @NewId OUTPUT;
+        RETURN;
+    END
+
+    -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
+    --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+    INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
+
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
+    DECLARE @Part purchase.tvp_PurchaseDocumentLine;
+    DECLARE @Seq INT = 1, @Last INT = (SELECT MAX(Seq) FROM @Items), @Item INT, @InvoiceId INT;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            DELETE FROM @Part;
+            INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
+                   ImportRowNumber, Notes, SourceLineId
+            FROM @Lines WHERE ItemId = @Item;
+
+            SET @InvoiceId = NULL;
+            EXEC purchase.usp_PurchaseDocument_Save
+                 @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+                 @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+                 @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+                 @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
+                 @ReceiptMode = @ReceiptMode, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
+                 @NewId = @InvoiceId OUTPUT;
+            INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
+
+            SET @Seq += 1;
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    -- the first invoice, as before: the callers that read @NewId keep working
+    SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
 END
 
 GO

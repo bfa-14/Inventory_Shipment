@@ -114,6 +114,15 @@ public sealed class PurchaseDocumentListDto
     /// <summary>Orders only: how much of the ordered quantity has been invoiced, 0–100.</summary>
     public decimal? ReceivedPercent { get; init; }
 
+    /// <summary>Supplier invoices only: the item it holds (the one of its first line). Null for orders and returns.</summary>
+    public int? ItemId { get; init; }
+
+    public string? ItemCode { get; init; }
+    public string? ItemName { get; init; }
+
+    /// <summary>Supplier invoices only: how many items it holds — more than 1 for a draft made before one item per invoice.</summary>
+    public int? ItemCount { get; init; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime? CancelledAtUtc { get; init; }
@@ -331,8 +340,14 @@ public sealed class PurchaseDocumentDto
     /// <summary>The supplier's commercial invoice number — what the container list and the forwarder quote.</summary>
     public string? CommercialInvoiceNo { get; init; }
 
-    /// <summary>1 = stock on posting, 2 = stock on container offload (see <see cref="PurchaseReceiptModes"/>). Automatic on invoices.</summary>
+    /// <summary>
+    /// 1 = stock on posting, 2 = stock on container offload (see <see cref="PurchaseReceiptModes"/>). Chosen on an
+    /// invoice since script 43 (<see cref="ShippedInContainers"/>); a line linked to a container forces 2.
+    /// </summary>
     public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
+
+    /// <summary>An invoice whose goods enter the stock at the offload of its containers (receipt mode 2).</summary>
+    public bool ShippedInContainers => DocumentTypeCode == PurchaseDocumentTypes.Invoice && ReceiptMode == PurchaseReceiptModes.OnContainerOffload;
 
     public string? Notes { get; init; }
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
@@ -342,6 +357,12 @@ public sealed class PurchaseDocumentDto
 
     /// <summary>Orders: containers carrying its lines (not cancelled); invoices: containers its lines come from.</summary>
     public int ContainerCount { get; init; }
+
+    /// <summary>
+    /// Invoices: the containers its pieces fill, summed over its items (pieces / the item's Container unit, 2 decimals);
+    /// null when no item has a Container unit, and on orders and returns.
+    /// </summary>
+    public decimal? ContainersNeeded { get; init; }
 
     /// <summary>Orders: loaded in containers that are not cancelled, in base units; null on invoices and returns.</summary>
     public int? LoadedBase { get; init; }
@@ -418,13 +439,12 @@ public sealed class PurchaseDocumentDto
     public bool CanMarkShipped => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
 
     /// <summary>
-    /// An open order with something left to receive becomes a purchase invoice — unless it is
-    /// shipped in containers: then its invoices are made from the containers (65021).
+    /// An open order with something left to receive becomes a purchase invoice. Since script 43 an order with
+    /// containers too: the invoice is "shipped in containers" and is linked to them afterwards.
     /// </summary>
     public bool CanCreateInvoice
         => DocumentTypeCode == PurchaseDocumentTypes.Order
            && Status == PurchaseDocumentStatus.Posted
-           && ContainerCount == 0
            && Lines.Any(l => (l.RemainingBase ?? 0) > 0);
 
     /// <summary>A posted invoice with something not yet returned becomes a purchase return.</summary>
@@ -541,9 +561,15 @@ public sealed class SavePurchaseDocumentRequest
     [StringLength(100)]
     public string? SupplierReference { get; init; }
 
-    /// <summary>Ignored for invoices since script 27: the receipt mode is automatic (2 from containers, 1 otherwise).</summary>
+    /// <summary>1 on posting, 2 on container offload; null = unchanged (1 on creation). <see cref="ShippedInContainers"/> wins when sent.</summary>
     [Range(1, 2)]
     public byte? ReceiptMode { get; init; }
+
+    /// <summary>
+    /// Invoices: "Shipped in containers" = receipt mode 2, off = 1; null = unchanged. Switching it off while a line is
+    /// linked to a container is refused (409 RECEIPT_MODE_LOCKED).
+    /// </summary>
+    public bool? ShippedInContainers { get; init; }
 
     [StringLength(50)]
     public string? ExporterReference { get; init; }
@@ -610,13 +636,24 @@ public sealed class ContainerLineQuantityRequest
     public int QuantityBase { get; init; }
 }
 
-/// <summary>A draft purchase invoice from container lines of one order. NO LINES = everything loaded and not yet invoiced.</summary>
+/// <summary>
+/// Draft purchase invoices from container lines of one order — ONE PER ITEM (script 45). NO LINES =
+/// everything loaded and not yet invoiced.
+/// </summary>
 public sealed class InvoiceFromContainersRequest
 {
     /// <summary>Null = today.</summary>
     public DateOnly? DocumentDate { get; init; }
 
     public IReadOnlyList<ContainerLineQuantityRequest> Lines { get; init; } = [];
+
+    /// <summary>Copied to every invoice created.</summary>
+    [StringLength(50)]
+    public string? ExporterReference { get; init; }
+
+    /// <summary>Copied to every invoice created.</summary>
+    [StringLength(50)]
+    public string? CommercialInvoiceNo { get; init; }
 }
 
 /// <summary>Make the next document of the chain (order → invoice, invoice → return) from a posted one.</summary>
@@ -624,7 +661,66 @@ public sealed class CreateFromSourceRequest
 {
     /// <summary>Null = today.</summary>
     public DateOnly? DocumentDate { get; init; }
+
+    /// <summary>Order → invoices: copied to every invoice created. Ignored for a return.</summary>
+    [StringLength(50)]
+    public string? ExporterReference { get; init; }
+
+    /// <summary>Order → invoices: copied to every invoice created. Ignored for a return.</summary>
+    [StringLength(50)]
+    public string? CommercialInvoiceNo { get; init; }
 }
+
+/// <summary>One supplier invoice a create or a split made: a supplier invoice holds ONE item (script 45).</summary>
+public sealed class CreatedPurchaseInvoiceDto
+{
+    public int Id { get; init; }
+    public int? ItemId { get; init; }
+    public string? ItemCode { get; init; }
+    public string? ItemName { get; init; }
+    public int LineCount { get; init; }
+    public int QuantityBase { get; init; }
+    public decimal TotalAmount { get; init; }
+}
+
+/// <summary>
+/// The answer to "create invoice" from an order or from its containers: one draft per item of the selection.
+/// <see cref="Id"/> is <see cref="FirstId"/> under the name the pages read before invoices were split by item.
+/// </summary>
+public sealed class CreatedPurchaseInvoicesDto
+{
+    public int FirstId { get; init; }
+
+    /// <summary>= <see cref="FirstId"/>: the field the pages opened the new draft with.</summary>
+    public int Id => FirstId;
+
+    public IReadOnlyList<CreatedPurchaseInvoiceDto> Invoices { get; init; } = [];
+
+    /// <summary>"3 invoices created, one per item" or "Invoice created".</summary>
+    public string Message { get; init; } = string.Empty;
+
+    public static CreatedPurchaseInvoicesDto From(IReadOnlyList<CreatedPurchaseInvoiceDto> invoices) => new()
+    {
+        FirstId = invoices.Count > 0 ? invoices[0].Id : 0,
+        Invoices = invoices,
+        Message = invoices.Count == 1 ? "Invoice created" : $"{invoices.Count} invoices created, one per item",
+    };
+}
+
+/// <summary>Split a draft supplier invoice holding several items (made before script 45) into one invoice per item.</summary>
+public sealed class SplitByItemRequest
+{
+    public string? RowVersion { get; init; }
+}
+
+/// <summary>The invoices after a split by item: the original (holding the item of its first line) first.</summary>
+public sealed class SplitByItemResultDto
+{
+    public IReadOnlyList<CreatedPurchaseInvoiceDto> Invoices { get; init; } = [];
+}
+
+/// <summary>What the procedures that create from a source answer: the first id, and one row per invoice (none for a return).</summary>
+public sealed record CreatedFromSource(int NewId, IReadOnlyList<CreatedPurchaseInvoiceDto> Invoices);
 
 public sealed class PurchaseDocumentQuery
 {

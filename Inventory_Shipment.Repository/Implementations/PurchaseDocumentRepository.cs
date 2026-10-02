@@ -64,6 +64,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public int? SourceDocumentId { get; init; }
         public string? SourceDocumentNumber { get; init; }
         public decimal? ReceivedPercent { get; init; }
+        public int? ItemId { get; init; }
+        public string? ItemCode { get; init; }
+        public string? ItemName { get; init; }
+        public int? ItemCount { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -109,6 +113,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             SourceDocumentId = SourceDocumentId,
             SourceDocumentNumber = SourceDocumentNumber,
             ReceivedPercent = ReceivedPercent,
+            ItemId = ItemId,
+            ItemCode = ItemCode,
+            ItemName = ItemName,
+            ItemCount = ItemCount,
             PostedAtUtc = PostedAtUtc,
             PostedByName = PostedByName,
             CancelledAtUtc = CancelledAtUtc,
@@ -196,6 +204,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public byte Status { get; init; }
         public bool IsContainerBound { get; init; }
         public int ContainerCount { get; init; }
+        public decimal? ContainersNeeded { get; init; }
         public int? LoadedBase { get; init; }
         public decimal? ContainerChargesBase { get; init; }
         public decimal? OrderedBase { get; init; }
@@ -421,6 +430,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             Status = PurchaseDocumentStatus.From(header.Status),
             IsContainerBound = header.IsContainerBound,
             ContainerCount = header.ContainerCount,
+            ContainersNeeded = header.ContainersNeeded,
             LoadedBase = header.LoadedBase,
             ContainerChargesBase = header.ContainerChargesBase,
             OrderedBase = header.OrderedBase,
@@ -520,7 +530,12 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         parameters.Add("@SourceDocumentId", request.SourceDocumentId, DbType.Int32);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
-        parameters.Add("@ReceiptMode", request.ReceiptMode, DbType.Byte);
+        // "Shipped in containers" (script 43) is the receipt mode of an invoice: 2 on, 1 off, null unchanged.
+        parameters.Add("@ReceiptMode",
+            request.ShippedInContainers is { } shipped
+                ? (shipped ? PurchaseReceiptModes.OnContainerOffload : PurchaseReceiptModes.OnPosting)
+                : request.ReceiptMode,
+            DbType.Byte);
         // Trimmed here as well as in the procedure: an all-blank value is "none", not a reference.
         parameters.Add("@ExporterReference", string.IsNullOrWhiteSpace(request.ExporterReference) ? null : request.ExporterReference.Trim(), DbType.String, size: 50);
         parameters.Add("@CommercialInvoiceNo", string.IsNullOrWhiteSpace(request.CommercialInvoiceNo) ? null : request.CommercialInvoiceNo.Trim(), DbType.String, size: 50);
@@ -600,58 +615,67 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         return ExecuteAsync("purchase.usp_PurchaseDocument_MarkShipped", parameters, cancellationToken);
     }
 
-    public async Task<int> CreateFromSourceAsync(
-        int sourceId, string targetTypeCode, DateOnly? documentDate, int userId,
-        CancellationToken cancellationToken = default)
+    /// <summary>From an order: one invoice per item, and their rows; from an invoice: one return, no rows.</summary>
+    public async Task<CreatedFromSource> CreateFromSourceAsync(
+        int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
+        int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@SourceId", sourceId, DbType.Int32);
         parameters.Add("@TargetTypeCode", targetTypeCode, DbType.String, size: 20);
         parameters.Add("@DocumentDate", documentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@ExporterReference", exporterReference, DbType.String, size: 50);
+        parameters.Add("@CommercialInvoiceNo", commercialInvoiceNo, DbType.String, size: 50);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
-        try
-        {
-            await SqlRetry.OnDeadlockAsync(async () =>
-            {
-                await using var connection = _connectionFactory.Create();
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "purchase.usp_PurchaseDocument_CreateFromSource", parameters,
-                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-            }, cancellationToken);
-
-            return parameters.Get<int>("@NewId");
-        }
-        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
-        {
-            throw SqlErrors.Wrap(ex);
-        }
+        var invoices = await QueryCreatedAsync("purchase.usp_PurchaseDocument_CreateFromSource", parameters, cancellationToken);
+        return new CreatedFromSource(parameters.Get<int>("@NewId"), invoices);
     }
 
     /// <summary>An EMPTY selection is the procedure's "everything loaded and not yet invoiced"; the table is sent either way.</summary>
-    public async Task<int> CreateFromContainersAsync(
-        int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate, int userId,
-        CancellationToken cancellationToken = default)
+    public Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> CreateFromContainersAsync(
+        int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate,
+        string? exporterReference, string? commercialInvoiceNo, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@PurchaseOrderId", purchaseOrderId, DbType.Int32);
         parameters.Add("@Selection", ToContainerLineQtyTable(lines).AsTableValuedParameter(ContainerLineQtyTypeName));
         parameters.Add("@DocumentDate", documentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@ExporterReference", exporterReference, DbType.String, size: 50);
+        parameters.Add("@CommercialInvoiceNo", commercialInvoiceNo, DbType.String, size: 50);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
+        return QueryCreatedAsync("purchase.usp_PurchaseDocument_CreateFromContainers", parameters, cancellationToken);
+    }
+
+    public Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> SplitByItemAsync(
+        int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", id, DbType.Int32);
+        parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return QueryCreatedAsync("purchase.usp_PurchaseDocument_SplitByItem", parameters, cancellationToken);
+    }
+
+    /// <summary>
+    /// The rows of the invoices a procedure created (Id, ItemId, ItemCode, ItemName, LineCount, QuantityBase,
+    /// TotalAmount, RowVersion), in its order. A procedure that returns none (a return) gives an empty list.
+    /// </summary>
+    private async Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> QueryCreatedAsync(
+        string procedure, DynamicParameters parameters, CancellationToken cancellationToken)
+    {
         try
         {
-            await SqlRetry.OnDeadlockAsync(async () =>
+            return await SqlRetry.OnDeadlockAsync<IReadOnlyList<CreatedPurchaseInvoiceDto>>(async () =>
             {
                 await using var connection = _connectionFactory.Create();
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "purchase.usp_PurchaseDocument_CreateFromContainers", parameters,
-                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+                return (await connection.QueryAsync<CreatedPurchaseInvoiceDto>(new CommandDefinition(
+                    procedure, parameters, commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
             }, cancellationToken);
-
-            return parameters.Get<int>("@NewId");
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {

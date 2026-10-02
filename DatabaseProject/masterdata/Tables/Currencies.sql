@@ -24,14 +24,14 @@ CREATE TABLE [masterdata].[Currencies] (
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Currencies_ActiveBaseCurrency]
-    ON [masterdata].[Currencies]([IsBaseCurrency] ASC) WHERE ([IsBaseCurrency]=(1) AND [IsActive]=(1));
+CREATE NONCLUSTERED INDEX [IX_Currencies_CurrencyName]
+    ON [masterdata].[Currencies]([CurrencyName] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Currencies_CurrencyName]
-    ON [masterdata].[Currencies]([CurrencyName] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Currencies_ActiveBaseCurrency]
+    ON [masterdata].[Currencies]([IsBaseCurrency] ASC) WHERE ([IsBaseCurrency]=(1) AND [IsActive]=(1));
 
 
 GO

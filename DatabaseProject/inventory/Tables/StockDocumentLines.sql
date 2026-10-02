@@ -27,14 +27,14 @@ CREATE TABLE [inventory].[StockDocumentLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Item]
-    ON [inventory].[StockDocumentLines]([ItemId] ASC);
+CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Document]
+    ON [inventory].[StockDocumentLines]([DocumentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Document]
-    ON [inventory].[StockDocumentLines]([DocumentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_StockDocumentLines_Item]
+    ON [inventory].[StockDocumentLines]([ItemId] ASC);
 
 
 GO

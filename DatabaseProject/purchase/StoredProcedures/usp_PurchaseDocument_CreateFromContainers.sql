@@ -1,15 +1,18 @@
--- empty = everything of this order that is loaded and not yet invoiced (containers not offloaded).
--- Lines: the order line's unit and price (base unit when the quantity is not a whole number of it), SourceLineId = order line,
--- ContainerLineId = container line, receipt mode 2 (the stock enters at the container offload).
+/* ================================================================== 4. CreateFromContainers: one invoice per item */
+
+-- Re-created (45) from the body of script 27: one draft per item, + @ExporterReference / @CommercialInvoiceNo.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromContainers
     @PurchaseOrderId INT,
     @Selection       logistics.tvp_ContainerLineQty READONLY,
     @DocumentDate    DATE = NULL,
     @UserId          INT  = NULL,
-    @NewId           INT OUTPUT
+    @NewId           INT OUTPUT,                      -- (45) the FIRST invoice created
+    @ExporterReference   NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL          -- (45) copied to every invoice created
 AS
 BEGIN
     SET NOCOUNT ON;
+    SET XACT_ABORT ON;
     IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
 
     DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT,
@@ -92,21 +95,65 @@ BEGIN
                         Quantity   = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN r.QuantityBase / pol.PackingFormula ELSE r.QuantityBase END,
                         UnitPrice  = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN pol.UnitPrice ELSE ROUND(pol.UnitPrice / pol.PackingFormula, 4) END) u;
 
-    DECLARE @LineContainers purchase.tvp_LineContainer;
-    INSERT INTO @LineContainers (LineNumber, ContainerLineId) SELECT LineNumber, ContainerLineId FROM @Rows;
+    -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
+    --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+    INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
 
-    EXEC purchase.usp_PurchaseDocument_Save
-         @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
-         @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
-         @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
-         @Lines = @Lines, @MaxDiscountPercent = 100, @SourceDocumentId = @PurchaseOrderId, @RowVersion = NULL, @UserId = @UserId,
-         @ReceiptMode = 2, @LineContainers = @LineContainers, @NewId = @NewId OUTPUT;
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
+    DECLARE @Part purchase.tvp_PurchaseDocumentLine, @PartContainers purchase.tvp_LineContainer;
+    DECLARE @Seq INT = 1, @Last INT = (SELECT MAX(Seq) FROM @Items), @Item INT, @InvoiceId INT;
 
-    INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
-    SELECT DISTINCT cl.ContainerId, N'Updated',
-           N'Draft purchase invoice ' + ISNULL((SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @NewId), N'#' + CAST(@NewId AS NVARCHAR(10)))
-           + N' created from the container', @UserId
-    FROM @Rows r INNER JOIN logistics.ContainerLines cl ON cl.Id = r.ContainerLineId;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            DELETE FROM @Part;
+            INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
+                   ImportRowNumber, Notes, SourceLineId
+            FROM @Lines WHERE ItemId = @Item;
+
+            DELETE FROM @PartContainers;
+            INSERT INTO @PartContainers (LineNumber, ContainerLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY r.LineNumber), r.ContainerLineId
+            FROM @Rows r INNER JOIN @Lines l ON l.LineNumber = r.LineNumber
+            WHERE l.ItemId = @Item;
+
+            SET @InvoiceId = NULL;
+            EXEC purchase.usp_PurchaseDocument_Save
+                 @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+                 @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+                 @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+                 @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @PurchaseOrderId, @RowVersion = NULL, @UserId = @UserId,
+                 @ReceiptMode = 2, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
+                 @LineContainers = @PartContainers, @NewId = @InvoiceId OUTPUT;
+            INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            SELECT DISTINCT cl.ContainerId, N'Updated',
+                   N'Draft purchase invoice ' + ISNULL((SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId),
+                                                       N'#' + CAST(@InvoiceId AS NVARCHAR(10)))
+                   + N' created from the container', @UserId
+            FROM @PartContainers x INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId;
+
+            SET @Seq += 1;
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    -- the first invoice, as before: the callers that read @NewId keep working
+    SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
 END
 
 GO

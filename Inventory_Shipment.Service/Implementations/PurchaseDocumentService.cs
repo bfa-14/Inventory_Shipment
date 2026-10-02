@@ -347,11 +347,38 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         int sourceId, string targetTypeCode, CreateFromSourceRequest request, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
+        var created = await CreateFromSourceCoreAsync(sourceId, targetTypeCode, request, userId, permissions, cancellationToken);
+        if (created.IsFailure || created.Value is null)
+        {
+            return Result<PurchaseDocumentDto>.Failure(created.ErrorType, created.Error ?? string.Empty, created.Code ?? "ERROR");
+        }
+
+        return await ReadAsync(created.Value.NewId, cancellationToken);
+    }
+
+    /// <summary>
+    /// "Create invoice" on an order: ONE DRAFT PER ITEM of what remains (script 45 — a supplier invoice holds one
+    /// item), the exporter's reference and the commercial invoice number copied to each.
+    /// </summary>
+    public async Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
+        int orderId, CreateFromSourceRequest request, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        var created = await CreateFromSourceCoreAsync(orderId, PurchaseDocumentTypes.Invoice, request, userId, permissions, cancellationToken);
+        return created.IsFailure || created.Value is null
+            ? Result<CreatedPurchaseInvoicesDto>.Failure(created.ErrorType, created.Error ?? string.Empty, created.Code ?? "ERROR")
+            : Result<CreatedPurchaseInvoicesDto>.Success(CreatedPurchaseInvoicesDto.From(created.Value.Invoices));
+    }
+
+    private async Task<Result<CreatedFromSource>> CreateFromSourceCoreAsync(
+        int sourceId, string targetTypeCode, CreateFromSourceRequest request, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken)
+    {
         var target = PurchaseDocumentTypes.Normalize(targetTypeCode);
         var set = SetFor(target);
         if (set is null || target == PurchaseDocumentTypes.Order)
         {
-            return Result<PurchaseDocumentDto>.Failure(
+            return Result<CreatedFromSource>.Failure(
                 ErrorType.Validation, "Only purchase invoices (from orders) and purchase returns (from invoices) can be created from a source.", "VALIDATION");
         }
 
@@ -359,74 +386,150 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
            seeing the order is checked too, because the new draft copies its lines. */
         if (!permissions.Contains(set.Create))
         {
-            return Forbidden<PurchaseDocumentDto>(set.Create);
+            return Forbidden<CreatedFromSource>(set.Create);
         }
 
         var source = await AllowAsync(sourceId, s => s.View, permissions, cancellationToken);
         if (source.IsFailure)
         {
-            return Result<PurchaseDocumentDto>.Failure(source.ErrorType, source.Error ?? string.Empty, source.Code ?? "ERROR");
+            return Result<CreatedFromSource>.Failure(source.ErrorType, source.Error ?? string.Empty, source.Code ?? "ERROR");
         }
 
-        int newId;
+        CreatedFromSource created;
         try
         {
-            newId = await _documents.CreateFromSourceAsync(sourceId, target!, request.DocumentDate, userId, cancellationToken);
+            created = await _documents.CreateFromSourceAsync(
+                sourceId, target!, request.DocumentDate, Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo),
+                userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
-            return Failure<PurchaseDocumentDto>(ex);
+            return Failure<CreatedFromSource>(ex);
         }
 
-        _logger.LogInformation("{Kind} {DocumentId} created from {SourceNumber} by user {UserId}",
-            set.Label, newId, source.Value!.DocumentNumber, userId);
+        _logger.LogInformation("{Kind} {DocumentIds} created from {SourceNumber} by user {UserId}",
+            set.Label, created.Invoices.Count > 0 ? string.Join(", ", created.Invoices.Select(i => i.Id)) : created.NewId.ToString(),
+            source.Value!.DocumentNumber, userId);
 
-        return await ReadAsync(newId, cancellationToken);
+        return Result<CreatedFromSource>.Success(created);
     }
 
     /// <summary>
     /// AN INVOICE FROM CONTAINERS IS AN INVOICE: the right is purchase.invoices.create, and seeing the
-    /// order is checked too because the draft copies its prices. The answer is the new id only — the
-    /// page opens the draft next.
+    /// order is checked too because the drafts copy its prices. ONE DRAFT PER ITEM of the selection
+    /// (script 45); the answer lists them — the page opens the one, or lists the several.
     /// </summary>
-    public async Task<Result<int>> CreateFromContainersAsync(
+    public async Task<Result<CreatedPurchaseInvoicesDto>> CreateFromContainersAsync(
         int purchaseOrderId, InvoiceFromContainersRequest request, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Invoices.Create))
         {
-            return Forbidden<int>(Invoices.Create);
+            return Forbidden<CreatedPurchaseInvoicesDto>(Invoices.Create);
         }
 
         var duplicate = request.Lines.GroupBy(l => l.ContainerLineId).FirstOrDefault(g => g.Count() > 1);
         if (duplicate is not null)
         {
-            return Result<int>.Failure(
+            return Result<CreatedPurchaseInvoicesDto>.Failure(
                 ErrorType.Validation, $"Container line {duplicate.Key} appears more than once.", "VALIDATION");
         }
 
         var order = await AllowAsync(purchaseOrderId, s => s.View, permissions, cancellationToken);
         if (order.IsFailure)
         {
-            return Result<int>.Failure(order.ErrorType, order.Error ?? string.Empty, order.Code ?? "ERROR");
+            return Result<CreatedPurchaseInvoicesDto>.Failure(order.ErrorType, order.Error ?? string.Empty, order.Code ?? "ERROR");
         }
 
-        int newId;
+        IReadOnlyList<CreatedPurchaseInvoiceDto> invoices;
         try
         {
-            newId = await _documents.CreateFromContainersAsync(
-                purchaseOrderId, request.Lines, request.DocumentDate, userId, cancellationToken);
+            invoices = await _documents.CreateFromContainersAsync(
+                purchaseOrderId, request.Lines, request.DocumentDate,
+                Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo), userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
-            return Failure<int>(ex);
+            return Failure<CreatedPurchaseInvoicesDto>(ex);
         }
 
-        _logger.LogInformation("Purchase invoice {DocumentId} created from the containers of {OrderNumber} by user {UserId}",
-            newId, order.Value!.DocumentNumber, userId);
+        _logger.LogInformation("Purchase invoice(s) {DocumentIds} created from the containers of {OrderNumber} by user {UserId}",
+            string.Join(", ", invoices.Select(i => i.Id)), order.Value!.DocumentNumber, userId);
 
-        return Result<int>.Success(newId);
+        return Result<CreatedPurchaseInvoicesDto>.Success(CreatedPurchaseInvoicesDto.From(invoices));
     }
+
+    /// <summary>
+    /// A draft supplier invoice holding several items (saved before script 45) becomes one invoice per item: the
+    /// item of its first line stays, the others move to new drafts with the same header. Editing an invoice is
+    /// purchase.invoices.create.
+    /// </summary>
+    public async Task<Result<SplitByItemResultDto>> SplitByItemAsync(
+        int id, SplitByItemRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Invoices.Create))
+        {
+            return Forbidden<SplitByItemResultDto>(Invoices.Create);
+        }
+
+        var allowed = await AllowAsync(id, s => s.View, permissions, cancellationToken);
+        if (allowed.IsFailure)
+        {
+            return Result<SplitByItemResultDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
+        }
+
+        IReadOnlyList<CreatedPurchaseInvoiceDto> invoices;
+        try
+        {
+            invoices = await _documents.SplitByItemAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<SplitByItemResultDto>(ex);
+        }
+
+        _logger.LogInformation("Purchase invoice {DocumentId} split by item into {DocumentIds} by user {UserId}",
+            id, string.Join(", ", invoices.Select(i => i.Id)), userId);
+
+        return Result<SplitByItemResultDto>.Success(new SplitByItemResultDto { Invoices = invoices });
+    }
+
+    /// <summary>
+    /// "Post selected" on an order's invoices: each draft posted by <see cref="PostAsync"/>, one after the other and
+    /// on its own — a refusal is that invoice's answer and the next one is still tried. Purchase invoices only.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<BulkActionItemResult>>> PostManyAsync(
+        IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Invoices.Post))
+        {
+            return Forbidden<IReadOnlyList<BulkActionItemResult>>(Invoices.Post);
+        }
+
+        var result = await BulkDocumentActions.RunAsync(ids, async id =>
+        {
+            var stub = await _documents.GetStubAsync(id, cancellationToken);
+            if (stub is null)
+            {
+                return Result<string?>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+            }
+
+            if (!string.Equals(PurchaseDocumentTypes.Normalize(stub.DocumentTypeCode), PurchaseDocumentTypes.Invoice, StringComparison.Ordinal))
+            {
+                return Result<string?>.Failure(ErrorType.Validation, "Only purchase invoices are posted here.", "VALIDATION");
+            }
+
+            var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
+            return posted.IsSuccess && posted.Value is not null
+                ? Result<string?>.Success(posted.Value.DocumentNumber)
+                : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
+        });
+
+        return Result<IReadOnlyList<BulkActionItemResult>>.Success(result.Results);
+    }
+
+    private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     public Task<BulkActionResult> BulkPostAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
@@ -452,6 +555,10 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// The imported file's lines, saved as ONE document whatever warehouses they name — the warehouse
     /// is a line's, so a file naming several becomes one document whose rows each keep their own. A
     /// refused posting leaves the document as a draft: the lines are worth more than a clean failure.
+    ///
+    /// EXCEPT A SUPPLIER INVOICE, WHICH HOLDS ONE ITEM (script 45): a file of several items becomes one invoice
+    /// per item, in the order of each item's first row, all with the same header values. Each is saved (and
+    /// posted) on its own: one refused invoice does not stop the others, and the result lists every one.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreatePurchaseDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
@@ -478,49 +585,56 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
 
-        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
+        var onePerItem = set == Invoices;
+        IReadOnlyList<IReadOnlyList<ImportCreateLine>> parts = onePerItem
+            ? request.Lines.GroupBy(line => line.ItemId).Select(group => (IReadOnlyList<ImportCreateLine>)group.ToList()).ToList()
+            : [request.Lines];
 
-        var draft = new SavePurchaseDocumentRequest
+        foreach (var lines in parts)
         {
-            DocumentTypeCode = request.DocumentTypeCode,
-            DocumentDate = request.DocumentDate,
-            ExpectedDate = request.ExpectedDate,
-            BranchId = request.BranchId,
-            // Left for the database, which takes the first line's: the header warehouse is only a label.
-            WarehouseId = null,
-            SupplierId = request.SupplierId,
-            CurrencyId = request.CurrencyId,
-            RateType = request.RateType,
-            ExchangeRate = request.ExchangeRate,
-            SupplierReference = request.SupplierReference,
-            Notes = request.Notes,
-            Lines = request.Lines.Select((line, index) => new SavePurchaseDocumentLineRequest
-            {
-                LineNo = index + 1,
-                ItemId = line.ItemId,
-                ItemUnitId = line.ItemUnitId,
-                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
-                WarehouseId = line.WarehouseId,
-                ExpiryDate = line.ExpiryDate,
-                Quantity = line.Quantity,
-                UnitPrice = line.UnitPrice,
-                DiscountPercent = line.DiscountPercent,
-                ImportRowNumber = line.ImportRowNumber,
-                Notes = line.Notes,
-            }).ToList(),
-        };
+            var warehouseCount = lines.Select(line => line.WarehouseId).Distinct().Count();
 
-        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-        if (saved.IsFailure || saved.Value is null)
-        {
-            failed.Add(new ImportCreateFailure
+            var draft = new SavePurchaseDocumentRequest
             {
-                Code = saved.Code ?? "ERROR",
-                Message = saved.Error ?? "The document could not be created.",
-            });
-        }
-        else
-        {
+                DocumentTypeCode = request.DocumentTypeCode,
+                DocumentDate = request.DocumentDate,
+                ExpectedDate = request.ExpectedDate,
+                BranchId = request.BranchId,
+                // Left for the database, which takes the first line's: the header warehouse is only a label.
+                WarehouseId = null,
+                SupplierId = request.SupplierId,
+                CurrencyId = request.CurrencyId,
+                RateType = request.RateType,
+                ExchangeRate = request.ExchangeRate,
+                SupplierReference = request.SupplierReference,
+                Notes = request.Notes,
+                Lines = lines.Select((line, index) => new SavePurchaseDocumentLineRequest
+                {
+                    LineNo = index + 1,
+                    ItemId = line.ItemId,
+                    ItemUnitId = line.ItemUnitId,
+                    // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                    WarehouseId = line.WarehouseId,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = line.Quantity,
+                    UnitPrice = line.UnitPrice,
+                    DiscountPercent = line.DiscountPercent,
+                    ImportRowNumber = line.ImportRowNumber,
+                    Notes = line.Notes,
+                }).ToList(),
+            };
+
+            var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+            if (saved.IsFailure || saved.Value is null)
+            {
+                failed.Add(new ImportCreateFailure
+                {
+                    Code = saved.Code ?? "ERROR",
+                    Message = saved.Error ?? "The document could not be created.",
+                });
+                continue;
+            }
+
             var document = saved.Value;
             if (request.PostImmediately)
             {
@@ -542,6 +656,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 }
             }
 
+            var item = onePerItem ? document.Lines.FirstOrDefault() : null;
             documents.Add(new ImportCreateDocument
             {
                 Id = document.Id,
@@ -551,12 +666,15 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 WarehouseCount = warehouseCount,
                 LineCount = document.Lines.Count,
                 Status = document.Status,
+                ItemId = item?.ItemId,
+                ItemCode = item?.ItemCode,
+                ItemName = item?.ItemName,
             });
         }
 
         _logger.LogInformation(
-            "Import created {Created} {Kind}(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, set.Label, warehouseCount, userId, posted, failed.Count);
+            "Import created {Created} {Kind}(s) from {Lines} line(s) for user {UserId}: {Posted} posted, {Failed} refused",
+            documents.Count, set.Label, request.Lines.Count, userId, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {
@@ -662,7 +780,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// block because they are what make the numbers below mean anything, the base equivalent printed
     /// when the currency is not the base one, and — for an order — what has been received so far.
     /// </summary>
-    private static byte[] BuildWorkbook(PurchaseDocumentDto document)
+    internal static byte[] BuildWorkbook(PurchaseDocumentDto document)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet(document.DocumentTypeName.Length <= 31 ? document.DocumentTypeName : "Purchase Document");
@@ -861,7 +979,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// units invoiced but only 6 remain on the order line." names the line and the number, and only
     /// the code is added. SOURCE_INVALID is a 409: the chain, not the request, is what refuses.
     /// </summary>
-    private static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
+    internal static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
         SqlErrors.PurchaseDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.PurchaseDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
@@ -883,6 +1001,14 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         SqlErrors.PurchaseChargesOnContainer => new RuleFailure(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
         SqlErrors.PurchaseOrderInContainers => new RuleFailure(ErrorType.Conflict, exception.Message, "PO_IN_CONTAINERS"),
         SqlErrors.ContainerLineInvoiced => new RuleFailure(ErrorType.Conflict, exception.Message, "LINE_INVOICED"),
+
+        // Script 43: an invoice linked to its containers from the invoice.
+        SqlErrors.PurchaseReceiptModeRefused => new RuleFailure(ErrorType.Conflict, exception.Message, "RECEIPT_MODE_LOCKED"),
+        SqlErrors.PurchaseContainerMoving => new RuleFailure(ErrorType.Conflict, exception.Message, "CONTAINER_MOVING"),
+        SqlErrors.PurchaseInvoiceNotLinkable => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_LINKABLE"),
+
+        // Script 45: a supplier invoice holds one item.
+        SqlErrors.PurchaseInvoiceOneItem => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 
@@ -898,5 +1024,5 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             : null;
     }
 
-    private readonly record struct RuleFailure(ErrorType Type, string Message, string Code);
+    internal readonly record struct RuleFailure(ErrorType Type, string Message, string Code);
 }

@@ -398,6 +398,10 @@
     <Build Include="messaging\StoredProcedures\usp_EmailSettings_SetTestResult.sql" />
     <Build Include="messaging\Tables\EmailOutbox.sql" />
     <Build Include="messaging\Tables\EmailSettings.sql" />
+    <Build Include="purchase\Functions\fn_PurchaseInvoice_ItemContainers.sql" />
+    <Build Include="purchase\Functions\fn_PurchaseInvoice_Row.sql" />
+    <Build Include="purchase\Functions\fn_PurchaseInvoice_TakesContainers.sql" />
+    <Build Include="purchase\Functions\fn_PurchaseInvoice_Unlinked.sql" />
     <Build Include="purchase\Functions\fn_PurchaseOrder_Approvers.sql" />
     <Build Include="purchase\Functions\fn_PurchaseOrder_NeedsApproval.sql" />
     <Build Include="purchase\StoredProcedures\usp_ApprovalSettings_ForUser.sql" />
@@ -427,10 +431,15 @@
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocument_Save.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocument_Search.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocument_SetCharges.sql" />
+    <Build Include="purchase\StoredProcedures\usp_PurchaseDocument_SplitByItem.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocument_ValidateInput.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocumentFile_Add.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocumentFile_Delete.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseDocumentFile_Get.sql" />
+    <Build Include="purchase\StoredProcedures\usp_PurchaseInvoice_ContainerSummary.sql" />
+    <Build Include="purchase\StoredProcedures\usp_PurchaseInvoice_LinkCandidates.sql" />
+    <Build Include="purchase\StoredProcedures\usp_PurchaseInvoice_LinkContainers.sql" />
+    <Build Include="purchase\StoredProcedures\usp_PurchaseInvoice_UnlinkContainer.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseOrder_ApplyDecision.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseOrder_ApprovalHistory.sql" />
     <Build Include="purchase\StoredProcedures\usp_PurchaseOrder_ApprovalState.sql" />
