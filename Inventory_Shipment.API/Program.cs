@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using System.Text.Json.Serialization.Metadata;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.API.Middleware;
 using Inventory_Shipment.API.OpenApi;
@@ -40,6 +41,9 @@ builder.Services.AddOptions<PurchaseOptions>()
 builder.Services.AddOptions<AppOptions>()
     .Bind(builder.Configuration.GetSection(AppOptions.SectionName));
 
+builder.Services.AddOptions<ApprovalOptions>()
+    .Bind(builder.Configuration.GetSection(ApprovalOptions.SectionName));
+
 // ----- Layers -----
 var connectionString = builder.Configuration.GetConnectionString("DefaultConnection")
     ?? throw new InvalidOperationException("ConnectionStrings:DefaultConnection is missing from configuration.");
@@ -66,6 +70,7 @@ builder.Services.AddDataProtection()
     .PersistKeysToFileSystem(new DirectoryInfo(keysPath));
 builder.Services.AddSingleton<ISecretProtector, DataProtectionSecretProtector>();
 builder.Services.AddHostedService<EmailOutboxWorker>();
+builder.Services.AddHostedService<ApprovalReminderWorker>();
 
 // ----- Web -----
 builder.Services.AddControllers(options =>
@@ -81,6 +86,10 @@ builder.Services.AddControllers(options =>
     .AddJsonOptions(options =>
     {
         options.JsonSerializerOptions.Converters.Add(new JsonStringEnumConverter());
+
+        // Every *Utc time as UTC with its "Z"; the calendar dates (DocumentDate, Eta...) unchanged (UtcDateTimeJson).
+        options.JsonSerializerOptions.TypeInfoResolver = (options.JsonSerializerOptions.TypeInfoResolver ?? new DefaultJsonTypeInfoResolver())
+            .WithAddedModifier(UtcDateTimeJson.MarkUtcProperties);
     })
     .ConfigureApiBehaviorOptions(options =>
     {
@@ -151,6 +160,7 @@ builder.Services.AddOptions<MvcOptions>()
             input.JsonSerializerOptions.PropertyNamingPolicy = shared.PropertyNamingPolicy;
             input.JsonSerializerOptions.PropertyNameCaseInsensitive = shared.PropertyNameCaseInsensitive;
             input.JsonSerializerOptions.NumberHandling = shared.NumberHandling;
+            input.JsonSerializerOptions.TypeInfoResolver = shared.TypeInfoResolver;
             foreach (var converter in shared.Converters)
             {
                 input.JsonSerializerOptions.Converters.Add(converter);

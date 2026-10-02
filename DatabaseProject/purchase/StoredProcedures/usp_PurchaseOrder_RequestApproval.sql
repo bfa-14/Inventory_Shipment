@@ -1,4 +1,8 @@
+/* ================================================================== 1. Send for approval */
+
+-- 6.2 Draft PO -> Pending approval. Returns one row per approver: a personal token (shown ONCE, only its hash is kept)
 -- for the by-email approvers, none for the in-app ones; SendEmail = whether the API emails that approver.
+-- 65016 only while the approved order is emailed to the supplier (ApprovalSettings.EmailSupplierOnApproval).
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_RequestApproval
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -23,7 +27,8 @@ BEGIN
         THROW 65009, 'The purchase order has no lines. Add at least one item before sending it for approval.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
         THROW 65008, 'The supplier is inactive.', 1;
-    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND NULLIF(LTRIM(RTRIM(Email)), N'') IS NOT NULL)
+    IF ISNULL((SELECT EmailSupplierOnApproval FROM purchase.ApprovalSettings WHERE Id = 1), 0) = 1
+       AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND NULLIF(LTRIM(RTRIM(Email)), N'') IS NOT NULL)
         THROW 65016, 'The supplier has no email in Parties. Add it first: the approved order is emailed to the supplier.', 1;
     IF purchase.fn_PurchaseOrder_NeedsApproval(@Id) = 0
         THROW 65022, 'This order does not need approval: post it.', 1;

@@ -69,8 +69,8 @@ public sealed class PurchaseApprovalRepository : IPurchaseApprovalRepository
         return rows;
     }
 
-    public Task WithdrawAsync(int id, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("purchase.usp_PurchaseOrder_Withdraw", new { Id = id, UserId = userId }, cancellationToken);
+    public Task WithdrawAsync(int id, string? reason, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("purchase.usp_PurchaseOrder_Withdraw", new { Id = id, UserId = userId, Reason = reason }, cancellationToken);
 
     public Task<ApprovalDecisionRow> DecideInAppAsync(
         int id, byte[]? rowVersion, bool approve, string? reason, int userId, CancellationToken cancellationToken = default)

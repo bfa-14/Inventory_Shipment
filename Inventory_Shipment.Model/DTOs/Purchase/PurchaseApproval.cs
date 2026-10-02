@@ -258,6 +258,13 @@ public sealed class CreateAndApproveResultDto
     public string? DocumentNumber { get; init; }
     public bool Approved { get; init; }
     public bool Posted { get; init; }
+
+    /// <summary>As approve-now: true sent, false not sent (no address), null nothing was to be sent (or not approved here).</summary>
+    public bool? SupplierEmailed { get; init; }
+
+    /// <summary>As approve-now: what went wrong with the follow-up emails ("The supplier has no email address: ...").</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+
     public string Message { get; init; } = string.Empty;
 }
 

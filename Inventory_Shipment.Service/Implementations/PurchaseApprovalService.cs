@@ -136,16 +136,15 @@ public sealed partial class PurchaseApprovalService : IPurchaseApprovalService
 
         try
         {
-            await _approvals.WithdrawAsync(id, userId, cancellationToken);
+            await _approvals.WithdrawAsync(id, string.IsNullOrWhiteSpace(request.Reason) ? null : request.Reason.Trim(), userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
             return ApprovalRuleFailures.Failure<ApprovalDecisionResultDto>(ex);
         }
 
-        // The procedure keeps no reason for a withdrawal; it is logged so it is not lost.
-        _logger.LogInformation("Approval request of purchase order {DocumentId} withdrawn by user {UserId}{Reason}",
-            id, userId, string.IsNullOrWhiteSpace(request.Reason) ? string.Empty : ": " + request.Reason.Trim());
+        // The reason is kept on the "Withdrawn" event of the history (usp_PurchaseOrder_Withdraw, script 44).
+        _logger.LogInformation("Approval request of purchase order {DocumentId} withdrawn by user {UserId}", id, userId);
 
         return await DocumentResultAsync(id, ApprovalFollowUp.Nothing, "Approval request withdrawn: the order is a draft again.", cancellationToken);
     }
@@ -302,7 +301,8 @@ public sealed partial class PurchaseApprovalService : IPurchaseApprovalService
             return Result<CreateAndApproveResultDto>.Success(Draft(draft, ex.Message));
         }
 
-        await _mailer.DecidedAsync(decision, userId, cancellationToken);
+        // The follow-up emails, and what went wrong with them - the same warnings approve-now answers.
+        var followUp = await _mailer.DecidedAsync(decision, userId, cancellationToken);
         return Result<CreateAndApproveResultDto>.Success(new CreateAndApproveResultDto
         {
             Id = draft.Id,
@@ -310,6 +310,8 @@ public sealed partial class PurchaseApprovalService : IPurchaseApprovalService
             DocumentNumber = decision.DocumentNumber,
             Approved = true,
             Posted = true,
+            SupplierEmailed = followUp.SupplierEmailed,
+            Warnings = followUp.Warnings,
             Message = $"Approved: {decision.DocumentNumber}",
         });
 

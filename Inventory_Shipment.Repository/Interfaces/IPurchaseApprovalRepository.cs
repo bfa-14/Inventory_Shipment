@@ -16,7 +16,8 @@ public interface IPurchaseApprovalRepository
     Task<IReadOnlyList<ApprovalLinkRow>> ResendAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>Waiting -> draft; the links stop working.</summary>
-    Task WithdrawAsync(int id, int userId, CancellationToken cancellationToken = default);
+    /// <summary>Waiting -> draft again; the reason (optional) is kept on the "Withdrawn" event.</summary>
+    Task WithdrawAsync(int id, string? reason, int userId, CancellationToken cancellationToken = default);
 
     Task<ApprovalDecisionRow> DecideInAppAsync(int id, byte[]? rowVersion, bool approve, string? reason, int userId, CancellationToken cancellationToken = default);
 
