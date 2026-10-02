@@ -1,18 +1,19 @@
-/* ================================================================== 2. Auto-plan: proposal (nothing saved) */
+/* ================================================================== 8. PlanFromOrder: for an invoice of the order */
 
--- Three result sets: 1 containers (Seq, ItemCount, Units, FillPct, MaxUnits, ItemSummary), 2 their lines,
--- 3 the order lines (available, planned, pieces per container and where that number comes from).
+-- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before) plans only what that invoice has outside containers.
 CREATE   PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
     @ContainerTypeId INT,
     @MixRemainders   BIT = 1,       -- 0 = the rest of every order line gets its own container
-    @Capacities      logistics.tvp_ItemCapacity READONLY     -- pieces per container typed by the user (optional)
+    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- pieces per container typed by the user (optional)
+    @ForInvoiceId    INT = NULL      -- (43) only what this invoice of the order has outside containers
 AS
 BEGIN
     SET NOCOUNT ON;
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-                   WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO' AND d.Status = 2)
+                   WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
+                     AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)))
         THROW 69000, 'The purchase order must be approved and still open.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId AND IsActive = 1)
         THROW 69000, 'Container type not found or inactive.', 1;
@@ -37,7 +38,9 @@ BEGIN
     );
     INSERT INTO @Lines (PoLineId, PoLineNumber, ItemId, OrderedBase, AvailableBase, Cap, CapSource, OilIncluded, Remaining)
     SELECT l.Id, l.LineNumber, l.ItemId, l.QuantityBase,
-           l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0),
+           CASE WHEN @ForInvoiceId IS NOT NULL AND inv.UnlinkedBase < l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
+                THEN inv.UnlinkedBase
+                ELSE l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) END,
            COALESCE(cap.PcsPerContainer, NULLIF(cnt.PackingFormula, 0), @TypeCap),
            CASE WHEN cap.PcsPerContainer IS NOT NULL THEN N'Entered'
                 WHEN cnt.PackingFormula > 0 THEN N'Item'
@@ -48,9 +51,10 @@ BEGIN
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN inventory.Items i ON i.Id = l.ItemId
     LEFT  JOIN @Capacities cap   ON cap.ItemId = l.ItemId
+    LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@ForInvoiceId) inv ON inv.PoLineId = l.Id
     OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                  INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4)) dir
+                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8) oth
@@ -58,7 +62,7 @@ BEGIN
                  INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
                  WHERE u.ItemId = l.ItemId AND t.IsContainer = 1
                  ORDER BY u.Id) cnt
-    WHERE l.DocumentId = @PurchaseOrderId;
+    WHERE l.DocumentId = @PurchaseOrderId AND (@ForInvoiceId IS NULL OR inv.UnlinkedBase > 0);
 
     SELECT TOP (1) @Msg = N'Line ' + CAST(l.PoLineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): the number of pieces per container '
                         + N'is unknown. Enter it, or give the item a Container unit or the container type a capacity.'

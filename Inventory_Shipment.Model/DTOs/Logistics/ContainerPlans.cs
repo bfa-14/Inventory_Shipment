@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 
 namespace Inventory_Shipment.Model.DTOs.Logistics;
 
@@ -24,6 +25,13 @@ public sealed class AutoPlanRequest
 
     /// <summary>Items left out take the item's container unit, else the container type's capacity.</summary>
     public IReadOnlyList<ItemCapacityRequest>? Capacities { get; init; }
+
+    /// <summary>
+    /// Set by the server for the auto-plan of an INVOICE (script 43): only what that invoice of the order has outside
+    /// containers is planned. Never read from a request body.
+    /// </summary>
+    [JsonIgnore]
+    public int? ForInvoiceId { get; init; }
 }
 
 /// <summary>One proposed container (result set 1).</summary>

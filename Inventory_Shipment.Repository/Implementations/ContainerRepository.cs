@@ -178,6 +178,32 @@ public sealed class ContainerRepository : IContainerRepository
     public async Task<int> SaveAsync(
         SaveContainerRequest request, int? id, int userId, CancellationToken cancellationToken = default)
     {
+        var parameters = SaveParameters(request, id, userId);
+
+        try
+        {
+            await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                await connection.ExecuteAsync(new CommandDefinition(
+                    "logistics.usp_Container_Save", parameters,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            }, cancellationToken);
+
+            return parameters.Get<int>("@NewId");
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>
+    /// The parameters of logistics.usp_Container_Save (@NewId is the output), shared with the invoice that adds a
+    /// container and links it in one transaction (script 43, which adds <c>@ForInvoiceId</c> to them).
+    /// </summary>
+    internal static DynamicParameters SaveParameters(SaveContainerRequest request, int? id, int userId)
+    {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
         parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
@@ -224,23 +250,7 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
-
-        try
-        {
-            await SqlRetry.OnDeadlockAsync(async () =>
-            {
-                await using var connection = _connectionFactory.Create();
-                await connection.ExecuteAsync(new CommandDefinition(
-                    "logistics.usp_Container_Save", parameters,
-                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-            }, cancellationToken);
-
-            return parameters.Get<int>("@NewId");
-        }
-        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
-        {
-            throw SqlErrors.Wrap(ex);
-        }
+        return parameters;
     }
 
     public Task ConfirmAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
@@ -325,6 +335,7 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@ContainerTypeId", request.ContainerTypeId, DbType.Int32);
         parameters.Add("@MixRemainders", request.MixRemainders, DbType.Boolean);
         parameters.Add("@Capacities", ToCapacityTable(request.Capacities).AsTableValuedParameter(ItemCapacityTypeName));
+        parameters.Add("@ForInvoiceId", request.ForInvoiceId, DbType.Int32);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -346,6 +357,10 @@ public sealed class ContainerRepository : IContainerRepository
 
     public async Task<IReadOnlyList<CreatedContainerDto>> CreateBatchAsync(
         CreateContainersFromPlanRequest request, int userId, CancellationToken cancellationToken = default)
+        => await QueryAsync<CreatedContainerDto>("logistics.usp_Container_CreateBatch", CreateBatchParameters(request, userId), cancellationToken);
+
+    /// <summary>The parameters of logistics.usp_Container_CreateBatch, shared like <see cref="SaveParameters"/>.</summary>
+    internal static DynamicParameters CreateBatchParameters(CreateContainersFromPlanRequest request, int userId)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
@@ -373,8 +388,7 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@AllowOverCapacity", request.AllowOverCapacity, DbType.Boolean);
         parameters.Add("@Confirm", request.Confirm, DbType.Boolean);
         parameters.Add("@UserId", userId, DbType.Int32);
-
-        return await QueryAsync<CreatedContainerDto>("logistics.usp_Container_CreateBatch", parameters, cancellationToken);
+        return parameters;
     }
 
     public Task<IReadOnlyList<ContainerNumberDto>> SetNumbersAsync(

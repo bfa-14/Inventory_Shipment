@@ -1,3 +1,6 @@
+/* ================================================================== 5. Get: containers needed */
+
+-- Re-created (43) from the body of script 27: header ContainersNeeded; an invoice shipped in containers is not "invoiced directly".
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Get
     @Id INT
 AS
@@ -25,6 +28,7 @@ BEGIN
                                           INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
                                           WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8), 0) END,
            ContainerChargesBase = cch.Share,
+           ContainersNeeded = need.Containers,     -- (43) invoices: sum over the items of the pieces / pieces per container
            d.ApprovalRequestedAtUtc, d.ApprovalRequestedBy, rqu.FullName AS ApprovalRequestedByName,
            d.ApprovedAtUtc, d.ApprovedBy, apu.FullName AS ApprovedByName, d.ApprovalChannel,
            d.RejectedAtUtc, d.RejectedBy, rju.FullName AS RejectedByName, d.RejectReason,
@@ -70,6 +74,9 @@ BEGIN
                  INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id
                  INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
                  WHERE x.DocumentId = d.Id) cch
+    OUTER APPLY (SELECT Containers = CASE WHEN dt.Code = N'PINV'
+                                          THEN CAST(SUM(CAST(s.InvoicedBase AS DECIMAL(19,4)) / s.PcsPerContainer) AS DECIMAL(18,2)) END
+                 FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) need
     WHERE d.Id = @Id;
 
     SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
@@ -112,7 +119,7 @@ BEGIN
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8) ct
     OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                  INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND dt.Code = N'PO') dir
+                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2 AND dt.Code = N'PO') dir
     LEFT  JOIN logistics.ContainerLines lcl ON lcl.Id = l.ContainerLineId
     LEFT  JOIN logistics.Containers lct     ON lct.Id = lcl.ContainerId
     OUTER APPLY (SELECT Charges = SUM(a.AmountBase)

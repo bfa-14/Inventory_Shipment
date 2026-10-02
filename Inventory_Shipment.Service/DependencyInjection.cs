@@ -50,6 +50,7 @@ public static class DependencyInjection
         services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
         services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();
         services.TryAddScoped<ILateChargeService, LateChargeService>();
+        services.TryAddScoped<IPurchaseInvoiceContainerService, PurchaseInvoiceContainerService>();
         services.TryAddScoped<ICostingReportService, CostingReportService>();
         services.TryAddScoped<IContainerService, ContainerService>();
         services.TryAddScoped<IContainerTypeService, ContainerTypeService>();
@@ -74,7 +75,7 @@ public static class DependencyInjection
         services.TryAddScoped<IEmailLogService, EmailLogService>();
 
         // Purchase order approval: who approves is SQL's (Settings > Purchase approval); the mailer queues the emails.
-        services.TryAddScoped<IPurchaseApprovalMailer, LoggingPurchaseApprovalMailer>();
+        services.TryAddScoped<IPurchaseApprovalMailer, PurchaseApprovalMailer>();
         services.TryAddScoped<IPurchaseApprovalService, PurchaseApprovalService>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

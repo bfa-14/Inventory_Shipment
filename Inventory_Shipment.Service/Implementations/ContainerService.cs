@@ -532,7 +532,7 @@ public sealed class ContainerService : IContainerService
     /// order line at most once and every quantity above zero. The plan table's primary key
     /// (Seq, PoLineId) would refuse a line twice too, but as a constraint violation — a 500.
     /// </summary>
-    private static string? CheckPlan(IReadOnlyList<PlanContainerRequest>? containers)
+    internal static string? CheckPlan(IReadOnlyList<PlanContainerRequest>? containers)
     {
         if (containers is null || containers.All(c => c.Lines is null or { Count: 0 }))
         {
@@ -579,7 +579,7 @@ public sealed class ContainerService : IContainerService
         return null;
     }
 
-    private static string? CheckCapacities(IReadOnlyList<ItemCapacityRequest>? capacities)
+    internal static string? CheckCapacities(IReadOnlyList<ItemCapacityRequest>? capacities)
     {
         if (capacities is null)
         {

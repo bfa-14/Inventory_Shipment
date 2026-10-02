@@ -1,3 +1,6 @@
+/* ================================================================== 7. Container_Save: for an invoice of the order */
+
+-- Re-created (43) from the body of script 27: + @ForInvoiceId (default NULL = as before); invoices shipped in containers are not "invoiced directly".
 CREATE   PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
     @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
@@ -43,6 +46,7 @@ CREATE   PROCEDURE logistics.usp_Container_Save
     @AllowOverCapacity   BIT            = 0,
     @RowVersion          BINARY(8)      = NULL,
     @UserId              INT            = NULL,
+    @ForInvoiceId        INT            = NULL,   -- (43) for this invoice of the order: the order may be closed by it
     @NewId               INT OUTPUT
 AS
 BEGIN
@@ -88,7 +92,8 @@ BEGIN
     BEGIN
         IF @PurchaseOrderId IS NULL THROW 69000, 'The purchase order is required: a container is created from a purchase order.', 1;
         IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-                       WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO' AND d.Status = 2)
+                       WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
+                         AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)))
             THROW 69000, 'The purchase order must be approved and still open.', 1;
     END
 
@@ -102,7 +107,7 @@ BEGIN
         CASE WHEN pol.Id IS NULL OR dt.Code <> N'PO' THEN N'the purchase order line no longer exists.'
              WHEN l.QuantityBase <= 0 THEN N'the quantity must be greater than zero.'
              WHEN l.OilQtyPerUnit < 0 THEN N'the oil quantity cannot be negative.'
-             WHEN ex.Id IS NULL AND d.Status <> 2 THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' is not approved or no longer open.'
+             WHEN ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' is not approved or no longer open.'
              WHEN ex.Id IS NOT NULL AND d.Status NOT IN (2, 4) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' was cancelled.'
              ELSE N'item ' + i.ItemCode + N' has no base unit.' END
     FROM @Lines l
@@ -112,7 +117,7 @@ BEGIN
     LEFT JOIN inventory.Items i                  ON i.Id = pol.ItemId
     LEFT JOIN logistics.ContainerLines ex        ON ex.ContainerId = @Id AND ex.PoLineId = l.PoLineId
     WHERE pol.Id IS NULL OR dt.Code <> N'PO' OR l.QuantityBase <= 0 OR l.OilQtyPerUnit < 0
-       OR (ex.Id IS NULL AND d.Status <> 2) OR (ex.Id IS NOT NULL AND d.Status NOT IN (2, 4))
+       OR (ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)) OR (ex.Id IS NOT NULL AND d.Status NOT IN (2, 4))
        OR NOT EXISTS (SELECT 1 FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1)
     ORDER BY l.LineNumber;
     IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
@@ -128,7 +133,7 @@ BEGIN
     INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
     OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                  INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4)) dir
+                 WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c2 ON c2.Id = cl.ContainerId
                  WHERE cl.PoLineId = pol.Id AND c2.Status <> 8 AND (@Id IS NULL OR cl.ContainerId <> @Id)) oth

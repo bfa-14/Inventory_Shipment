@@ -1,7 +1,6 @@
-/* ================================================================== 10. Containers: loaded from purchase orders */
+/* ================================================================== 6. Order lines that can still be loaded */
 
--- Order lines that can still be loaded: approved, open orders. Loadable = ordered - invoiced WITHOUT a container
--- (local receipts) - loaded in other containers. @ContainerId = the container being edited (its own lines count apart).
+-- Re-created (43) from the body of script 27: the lines of an invoice shipped in containers are not "invoiced directly".
 CREATE   PROCEDURE logistics.usp_Container_AvailablePoLines
     @PurchaseOrderId INT           = NULL,
     @SupplierId      INT           = NULL,
@@ -43,7 +42,7 @@ BEGIN
     INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
     OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                  INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4)) dir
+                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8 AND (@ContainerId IS NULL OR cl.ContainerId <> @ContainerId)) oth

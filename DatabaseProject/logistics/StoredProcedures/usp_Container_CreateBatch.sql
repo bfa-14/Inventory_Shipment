@@ -1,10 +1,6 @@
-/* ================================================================== 3. Auto-plan: create the containers */
+/* ================================================================== 9. CreateBatch: for an invoice of the order */
 
--- Creates every container of the plan in ONE transaction (all or nothing), each through usp_Container_Save.
--- Header values are the same for every container; the order's branch and warehouse by default. Send Seq 1..N in the
--- order shown to the user and the same @Capacities as for the proposal: an error names "Container <Seq> of <N>".
--- Returns the created containers (Seq, ContainerId, ContainerRef, Status, TotalLines, TotalAllocatedBase, MaxUnits,
--- UtilizationPct, RowVersion).
+-- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before), passed to usp_Container_Save.
 CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
     @ContainerTypeId     INT,
@@ -24,7 +20,8 @@ CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @Capacities          logistics.tvp_ItemCapacity READONLY,     -- the same values as for the proposal
     @AllowOverCapacity   BIT            = 0,
     @Confirm             BIT            = 0,                      -- 1 = the new containers are confirmed at once
-    @UserId              INT            = NULL
+    @UserId              INT            = NULL,
+    @ForInvoiceId        INT            = NULL                    -- (43) for this invoice: its pieces outside containers at most
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -36,7 +33,7 @@ BEGIN
     SELECT @OrderBranch = d.BranchId, @OrderWarehouse = d.WarehouseId, @OrderNo = d.DocumentNumber
     FROM purchase.PurchaseDocuments d
     INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-    WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO' AND d.Status = 2;
+    WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO' AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1));
     IF @OrderBranch IS NULL THROW 69000, 'The purchase order must be approved and still open.', 1;
     SET @BranchId = ISNULL(@BranchId, @OrderBranch);
     SET @WarehouseId = ISNULL(@WarehouseId, @OrderWarehouse);
@@ -107,13 +104,28 @@ BEGIN
         INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
         OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                      INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                     WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4)) dir
+                     WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
         OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                      INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                      WHERE cl.PoLineId = pol.Id AND c.Status <> 8) oth
         WHERE t.Planned > pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
         ORDER BY pol.LineNumber;
         IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
+
+        -- (43) for an invoice: no more than its pieces of every order line outside containers
+        IF @ForInvoiceId IS NOT NULL
+        BEGIN
+            SELECT TOP (1) @Msg = N'Order line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                + CAST(t.Planned AS NVARCHAR(20)) + N' pieces planned but the invoice has only '
+                                + CAST(ISNULL(inv.UnlinkedBase, 0) AS NVARCHAR(20)) + N' outside containers.'
+            FROM (SELECT PoLineId, Planned = SUM(QuantityBase) FROM @Plan GROUP BY PoLineId) t
+            INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = t.PoLineId
+            INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+            LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@ForInvoiceId) inv ON inv.PoLineId = t.PoLineId
+            WHERE t.Planned > ISNULL(inv.UnlinkedBase, 0)
+            ORDER BY pol.LineNumber;
+            IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
+        END
 
         DECLARE plan_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
             SELECT Seq, Ord, MaxUnits FROM @Seqs ORDER BY Ord;
@@ -150,6 +162,7 @@ BEGIN
                  @Lines               = @L,
                  @AllowOverCapacity   = @AllowOverCapacity,
                  @UserId              = @UserId,
+                 @ForInvoiceId        = @ForInvoiceId,
                  @NewId               = @NewId OUTPUT;
 
             IF ISNULL(@Confirm, 0) = 1
