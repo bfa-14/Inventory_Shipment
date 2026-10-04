@@ -346,6 +346,26 @@ public static class SqlErrors
     /// <summary>A receipt created by a Cash invoice cannot be reversed on its own.</summary>
     public const int ReceiptAutomatic = 71015;
 
+    // ----- 73xxx: supplier payments (scripts 46-47) -----
+    public const int PaymentValidation = 73000;
+    public const int PaymentConcurrency = 73004;
+    public const int PaymentNotEditable = 73005;
+    public const int PaymentNotFound = 73006;
+
+    /// <summary>The payment lines (or the allocations) do not add up to the Payment Amount in the payment currency.</summary>
+    public const int PaymentNotBalanced = 73008;
+
+    /// <summary>An allocation is more than what the invoice / charge still owes.</summary>
+    public const int PaymentAllocationExceeds = 73009;
+
+    public const int PaymentInvalidStatus = 73010;
+
+    /// <summary>A Free Payment's later allocation asks for more than its unapplied advance.</summary>
+    public const int PaymentUnappliedExceeded = 73011;
+
+    /// <summary>A Free Payment applied to documents cannot be reversed until those allocations are removed.</summary>
+    public const int PaymentHasAllocations = 73012;
+
     // ----- 72xxx: global settings -----
     public const int SettingValidation = 72000;
     public const int SettingNotFound = 72006;
@@ -354,7 +374,7 @@ public static class SqlErrors
 
     // The ceiling moves with the newest block (71xxx is receipts): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 72999;
+    private const int LastBusinessRule = 73999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

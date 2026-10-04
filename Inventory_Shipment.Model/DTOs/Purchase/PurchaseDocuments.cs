@@ -123,6 +123,20 @@ public sealed class PurchaseDocumentListDto
     /// <summary>Supplier invoices only: how many items it holds — more than 1 for a draft made before one item per invoice.</summary>
     public int? ItemCount { get; init; }
 
+    /* (47) Supplier payments - posted purchase invoices only; null on orders, returns, drafts and cancelled ones. */
+
+    /// <summary>What posted supplier payments have paid, in the invoice's currency.</summary>
+    public decimal? PaidAmount { get; init; }
+
+    /// <summary>Posted purchase returns made from it, in its currency: they lower what is owed.</summary>
+    public decimal? ReturnedAmount { get; init; }
+
+    /// <summary>Total less returns less payments, in the invoice's currency.</summary>
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid.</summary>
+    public string? PaymentStatus { get; init; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime? CancelledAtUtc { get; init; }
@@ -389,6 +403,20 @@ public sealed class PurchaseDocumentDto
 
     /// <summary>What the goods really cost: TotalAmountBase + TotalChargesBase.</summary>
     public decimal TotalLandedCostBase { get; init; }
+
+    /* (47) Supplier payments - posted purchase invoices only; null on orders, returns, drafts and cancelled ones. */
+
+    /// <summary>What posted supplier payments have paid, in the invoice's currency.</summary>
+    public decimal? PaidAmount { get; init; }
+
+    /// <summary>Posted purchase returns made from it, in its currency: they lower what is owed.</summary>
+    public decimal? ReturnedAmount { get; init; }
+
+    /// <summary>Total less returns less payments, in the invoice's currency.</summary>
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid.</summary>
+    public string? PaymentStatus { get; init; }
 
     public int? SourceDocumentId { get; init; }
     public string? SourceDocumentNumber { get; init; }

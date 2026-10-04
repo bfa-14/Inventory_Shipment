@@ -221,8 +221,8 @@ public sealed class SaveAttachmentTypeRequest
     [StringLength(60, MinimumLength = 1)]
     public string SubType { get; init; } = string.Empty;
 
-    /// <summary>Logistics (container pages) or Receipt (customer receipts). Null keeps the row's current value; a new row defaults to Logistics.</summary>
-    [RegularExpression("^(Logistics|Receipt)$", ErrorMessage = "Applies to must be Logistics or Receipt.")]
+    /// <summary>Logistics (container pages), Receipt (customer receipts) or Payment (supplier payments). Null keeps the row's current value; a new row defaults to Logistics.</summary>
+    [RegularExpression("^(Logistics|Receipt|Payment)$", ErrorMessage = "Applies to must be Logistics, Receipt or Payment.")]
     public string? AppliesTo { get; init; }
 
     public int SortOrder { get; init; }

@@ -200,6 +200,15 @@ public static class Permissions
         public const string LandedCostsCancel = "purchase.landedcosts.cancel";
         public const string LandedCostsDelete = "purchase.landedcosts.delete";
 
+        /* Supplier payments (US-PAY-001): money going out to suppliers and service providers. View sees them;
+           Create covers drafts and their files; the rest are separate because they move what is owed. */
+        public const string PaymentsView = "purchase.payments.view";
+        public const string PaymentsCreate = "purchase.payments.create";
+        public const string PaymentsPost = "purchase.payments.post";
+        public const string PaymentsReverse = "purchase.payments.reverse";
+        public const string PaymentsDelete = "purchase.payments.delete";
+        public const string PaymentsAllocate = "purchase.payments.allocate";
+
         /// <summary>Settings > Purchase approval (script 42): whether orders need approval, and who approves them.</summary>
         public const string ApprovalManage = "purchase.approval.manage";
 
@@ -434,6 +443,19 @@ public static class Permissions
             "Cancel posted purchase returns (stock reversal).", 1150),
         new(Purchase.ReturnsDelete, "Delete Purchase Returns", PurchaseModule,
             "Delete draft purchase returns.", 1160),
+
+        new(Purchase.PaymentsView, "View Supplier Payments", PurchaseModule,
+            "See supplier payments and the invoices or charges they paid.", 1230),
+        new(Purchase.PaymentsCreate, "Create Supplier Payments", PurchaseModule,
+            "Create and edit draft supplier payments, and attach files to them.", 1240),
+        new(Purchase.PaymentsPost, "Post Supplier Payments", PurchaseModule,
+            "Post a supplier payment: it starts paying the invoices or charges it is allocated to.", 1250),
+        new(Purchase.PaymentsReverse, "Reverse Supplier Payments", PurchaseModule,
+            "Reverse a posted supplier payment; what it paid is owed again.", 1260),
+        new(Purchase.PaymentsDelete, "Delete Supplier Payments", PurchaseModule,
+            "Delete draft supplier payments.", 1270),
+        new(Purchase.PaymentsAllocate, "Allocate Supplier Payments", PurchaseModule,
+            "Apply the unapplied advance of a posted payment to invoices or charges, or take it back.", 1280),
 
         new(Purchase.LandedCostsView, "View Landed Cost Adjustments", PurchaseModule,
             "See landed cost adjustments.", 1180),

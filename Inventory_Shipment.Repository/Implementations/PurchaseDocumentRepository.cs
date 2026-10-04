@@ -68,6 +68,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? ItemCode { get; init; }
         public string? ItemName { get; init; }
         public int? ItemCount { get; init; }
+        public decimal? PaidAmount { get; init; }
+        public decimal? ReturnedAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -113,6 +117,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             SourceDocumentId = SourceDocumentId,
             SourceDocumentNumber = SourceDocumentNumber,
             ReceivedPercent = ReceivedPercent,
+            PaidAmount = PaidAmount,
+            ReturnedAmount = ReturnedAmount,
+            OutstandingAmount = OutstandingAmount,
+            PaymentStatus = PaymentStatus,
             ItemId = ItemId,
             ItemCode = ItemCode,
             ItemName = ItemName,
@@ -219,6 +227,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal TotalAmountBase { get; init; }
         public decimal TotalChargesBase { get; init; }
         public decimal TotalLandedCostBase { get; init; }
+        public decimal? PaidAmount { get; init; }
+        public decimal? ReturnedAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
         public int? SourceDocumentId { get; init; }
         public string? SourceDocumentNumber { get; init; }
         public string? SourceDocumentTypeCode { get; init; }
@@ -445,6 +457,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             TotalAmountBase = header.TotalAmountBase,
             TotalChargesBase = header.TotalChargesBase,
             TotalLandedCostBase = header.TotalLandedCostBase,
+            PaidAmount = header.PaidAmount,
+            ReturnedAmount = header.ReturnedAmount,
+            OutstandingAmount = header.OutstandingAmount,
+            PaymentStatus = header.PaymentStatus,
             SourceDocumentId = header.SourceDocumentId,
             SourceDocumentNumber = header.SourceDocumentNumber,
             SourceDocumentTypeCode = header.SourceDocumentTypeCode,
