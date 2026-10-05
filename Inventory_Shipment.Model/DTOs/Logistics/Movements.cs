@@ -590,6 +590,17 @@ public sealed class ContainerAttachmentUpload
     public DateOnly? DocumentDate { get; init; }
 }
 
+/// <summary>The edited details of a container attachment; Content null keeps the stored file.</summary>
+public sealed class ContainerAttachmentEdit
+{
+    public int? AttachmentTypeId { get; init; }
+    public string FileName { get; init; } = string.Empty;
+    public string? ContentType { get; init; }
+    public byte[]? Content { get; init; }
+    public string? Note { get; init; }
+    public DateOnly? DocumentDate { get; init; }
+}
+
 public sealed class ContainerAttachmentFile
 {
     public int Id { get; init; }

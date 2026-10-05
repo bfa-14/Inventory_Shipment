@@ -56,6 +56,11 @@ public interface ISalesDocumentRepository
 
     Task<SalesDocumentFileContent?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);
 
+    /// <summary>Renames an attachment; content null keeps the stored bytes.</summary>
+    Task UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, int userId,
+        CancellationToken cancellationToken = default);
+
     Task DeleteFileAsync(int fileId, int userId, CancellationToken cancellationToken = default);
 }
 

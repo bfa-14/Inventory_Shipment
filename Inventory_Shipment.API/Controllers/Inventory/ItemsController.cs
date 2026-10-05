@@ -231,6 +231,27 @@ public sealed class ItemsController : ControllerBase
             : File(file.Content, file.ContentType, file.FileName);
     }
 
+    /// <summary>
+    /// Edits one of the item's files (multipart/form-data): fileName renames it, and an optional file
+    /// replaces its content under the upload's checks. Without a file the stored one is kept.
+    /// </summary>
+    [HttpPut("{id:int}/files/{fileId:int}")]
+    [HasPermission(Permissions.Inventory.ItemsEdit)]
+    [Consumes("multipart/form-data")]
+    [RequestSizeLimit(6 * 1024 * 1024)]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult> UpdateFile(
+        int id, int fileId, [FromForm] string? fileName, IFormFile? file, CancellationToken cancellationToken = default)
+    {
+        await using var stream = file?.OpenReadStream();
+        var upload = file is null ? null : new ItemFileUpload(file.FileName, file.ContentType, file.Length, stream!);
+
+        var result = await _itemService.UpdateFileAsync(id, fileId, fileName, upload, cancellationToken);
+        return result.ToNoContentResult(this);
+    }
+
     /// <summary>Deletes one of the item's files.</summary>
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [HasPermission(Permissions.Inventory.ItemsEdit)]

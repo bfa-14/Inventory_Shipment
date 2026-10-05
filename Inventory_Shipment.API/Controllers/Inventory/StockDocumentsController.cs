@@ -234,6 +234,52 @@ public sealed class StockDocumentsController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>Renames an attachment; a file sent with it replaces the content, none keeps the stored one.</summary>
+    [HttpPut("{id:int}/files/{fileId:int}")]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [RequestSizeLimit(MaxFileBytes * 2)]
+    public async Task<IActionResult> UpdateFile(
+        int id, int fileId, [FromForm] string? fileName, IFormFile? file, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return Invalid("The file name is required.");
+        }
+
+        byte[]? content = null;
+
+        if (file is not null)
+        {
+            if (file.Length == 0)
+            {
+                return Invalid("No file was uploaded.");
+            }
+
+            if (file.Length > MaxFileBytes)
+            {
+                return Invalid($"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.");
+            }
+
+            if (!AllowedFileTypes.Contains(Path.GetExtension(file.FileName)))
+            {
+                return Invalid("Only PDF, Excel, Word and image files can be attached.");
+            }
+
+            using var buffer = new MemoryStream();
+            await file.CopyToAsync(buffer, cancellationToken);
+            content = buffer.ToArray();
+        }
+
+        var result = await _documents.UpdateFileAsync(
+            id, fileId, fileName.Trim(), file?.ContentType, content, User.GetUserId(),
+            User.GetPermissions(), cancellationToken);
+
+        return result.ToNoContentResult(this);
+    }
+
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<ActionResult> DeleteFile(int id, int fileId, CancellationToken cancellationToken)

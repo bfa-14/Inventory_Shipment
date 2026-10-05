@@ -62,7 +62,12 @@ public interface IReceiptService
 
     Task<Result<ReceiptFileContent>> GetFileAsync(int receiptId, int fileId, CancellationToken cancellationToken = default);
 
-    /// <summary>Drafts only. Needs sales.receipts.create.</summary>
+    /// <summary>Details of a file and, when content is given, its bytes. Not on a reversed receipt. Needs sales.receipts.create.</summary>
+    Task<Result> UpdateFileAsync(
+        int receiptId, int fileId, int? attachmentTypeId, string? note, string fileName, string? contentType, byte[]? content,
+        int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>Drafts and posted receipts, not a reversed one. Needs sales.receipts.create.</summary>
     Task<Result> DeleteFileAsync(
         int receiptId, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 }

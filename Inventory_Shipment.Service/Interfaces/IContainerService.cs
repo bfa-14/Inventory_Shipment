@@ -74,6 +74,11 @@ public interface IContainerService
     Task<Result<ContainerAttachmentFile>> GetAttachmentFileAsync(
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>allShared = the details of every container holding the file. Needs containers.attachments.manage.</summary>
+    Task<Result> UpdateAttachmentAsync(
+        int id, bool allShared, ContainerAttachmentEdit edit, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     /// <summary>allShared = the file from every container holding it. Needs containers.attachments.manage.</summary>
     Task<Result> DeleteAttachmentAsync(
         int id, bool allShared, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

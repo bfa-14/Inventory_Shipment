@@ -49,5 +49,10 @@ public interface IPaymentService
 
     Task<Result<PaymentFileContent>> GetFileAsync(int paymentId, int fileId, CancellationToken cancellationToken = default);
 
+    /// <summary>Details of a file and, when content is given, its bytes. Not on a reversed payment.</summary>
+    Task<Result> UpdateFileAsync(
+        int paymentId, int fileId, int? attachmentTypeId, string? note, string fileName, string? contentType, byte[]? content,
+        int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     Task<Result> DeleteFileAsync(int paymentId, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 }

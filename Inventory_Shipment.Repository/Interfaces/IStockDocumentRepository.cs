@@ -49,6 +49,11 @@ public interface IStockDocumentRepository
     /// <summary>One attachment WITH its bytes. Null when there is no such file.</summary>
     Task<StockDocumentFileContent?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);
 
+    /// <summary>Renames an attachment; content null keeps the stored bytes.</summary>
+    Task UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, int userId,
+        CancellationToken cancellationToken = default);
+
     Task DeleteFileAsync(int fileId, int userId, CancellationToken cancellationToken = default);
 }
 

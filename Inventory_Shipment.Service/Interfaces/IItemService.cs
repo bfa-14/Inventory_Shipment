@@ -46,5 +46,12 @@ public interface IItemService
     /// <summary>The file with its bytes, for download. Fails with NOT_FOUND when it belongs to another item.</summary>
     Task<Result<ItemFile>> GetFileAsync(int itemId, int fileId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Renames one of the item's files and, when <paramref name="upload"/> is given, replaces its bytes
+    /// under the same checks as an upload. Without one the stored file is kept.
+    /// </summary>
+    Task<Result> UpdateFileAsync(
+        int itemId, int fileId, string? fileName, ItemFileUpload? upload, CancellationToken cancellationToken = default);
+
     Task<Result> DeleteFileAsync(int itemId, int fileId, CancellationToken cancellationToken = default);
 }

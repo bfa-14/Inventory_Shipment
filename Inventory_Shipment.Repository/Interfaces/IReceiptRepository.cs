@@ -47,6 +47,11 @@ public interface IReceiptRepository
 
     Task<ReceiptFileContent?> GetFileAsync(int receiptId, int fileId, CancellationToken cancellationToken = default);
 
-    /// <summary>Drafts only: the evidence of a posted payment stays.</summary>
+    /// <summary>Details of a file and, when content is given, its bytes. Not on a reversed receipt (71005).</summary>
+    Task UpdateFileAsync(
+        int receiptId, int fileId, int? attachmentTypeId, string? note, string fileName, string? contentType, byte[]? content,
+        int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>Drafts and posted receipts; a reversed one keeps its files (71005).</summary>
     Task DeleteFileAsync(int receiptId, int fileId, int userId, CancellationToken cancellationToken = default);
 }

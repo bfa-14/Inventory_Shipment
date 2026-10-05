@@ -405,6 +405,24 @@ public sealed class ReceiptRepository : IReceiptRepository
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
 
+    public Task UpdateFileAsync(
+        int receiptId, int fileId, int? attachmentTypeId, string? note, string fileName, string? contentType, byte[]? content,
+        int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@ReceiptId", receiptId, DbType.Int32);
+        parameters.Add("@FileId", fileId, DbType.Int32);
+        parameters.Add("@AttachmentTypeId", attachmentTypeId, DbType.Int32);
+        parameters.Add("@Note", note, DbType.String, size: 300);
+        parameters.Add("@FileName", fileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", contentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", content?.Length, DbType.Int32);
+        parameters.Add("@Content", content, DbType.Binary, size: -1);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return ExecuteAsync("sales.usp_ReceiptFile_Update", parameters, cancellationToken);
+    }
+
     public Task DeleteFileAsync(int receiptId, int fileId, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("sales.usp_ReceiptFile_Delete", new { ReceiptId = receiptId, FileId = fileId, UserId = userId }, cancellationToken);
 

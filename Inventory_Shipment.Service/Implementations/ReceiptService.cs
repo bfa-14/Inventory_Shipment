@@ -249,6 +249,28 @@ public sealed class ReceiptService : IReceiptService
             : Result<ReceiptFileContent>.Success(file);
     }
 
+    public async Task<Result> UpdateFileAsync(
+        int receiptId, int fileId, int? attachmentTypeId, string? note, string fileName, string? contentType, byte[]? content,
+        int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Sales.ReceiptsCreate))
+        {
+            return Forbidden(Permissions.Sales.ReceiptsCreate);
+        }
+
+        try
+        {
+            await _receipts.UpdateFileAsync(
+                receiptId, fileId, attachmentTypeId, note, fileName, contentType, content, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure(ex);
+        }
+
+        return Result.Success();
+    }
+
     public async Task<Result> DeleteFileAsync(
         int receiptId, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {

@@ -54,6 +54,10 @@ public interface IContainerRepository
 
     Task<ContainerAttachmentFile?> GetAttachmentFileAsync(int id, CancellationToken cancellationToken = default);
 
+    /// <summary>One record's details, or (allShared) those of every container holding the file; content null keeps it.</summary>
+    Task UpdateAttachmentAsync(
+        int id, bool allShared, ContainerAttachmentEdit edit, int userId, CancellationToken cancellationToken = default);
+
     /// <summary>One record, or (allShared) the file from every container holding it.</summary>
     Task DeleteAttachmentAsync(int id, bool allShared, int userId, CancellationToken cancellationToken = default);
 

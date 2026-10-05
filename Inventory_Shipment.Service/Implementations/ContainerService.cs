@@ -300,6 +300,30 @@ public sealed class ContainerService : IContainerService
             : Result<ContainerAttachmentFile>.Success(file);
     }
 
+    public async Task<Result> UpdateAttachmentAsync(
+        int id, bool allShared, ContainerAttachmentEdit edit, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.AttachmentsManage))
+        {
+            return Forbidden<ContainerDto>(Permissions.Containers.AttachmentsManage);
+        }
+
+        try
+        {
+            await _containers.UpdateAttachmentAsync(id, allShared, edit, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure(ex);
+        }
+
+        _logger.LogInformation("Attachment {AttachmentId} updated{Shared}{Replaced} by user {UserId}",
+            id, allShared ? " on every container" : string.Empty,
+            edit.Content is null ? string.Empty : " with new content", userId);
+        return Result.Success();
+    }
+
     public async Task<Result> DeleteAttachmentAsync(
         int id, bool allShared, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {

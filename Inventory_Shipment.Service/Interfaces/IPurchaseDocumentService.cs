@@ -106,6 +106,11 @@ public interface IPurchaseDocumentService
     Task<Result<PurchaseDocumentFileContent>> GetFileAsync(
         int id, int fileId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>Renames an attachment and, when content is given, replaces its bytes.</summary>
+    Task<Result> UpdateFileAsync(
+        int id, int fileId, string fileName, string? contentType, byte[]? content, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     Task<Result> DeleteFileAsync(
         int id, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 }

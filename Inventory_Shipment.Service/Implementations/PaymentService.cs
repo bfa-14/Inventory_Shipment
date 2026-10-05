@@ -290,6 +290,28 @@ public sealed class PaymentService : IPaymentService
             : Result<PaymentFileContent>.Success(file);
     }
 
+    public async Task<Result> UpdateFileAsync(
+        int paymentId, int fileId, int? attachmentTypeId, string? note, string fileName, string? contentType, byte[]? content,
+        int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Purchase.PaymentsCreate))
+        {
+            return Forbidden(Permissions.Purchase.PaymentsCreate);
+        }
+
+        try
+        {
+            await _payments.UpdateFileAsync(
+                paymentId, fileId, attachmentTypeId, note, fileName, contentType, content, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure(ex);
+        }
+
+        return Result.Success();
+    }
+
     public async Task<Result> DeleteFileAsync(
         int paymentId, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {

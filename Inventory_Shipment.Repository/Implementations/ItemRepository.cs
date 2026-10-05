@@ -354,6 +354,29 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
+    public async Task UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", fileId, DbType.Int32);
+        parameters.Add("@FileName", fileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", contentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", content?.Length, DbType.Int32);
+        parameters.Add("@Content", content, DbType.Binary, size: -1);
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_ItemFile_Update", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public async Task DeleteFileAsync(int fileId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();

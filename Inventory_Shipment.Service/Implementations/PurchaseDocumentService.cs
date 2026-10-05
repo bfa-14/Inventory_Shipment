@@ -725,6 +725,34 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             : Result<PurchaseDocumentFileContent>.Success(file);
     }
 
+    public async Task<Result> UpdateFileAsync(
+        int id, int fileId, string fileName, string? contentType, byte[]? content, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        var allowed = await AllowAsync(id, s => s.Create, permissions, cancellationToken);
+        if (allowed.IsFailure)
+        {
+            return Result.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
+        }
+
+        var file = await _documents.GetFileAsync(fileId, cancellationToken);
+        if (file is null || file.DocumentId != id)
+        {
+            return Result.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND");
+        }
+
+        try
+        {
+            await _documents.UpdateFileAsync(fileId, fileName, contentType, content, userId, cancellationToken);
+            return Result.Success();
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return Result.Failure(failure.Type, failure.Message, failure.Code);
+        }
+    }
+
     public async Task<Result> DeleteFileAsync(
         int id, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {

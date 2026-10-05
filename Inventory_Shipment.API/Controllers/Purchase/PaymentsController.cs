@@ -253,7 +253,58 @@ public sealed class PaymentsController : ControllerBase
             : this.ToProblem(result);
     }
 
-    /// <summary>Drafts only: the evidence of a posted payment stays.</summary>
+    /// <summary>
+    /// Edits a file's name, type and note; a file sent with them replaces the content, none keeps the
+    /// stored one. A reversed payment answers 409 NOT_EDITABLE.
+    /// </summary>
+    [HttpPut("{id:int}/files/{fileId:int}")]
+    [HasPermission(Permissions.Purchase.PaymentsCreate)]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    [RequestSizeLimit(MaxFileBytes * 2)]
+    public async Task<IActionResult> UpdateFile(
+        int id, int fileId, [FromForm] string? fileName, [FromForm] int? attachmentTypeId, [FromForm] string? note,
+        IFormFile? file, CancellationToken cancellationToken)
+    {
+        if (string.IsNullOrWhiteSpace(fileName))
+        {
+            return Invalid("The file name is required.");
+        }
+
+        byte[]? content = null;
+
+        if (file is not null)
+        {
+            if (file.Length == 0)
+            {
+                return Invalid("No file was uploaded.");
+            }
+
+            if (file.Length > MaxFileBytes)
+            {
+                return Invalid($"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.");
+            }
+
+            if (!AllowedFileTypes.Contains(Path.GetExtension(file.FileName)))
+            {
+                return Invalid("Only PDF, Excel, Word and image files can be attached.");
+            }
+
+            using var buffer = new MemoryStream();
+            await file.CopyToAsync(buffer, cancellationToken);
+            content = buffer.ToArray();
+        }
+
+        var result = await _payments.UpdateFileAsync(
+            id, fileId, attachmentTypeId, note, fileName.Trim(), file?.ContentType, content,
+            User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.ToNoContentResult(this);
+    }
+
+    /// <summary>Drafts and posted payments: evidence filed by mistake can go. A reversed payment keeps its files (409 NOT_EDITABLE).</summary>
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [HasPermission(Permissions.Purchase.PaymentsCreate)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

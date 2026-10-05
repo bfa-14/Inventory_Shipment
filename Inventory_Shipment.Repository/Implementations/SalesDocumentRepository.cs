@@ -591,6 +591,21 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
 
+    public Task UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", fileId, DbType.Int32);
+        parameters.Add("@FileName", fileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", contentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", content?.Length, DbType.Int32);
+        parameters.Add("@Content", content, DbType.Binary, size: -1);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return ExecuteAsync("sales.usp_SalesDocumentFile_Update", parameters, cancellationToken);
+    }
+
     private async Task ExecuteAsync(string procedure, object parameters, CancellationToken cancellationToken)
     {
         await using var connection = _connectionFactory.Create();

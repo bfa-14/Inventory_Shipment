@@ -322,6 +322,24 @@ public sealed class ContainerRepository : IContainerRepository
         }
     }
 
+    public Task UpdateAttachmentAsync(
+        int id, bool allShared, ContainerAttachmentEdit edit, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", id, DbType.Int32);
+        parameters.Add("@AllShared", allShared, DbType.Boolean);
+        parameters.Add("@AttachmentTypeId", edit.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@Note", edit.Note, DbType.String, size: 300);
+        parameters.Add("@DocumentDate", ToDate(edit.DocumentDate), DbType.Date);
+        parameters.Add("@FileName", edit.FileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", edit.ContentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", edit.Content?.Length, DbType.Int32);
+        parameters.Add("@Content", edit.Content, DbType.Binary, size: -1);
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        return ExecuteAsync("logistics.usp_ContainerAttachment_Update", parameters, cancellationToken);
+    }
+
     public Task DeleteAttachmentAsync(int id, bool allShared, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_ContainerAttachment_Delete",
             new { Id = id, AllShared = allShared, UserId = userId }, cancellationToken);

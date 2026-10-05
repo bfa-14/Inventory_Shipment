@@ -330,6 +330,82 @@ public sealed class ItemService : IItemService
             : Result<ItemFile>.Success(file);
     }
 
+    public async Task<Result> UpdateFileAsync(
+        int itemId, int fileId, string? fileName, ItemFileUpload? upload, CancellationToken cancellationToken = default)
+    {
+        var file = await _items.GetFileAsync(fileId, cancellationToken);
+
+        if (file is null || file.ItemId != itemId)
+        {
+            return Result.Failure(ErrorType.NotFound, FileNotFoundMessage, "NOT_FOUND");
+        }
+
+        var name = Path.GetFileName(fileName?.Trim() ?? string.Empty);
+        if (string.IsNullOrEmpty(name))
+        {
+            return Result.Failure(ErrorType.Validation, "The file name is required.", "VALIDATION");
+        }
+
+        string? contentType = null;
+        byte[]? content = null;
+
+        // No upload keeps the stored bytes; only the name changes.
+        if (upload is not null)
+        {
+            if (upload.SizeBytes <= 0)
+            {
+                return Result.Failure(ErrorType.Validation, "The file is empty.", "VALIDATION");
+            }
+
+            if (upload.SizeBytes > MaxFileBytes)
+            {
+                return Result.Failure(ErrorType.Validation, "The file is larger than the 5 MB limit.", "VALIDATION");
+            }
+
+            // The item image stays an image: the allow-list follows the file being replaced.
+            contentType = upload.ContentType?.Trim() ?? string.Empty;
+            var allowed = file.IsItemImage ? ImageContentTypes : AttachmentContentTypes;
+
+            if (!allowed.Contains(contentType))
+            {
+                return Result.Failure(
+                    ErrorType.Validation,
+                    file.IsItemImage
+                        ? "The item image must be a JPEG, PNG or WebP file."
+                        : "Allowed attachments are images (JPEG, PNG, WebP), PDF, Word, Excel and plain text files.",
+                    "VALIDATION");
+            }
+
+            using var buffer = new MemoryStream();
+            await upload.Content.CopyToAsync(buffer, cancellationToken);
+            content = buffer.ToArray();
+
+            if (content.Length == 0)
+            {
+                return Result.Failure(ErrorType.Validation, "The file is empty.", "VALIDATION");
+            }
+
+            if (content.Length > MaxFileBytes)
+            {
+                return Result.Failure(ErrorType.Validation, "The file is larger than the 5 MB limit.", "VALIDATION");
+            }
+        }
+
+        try
+        {
+            await _items.UpdateFileAsync(fileId, name, contentType, content, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return Result.Failure(failure.Type, failure.Message, failure.Code);
+        }
+
+        _logger.LogInformation("File {FileId} of item {ItemId} updated{Replaced}",
+            fileId, itemId, content is null ? string.Empty : " with new content");
+        return Result.Success();
+    }
+
     public async Task<Result> DeleteFileAsync(int itemId, int fileId, CancellationToken cancellationToken = default)
     {
         var file = await _items.GetFileAsync(fileId, cancellationToken);
