@@ -62,6 +62,26 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default)
         => await ReadBackAsync(id, cancellationToken);
 
+    public async Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var loaded = await _items.GetAsync(id, cancellationToken);
+        if (loaded is null)
+        {
+            return Result<ItemStockBalanceDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        var rows = await _items.GetStockBalanceAsync(id, cancellationToken);
+        return Result<ItemStockBalanceDto>.Success(new ItemStockBalanceDto
+        {
+            ItemId = id,
+            ItemCode = loaded.Value.Item.ItemCode,
+            ItemName = loaded.Value.Item.ItemName,
+            Warehouses = rows,
+            TotalOnHandBase = rows.Sum(r => r.OnHandBase),
+            TotalInventoryValue = rows.Sum(r => r.InventoryValue),
+        });
+    }
+
     public async Task<Result<ItemDetailsDto>> CreateAsync(
         SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
     {

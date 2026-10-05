@@ -93,7 +93,7 @@ public interface ISalesInvoiceService
 
     /// <summary>The rate the page pre-fills. Rate is null when none is defined — a warning, not an error.</summary>
     Task<Result<RateResolutionDto>> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
+        int? priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
 
     /// <summary>The invoice as a workbook: header incl. client, currency and rate; the lines; totals in both currencies.</summary>
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(int id, CancellationToken cancellationToken = default);

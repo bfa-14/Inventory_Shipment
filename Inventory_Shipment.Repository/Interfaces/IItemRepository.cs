@@ -20,6 +20,9 @@ public interface IItemRepository
     Task<(Item Item, IReadOnlyList<ItemUnit> Units, IReadOnlyList<ItemFile> Files)?> GetAsync(
         int id, CancellationToken cancellationToken = default);
 
+    /// <summary>inventory.usp_Item_StockBalance - the item's on hand per warehouse that has held it.</summary>
+    Task<IReadOnlyList<ItemStockBalanceRowDto>> GetStockBalanceAsync(int itemId, CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_Item_Create - returns the new id. Throws 56000 / 56001 / 56008.</summary>
     Task<int> CreateAsync(Item item, int? userId, CancellationToken cancellationToken = default);
 

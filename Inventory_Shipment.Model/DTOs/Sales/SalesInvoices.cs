@@ -286,6 +286,12 @@ public sealed class SalesInvoiceDto
     /// <summary>1 base currency unit = ExchangeRate invoice currency units. Exactly 1 on a base-currency invoice.</summary>
     public decimal ExchangeRate { get; init; }
 
+    /// <summary>
+    /// The price list currency's rate the lines were converted with (list price x ExchangeRate / PriceListRate),
+    /// when the invoice is billed in another currency. Null when they are the same, and on older invoices.
+    /// </summary>
+    public decimal? PriceListRate { get; init; }
+
     public string? BaseCurrencyCode { get; init; }
 
     public string? ReferenceNo { get; init; }
@@ -389,7 +395,8 @@ public sealed class CreateSalesReturnRequest
 /// </summary>
 public sealed class RateResolutionDto
 {
-    public int PriceListId { get; init; }
+    /// <summary>Null when the rate was asked for a currency alone, before any price list is chosen.</summary>
+    public int? PriceListId { get; init; }
     public int CurrencyId { get; init; }
     public string CurrencyCode { get; init; } = string.Empty;
     public string? Symbol { get; init; }
@@ -399,6 +406,14 @@ public sealed class RateResolutionDto
     public decimal? Rate { get; init; }
     public DateTime? RateDate { get; init; }
     public string? BaseCurrencyCode { get; init; }
+
+    /* The price list's own currency and its rate: what converts a list price into the invoice
+       currency when the two differ. Null when no price list was given. */
+    public int? PriceListCurrencyId { get; init; }
+    public string? PriceListCurrencyCode { get; init; }
+    public bool? PriceListIsBaseCurrency { get; init; }
+    public decimal? PriceListRate { get; init; }
+    public DateTime? PriceListRateDate { get; init; }
 }
 
 /// <summary>
@@ -518,6 +533,13 @@ public sealed class SaveSalesInvoiceRequest
     [Range(0.000001, double.MaxValue)]
     public decimal? ExchangeRate { get; init; }
 
+    /// <summary>
+    /// The price list currency's rate, when the invoice is billed in another currency. Null: the
+    /// published one for the document date. Ignored when the two currencies are the same.
+    /// </summary>
+    [Range(0.000001, double.MaxValue)]
+    public decimal? PriceListRate { get; init; }
+
     [StringLength(100)]
     public string? ReferenceNo { get; init; }
 
@@ -578,11 +600,19 @@ public sealed class ImportCreateSalesInvoicesRequest
     [Range(1, int.MaxValue)]
     public int PriceListId { get; init; }
 
+    /// <summary>The currency the invoices are billed in. Null = the price list's.</summary>
+    [Range(1, int.MaxValue)]
+    public int? CurrencyId { get; init; }
+
     [Range(1, 3)]
     public byte RateType { get; init; } = RateTypes.Official;
 
     [Range(0.000001, double.MaxValue)]
     public decimal? ExchangeRate { get; init; }
+
+    /// <summary>The price list currency's rate when the invoices are billed in another. Null = the published one.</summary>
+    [Range(0.000001, double.MaxValue)]
+    public decimal? PriceListRate { get; init; }
 
     [StringLength(100)]
     public string? ReferenceNo { get; init; }

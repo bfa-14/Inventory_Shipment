@@ -188,8 +188,13 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     }
 
     public async Task<Result<RateResolutionDto>> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
+        int? priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
     {
+        if (priceListId is null && currencyId is null)
+        {
+            return Result<RateResolutionDto>.Failure(ErrorType.Validation, "Give a priceListId, a currencyId, or both.", "VALIDATION");
+        }
+
         if (!RateTypes.IsKnown(rateType))
         {
             return Result<RateResolutionDto>.Failure(
@@ -479,8 +484,10 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             ClientId = request.ClientId,
             SalesmanId = request.SalesmanId,
             PriceListId = request.PriceListId,
+            CurrencyId = request.CurrencyId,
             RateType = request.RateType,
             ExchangeRate = request.ExchangeRate,
+            PriceListRate = request.PriceListRate,
             ReferenceNo = request.ReferenceNo,
             Notes = request.Notes,
             DraftReference = request.DraftReference,

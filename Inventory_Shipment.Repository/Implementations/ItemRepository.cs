@@ -339,6 +339,15 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
+    public async Task<IReadOnlyList<ItemStockBalanceRowDto>> GetStockBalanceAsync(int itemId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<ItemStockBalanceRowDto>(new CommandDefinition(
+            "inventory.usp_Item_StockBalance", new { ItemId = itemId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        return rows.AsList();
+    }
+
     public async Task<ItemFile?> GetFileAsync(int fileId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();

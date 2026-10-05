@@ -56,7 +56,7 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<RateResolutionDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<RateResolutionDto>> GetRate(
-        [FromQuery] int priceListId, [FromQuery] byte rateType = RateTypes.Official,
+        [FromQuery] int? priceListId, [FromQuery] byte rateType = RateTypes.Official,
         [FromQuery] DateOnly? date = null, [FromQuery] int? currencyId = null, CancellationToken cancellationToken = default)
     {
         var result = await _invoices.ResolveRateAsync(priceListId, rateType, date, currencyId, cancellationToken);

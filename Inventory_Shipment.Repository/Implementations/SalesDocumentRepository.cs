@@ -194,6 +194,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         public bool IsBaseCurrency { get; init; }
         public byte RateType { get; init; }
         public decimal ExchangeRate { get; init; }
+        public decimal? PriceListRate { get; init; }
         public string? BaseCurrencyCode { get; init; }
         public string? ReferenceNo { get; init; }
         public string? Notes { get; init; }
@@ -370,6 +371,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
             IsBaseCurrency = header.IsBaseCurrency,
             RateType = header.RateType,
             ExchangeRate = header.ExchangeRate,
+            PriceListRate = header.PriceListRate,
             BaseCurrencyCode = header.BaseCurrencyCode,
             ReferenceNo = header.ReferenceNo,
             Notes = header.Notes,
@@ -431,7 +433,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
     }
 
     public async Task<RateResolutionDto?> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
+        int? priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         return await connection.QuerySingleOrDefaultAsync<RateResolutionDto>(new CommandDefinition(
@@ -465,6 +467,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         parameters.Add("@CurrencyId", request.CurrencyId, DbType.Int32);
         parameters.Add("@RateType", request.RateType, DbType.Byte);
         parameters.Add("@ExchangeRate", request.ExchangeRate, DbType.Decimal);
+        parameters.Add("@PriceListRate", request.PriceListRate, DbType.Decimal, precision: 18, scale: 6);
         parameters.Add("@ReferenceNo", request.ReferenceNo, DbType.String, size: 100);
         parameters.Add("@Notes", request.Notes, DbType.String, size: 1000);
         parameters.Add("@Lines", ToLineTable(request.Lines).AsTableValuedParameter(LineTypeName));

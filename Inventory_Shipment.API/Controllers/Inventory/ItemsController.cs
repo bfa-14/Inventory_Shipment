@@ -62,6 +62,17 @@ public sealed class ItemsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>The item's on hand in every warehouse that has held it, with the totals - the Stock Balance quick link.</summary>
+    [HttpGet("{id:int}/stock-balance")]
+    [HasPermission(Permissions.Inventory.ItemsView)]
+    [ProducesResponseType<ItemStockBalanceDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ItemStockBalanceDto>> GetStockBalance(int id, CancellationToken cancellationToken)
+    {
+        var result = await _itemService.GetStockBalanceAsync(id, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /// <summary>
     /// Creates an item. Units and files are added afterwards through their own endpoints.
     /// An Item Code already in use fails with code DUPLICATE_CODE.

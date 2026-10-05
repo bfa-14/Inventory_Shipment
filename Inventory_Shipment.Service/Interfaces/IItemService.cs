@@ -11,6 +11,9 @@ public interface IItemService
     /// <summary>The item with its units and file metadata.</summary>
     Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default);
 
+    /// <summary>The item's stock per warehouse, with totals. 404 when the item does not exist.</summary>
+    Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default);
+
     Task<Result<ItemDetailsDto>> CreateAsync(SaveItemRequest request, int userId, CancellationToken cancellationToken = default);
 
     Task<Result<ItemDetailsDto>> UpdateAsync(int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default);

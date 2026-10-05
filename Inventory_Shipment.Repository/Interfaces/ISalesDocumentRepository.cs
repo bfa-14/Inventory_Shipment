@@ -49,7 +49,7 @@ public interface ISalesDocumentRepository
     Task<IReadOnlyList<string>> ItemSpecificationsAsync(int itemId, CancellationToken cancellationToken = default);
 
     Task<RateResolutionDto?> ResolveRateAsync(
-        int priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
+        int? priceListId, byte rateType, DateOnly? asOfDate, int? currencyId = null, CancellationToken cancellationToken = default);
 
     /// <summary>The file with its type (required, used for the document's kind), date and note (script 52).</summary>
     Task<int> AddFileAsync(
