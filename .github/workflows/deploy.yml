@@ -1,0 +1,50 @@
+name: Deploy to server
+
+# Deploys the latest code to the server: runs deploy/update.sh there over SSH, which backs up the
+# database, pulls both repositories (API and frontend), rebuilds and restarts.
+#
+# Start it from the Actions tab: "Deploy to server" > "Run workflow".
+# One-time setup: deploy/enable-github-deploy.sh on the server, then the secrets it prints
+# (see "Deploy new versions" in deploy/README.md).
+
+on:
+  workflow_dispatch:
+
+# One deployment at a time: a second click waits for the first to finish.
+concurrency:
+  group: deploy-server
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Run update.sh on the server
+        env:
+          DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
+          DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
+          DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
+          DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
+        run: |
+          for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS DEPLOY_SSH_KEY; do
+            if [ -z "${!name}" ]; then
+              echo "::error::The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (deploy/README.md, \"Deploy new versions\")."
+              exit 1
+            fi
+          done
+
+          dir="$RUNNER_TEMP/deploy-ssh"
+          install -d -m 700 "$dir"
+          printf '%s\n' "$DEPLOY_SSH_KEY" | tr -d '\r' > "$dir/key"
+          chmod 600 "$dir/key"
+          printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$dir/known_hosts"
+
+          # The key can only run update.sh on the server (a forced command), so no command is sent.
+          ssh -T -i "$dir/key" -p "${DEPLOY_PORT:-22}" \
+              -o IdentitiesOnly=yes -o UserKnownHostsFile="$dir/known_hosts" -o StrictHostKeyChecking=yes \
+              -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
+              "$DEPLOY_USER@$DEPLOY_HOST"

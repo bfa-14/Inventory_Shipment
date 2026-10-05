@@ -16,6 +16,7 @@ browser ──https──► web  Caddy: the React app, HTTPS certificate (Let's
 | `.env.example` | Every setting, explained. `setup.sh` writes the real one, `.env`, with fresh secrets |
 | `setup.sh` | First-time installation |
 | `update.sh` | Deploys the latest code: backup, `git pull`, rebuild, restart |
+| `enable-github-deploy.sh` | One-time setup for the "Deploy to server" button on GitHub (`../.github/workflows/deploy.yml`) |
 | `backup.sh` / `restore.sh` | Database backup (scheduled nightly) and restore |
 | `../Dockerfile` | The API image |
 | `Dockerfile`, `Caddyfile` in **Inventory_Shipment_Frontend** | The web image |
@@ -87,19 +88,65 @@ The server serves this port on its own `127.0.0.1` only, so nobody can reach it 
 80/443 are open, the normal `https://` address works too, with nothing to switch. If 8080 is already taken
 on your PC, use another local port: `ssh -L 9090:localhost:8080 ...` and http://localhost:9090.
 
+## Deploy new versions
+
+Whenever you want the server to run the latest code, push it to `main` on GitHub (both repositories
+deploy together) and then **either**:
+
+- **Click a button on GitHub:** the **Inventory_Shipment** repository > **Actions** > **Deploy to server** >
+  **Run workflow**. The log shows each step; a green tick means the server runs the new version.
+- **Or run one command from your PC:**
+
+  ```
+  ssh -t <user>@<server-ip> sudo /opt/inventory/Inventory_Shipment/deploy/update.sh
+  ```
+
+Both run `update.sh` on the server: backup, pull both repositories, rebuild, restart (a few minutes).
+
+### One-time setup of the button
+
+1. **On the server:**
+
+   ```bash
+   cd /opt/inventory/Inventory_Shipment/deploy
+   sudo ./enable-github-deploy.sh
+   ```
+
+   It creates an SSH key that can do one thing only on the server - run `update.sh` - and prints a table of
+   values and the key.
+2. **On GitHub:** **Inventory_Shipment** repository > **Settings** > **Secrets and variables** > **Actions** >
+   **New repository secret**, once per line of the table: `DEPLOY_HOST`, `DEPLOY_USER`, `DEPLOY_KNOWN_HOSTS`
+   (and `DEPLOY_PORT` if it is listed), then `DEPLOY_SSH_KEY` with the whole key, `BEGIN` and `END` lines
+   included.
+3. **Try it:** Actions > Deploy to server > Run workflow.
+
+The key is not kept on the server and is only shown once: run the script again to make a new one (the old
+one stops working). The button appears on GitHub only once `.github/workflows/deploy.yml` is on `main`.
+
+### Which branch the server runs
+
+The server deploys the branch its copies of the repositories are on. To move it to another branch (for
+example to `main`, once the deployment files are merged there), once:
+
+```bash
+sudo ./update.sh main
+```
+
+From then on, plain `sudo ./update.sh` and the button deploy `main`.
+
 ## Everyday tasks
 
-Run these on the server in `/opt/inventory/Inventory_Shipment/deploy`:
+Run these on the server in `/opt/inventory/Inventory_Shipment/deploy` (signed in as root, leave out `sudo`):
 
 | To | Run |
 |----|-----|
-| Deploy the latest code from GitHub | `./update.sh` |
-| Back up now | `./backup.sh` |
-| Restore a backup | `./restore.sh backups/Inventory_Shipment-20261005-023000.bak.gz` |
-| See what is running | `docker compose ps` |
-| Read the logs | `docker compose logs -f api` (or `web`, `db`), `Ctrl+C` to stop |
-| Restart the API | `docker compose restart api` |
-| Stop everything / start again | `docker compose down` / `docker compose up -d` |
+| Deploy the latest code from GitHub | `sudo ./update.sh` (or the button: [Deploy new versions](#deploy-new-versions)) |
+| Back up now | `sudo ./backup.sh` |
+| Restore a backup | `sudo ./restore.sh backups/Inventory_Shipment-20261005-023000.bak.gz` |
+| See what is running | `sudo docker compose ps` |
+| Read the logs | `sudo docker compose logs -f api` (or `web`, `db`), `Ctrl+C` to stop |
+| Restart the API | `sudo docker compose restart api` |
+| Stop everything / start again | `sudo docker compose down` / `sudo docker compose up -d` |
 
 `update.sh` takes a backup, pulls both repositories, rebuilds and restarts. Database changes need nothing
 extra: the API applies `Schema.sql` every time it starts. While the API restarts (under a minute) users see
@@ -182,6 +229,9 @@ edit the file (`nano .env`) and run `docker compose up -d`.
   because SQL Server is not exposed to the internet. Keep it that way: do not publish port 1433.
 - Recommended for the server itself: sign in with an SSH key instead of a password, and turn on automatic
   security updates (`apt-get install -y unattended-upgrades`).
+- The GitHub deploy key can only start `update.sh` (a forced command with `restrict` in `authorized_keys`);
+  it cannot open a shell or reach anything else. `update.sh` runs the code it pulls, so whoever can push to
+  the two repositories decides what the server runs: keep that list short.
 
 ## Troubleshooting
 
