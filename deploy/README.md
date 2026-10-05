@@ -26,7 +26,7 @@ browser ──https──► web  Caddy: the React app, HTTPS certificate (Let's
   will not work: SQL Server has no ARM version.
 - **At least 2 GB of memory, 4 GB recommended**, 2 CPUs and 30 GB of disk. With less than 4 GB, `setup.sh`
   adds a swap file.
-- **SSH access as root**: the server's IP address and password (or SSH key) from your provider.
+- **SSH access** as root or as a user allowed to use `sudo`: the server's IP address, user name and password (or SSH key).
 - **Ports 80 and 443 open.** Some providers (AWS, Azure, Oracle Cloud, Hetzner Cloud firewalls, ...) block them
   until you allow them in their control panel.
 - **A domain name** such as `erp.yourcompany.com`, with a DNS **A record** pointing at the server's IP.
@@ -62,12 +62,30 @@ browser ──https──► web  Caddy: the React app, HTTPS certificate (Let's
    ```
 
 3. **Open the address, sign in, and change the admin password** (top-right menu > Change password).
+   If it does not open, see [The site does not open](#the-site-does-not-open); meanwhile you can
+   [open the app through SSH](#open-the-app-through-ssh).
 
 4. **Set up email** in *Configuration > Settings > Email* (SMTP server, account, password) if you use the approval emails.
    See [Emails are not sent](#emails-are-not-sent) if they fail.
 
 Moving to the server with data you already entered on your PC? Do [Move your existing data](#move-your-existing-data-from-your-pc)
 right after step 2.
+
+## Open the app through SSH
+
+If the site does not open from the internet yet (ports 80/443 still blocked by the provider's firewall,
+or no certificate yet), you can still use the app through your SSH connection. On your PC:
+
+```
+ssh -L 8080:localhost:8080 <user>@<server-ip>
+```
+
+Leave that window open and browse to **http://localhost:8080** on the same PC. The traffic travels inside
+SSH, so it is encrypted even though the address says `http`. Closing the SSH window closes the tunnel.
+
+The server serves this port on its own `127.0.0.1` only, so nobody can reach it from the internet. Once
+80/443 are open, the normal `https://` address works too, with nothing to switch. If 8080 is already taken
+on your PC, use another local port: `ssh -L 9090:localhost:8080 ...` and http://localhost:9090.
 
 ## Everyday tasks
 
@@ -173,7 +191,9 @@ edit the file (`nano .env`) and run `docker compose up -d`.
 2. `docker compose logs web`: Caddy explains certificate problems here. The usual causes:
    - The domain does not point at this server yet (`getent hosts <domain>` must show the server's IP).
      DNS changes can take up to an hour.
-   - Ports 80/443 are blocked by the provider's firewall.
+   - Ports 80/443 are blocked by the provider's firewall: from your PC, `curl -sI -m 10 http://<server-ip>`
+     prints nothing. Only the provider (or whoever manages the server) can open them; meanwhile use
+     [the SSH tunnel](#open-the-app-through-ssh). Once they are open, `docker compose restart web`.
    - Too many failed attempts: Let's Encrypt pauses for an hour. Fix the cause, then wait.
 
 ### "The server is not reachable right now"
