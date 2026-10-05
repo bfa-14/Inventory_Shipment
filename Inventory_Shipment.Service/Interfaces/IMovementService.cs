@@ -44,6 +44,17 @@ public interface IMovementService
         ShipContainersRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// The containers a movement can take, for the From on the page (required): canAdd / reason are the checks of
+    /// the save, the place rule included. Needs containers.movements.manage.
+    /// </summary>
+    Task<Result<PagedResult<MovementContainerCandidateDto>>> ContainerCandidatesAsync(
+        MovementContainerCandidateQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>Container numbers or refs matched for a movement, one row per number in order. Needs containers.movements.manage.</summary>
+    Task<Result<IReadOnlyList<MovementContainerMatchDto>>> MatchContainersAsync(
+        MatchMovementContainersRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     /// <summary>The filtered list (every page) as a workbook.</summary>
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         MovementQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

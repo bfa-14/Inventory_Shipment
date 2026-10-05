@@ -14,9 +14,7 @@ public class ContainerTypeDto
     public string TypeCode { get; init; } = string.Empty;
     public string TypeName { get; init; } = string.Empty;
 
-    /// <summary>Default capacity in BASE units, copied onto a new container and editable there.</summary>
-    public int? MaxUnits { get; init; }
-
+    /* No MaxUnits any more (script 50): a container's capacity is its items' Container units. */
     public decimal? MaxWeightKg { get; init; }
     public decimal? MaxVolumeCbm { get; init; }
     public string? Description { get; init; }
@@ -35,7 +33,6 @@ public sealed class ContainerTypeLookupDto
     public int Id { get; init; }
     public string TypeCode { get; init; } = string.Empty;
     public string TypeName { get; init; } = string.Empty;
-    public int? MaxUnits { get; init; }
     public decimal? MaxWeightKg { get; init; }
     public decimal? MaxVolumeCbm { get; init; }
     public bool IsActive { get; init; }
@@ -46,7 +43,7 @@ public sealed class ContainerTypeQuery
     public string? Search { get; init; }
     public bool? IsActive { get; init; }
 
-    /// <summary>TypeCode, TypeName, MaxUnits or IsActive.</summary>
+    /// <summary>TypeCode, TypeName or IsActive.</summary>
     public string SortBy { get; init; } = "TypeCode";
 
     public string SortDir { get; init; } = "asc";
@@ -64,9 +61,7 @@ public sealed class SaveContainerTypeRequest
     [StringLength(100, MinimumLength = 1)]
     public string TypeName { get; init; } = string.Empty;
 
-    [Range(1, int.MaxValue)]
-    public int? MaxUnits { get; init; }
-
+    /* maxUnits from an older page is ignored (an unknown member): the capacity is the items' Container units. */
     [Range(0.001, 999999999999.999)]
     public decimal? MaxWeightKg { get; init; }
 
@@ -179,9 +174,22 @@ public class AttachmentTypeDto
 
     public int SortOrder { get; init; }
     public bool IsActive { get; init; }
+
+    /// <summary>(48) The document kinds whose upload dialogs offer the type: codes of attachment-types/document-kinds.</summary>
+    public IReadOnlyList<string> UsedFor { get; init; } = [];
+
     public DateTime CreatedAtUtc { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
     public byte[] RowVersion { get; init; } = [];
+}
+
+/// <summary>A document kind an attachment type can be used for: CONTAINER or a document type code (PO, PINV...).</summary>
+public sealed class AttachmentDocumentKindDto
+{
+    public string Code { get; init; } = string.Empty;
+
+    /// <summary>"Purchase orders".</summary>
+    public string Name { get; init; } = string.Empty;
 }
 
 public sealed class AttachmentTypeLookupDto
@@ -201,7 +209,12 @@ public sealed class AttachmentTypeQuery
 {
     public string? Search { get; init; }
     public string? Category { get; init; }
+
+    /// <summary>Null = both, except with a document kind: then the active ones (what the upload dialog offers).</summary>
     public bool? IsActive { get; init; }
+
+    /// <summary>(48) Only the types used for this kind (CONTAINER, PO, PINV...).</summary>
+    public string? DocumentKind { get; init; }
 
     /// <summary>SortOrder, Category, SubType or IsActive.</summary>
     public string SortBy { get; init; } = "SortOrder";
@@ -224,6 +237,9 @@ public sealed class SaveAttachmentTypeRequest
     /// <summary>Logistics (container pages) or Receipt (customer receipts). Null keeps the row's current value; a new row defaults to Logistics.</summary>
     [RegularExpression("^(Logistics|Receipt)$", ErrorMessage = "Applies to must be Logistics or Receipt.")]
     public string? AppliesTo { get; init; }
+
+    /// <summary>(48) The document kinds the type is used for, at least one. Null keeps the row's list (a new row: from Applies to).</summary>
+    public IReadOnlyList<string>? UsedFor { get; init; }
 
     public int SortOrder { get; init; }
     public bool IsActive { get; init; } = true;

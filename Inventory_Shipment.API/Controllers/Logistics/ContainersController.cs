@@ -1,6 +1,7 @@
 using Inventory_Shipment.API.Authorization;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Logistics;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
@@ -22,14 +23,6 @@ namespace Inventory_Shipment.API.Controllers.Logistics;
 [Produces("application/json")]
 public sealed class ContainersController : ControllerBase
 {
-    /// <summary>PDF, images and office files — what a forwarder, a customs agent or a supplier sends.</summary>
-    private static readonly HashSet<string> AllowedFileTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp", ".tif", ".tiff",
-        ".xlsx", ".xls", ".docx", ".doc", ".pptx", ".ppt", ".csv", ".txt",
-    };
-
-    private const long MaxFileBytes = 20 * 1024 * 1024;
     private const string SpreadsheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private readonly IContainerService _containers;
@@ -59,7 +52,7 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    /// <summary>Creates a draft from an approved order (purchaseOrderId); the reference (KTG-yyyy-nnnn) is assigned now and MaxUnits copied from the type.</summary>
+    /// <summary>Creates a draft from an approved order (purchaseOrderId); the reference (KTG-yyyy-nnnn) is assigned now; its capacity is its items' Container units.</summary>
     [HttpPost]
     [HasPermission(Permissions.Containers.Create)]
     [ProducesResponseType<ContainerDto>(StatusCodes.Status201Created)]
@@ -300,40 +293,26 @@ public sealed class ContainersController : ControllerBase
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
-    /// Multipart: file, containerIds (repeated), and optionally movementId, chargeId, attachmentTypeId,
-    /// note and documentDate (yyyy-MM-dd). The file is stored ONCE and recorded on every container;
-    /// the answer is the created records (201).
+    /// Multipart: file, containerIds (repeated), attachmentTypeId (required: a type used for containers), and
+    /// optionally movementId, chargeId, note and documentDate (yyyy-MM-dd). PDF, image or Office file, up to 20 MB.
+    /// The file is stored ONCE and recorded on every container; the answer is the created records (201).
     /// </summary>
     [HttpPost("attachments")]
     [HasPermission(Permissions.Containers.AttachmentsManage)]
     [Consumes("multipart/form-data")]
     [ProducesResponseType<IReadOnlyList<ContainerAttachmentCreatedDto>>(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [RequestSizeLimit(MaxFileBytes + 1024 * 1024)]
-    [RequestFormLimits(MultipartBodyLengthLimit = MaxFileBytes + 1024 * 1024)]
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
     public async Task<IActionResult> AddAttachment(
         IFormFile file, [FromForm] List<int>? containerIds, [FromForm] int? movementId, [FromForm] int? chargeId,
         [FromForm] int? attachmentTypeId, [FromForm] string? note, [FromForm] DateOnly? documentDate,
         CancellationToken cancellationToken)
     {
-        if (file is null || file.Length == 0)
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        if (this.RefuseUpload(file, fields) is { } refusal)
         {
-            return Invalid("No file was uploaded.");
-        }
-
-        if (file.Length > MaxFileBytes)
-        {
-            return Invalid($"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.");
-        }
-
-        if (!AllowedFileTypes.Contains(Path.GetExtension(file.FileName)))
-        {
-            return Invalid("Only PDF, image and office files (Word, Excel, PowerPoint, CSV, text) can be attached.");
-        }
-
-        if (note is { Length: > 300 })
-        {
-            return Invalid("The note is longer than 300 characters.");
+            return refusal;
         }
 
         using var buffer = new MemoryStream();
@@ -372,6 +351,41 @@ public sealed class ContainersController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>
+    /// The attachments of a container (containerId) or of a movement's containers (movementId), with their type, date
+    /// and note, newest first; attachmentTypeId = one type only.
+    /// </summary>
+    [HttpGet("attachments")]
+    [HasPermission(Permissions.Containers.View)]
+    [ProducesResponseType<IReadOnlyList<ContainerAttachmentDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<IReadOnlyList<ContainerAttachmentDto>>> ListAttachments(
+        [FromQuery] int? containerId, [FromQuery] int? movementId, [FromQuery] int? attachmentTypeId,
+        CancellationToken cancellationToken)
+    {
+        var result = await _containers.ListAttachmentsAsync(
+            containerId, movementId, attachmentTypeId, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>The type, date and note of one record (this container only, not the others sharing the file).</summary>
+    [HttpPut("attachments/{id:int}")]
+    [HasPermission(Permissions.Containers.AttachmentsManage)]
+    [ProducesResponseType<ContainerAttachmentDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ContainerAttachmentDto>> UpdateAttachment(
+        int id, DocumentFileFields request, CancellationToken cancellationToken)
+    {
+        if (this.RefuseFields(request) is { } refusal)
+        {
+            return refusal;
+        }
+
+        var result = await _containers.UpdateAttachmentAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /// <summary>allShared = true removes the file from every container holding it.</summary>
     [HttpDelete("attachments/{id:int}")]
     [HasPermission(Permissions.Containers.AttachmentsManage)]
@@ -383,14 +397,4 @@ public sealed class ContainersController : ControllerBase
         var result = await _containers.DeleteAttachmentAsync(id, allShared, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToNoContentResult(this);
     }
-
-    private IActionResult Invalid(string detail)
-        => BadRequest(new ProblemDetails
-        {
-            Status = StatusCodes.Status400BadRequest,
-            Title = "Validation failed",
-            Detail = detail,
-            Instance = HttpContext.Request.Path,
-            Extensions = { ["code"] = "INVALID_FILE" },
-        });
 }

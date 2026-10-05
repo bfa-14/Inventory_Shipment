@@ -1,3 +1,4 @@
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Logistics;
 
 namespace Inventory_Shipment.Repository.Interfaces;
@@ -56,6 +57,14 @@ public interface IContainerRepository
 
     /// <summary>One record, or (allShared) the file from every container holding it.</summary>
     Task DeleteAttachmentAsync(int id, bool allShared, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>The attachments of a container or of a movement's containers (or one record), newest first; one type when asked.</summary>
+    Task<IReadOnlyList<ContainerAttachmentDto>> ListAttachmentsAsync(
+        int? containerId, int? movementId, int? attachmentTypeId, int? id = null, CancellationToken cancellationToken = default);
+
+    /// <summary>The type, date and note of one record (the upload's checks); the record as it now stands.</summary>
+    Task<ContainerAttachmentDto?> UpdateAttachmentAsync(
+        int id, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
 
     /* ── many containers per order (script 28) ── */
 

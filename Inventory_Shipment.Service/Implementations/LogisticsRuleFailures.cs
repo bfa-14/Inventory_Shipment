@@ -46,11 +46,17 @@ internal static class LogisticsRuleFailures
             SqlErrors.ContainerBusy => new(ErrorType.Conflict, exception.Message, "CONTAINER_BUSY"),
             SqlErrors.ChargeAllocationDataMissing => new(ErrorType.Conflict, exception.Message, "ALLOCATION_DATA_MISSING"),
             SqlErrors.LogisticsInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
+            SqlErrors.ContainerNotAtFrom => new(ErrorType.Conflict, exception.Message, "CONTAINER_NOT_AT_FROM"),
+            SqlErrors.PreviousMovementOpen => new(ErrorType.Conflict, exception.Message, "PREVIOUS_MOVEMENT_OPEN"),
+            SqlErrors.ContainerAttachmentType => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             SqlErrors.PurchaseExporterReferenceRequired => new(ErrorType.Validation, exception.Message, "EXPORTER_REFERENCE_REQUIRED"),
             SqlErrors.PurchaseContainerLineInvalid => new(ErrorType.Conflict, exception.Message, "CONTAINER_LINE_INVALID"),
             SqlErrors.PurchaseChargesOnContainer => new(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
             SqlErrors.PurchaseOrderInContainers => new(ErrorType.Conflict, exception.Message, "PO_IN_CONTAINERS"),
             SqlErrors.LandedCostImportedInvoice => new(ErrorType.Conflict, exception.Message, "IMPORTED_INVOICE"),
+            // Script 47: the container procedures called for an invoice check its rules first.
+            SqlErrors.PurchaseInvoiceCannotTakeContainers => new(ErrorType.Conflict, exception.Message, "CANNOT_TAKE_CONTAINERS"),
+            SqlErrors.PurchaseInvoiceTooManyPieces => new(ErrorType.Validation, exception.Message, "TOO_MANY_PIECES"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),
         };
 

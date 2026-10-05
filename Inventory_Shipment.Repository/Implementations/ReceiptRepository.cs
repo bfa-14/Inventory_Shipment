@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Receipts;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Interfaces;
@@ -379,13 +380,14 @@ public sealed class ReceiptRepository : IReceiptRepository
     /* ── files ────────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<int> AddFileAsync(
-        int receiptId, int? attachmentTypeId, string? note, string fileName, string contentType, byte[] content, int userId,
+        int receiptId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@ReceiptId", receiptId, DbType.Int32);
-        parameters.Add("@AttachmentTypeId", attachmentTypeId, DbType.Int32);
-        parameters.Add("@Note", note, DbType.String, size: 300);
+        parameters.Add("@AttachmentTypeId", fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@Note", fields.Note, DbType.String, size: 500);
+        parameters.Add("@DocumentDate", fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("@FileName", fileName, DbType.String, size: 255);
         parameters.Add("@ContentType", contentType, DbType.String, size: 100);
         parameters.Add("@SizeBytes", content.Length, DbType.Int32);
@@ -395,6 +397,43 @@ public sealed class ReceiptRepository : IReceiptRepository
 
         await ExecuteAsync("sales.usp_ReceiptFile_Add", parameters, cancellationToken);
         return parameters.Get<int>("@NewId");
+    }
+
+    public async Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
+        int receiptId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<DocumentFileDto>(new CommandDefinition(
+            "sales.usp_ReceiptFile_List", new { ReceiptId = receiptId, AttachmentTypeId = attachmentTypeId, FileId = fileId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        return rows.AsList();
+    }
+
+    public async Task<DocumentFileDto?> UpdateFileAsync(
+        int receiptId, int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new
+        {
+            ReceiptId = receiptId,
+            FileId = fileId,
+            fields.AttachmentTypeId,
+            DocumentDate = fields.DocumentDate?.ToDateTime(TimeOnly.MinValue),
+            fields.Note,
+            UserId = userId,
+        };
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            return await connection.QuerySingleOrDefaultAsync<DocumentFileDto>(new CommandDefinition(
+                "sales.usp_ReceiptFile_Update", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
     }
 
     public async Task<ReceiptFileContent?> GetFileAsync(int receiptId, int fileId, CancellationToken cancellationToken = default)

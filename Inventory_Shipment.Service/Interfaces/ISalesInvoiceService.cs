@@ -99,8 +99,16 @@ public interface ISalesInvoiceService
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(int id, CancellationToken cancellationToken = default);
 
     Task<Result<int>> AddFileAsync(
-        int id, string fileName, string contentType, byte[] content, int userId,
+        int id, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>The files with their type, date and note, newest first; one type when asked.</summary>
+    Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int id, int? attachmentTypeId, CancellationToken cancellationToken = default);
+
+    /// <summary>The type, date and note of a file (the upload's permission and checks); the file as it now stands.</summary>
+    Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int id, int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
 
     Task<Result<SalesDocumentFileContent>> GetFileAsync(int id, int fileId, CancellationToken cancellationToken = default);
 

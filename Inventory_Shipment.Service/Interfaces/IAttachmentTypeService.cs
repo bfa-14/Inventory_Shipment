@@ -9,12 +9,17 @@ namespace Inventory_Shipment.Service.Interfaces;
 /// </summary>
 public interface IAttachmentTypeService
 {
-    Task<Result<PagedResult<AttachmentTypeDto>>> SearchAsync(AttachmentTypeQuery query, CancellationToken cancellationToken = default);
+    /// <summary>The list page needs the manage permission; with a document kind it is what an upload dialog offers, open to anyone signed in.</summary>
+    Task<Result<PagedResult<AttachmentTypeDto>>> SearchAsync(
+        AttachmentTypeQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     Task<Result<AttachmentTypeDto>> GetAsync(int id, CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<AttachmentTypeLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, string? appliesTo = null, CancellationToken cancellationToken = default);
+        bool activeOnly, int? includeId, string? appliesTo = null, string? documentKind = null,
+        CancellationToken cancellationToken = default);
+
+    Task<Result<IReadOnlyList<AttachmentDocumentKindDto>>> GetDocumentKindsAsync(CancellationToken cancellationToken = default);
 
     Task<Result<AttachmentTypeDto>> SaveAsync(
         int? id, SaveAttachmentTypeRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

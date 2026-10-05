@@ -11,8 +11,12 @@ namespace Inventory_Shipment.Service.Interfaces;
 /// </summary>
 public interface IPurchaseInvoiceContainerService
 {
+    /// <summary>
+    /// Any purchase invoice: its items and containers, and the state - what it can do with containers and why not, the
+    /// caller's permissions included (rule 9). Never refused because of the rules: the state carries the reason.
+    /// </summary>
     Task<Result<InvoiceContainerSummaryDto>> GetSummaryAsync(
-        int invoiceId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+        int invoiceId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     Task<Result<IReadOnlyList<InvoiceLinkCandidateDto>>> GetCandidatesAsync(
         int invoiceId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

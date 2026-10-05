@@ -51,6 +51,42 @@ public sealed class MovementsController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>
+    /// The containers a movement can take (movementId empty = a new one) for the From on the page, saved or not:
+    /// at the From — where their previous movement ends — or never moved. includeBlocked also lists the ones the
+    /// save would refuse (canAdd false, reason). At most 200 a page. 400 VALIDATION without fromPlaceId.
+    /// </summary>
+    [HttpGet("container-candidates")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<PagedResult<MovementContainerCandidateDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<PagedResult<MovementContainerCandidateDto>>> ContainerCandidates(
+        [FromQuery] MovementContainerCandidateQuery query, CancellationToken cancellationToken)
+    {
+        var result = await _movements.ContainerCandidatesAsync(query, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Container numbers or refs (typed, pasted or read from a file) matched for a movement: one row per number in
+    /// the order given — Ready, AlreadyOnMovement, NotFound, Ambiguous, Blocked or Duplicate, with the reason. Nothing
+    /// is saved. 400 VALIDATION without a number or above 500.
+    /// </summary>
+    [HttpPost("match-containers")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<IReadOnlyList<MovementContainerMatchDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<IReadOnlyList<MovementContainerMatchDto>>> MatchContainers(
+        [FromBody] MatchMovementContainersRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _movements.MatchContainersAsync(request, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpGet("{id:int}")]
     [HasPermission(Permissions.Containers.View)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]
@@ -61,6 +97,7 @@ public sealed class MovementsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>409 CONTAINER_NOT_AT_FROM when a container is elsewhere: its previous movement ends at another place.</summary>
     [HttpPost]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status201Created)]
@@ -97,6 +134,7 @@ public sealed class MovementsController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>409 CONTAINER_NOT_AT_FROM when a container, added or kept, is not at the From.</summary>
     [HttpPut("{id:int}")]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]
@@ -109,7 +147,10 @@ public sealed class MovementsController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    /// <summary>date = start date (default today). 409 CONTAINER_BUSY when a container travels with another movement in progress.</summary>
+    /// <summary>
+    /// date = start date (default today). 409 CONTAINER_BUSY when a container travels with another movement in progress,
+    /// PREVIOUS_MOVEMENT_OPEN when its previous movement is not completed, CONTAINER_NOT_AT_FROM when it ends elsewhere.
+    /// </summary>
     [HttpPost("{id:int}/start")]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]

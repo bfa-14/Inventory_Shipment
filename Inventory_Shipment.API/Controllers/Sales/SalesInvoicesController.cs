@@ -25,12 +25,6 @@ namespace Inventory_Shipment.API.Controllers.Sales;
 [Produces("application/json")]
 public sealed class SalesInvoicesController : ControllerBase
 {
-    private static readonly HashSet<string> AllowedFileTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-    };
-
-    private const long MaxFileBytes = 10 * 1024 * 1024;
     private const string SpreadsheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private readonly ISalesInvoiceService _invoices;
@@ -272,38 +266,47 @@ public sealed class SalesInvoicesController : ControllerBase
 
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
+    /// <summary>
+    /// Multipart: file, attachmentTypeId (required: a type used for the document's kind - SO, SINV or SRET), and optionally documentDate
+    /// (yyyy-MM-dd) and note. PDF, image or Office file, up to 20 MB.
+    /// </summary>
     [HttpPost("{id:int}/files")]
     [HasPermission(Permissions.Sales.InvoicesCreate)]
     [Consumes("multipart/form-data")]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [RequestSizeLimit(MaxFileBytes * 2)]
-    public async Task<IActionResult> AddFile(int id, IFormFile file, CancellationToken cancellationToken)
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
+    public async Task<IActionResult> AddFile(
+        int id, IFormFile file, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate, [FromForm] string? note,
+        CancellationToken cancellationToken)
     {
-        if (file is null || file.Length == 0)
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        if (this.RefuseUpload(file, fields) is { } refusal)
         {
-            return Invalid("No file was uploaded.");
-        }
-
-        if (file.Length > MaxFileBytes)
-        {
-            return Invalid($"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.");
-        }
-
-        if (!AllowedFileTypes.Contains(Path.GetExtension(file.FileName)))
-        {
-            return Invalid("Only PDF, Excel, Word and image files can be attached.");
+            return refusal;
         }
 
         using var buffer = new MemoryStream();
         await file.CopyToAsync(buffer, cancellationToken);
 
         var result = await _invoices.AddFileAsync(
-            id, file.FileName, file.ContentType, buffer.ToArray(), User.GetUserId(), cancellationToken);
+            id, file.FileName, file.ContentType, buffer.ToArray(), fields, User.GetUserId(), cancellationToken);
 
         return result.IsSuccess
             ? StatusCode(StatusCodes.Status201Created, new { id = result.Value })
             : this.ToProblem(result);
+    }
+
+    /// <summary>The files with their type, date and note, newest first; attachmentTypeId = one type only.</summary>
+    [HttpGet("{id:int}/files")]
+    [HasPermission(Permissions.Sales.InvoicesView)]
+    [ProducesResponseType<IReadOnlyList<DocumentFileDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<DocumentFileDto>>> ListFiles(
+        int id, [FromQuery] int? attachmentTypeId, CancellationToken cancellationToken)
+    {
+        var result = await _invoices.ListFilesAsync(id, attachmentTypeId, cancellationToken);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("{id:int}/files/{fileId:int}")]
@@ -319,6 +322,24 @@ public sealed class SalesInvoicesController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>The type, date and note of a file: the upload's permission and checks.</summary>
+    [HttpPut("{id:int}/files/{fileId:int}")]
+    [HasPermission(Permissions.Sales.InvoicesCreate)]
+    [ProducesResponseType<DocumentFileDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<DocumentFileDto>> UpdateFile(
+        int id, int fileId, DocumentFileFields request, CancellationToken cancellationToken)
+    {
+        if (this.RefuseFields(request) is { } refusal)
+        {
+            return refusal;
+        }
+
+        var result = await _invoices.UpdateFileAsync(id, fileId, request, User.GetUserId(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [HasPermission(Permissions.Sales.InvoicesCreate)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -327,14 +348,4 @@ public sealed class SalesInvoicesController : ControllerBase
         var result = await _invoices.DeleteFileAsync(id, fileId, User.GetUserId(), cancellationToken);
         return result.ToNoContentResult(this);
     }
-
-    private IActionResult Invalid(string detail)
-        => BadRequest(new ProblemDetails
-        {
-            Status = StatusCodes.Status400BadRequest,
-            Title = "Validation failed",
-            Detail = detail,
-            Instance = HttpContext.Request.Path,
-            Extensions = { ["code"] = "INVALID_FILE" },
-        });
 }

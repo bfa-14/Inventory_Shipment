@@ -31,13 +31,6 @@ namespace Inventory_Shipment.API.Controllers.Inventory;
 [Authorize]
 public sealed class StockDocumentsController : ControllerBase
 {
-    /// <summary>What an attachment may be. Anything else is a file somebody meant to send elsewhere.</summary>
-    private static readonly HashSet<string> AllowedFileTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-    };
-
-    private const long MaxFileBytes = 10 * 1024 * 1024;
     private const string SpreadsheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private readonly IStockDocumentService _documents;
@@ -185,41 +178,45 @@ public sealed class StockDocumentsController : ControllerBase
 
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
+    /// <summary>
+    /// Multipart: file, attachmentTypeId (required: a type used for the document's kind - INV_IN or INV_OUT), and optionally documentDate
+    /// (yyyy-MM-dd) and note. PDF, image or Office file, up to 20 MB.
+    /// </summary>
     [HttpPost("{id:int}/files")]
     [Consumes("multipart/form-data")]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [RequestSizeLimit(MaxFileBytes * 2)]
-    public async Task<IActionResult> AddFile(int id, IFormFile file, CancellationToken cancellationToken)
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
+    public async Task<IActionResult> AddFile(
+        int id, IFormFile file, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate, [FromForm] string? note,
+        CancellationToken cancellationToken)
     {
-        if (file is null || file.Length == 0)
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        if (this.RefuseUpload(file, fields) is { } refusal)
         {
-            return Invalid("No file was uploaded.");
+            return refusal;
         }
 
-        if (file.Length > MaxFileBytes)
-        {
-            return Invalid($"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.");
-        }
-
-        var extension = Path.GetExtension(file.FileName);
-        if (!AllowedFileTypes.Contains(extension))
-        {
-            return Invalid("Only PDF, Excel, Word and image files can be attached.");
-        }
-
-        // Read here rather than streaming to SQL: the ceiling is 10 MB, the procedure takes a
-        // VARBINARY(MAX) parameter, and a stream would buy nothing at this size.
         using var buffer = new MemoryStream();
         await file.CopyToAsync(buffer, cancellationToken);
 
         var result = await _documents.AddFileAsync(
-            id, file.FileName, file.ContentType, buffer.ToArray(), User.GetUserId(),
-            User.GetPermissions(), cancellationToken);
+            id, file.FileName, file.ContentType, buffer.ToArray(), fields, User.GetUserId(), User.GetPermissions(), cancellationToken);
 
         return result.IsSuccess
             ? StatusCode(StatusCodes.Status201Created, new { id = result.Value })
             : this.ToProblem(result);
+    }
+
+    /// <summary>The files with their type, date and note, newest first; attachmentTypeId = one type only.</summary>
+    [HttpGet("{id:int}/files")]
+    [ProducesResponseType<IReadOnlyList<DocumentFileDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<DocumentFileDto>>> ListFiles(
+        int id, [FromQuery] int? attachmentTypeId, CancellationToken cancellationToken)
+    {
+        var result = await _documents.ListFilesAsync(id, attachmentTypeId, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("{id:int}/files/{fileId:int}")]
@@ -234,6 +231,23 @@ public sealed class StockDocumentsController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>The type, date and note of a file: the upload's permission and checks.</summary>
+    [HttpPut("{id:int}/files/{fileId:int}")]
+    [ProducesResponseType<DocumentFileDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<DocumentFileDto>> UpdateFile(
+        int id, int fileId, DocumentFileFields request, CancellationToken cancellationToken)
+    {
+        if (this.RefuseFields(request) is { } refusal)
+        {
+            return refusal;
+        }
+
+        var result = await _documents.UpdateFileAsync(id, fileId, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
     public async Task<ActionResult> DeleteFile(int id, int fileId, CancellationToken cancellationToken)
@@ -243,16 +257,6 @@ public sealed class StockDocumentsController : ControllerBase
 
         return result.ToNoContentResult(this);
     }
-
-    private IActionResult Invalid(string detail)
-        => BadRequest(new ProblemDetails
-        {
-            Status = StatusCodes.Status400BadRequest,
-            Title = "Validation failed",
-            Detail = detail,
-            Instance = HttpContext.Request.Path,
-            Extensions = { ["code"] = "INVALID_FILE" },
-        });
 }
 
 /// <summary>

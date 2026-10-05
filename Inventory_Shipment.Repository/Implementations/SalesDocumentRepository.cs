@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.DTOs.Sales;
 using Inventory_Shipment.Repository.Database;
@@ -556,7 +557,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         => ExecuteAsync("sales.usp_SalesDocumentFile_Delete", new { Id = fileId, UserId = userId }, cancellationToken);
 
     public async Task<int> AddFileAsync(
-        int documentId, string fileName, string contentType, byte[] content, int userId,
+        int documentId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
@@ -567,6 +568,9 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         parameters.Add("@Content", content, DbType.Binary, size: -1);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+        parameters.Add("@AttachmentTypeId", fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@DocumentDate", fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@Note", fields.Note, DbType.String, size: 500);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -576,6 +580,42 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
             return parameters.Get<int>("@NewId");
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
+        int documentId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<DocumentFileDto>(new CommandDefinition(
+            "sales.usp_SalesDocumentFile_List", new { DocumentId = documentId, AttachmentTypeId = attachmentTypeId, FileId = fileId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        return rows.AsList();
+    }
+
+    public async Task<DocumentFileDto?> UpdateFileAsync(
+        int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new
+        {
+            Id = fileId,
+            fields.AttachmentTypeId,
+            DocumentDate = fields.DocumentDate?.ToDateTime(TimeOnly.MinValue),
+            fields.Note,
+            UserId = userId,
+        };
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            return await connection.QuerySingleOrDefaultAsync<DocumentFileDto>(new CommandDefinition(
+                "sales.usp_SalesDocumentFile_Update", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {

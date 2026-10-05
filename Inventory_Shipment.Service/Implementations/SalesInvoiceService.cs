@@ -580,18 +580,46 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<int>> AddFileAsync(
-        int id, string fileName, string contentType, byte[] content, int userId,
+        int id, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default)
     {
         try
         {
-            var fileId = await _invoices.AddFileAsync(id, fileName, contentType, content, userId, cancellationToken);
+            var fileId = await _invoices.AddFileAsync(id, fileName, contentType, content, fields, userId, cancellationToken);
             return Result<int>.Success(fileId);
         }
         catch (BusinessRuleException ex)
         {
             var failure = Describe(ex);
             return Result<int>.Failure(failure.Type, failure.Message, failure.Code);
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int id, int? attachmentTypeId, CancellationToken cancellationToken = default)
+        => Result<IReadOnlyList<DocumentFileDto>>.Success(
+            await _invoices.ListFilesAsync(id, attachmentTypeId, cancellationToken: cancellationToken));
+
+    public async Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int id, int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+    {
+        // The file of THIS document: file ids are sequential across every invoice.
+        if ((await _invoices.ListFilesAsync(id, fileId: fileId, cancellationToken: cancellationToken)).Count == 0)
+        {
+            return Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND");
+        }
+
+        try
+        {
+            var file = await _invoices.UpdateFileAsync(fileId, fields, userId, cancellationToken);
+            return file is null
+                ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
+                : Result<DocumentFileDto>.Success(file);
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return Result<DocumentFileDto>.Failure(failure.Type, failure.Message, failure.Code);
         }
     }
 
@@ -819,6 +847,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         SqlErrors.SalesDocumentNoLines => new RuleFailure(ErrorType.Validation, exception.Message, "NO_LINES"),
         SqlErrors.SalesDocumentInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
         SqlErrors.SalesDocumentNoPrice => new RuleFailure(ErrorType.Validation, exception.Message, "NO_PRICE"),
+        SqlErrors.SalesDocumentAttachmentType => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 

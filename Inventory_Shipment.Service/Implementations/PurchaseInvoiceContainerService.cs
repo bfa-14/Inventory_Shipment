@@ -19,16 +19,16 @@ namespace Inventory_Shipment.Service.Implementations;
 ///
 /// Refusals keep the procedures' sentences: the invoice's 65xxx are classified as the purchase documents classify
 /// them, the containers' 69xxx / 70xxx as the container services do.
+///
+/// THE RULES ARE THE DATABASE'S (script 47): whether an invoice may take containers - and why not - is decided by
+/// purchase.usp_PurchaseInvoice_CheckContainers, which the order's procedures also run first. It is asked here before
+/// anything is built, so a refusal names the invoice's rule (65030, or 65031 with the figures) and every answer carries
+/// the state the page shows. Only the permissions (rule 9) are checked in this class.
 /// </summary>
 public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerService
 {
     private const string ForbiddenCode = "FORBIDDEN";
     private const string NotFoundMessage = "Purchase invoice not found.";
-
-    /// <summary>The words of usp_PurchaseInvoice_LinkContainers's 65028, said before the order's procedures run.</summary>
-    private const string NotFromOrderMessage = "Only a purchase invoice created from a purchase order can be linked to containers.";
-
-    private const string ReceivedOnPostingMessage = "This invoice was received when it was posted: it cannot be linked to containers.";
 
     private readonly IPurchaseInvoiceContainerRepository _links;
     private readonly IPurchaseDocumentRepository _invoices;
@@ -53,7 +53,7 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
     /* ── reading ──────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<InvoiceContainerSummaryDto>> GetSummaryAsync(
-        int invoiceId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        int invoiceId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Purchase.InvoicesView))
         {
@@ -66,7 +66,8 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             return Fail<InvoiceContainerSummaryDto>(invoice);
         }
 
-        return Result<InvoiceContainerSummaryDto>.Success(await _links.GetSummaryAsync(invoiceId, cancellationToken));
+        var summary = await _links.GetSummaryAsync(invoiceId, cancellationToken);
+        return Result<InvoiceContainerSummaryDto>.Success(await WithStateAsync(summary, invoiceId, userId, cancellationToken));
     }
 
     public async Task<Result<IReadOnlyList<InvoiceLinkCandidateDto>>> GetCandidatesAsync(
@@ -121,7 +122,7 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             var summary = await _links.LinkAsync(invoiceId, request.Links, ToRowVersion(request.RowVersion), userId, cancellationToken);
             _logger.LogInformation("Purchase invoice {InvoiceId} linked to {Count} container line(s) by user {UserId}",
                 invoiceId, request.Links.Count, userId);
-            return Result<InvoiceContainerSummaryDto>.Success(summary);
+            return Result<InvoiceContainerSummaryDto>.Success(await WithStateAsync(summary, invoiceId, userId, cancellationToken));
         }
         catch (BusinessRuleException ex)
         {
@@ -149,7 +150,7 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             var summary = await _links.UnlinkAsync(invoiceId, containerId, ToRowVersion(rowVersion), userId, cancellationToken);
             _logger.LogInformation("Purchase invoice {InvoiceId} unlinked from container {ContainerId} by user {UserId}",
                 invoiceId, containerId, userId);
-            return Result<InvoiceContainerSummaryDto>.Success(summary);
+            return Result<InvoiceContainerSummaryDto>.Success(await WithStateAsync(summary, invoiceId, userId, cancellationToken));
         }
         catch (BusinessRuleException ex)
         {
@@ -168,10 +169,15 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             return Fail<InvoiceContainersCreatedDto>(refused);
         }
 
-        var read = await ReadTakingContainersAsync(invoiceId, cancellationToken);
+        var read = await ReadInvoiceAsync(invoiceId, cancellationToken);
         if (read.IsFailure)
         {
             return Fail<InvoiceContainersCreatedDto>(read);
+        }
+
+        if (await CheckRulesAsync(invoiceId, "Add", request.QuantityBase, cancellationToken) is { } broken)
+        {
+            return Fail<InvoiceContainersCreatedDto>(broken);
         }
 
         var invoice = read.Value!;
@@ -204,7 +210,6 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             DispatchDate = request.DispatchDate,
             Eta = request.Eta,
             FreeDays = request.FreeDays,
-            MaxUnits = request.MaxUnits,
             BranchId = request.BranchId ?? invoice.BranchId,
             WarehouseId = request.WarehouseId ?? invoice.WarehouseId,
             Notes = request.Notes,
@@ -218,7 +223,7 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             _logger.LogInformation("Container {ContainerId} added from purchase invoice {InvoiceId} by user {UserId}{Override}",
                 created.Created.FirstOrDefault()?.ContainerId, invoiceId, userId,
                 request.AllowOverCapacity ? " (over capacity confirmed)" : string.Empty);
-            return Result<InvoiceContainersCreatedDto>.Success(created);
+            return Result<InvoiceContainersCreatedDto>.Success(await WithStateAsync(created, invoiceId, userId, cancellationToken));
         }
         catch (BusinessRuleException ex)
         {
@@ -229,15 +234,21 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
     public async Task<Result<AutoPlanDto>> AutoPlanAsync(
         int invoiceId, InvoiceAutoPlanRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Purchase.InvoicesCreate))
+        // The proposal is the first step of adding containers: the same rights (rule 9).
+        if (CheckAddRights(permissions, allowOverCapacity: false, confirm: false, shippingMethod: null) is { } refused)
         {
-            return Forbidden<AutoPlanDto>(Permissions.Purchase.InvoicesCreate);
+            return Fail<AutoPlanDto>(refused);
         }
 
-        var read = await ReadTakingContainersAsync(invoiceId, cancellationToken);
+        var read = await ReadInvoiceAsync(invoiceId, cancellationToken);
         if (read.IsFailure)
         {
             return Fail<AutoPlanDto>(read);
+        }
+
+        if (await CheckRulesAsync(invoiceId, "Plan", null, cancellationToken) is { } broken)
+        {
+            return Fail<AutoPlanDto>(broken);
         }
 
         // The order's own proposal (its checks, containers.create included), for this invoice's pieces only.
@@ -260,15 +271,21 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             return Fail<InvoiceContainersCreatedDto>(refused);
         }
 
-        if ((ContainerService.CheckPlan(request.Containers) ?? ContainerService.CheckCapacities(request.Capacities)) is { } invalid)
+        if (ContainerService.CheckPlan(request.Containers) is { } invalid)
         {
             return Result<InvoiceContainersCreatedDto>.Failure(ErrorType.Validation, invalid, "VALIDATION");
         }
 
-        var read = await ReadTakingContainersAsync(invoiceId, cancellationToken);
+        var read = await ReadInvoiceAsync(invoiceId, cancellationToken);
         if (read.IsFailure)
         {
             return Fail<InvoiceContainersCreatedDto>(read);
+        }
+
+        var pieces = request.Containers.Sum(c => c.Lines.Sum(l => l.QuantityBase));
+        if (await CheckRulesAsync(invoiceId, "Add", pieces, cancellationToken) is { } broken)
+        {
+            return Fail<InvoiceContainersCreatedDto>(broken);
         }
 
         var plan = new CreateContainersFromPlanRequest
@@ -298,7 +315,7 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
             var created = await _links.CreateFromPlanAsync(invoiceId, plan, ToRowVersion(request.RowVersion), userId, cancellationToken);
             _logger.LogInformation("{Count} container(s) created from the plan of purchase invoice {InvoiceId} by user {UserId}",
                 created.Created.Count, invoiceId, userId);
-            return Result<InvoiceContainersCreatedDto>.Success(created);
+            return Result<InvoiceContainersCreatedDto>.Success(await WithStateAsync(created, invoiceId, userId, cancellationToken));
         }
         catch (BusinessRuleException ex)
         {
@@ -345,33 +362,36 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
     }
 
     /// <summary>
-    /// An invoice the ORDER's procedures may create containers for: of an order, a draft or a posted invoice shipped in
-    /// containers. Checked before them, so a refusal names the invoice rather than the order.
+    /// The invoice's rules (script 47) for an action - Add (1-8, with the pieces asked), Plan (1-7) - asked of the
+    /// database before anything is built; null when they hold. Its refusal is the purchase documents' 65030 / 65031.
     /// </summary>
-    private async Task<Result<PurchaseDocumentDto>> ReadTakingContainersAsync(int invoiceId, CancellationToken cancellationToken)
+    private async Task<Result?> CheckRulesAsync(int invoiceId, string action, int? quantityBase, CancellationToken cancellationToken)
     {
-        var read = await ReadInvoiceAsync(invoiceId, cancellationToken);
-        if (read.IsFailure)
+        try
         {
-            return read;
+            await _links.CheckAsync(invoiceId, action, quantityBase, cancellationToken);
+            return null;
         }
-
-        var invoice = read.Value!;
-        if (invoice.SourceDocumentId is null)
+        catch (BusinessRuleException ex)
         {
-            return Result<PurchaseDocumentDto>.Failure(ErrorType.Conflict, NotFromOrderMessage, "NOT_LINKABLE");
+            var failure = PurchaseDocumentService.Describe(ex);
+            return Result.Failure(failure.Type, failure.Message, failure.Code);
         }
-
-        if (invoice.Status is not (PurchaseDocumentStatus.Draft or PurchaseDocumentStatus.Posted))
-        {
-            return Result<PurchaseDocumentDto>.Failure(
-                ErrorType.Conflict, "A cancelled invoice cannot be linked to containers.", "INVALID_STATUS");
-        }
-
-        return invoice.Status == PurchaseDocumentStatus.Posted && !invoice.ShippedInContainers
-            ? Result<PurchaseDocumentDto>.Failure(ErrorType.Conflict, ReceivedOnPostingMessage, "NOT_LINKABLE")
-            : read;
     }
+
+    /// <summary>The summary with the invoice's state as it is now, for the caller (rule 9 included).</summary>
+    private async Task<InvoiceContainerSummaryDto> WithStateAsync(
+        InvoiceContainerSummaryDto summary, int invoiceId, int userId, CancellationToken cancellationToken)
+        => new()
+        {
+            Items = summary.Items,
+            Containers = summary.Containers,
+            State = await _links.GetStateAsync(invoiceId, userId, cancellationToken),
+        };
+
+    private async Task<InvoiceContainersCreatedDto> WithStateAsync(
+        InvoiceContainersCreatedDto created, int invoiceId, int userId, CancellationToken cancellationToken)
+        => new() { Created = created.Created, Summary = await WithStateAsync(created.Summary, invoiceId, userId, cancellationToken) };
 
     /// <summary>
     /// The new container's lines: the pieces asked for, taken from the invoice's ORDER LINES of one item in the

@@ -474,6 +474,152 @@ public sealed class MovementQuery
     public int PageSize { get; init; } = 10;
 }
 
+/* ── containers for a movement: the picker, numbers matched (script 46) ─────────────────────── */
+
+/* THE PLACE RULE: a container starts a movement where its previous movement ends — the To of its movement not
+   cancelled with the highest id below this one. A container that never moved has no place and goes from any From.
+   Save refuses a container elsewhere (409 CONTAINER_NOT_AT_FROM), Start also a previous movement not completed
+   (409 PREVIOUS_MOVEMENT_OPEN). Both lists below run the same checks for the From on the page, saved or not. */
+
+/// <summary>The containers a movement can take (logistics.usp_Movement_ContainerCandidates).</summary>
+public sealed class MovementContainerCandidateQuery
+{
+    /// <summary>Null = a new movement (planned).</summary>
+    public int? MovementId { get; init; }
+
+    /// <summary>The From on the page, saved or not. Required.</summary>
+    public int? FromPlaceId { get; init; }
+
+    /// <summary>(49) The To on the page, saved or not: an Origin-stage movement takes a container whose port of loading is its To.</summary>
+    public int? ToPlaceId { get; init; }
+
+    /// <summary>(49) The movement type on the page (its stage: Origin takes only containers that never moved).</summary>
+    public int? MovementTypeId { get; init; }
+
+    /// <summary>Ref, container no., B/L, vessel, order no. or supplier (contains).</summary>
+    public string? Search { get; init; }
+
+    public int? PurchaseOrderId { get; init; }
+    public int? SupplierId { get; init; }
+
+    /// <summary>The code 1–8 or the name (Draft, Confirmed, InTransit / "In Transit", ...).</summary>
+    public string? Status { get; init; }
+
+    /// <summary>Also the containers the save would refuse: canAdd false, with the reason.</summary>
+    public bool IncludeBlocked { get; init; }
+
+    public int Page { get; init; } = 1;
+
+    /// <summary>At most 200.</summary>
+    public int PageSize { get; init; } = 200;
+}
+
+/// <summary>
+/// A container that is not on the movement and not offloaded, closed or cancelled, with the checks of the save for
+/// the movement's status and From: canAdd, else the reason ("At Beira (end of MOV-2026-000012), not at Durban.",
+/// "Not confirmed yet.", "Travelling with movement MOV-..."). The note, on the ones that can be added, says what is
+/// still to come ("Not moved yet - port of loading: Shanghai.", "On its way here with MOV-...", "Draft: confirm it
+/// before the movement starts.").
+/// </summary>
+public record MovementContainerCandidateDto
+{
+    public int Id { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+    public string? SealNo { get; init; }
+    public string ContainerTypeCode { get; init; } = string.Empty;
+
+    /// <summary>Summaries: "PO-BR-002-000038 +1", "Mixed - 3 items".</summary>
+    public string? OrderNumbers { get; init; }
+
+    public string? SupplierNames { get; init; }
+    public string? ItemSummary { get; init; }
+
+    /// <summary>Base units loaded.</summary>
+    public int Pieces { get; init; }
+
+    public byte Status { get; init; }
+    public string StatusName => ContainerStatus.Name(Status);
+    public DateTime? Eta { get; init; }
+
+    /// <summary>Where its previous movement ends; null = never moved.</summary>
+    public string? PlaceName { get; init; }
+
+    public string? PreviousMovementNo { get; init; }
+    public string? PortOfLoadingName { get; init; }
+    public bool CanAdd { get; init; }
+    public string? Reason { get; init; }
+    public string? Note { get; init; }
+}
+
+/// <summary>Container numbers or refs — typed, pasted or read from a file — to match for a movement.</summary>
+public sealed class MatchMovementContainersRequest
+{
+    /// <summary>Null = a new movement (planned).</summary>
+    public int? MovementId { get; init; }
+
+    /// <summary>The From on the page, saved or not. Required.</summary>
+    public int? FromPlaceId { get; init; }
+
+    /// <summary>(49) The To on the page, saved or not: an Origin-stage movement takes a container whose port of loading is its To.</summary>
+    public int? ToPlaceId { get; init; }
+
+    /// <summary>(49) The movement type on the page (its stage: Origin takes only containers that never moved).</summary>
+    public int? MovementTypeId { get; init; }
+
+    /// <summary>
+    /// In the order of the file: rowNo of the answer = position here, from 1. Empty ones are ignored; at most 500
+    /// others. Compared without case, spaces, tabs, '-', '.' and '/'.
+    /// </summary>
+    public IReadOnlyList<string?> Numbers { get; init; } = [];
+}
+
+/// <summary>What a number matched (logistics.usp_Movement_MatchContainers).</summary>
+public static class ContainerMatchResult
+{
+    public const string Ready = "Ready";
+
+    /// <summary>The reason is set when the saved container no longer passes the checks (another From on the page).</summary>
+    public const string AlreadyOnMovement = "AlreadyOnMovement";
+
+    public const string NotFound = "NotFound";
+
+    /// <summary>Two open containers have this number: their refs are in the reason.</summary>
+    public const string Ambiguous = "Ambiguous";
+
+    /// <summary>Offloaded, closed or cancelled, or refused by the checks of the save: the reason says which.</summary>
+    public const string Blocked = "Blocked";
+
+    /// <summary>The same container (or number) earlier in the list: "Already in the list, row n."</summary>
+    public const string Duplicate = "Duplicate";
+}
+
+/// <summary>One number of the list, in its order. The container columns are null when none (or two) matched.</summary>
+public sealed class MovementContainerMatchDto
+{
+    public int RowNo { get; init; }
+    public string InputNumber { get; init; } = string.Empty;
+
+    /// <summary>See <see cref="ContainerMatchResult"/>.</summary>
+    public string Result { get; init; } = string.Empty;
+
+    public int? ContainerId { get; init; }
+    public string? ContainerRef { get; init; }
+    public string? ContainerNo { get; init; }
+    public string? ContainerTypeCode { get; init; }
+    public byte? Status { get; init; }
+    public string? StatusName => Status is { } status ? ContainerStatus.Name(status) : null;
+    public string? OrderNumbers { get; init; }
+    public string? SupplierNames { get; init; }
+    public string? ItemSummary { get; init; }
+    public int? Pieces { get; init; }
+    public string? PlaceName { get; init; }
+    public string? PreviousMovementNo { get; init; }
+    public string? PortOfLoadingName { get; init; }
+    public string? Reason { get; init; }
+    public string? Note { get; init; }
+}
+
 /* ── tracking board ────────────────────────────────────────────────────────────────────────── */
 
 /// <summary>A container on the tracking board (set 1 of logistics.usp_Container_Tracking).</summary>

@@ -33,6 +33,7 @@ internal static class ReceiptRuleFailures
             SqlErrors.ReceiptDuplicateCode => new(ErrorType.Conflict, exception.Message, "DUPLICATE_CODE"),
             SqlErrors.ReceiptMasterInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
             SqlErrors.ReceiptAutomatic => new(ErrorType.Conflict, exception.Message, "AUTOMATIC_RECEIPT"),
+            SqlErrors.ReceiptAttachmentType => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),
         };
 

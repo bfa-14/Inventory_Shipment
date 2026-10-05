@@ -1,6 +1,7 @@
 using Inventory_Shipment.API.Authorization;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Receipts;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
@@ -23,13 +24,6 @@ namespace Inventory_Shipment.API.Controllers.Sales;
 [Produces("application/json")]
 public sealed class ReceiptsController : ControllerBase
 {
-    private static readonly HashSet<string> AllowedFileTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        ".pdf", ".xlsx", ".xls", ".docx", ".doc", ".png", ".jpg", ".jpeg", ".gif", ".webp",
-    };
-
-    private const long MaxFileBytes = 10 * 1024 * 1024;
-
     private readonly IReceiptService _receipts;
 
     public ReceiptsController(IReceiptService receipts)
@@ -196,44 +190,47 @@ public sealed class ReceiptsController : ControllerBase
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
-    /// Attaches evidence (a transfer slip, a cheque copy). `attachmentTypeId` is a Receipt type from
-    /// the attachment-types lookup with appliesTo=Receipt. A posted receipt still takes files - the
-    /// evidence often arrives later - a reversed one does not.
+    /// Attaches evidence (a transfer slip, a cheque copy). Multipart: file, attachmentTypeId (required: a type used for
+    /// receipts), and optionally documentDate (yyyy-MM-dd) and note. PDF, image or Office file, up to 20 MB. A posted
+    /// receipt still takes files - the evidence often arrives later - a reversed one does not.
     /// </summary>
     [HttpPost("{id:int}/files")]
     [HasPermission(Permissions.Sales.ReceiptsCreate)]
     [Consumes("multipart/form-data")]
     [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
-    [RequestSizeLimit(MaxFileBytes * 2)]
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
     public async Task<IActionResult> AddFile(
-        int id, IFormFile file, [FromForm] int? attachmentTypeId, [FromForm] string? note, CancellationToken cancellationToken)
+        int id, IFormFile file, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate, [FromForm] string? note,
+        CancellationToken cancellationToken)
     {
-        if (file is null || file.Length == 0)
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        if (this.RefuseUpload(file, fields) is { } refusal)
         {
-            return Invalid("No file was uploaded.");
-        }
-
-        if (file.Length > MaxFileBytes)
-        {
-            return Invalid($"The file is larger than {MaxFileBytes / (1024 * 1024)} MB.");
-        }
-
-        if (!AllowedFileTypes.Contains(Path.GetExtension(file.FileName)))
-        {
-            return Invalid("Only PDF, Excel, Word and image files can be attached.");
+            return refusal;
         }
 
         using var buffer = new MemoryStream();
         await file.CopyToAsync(buffer, cancellationToken);
 
         var result = await _receipts.AddFileAsync(
-            id, attachmentTypeId, note, file.FileName, file.ContentType, buffer.ToArray(),
-            User.GetUserId(), User.GetPermissions(), cancellationToken);
+            id, file.FileName, file.ContentType, buffer.ToArray(), fields, User.GetUserId(), User.GetPermissions(), cancellationToken);
 
         return result.IsSuccess
             ? StatusCode(StatusCodes.Status201Created, new { id = result.Value })
             : this.ToProblem(result);
+    }
+
+    /// <summary>The files with their type, date and note, newest first; attachmentTypeId = one type only.</summary>
+    [HttpGet("{id:int}/files")]
+    [HasPermission(Permissions.Sales.ReceiptsView)]
+    [ProducesResponseType<IReadOnlyList<DocumentFileDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<DocumentFileDto>>> ListFiles(
+        int id, [FromQuery] int? attachmentTypeId, CancellationToken cancellationToken)
+    {
+        var result = await _receipts.ListFilesAsync(id, attachmentTypeId, cancellationToken);
+        return result.ToActionResult(this);
     }
 
     [HttpGet("{id:int}/files/{fileId:int}")]
@@ -249,6 +246,24 @@ public sealed class ReceiptsController : ControllerBase
             : this.ToProblem(result);
     }
 
+    /// <summary>The type, date and note of a file: the upload's permission and checks.</summary>
+    [HttpPut("{id:int}/files/{fileId:int}")]
+    [HasPermission(Permissions.Sales.ReceiptsCreate)]
+    [ProducesResponseType<DocumentFileDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<DocumentFileDto>> UpdateFile(
+        int id, int fileId, DocumentFileFields request, CancellationToken cancellationToken)
+    {
+        if (this.RefuseFields(request) is { } refusal)
+        {
+            return refusal;
+        }
+
+        var result = await _receipts.UpdateFileAsync(id, fileId, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /// <summary>Drafts only: the evidence of a posted payment stays.</summary>
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [HasPermission(Permissions.Sales.ReceiptsCreate)]
@@ -259,14 +274,4 @@ public sealed class ReceiptsController : ControllerBase
         var result = await _receipts.DeleteFileAsync(id, fileId, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToNoContentResult(this);
     }
-
-    private IActionResult Invalid(string detail)
-        => BadRequest(new ProblemDetails
-        {
-            Status = StatusCodes.Status400BadRequest,
-            Title = "Validation failed",
-            Detail = detail,
-            Instance = HttpContext.Request.Path,
-            Extensions = { ["code"] = "INVALID_FILE" },
-        });
 }

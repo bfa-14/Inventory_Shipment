@@ -44,9 +44,10 @@ public sealed class InvoiceLinkedContainerDto
     /// <summary>The invoice's pieces of that item on the container.</summary>
     public int QuantityBase { get; init; }
 
-    public int? MaxUnits { get; init; }
+    /// <summary>(50) The item's pieces in a full container (its Container unit); null when it has none.</summary>
+    public int? PcsPerContainer { get; init; }
 
-    /// <summary>QuantityBase / the container's Max units, in %.</summary>
+    /// <summary>QuantityBase / the item's pieces per container, in % (script 50; it was the container's Max units).</summary>
     public decimal? ShareOfContainerPct { get; init; }
 
     /// <summary>Only a Draft or Confirmed container can still be unlinked.</summary>
@@ -57,6 +58,42 @@ public sealed class InvoiceContainerSummaryDto
 {
     public IReadOnlyList<InvoiceContainerItemDto> Items { get; init; } = [];
     public IReadOnlyList<InvoiceLinkedContainerDto> Containers { get; init; } = [];
+
+    /// <summary>What the invoice can do with containers now, and why not (script 47). Set on every answer of the API.</summary>
+    public InvoiceContainerStateDto? State { get; init; }
+}
+
+/// <summary>
+/// What a purchase invoice can do with containers now (purchase.usp_PurchaseInvoice_ContainerState, script 47). The
+/// rules: 1 a purchase invoice, draft or posted; 2 created from a purchase order; 3 one item (a draft); 4 shipped in
+/// containers; 5 its order approved, or closed; 6 pieces not in a container; 7 the order lines still allow pieces; 8 a
+/// new container of at most MaxAddQty pieces; 9 the caller's permissions. Reason is the first rule that fails, in the
+/// words the add and the link refuse with - the page shows it, it never has to guess.
+/// </summary>
+public sealed class InvoiceContainerStateDto
+{
+    public bool CanAddContainers { get; init; }
+    public string? Reason { get; init; }
+
+    /// <summary>1-9; null when every rule holds.</summary>
+    public byte? FailedRule { get; init; }
+
+    /// <summary>A draft with "Shipped in containers" off that may turn it on: the save of the invoice with the switch.</summary>
+    public bool CanTurnOnShipped { get; init; }
+
+    public int NotInContainerQty { get; init; }
+
+    /// <summary>What the invoice's order lines still allow: ordered - invoiced outside containers - loaded in containers.</summary>
+    public int OrderLinesAvailableQty { get; init; }
+
+    /// <summary>The most a new container may take: per order line the lesser of the two above.</summary>
+    public int MaxAddQty { get; init; }
+
+    /// <summary>The item's Container unit; null when it has none.</summary>
+    public int? PcsPerContainer { get; init; }
+
+    public bool CanLink { get; init; }
+    public string? LinkReason { get; init; }
 }
 
 /// <summary>A container line the invoice can be linked to: of its order, Draft or Confirmed, with something not invoiced.</summary>
@@ -166,9 +203,7 @@ public sealed class AddInvoiceContainerRequest
     [Range(0, 3650)]
     public int? FreeDays { get; init; }
 
-    /// <summary>Null = the container type's capacity.</summary>
-    [Range(1, int.MaxValue)]
-    public int? MaxUnits { get; init; }
+    /* maxUnits from an older page is ignored (an unknown member): the capacity is the items' Container units. */
 
     /// <summary>Null = the invoice's branch.</summary>
     public int? BranchId { get; init; }

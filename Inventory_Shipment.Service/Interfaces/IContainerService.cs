@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Logistics;
 
 namespace Inventory_Shipment.Service.Interfaces;
@@ -77,6 +78,16 @@ public interface IContainerService
     /// <summary>allShared = the file from every container holding it. Needs containers.attachments.manage.</summary>
     Task<Result> DeleteAttachmentAsync(
         int id, bool allShared, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>The attachments of a container or of a movement's containers, with their type; one type when asked.</summary>
+    Task<Result<IReadOnlyList<ContainerAttachmentDto>>> ListAttachmentsAsync(
+        int? containerId, int? movementId, int? attachmentTypeId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The type, date and note of one record. Needs containers.attachments.manage.</summary>
+    Task<Result<ContainerAttachmentDto>> UpdateAttachmentAsync(
+        int id, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 
     /* ── many containers per order ── */
 

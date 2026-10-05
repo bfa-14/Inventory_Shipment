@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Receipts;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Repository.Exceptions;
@@ -221,7 +222,7 @@ public sealed class ReceiptService : IReceiptService
     /* ── files ────────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<int>> AddFileAsync(
-        int receiptId, int? attachmentTypeId, string? note, string fileName, string contentType, byte[] content, int userId,
+        int receiptId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Sales.ReceiptsCreate))
@@ -231,13 +232,39 @@ public sealed class ReceiptService : IReceiptService
 
         try
         {
-            var fileId = await _receipts.AddFileAsync(
-                receiptId, attachmentTypeId, note, fileName, contentType, content, userId, cancellationToken);
+            var fileId = await _receipts.AddFileAsync(receiptId, fileName, contentType, content, fields, userId, cancellationToken);
             return Result<int>.Success(fileId);
         }
         catch (BusinessRuleException ex)
         {
             return Failure<int>(ex);
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int receiptId, int? attachmentTypeId, CancellationToken cancellationToken = default)
+        => Result<IReadOnlyList<DocumentFileDto>>.Success(
+            await _receipts.ListFilesAsync(receiptId, attachmentTypeId, cancellationToken: cancellationToken));
+
+    public async Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int receiptId, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Sales.ReceiptsCreate))
+        {
+            return Forbidden<DocumentFileDto>(Permissions.Sales.ReceiptsCreate);
+        }
+
+        try
+        {
+            var file = await _receipts.UpdateFileAsync(receiptId, fileId, fields, userId, cancellationToken);
+            return file is null
+                ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
+                : Result<DocumentFileDto>.Success(file);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<DocumentFileDto>(ex);
         }
     }
 

@@ -65,8 +65,17 @@ public interface IStockDocumentService
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     Task<Result<int>> AddFileAsync(
-        int id, string fileName, string contentType, byte[] content, int userId,
+        int id, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>The files with their type, date and note, newest first; one type when asked.</summary>
+    Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int id, int? attachmentTypeId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>The type, date and note of a file (the upload's permission and checks); the file as it now stands.</summary>
+    Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int id, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 
     Task<Result<Repository.Interfaces.StockDocumentFileContent>> GetFileAsync(
         int id, int fileId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

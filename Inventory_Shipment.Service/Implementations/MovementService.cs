@@ -17,6 +17,14 @@ public sealed class MovementService : IMovementService
     /// <summary>The procedure's page ceiling; the export walks the pages at this size.</summary>
     private const int ExportPageSize = 200;
 
+    /// <summary>The page ceiling of logistics.usp_Movement_ContainerCandidates.</summary>
+    private const int CandidatePageSize = 200;
+
+    /// <summary>The width of a value of logistics.tvp_TextList.</summary>
+    private const int MaxNumberLength = 100;
+
+    private const string FromRequiredMessage = "Choose the From first.";
+
     private readonly IMovementRepository _movements;
     private readonly ILogger<MovementService> _logger;
 
@@ -177,6 +185,94 @@ public sealed class MovementService : IMovementService
         _logger.LogInformation("Movement {MovementNo} created for {Count} container(s) by user {UserId}{Started}",
             movement.MovementNo, movement.ContainerCount, userId, request.StartNow ? " and started" : string.Empty);
         return Result<ShippedMovementDto>.Success(movement);
+    }
+
+    /* ── containers for a movement: the picker, numbers matched ───────────────────────────────── */
+
+    public async Task<Result<PagedResult<MovementContainerCandidateDto>>> ContainerCandidatesAsync(
+        MovementContainerCandidateQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<PagedResult<MovementContainerCandidateDto>>(Permissions.Containers.MovementsManage);
+        }
+
+        if (query.FromPlaceId is null or <= 0)
+        {
+            return Result<PagedResult<MovementContainerCandidateDto>>.Failure(ErrorType.Validation, FromRequiredMessage, "VALIDATION");
+        }
+
+        if (!string.IsNullOrWhiteSpace(query.Status) && ContainerStatus.ToCode(query.Status) is null)
+        {
+            return Result<PagedResult<MovementContainerCandidateDto>>.Failure(
+                ErrorType.Validation,
+                "status must be 1-8 or Draft, Confirmed, InTransit, AtPort, Cleared, Offloaded, Closed, Cancelled.", "VALIDATION");
+        }
+
+        // Clamped here as the procedure does, so the page numbers of the answer are the ones it used.
+        var page = Math.Max(1, query.Page);
+        var pageSize = Math.Clamp(query.PageSize, 1, CandidatePageSize);
+
+        IReadOnlyList<MovementContainerCandidateDto> items;
+        int totalCount;
+        try
+        {
+            (items, totalCount) = await _movements.ContainerCandidatesAsync(query, page, pageSize, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<PagedResult<MovementContainerCandidateDto>>(ex);
+        }
+
+        return Result<PagedResult<MovementContainerCandidateDto>>.Success(new PagedResult<MovementContainerCandidateDto>
+        {
+            Items = items,
+            Page = page,
+            PageSize = pageSize,
+            TotalCount = totalCount,
+        });
+    }
+
+    /// <summary>More than 500 numbers is the procedure's refusal (70000 → 400), with its message.</summary>
+    public async Task<Result<IReadOnlyList<MovementContainerMatchDto>>> MatchContainersAsync(
+        MatchMovementContainersRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<IReadOnlyList<MovementContainerMatchDto>>(Permissions.Containers.MovementsManage);
+        }
+
+        if (request.FromPlaceId is not { } fromPlaceId || fromPlaceId <= 0)
+        {
+            return Result<IReadOnlyList<MovementContainerMatchDto>>.Failure(ErrorType.Validation, FromRequiredMessage, "VALIDATION");
+        }
+
+        var numbers = request.Numbers ?? [];
+        if (numbers.All(string.IsNullOrWhiteSpace))
+        {
+            return Result<IReadOnlyList<MovementContainerMatchDto>>.Failure(
+                ErrorType.Validation, "Give at least one container number.", "VALIDATION");
+        }
+
+        var tooLong = numbers.Select((number, index) => (number, index))
+            .FirstOrDefault(n => n.number?.Trim().Length > MaxNumberLength);
+        if (tooLong.number is not null)
+        {
+            return Result<IReadOnlyList<MovementContainerMatchDto>>.Failure(
+                ErrorType.Validation,
+                $"Row {tooLong.index + 1}: a container number has at most {MaxNumberLength} characters.", "VALIDATION");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<MovementContainerMatchDto>>.Success(
+                await _movements.MatchContainersAsync(
+                    request.MovementId, fromPlaceId, numbers, request.ToPlaceId, request.MovementTypeId, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<MovementContainerMatchDto>>(ex);
+        }
     }
 
     /* ── export ───────────────────────────────────────────────────────────────────────────────── */

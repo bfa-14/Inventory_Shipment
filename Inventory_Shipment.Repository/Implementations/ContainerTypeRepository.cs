@@ -10,7 +10,7 @@ namespace Inventory_Shipment.Repository.Implementations;
 public sealed class ContainerTypeRepository : IContainerTypeRepository
 {
     /// <summary>The columns the search procedure will sort by; anything else falls back to the code.</summary>
-    private static readonly string[] SortColumns = ["TypeCode", "TypeName", "MaxUnits", "IsActive"];
+    private static readonly string[] SortColumns = ["TypeCode", "TypeName", "IsActive"];
 
     private readonly ISqlConnectionFactory _connectionFactory;
 
@@ -72,7 +72,6 @@ public sealed class ContainerTypeRepository : IContainerTypeRepository
         parameters.Add("@Id", id, DbType.Int32);
         parameters.Add("@TypeCode", request.TypeCode, DbType.String, size: 10);
         parameters.Add("@TypeName", request.TypeName, DbType.String, size: 100);
-        parameters.Add("@MaxUnits", request.MaxUnits, DbType.Int32);
         parameters.Add("@MaxWeightKg", request.MaxWeightKg, DbType.Decimal, precision: 18, scale: 3);
         parameters.Add("@MaxVolumeCbm", request.MaxVolumeCbm, DbType.Decimal, precision: 18, scale: 3);
         parameters.Add("@Description", request.Description, DbType.String, size: 500);

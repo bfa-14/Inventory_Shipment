@@ -31,4 +31,19 @@ public interface IMovementRepository
     /// </summary>
     Task<ShippedMovementDto> ShipContainersAsync(
         ShipContainersRequest request, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// logistics.usp_Movement_ContainerCandidates: one page (at most 200) and the count across the pages.
+    /// 70006 / 70005 for a movement not found or no longer editable, 70000 without a From.
+    /// </summary>
+    Task<(IReadOnlyList<MovementContainerCandidateDto> Items, int TotalCount)> ContainerCandidatesAsync(
+        MovementContainerCandidateQuery query, int page, int pageSize, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// logistics.usp_Movement_MatchContainers: one row per non-empty number, rowNo = its position in the list
+    /// from 1. 70000 above 500 numbers.
+    /// </summary>
+    Task<IReadOnlyList<MovementContainerMatchDto>> MatchContainersAsync(
+        int? movementId, int fromPlaceId, IReadOnlyList<string?> numbers, int? toPlaceId = null, int? movementTypeId = null,
+        CancellationToken cancellationToken = default);
 }

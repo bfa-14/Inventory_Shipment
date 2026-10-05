@@ -5,7 +5,7 @@ namespace Inventory_Shipment.Model.DTOs.Logistics;
 
 /* ── auto-plan: the proposal (logistics.usp_Container_PlanFromOrder, nothing saved) ────────────── */
 
-/// <summary>Pieces of one item in a full container, as typed in the dialog (logistics.tvp_ItemCapacity).</summary>
+/// <summary>Pieces of one item in a full container as an older dialog typed them: accepted and IGNORED (script 50).</summary>
 public sealed class ItemCapacityRequest
 {
     public int ItemId { get; init; }
@@ -23,7 +23,7 @@ public sealed class AutoPlanRequest
     /// <summary>False = the rest of every order line gets its own container.</summary>
     public bool MixRemainders { get; init; } = true;
 
-    /// <summary>Items left out take the item's container unit, else the container type's capacity.</summary>
+    /// <summary>Ignored (script 50): the pieces per container are the items' Container units only.</summary>
     public IReadOnlyList<ItemCapacityRequest>? Capacities { get; init; }
 
     /// <summary>
@@ -43,9 +43,6 @@ public sealed class PlannedContainerDto
 
     /// <summary>Sum of quantity / pieces per container, in % (one decimal); null when an item has no capacity.</summary>
     public decimal? FillPct { get; init; }
-
-    /// <summary>The equivalent capacity in pieces: 84 for a full container of an 84-piece item, 102 for 42 x 84 + 60 x 120.</summary>
-    public int? MaxUnits { get; init; }
 
     /// <summary>The item code, or "Mixed - 2 items".</summary>
     public string ItemSummary { get; init; } = string.Empty;
@@ -82,8 +79,11 @@ public sealed class PlanOrderLineDto
     public int PlannedBase { get; init; }
     public int? PcsPerContainer { get; init; }
 
-    /// <summary>Where <see cref="PcsPerContainer"/> comes from: Entered, Item (its container unit), Type or None.</summary>
+    /// <summary>Where <see cref="PcsPerContainer"/> comes from: "Item Definition" (its Container unit), or "None".</summary>
     public string CapacitySource { get; init; } = string.Empty;
+
+    /// <summary>Without a Container unit: "Line 2 (TEST46-C): set its Container unit in Item Definition first." (69000).</summary>
+    public string? CapacityMessage { get; init; }
 
     public decimal ContainersNeeded { get; init; }
     public bool OilIncluded { get; init; }
@@ -91,6 +91,12 @@ public sealed class PlanOrderLineDto
 
 public sealed class AutoPlanDto
 {
+    /// <summary>
+    /// Set when no plan can be made: an order line's item has no Container unit (the procedure's 69000, the first such
+    /// line). Containers and Lines are then empty and every order line says its pieces per container or its message.
+    /// </summary>
+    public string? Message { get; init; }
+
     public IReadOnlyList<PlannedContainerDto> Containers { get; init; } = [];
     public IReadOnlyList<PlannedContainerLineDto> Lines { get; init; } = [];
     public IReadOnlyList<PlanOrderLineDto> OrderLines { get; init; } = [];
@@ -118,9 +124,8 @@ public sealed class PlanContainerRequest
 }
 
 /// <summary>
-/// Every container gets the same header. Send the SAME capacities as the proposal: the procedure
-/// recomputes each container's Max units from them (without them an 84-piece item would get the
-/// container type's capacity).
+/// Every container gets the same header. The pieces per container are the items' Container units (script 50): the
+/// capacities of an older page are accepted and ignored, and an item without a Container unit is refused (69000).
 /// </summary>
 public sealed class CreateContainersFromPlanRequest
 {
@@ -178,8 +183,12 @@ public sealed class CreatedContainerDto
     public byte Status { get; init; }
     public int TotalLines { get; init; }
     public int TotalAllocatedBase { get; init; }
-    public int? MaxUnits { get; init; }
-    public decimal? UtilizationPct { get; init; }
+
+    /// <summary>(50) The fill from the items' Container units, in %; null when an item has none.</summary>
+    public decimal? FillPct { get; init; }
+
+    public bool CapacityKnown { get; init; }
+    public bool IsOverCapacity { get; init; }
     public byte[] RowVersion { get; init; } = [];
 }
 

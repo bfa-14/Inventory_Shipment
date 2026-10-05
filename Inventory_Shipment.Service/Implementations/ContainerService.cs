@@ -1,7 +1,9 @@
 using ClosedXML.Excel;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Logistics;
 using Inventory_Shipment.Model.Security;
+using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
@@ -322,6 +324,47 @@ public sealed class ContainerService : IContainerService
         return Result.Success();
     }
 
+    public async Task<Result<IReadOnlyList<ContainerAttachmentDto>>> ListAttachmentsAsync(
+        int? containerId, int? movementId, int? attachmentTypeId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.View))
+        {
+            return Forbidden<IReadOnlyList<ContainerAttachmentDto>>(Permissions.Containers.View);
+        }
+
+        if (containerId is null && movementId is null)
+        {
+            return Result<IReadOnlyList<ContainerAttachmentDto>>.Failure(
+                ErrorType.Validation, "Choose a container or a movement.", "VALIDATION");
+        }
+
+        return Result<IReadOnlyList<ContainerAttachmentDto>>.Success(
+            await _containers.ListAttachmentsAsync(containerId, movementId, attachmentTypeId, cancellationToken: cancellationToken));
+    }
+
+    public async Task<Result<ContainerAttachmentDto>> UpdateAttachmentAsync(
+        int id, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.AttachmentsManage))
+        {
+            return Forbidden<ContainerAttachmentDto>(Permissions.Containers.AttachmentsManage);
+        }
+
+        try
+        {
+            var attachment = await _containers.UpdateAttachmentAsync(id, fields, userId, cancellationToken);
+            return attachment is null
+                ? Result<ContainerAttachmentDto>.Failure(ErrorType.NotFound, "Attachment not found.", "NOT_FOUND")
+                : Result<ContainerAttachmentDto>.Success(attachment);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<ContainerAttachmentDto>(ex);
+        }
+    }
+
     /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
 
     public async Task<Result<AutoPlanDto>> AutoPlanAsync(
@@ -332,19 +375,60 @@ public sealed class ContainerService : IContainerService
             return Forbidden<AutoPlanDto>(Permissions.Containers.Create);
         }
 
-        if (CheckCapacities(request.Capacities) is { } invalid)
-        {
-            return Result<AutoPlanDto>.Failure(ErrorType.Validation, invalid, "VALIDATION");
-        }
-
+        // The typed pieces per container (request.Capacities) are ignored since script 50: the Container units only.
         try
         {
             return Result<AutoPlanDto>.Success(await _containers.PlanFromOrderAsync(request, cancellationToken));
+        }
+        catch (BusinessRuleException ex) when (ex.Number == SqlErrors.ContainerValidation
+                                                && ex.Message.EndsWith(MissingContainerUnit, StringComparison.Ordinal))
+        {
+            return Result<AutoPlanDto>.Success(await BlockedPlanAsync(request.PurchaseOrderId, ex.Message, cancellationToken));
         }
         catch (BusinessRuleException ex)
         {
             return Failure<AutoPlanDto>(ex);
         }
+    }
+
+    /// <summary>The end of the procedure's 69000 for an item without a Container unit (script 50).</summary>
+    private const string MissingContainerUnit = "set its Container unit in Item Definition first.";
+
+    /// <summary>
+    /// NO PLAN WITHOUT THE PIECES PER CONTAINER OF EVERY ITEM, but the dialog still needs the order lines to say which
+    /// item to fix: each with its pieces per container ("Item Definition"), or the procedure's sentence and no number.
+    /// </summary>
+    private async Task<AutoPlanDto> BlockedPlanAsync(int purchaseOrderId, string message, CancellationToken cancellationToken)
+    {
+        var lines = await _containers.GetAvailablePoLinesAsync(new AvailablePoLineQuery { PurchaseOrderId = purchaseOrderId }, cancellationToken);
+        return new AutoPlanDto
+        {
+            Message = message,
+            OrderLines = lines
+                .OrderBy(l => l.PoLineNumber)
+                .Select(l => new PlanOrderLineDto
+                {
+                    PoLineId = l.PoLineId,
+                    PoLineNumber = l.PoLineNumber,
+                    ItemId = l.ItemId,
+                    ItemCode = l.ItemCode,
+                    ItemName = l.ItemName,
+                    Model = l.Model,
+                    OrderedBase = l.OrderedBase,
+                    AvailableBase = Math.Max(0, l.AvailableBase),
+                    PlannedBase = 0,
+                    PcsPerContainer = l.PcPerContainer,
+                    CapacitySource = l.PcPerContainer is null ? "None" : "Item Definition",
+                    CapacityMessage = l.PcPerContainer is null && l.AvailableBase > 0
+                        ? $"Line {l.PoLineNumber} ({l.ItemCode}): {MissingContainerUnit}"
+                        : null,
+                    ContainersNeeded = l.PcPerContainer is > 0 && l.AvailableBase > 0
+                        ? Math.Round((decimal)l.AvailableBase / l.PcPerContainer.Value, 2)
+                        : 0,
+                    OilIncluded = l.ItemOilQtyPerUnit > 0,
+                })
+                .ToList(),
+        };
     }
 
     /// <summary>
@@ -385,7 +469,7 @@ public sealed class ContainerService : IContainerService
                 ErrorType.Validation, "Shipping method must be Sea, Air or Road.", "VALIDATION");
         }
 
-        if ((CheckPlan(request.Containers) ?? CheckCapacities(request.Capacities)) is { } invalid)
+        if (CheckPlan(request.Containers) is { } invalid)
         {
             return Result<IReadOnlyList<CreatedContainerDto>>.Failure(ErrorType.Validation, invalid, "VALIDATION");
         }
@@ -579,28 +663,6 @@ public sealed class ContainerService : IContainerService
         return null;
     }
 
-    internal static string? CheckCapacities(IReadOnlyList<ItemCapacityRequest>? capacities)
-    {
-        if (capacities is null)
-        {
-            return null;
-        }
-
-        if (capacities.FirstOrDefault(c => c.ItemId <= 0) is not null)
-        {
-            return "Every capacity needs its item (itemId).";
-        }
-
-        if (capacities.FirstOrDefault(c => c.PcsPerContainer <= 0) is { } zero)
-        {
-            return $"Pieces per container must be greater than zero (item {zero.ItemId}).";
-        }
-
-        return capacities.GroupBy(c => c.ItemId).FirstOrDefault(g => g.Count() > 1) is { } twice
-            ? $"Item {twice.Key} appears more than once in the capacities."
-            : null;
-    }
-
     private static string? CheckIds(IdsRequest request)
     {
         if (request.Ids is null or { Count: 0 })
@@ -682,9 +744,10 @@ public sealed class ContainerService : IContainerService
             ("Branch", $"{container.BranchCode} - {container.BranchName}"),
             ("Offloading Warehouse", container.WarehouseName ?? string.Empty),
             ("Offloaded", Day(container.OffloadedDate)),
-            ("Max Units", container.MaxUnits?.ToString() ?? string.Empty),
             ("Allocated Units", container.TotalAllocatedBase.ToString()),
-            ("Utilization", container.UtilizationPct is { } pct ? $"{pct:0.##} %" : string.Empty),
+            ("Fill", container.FillPct is { } pct
+                ? $"{pct:0.##} %"
+                : container.MissingContainerUnitItems is { } missing ? $"Unknown: no Container unit for {missing}" : string.Empty),
             ("Total Oil", container.TotalOilQty.ToString("0.##")),
             ("Invoiced (posted / draft)", $"{container.InvoicedPostedBase} / {container.InvoicedDraftBase}"),
             ("FOB Total (base)", container.FobTotalBase?.ToString("#,##0.00") ?? string.Empty),

@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Logistics;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Interfaces;
@@ -233,7 +234,6 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@BlNo", request.BlNo, DbType.String, size: 30);
         parameters.Add("@BlDate", ToDate(request.BlDate), DbType.Date);
         parameters.Add("@BlNotes", request.BlNotes, DbType.String, size: 500);
-        parameters.Add("@MaxUnits", request.MaxUnits, DbType.Int32);
         parameters.Add("@BranchId", request.BranchId, DbType.Int32);
         parameters.Add("@WarehouseId", request.WarehouseId, DbType.Int32);
         parameters.Add("@TruckNo", request.TruckNo, DbType.String, size: 30);
@@ -303,7 +303,7 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@ContentType", upload.ContentType, DbType.String, size: 100);
         parameters.Add("@SizeBytes", upload.Content.Length, DbType.Int32);
         parameters.Add("@Content", upload.Content, DbType.Binary, size: -1);
-        parameters.Add("@Note", upload.Note, DbType.String, size: 300);
+        parameters.Add("@Note", upload.Note, DbType.String, size: 500);
         parameters.Add("@DocumentDate", ToDate(upload.DocumentDate), DbType.Date);
         parameters.Add("@UserId", userId, DbType.Int32);
 
@@ -325,6 +325,36 @@ public sealed class ContainerRepository : IContainerRepository
     public Task DeleteAttachmentAsync(int id, bool allShared, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_ContainerAttachment_Delete",
             new { Id = id, AllShared = allShared, UserId = userId }, cancellationToken);
+
+    public async Task<IReadOnlyList<ContainerAttachmentDto>> ListAttachmentsAsync(
+        int? containerId, int? movementId, int? attachmentTypeId, int? id = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<ContainerAttachmentDto>(new CommandDefinition(
+            "logistics.usp_ContainerAttachment_List",
+            new { ContainerId = containerId, MovementId = movementId, AttachmentTypeId = attachmentTypeId, Id = id },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        return rows.AsList();
+    }
+
+    public async Task<ContainerAttachmentDto?> UpdateAttachmentAsync(
+        int id, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+    {
+        var parameters = new { Id = id, fields.AttachmentTypeId, DocumentDate = ToDate(fields.DocumentDate), fields.Note, UserId = userId };
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            return await connection.QuerySingleOrDefaultAsync<ContainerAttachmentDto>(new CommandDefinition(
+                "logistics.usp_ContainerAttachment_Update", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
 

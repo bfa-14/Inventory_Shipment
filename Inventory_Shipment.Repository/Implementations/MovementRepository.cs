@@ -12,6 +12,8 @@ public sealed class MovementRepository : IMovementRepository
     /// <summary>Matched by TYPE NAME on the server; a wrong one fails with a message that never mentions the type.</summary>
     private const string IdListTypeName = "logistics.tvp_IdList";
 
+    private const string TextListTypeName = "logistics.tvp_TextList";
+
     /// <summary>The columns the search procedure will sort by; anything else falls back to the start date.</summary>
     private static readonly string[] SortColumns = ["MovementNo", "StartDate", "Eta", "EndDate", "Status", "CreatedAtUtc"];
 
@@ -24,6 +26,12 @@ public sealed class MovementRepository : IMovementRepository
 
     /// <summary>The list row plus the window count the procedure adds. Serialized as the base type, so the count stays out of the JSON.</summary>
     private sealed record ListRow : MovementListDto
+    {
+        public int TotalCount { get; init; }
+    }
+
+    /// <summary>A candidate plus the window count, which stays out of the JSON the same way.</summary>
+    private sealed record CandidateRow : MovementContainerCandidateDto
     {
         public int TotalCount { get; init; }
     }
@@ -143,6 +151,72 @@ public sealed class MovementRepository : IMovementRepository
                     "logistics.usp_Movement_ShipContainers", parameters,
                     commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<(IReadOnlyList<MovementContainerCandidateDto> Items, int TotalCount)> ContainerCandidatesAsync(
+        MovementContainerCandidateQuery query, int page, int pageSize, CancellationToken cancellationToken = default)
+    {
+        var parameters = new
+        {
+            query.MovementId,
+            query.FromPlaceId,
+            Search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
+            query.PurchaseOrderId,
+            query.SupplierId,
+            Status = ContainerStatus.ToCode(query.Status),
+            query.IncludeBlocked,
+            PageNumber = page,
+            PageSize = pageSize,
+            query.ToPlaceId,
+            query.MovementTypeId,
+        };
+
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            var rows = (await connection.QueryAsync<CandidateRow>(new CommandDefinition(
+                "logistics.usp_Movement_ContainerCandidates", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+
+            return (rows, rows.Count > 0 ? rows[0].TotalCount : 0);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<MovementContainerMatchDto>> MatchContainersAsync(
+        int? movementId, int fromPlaceId, IReadOnlyList<string?> numbers, int? toPlaceId = null, int? movementTypeId = null,
+        CancellationToken cancellationToken = default)
+    {
+        // logistics.tvp_TextList (RowNo, Value): the position keeps the order of the file.
+        var table = new DataTable();
+        table.Columns.Add("RowNo", typeof(int));
+        table.Columns.Add("Value", typeof(string));
+        for (var i = 0; i < numbers.Count; i++)
+        {
+            table.Rows.Add(i + 1, (object?)numbers[i]?.Trim() ?? DBNull.Value);
+        }
+
+        var parameters = new DynamicParameters();
+        parameters.Add("@MovementId", movementId, DbType.Int32);
+        parameters.Add("@FromPlaceId", fromPlaceId, DbType.Int32);
+        parameters.Add("@Numbers", table.AsTableValuedParameter(TextListTypeName));
+        parameters.Add("@ToPlaceId", toPlaceId, DbType.Int32);
+        parameters.Add("@MovementTypeId", movementTypeId, DbType.Int32);
+
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<MovementContainerMatchDto>(new CommandDefinition(
+                "logistics.usp_Movement_MatchContainers", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {

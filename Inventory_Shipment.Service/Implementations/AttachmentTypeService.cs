@@ -25,8 +25,14 @@ public sealed class AttachmentTypeService : IAttachmentTypeService
         _logger = logger;
     }
 
-    public async Task<Result<PagedResult<AttachmentTypeDto>>> SearchAsync(AttachmentTypeQuery query, CancellationToken cancellationToken = default)
+    public async Task<Result<PagedResult<AttachmentTypeDto>>> SearchAsync(
+        AttachmentTypeQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
+        if (string.IsNullOrWhiteSpace(query.DocumentKind) && !permissions.Contains(Permissions.MasterData.AttachmentTypesManage))
+        {
+            return Forbidden<PagedResult<AttachmentTypeDto>>(Permissions.MasterData.AttachmentTypesManage);
+        }
+
         var (items, totalCount) = await _items.SearchAsync(query, cancellationToken);
 
         return Result<PagedResult<AttachmentTypeDto>>.Success(new PagedResult<AttachmentTypeDto>
@@ -47,8 +53,13 @@ public sealed class AttachmentTypeService : IAttachmentTypeService
     }
 
     public async Task<Result<IReadOnlyList<AttachmentTypeLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, string? appliesTo = null, CancellationToken cancellationToken = default)
-        => Result<IReadOnlyList<AttachmentTypeLookupDto>>.Success(await _items.LookupAsync(activeOnly, includeId, appliesTo, cancellationToken));
+        bool activeOnly, int? includeId, string? appliesTo = null, string? documentKind = null,
+        CancellationToken cancellationToken = default)
+        => Result<IReadOnlyList<AttachmentTypeLookupDto>>.Success(
+            await _items.LookupAsync(activeOnly, includeId, appliesTo, documentKind, cancellationToken));
+
+    public async Task<Result<IReadOnlyList<AttachmentDocumentKindDto>>> GetDocumentKindsAsync(CancellationToken cancellationToken = default)
+        => Result<IReadOnlyList<AttachmentDocumentKindDto>>.Success(await _items.GetDocumentKindsAsync(cancellationToken));
 
     public async Task<Result<AttachmentTypeDto>> SaveAsync(
         int? id, SaveAttachmentTypeRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)

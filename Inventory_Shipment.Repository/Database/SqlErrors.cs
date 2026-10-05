@@ -133,6 +133,9 @@ public static class SqlErrors
     /// <summary>The lifecycle forbids the move — posting something already posted, cancelling a draft.</summary>
     public const int StockDocumentInvalidStatus = 62010;
 
+    /// <summary>(48) The attachment type of a stock document file is missing, inactive or not used for its kind.</summary>
+    public const int StockDocumentAttachmentType = 62011;
+
     // ----- 64xxx: sales - invoices (the Sales document family) -----
     public const int SalesDocumentValidation = 64000;
     public const int SalesDocumentConcurrency = 64004;
@@ -142,6 +145,9 @@ public static class SqlErrors
 
     /// <summary>The invoice sells more than a warehouse holds, the policy allows it, and the caller has not confirmed yet.</summary>
     public const int SalesDocumentOutOfStockConfirm = 64016;
+
+    /// <summary>(48) The attachment type of a sales document file is missing, inactive or not used for its kind.</summary>
+    public const int SalesDocumentAttachmentType = 64017;
 
     /// <summary>Branch, warehouse, client, salesman or price list missing / inactive — or no exchange rate for the date.</summary>
     public const int SalesDocumentMasterInactive = 64008;
@@ -187,6 +193,19 @@ public static class SqlErrors
 
     /// <summary>The invoice cannot be linked: not from an order, received on posting, landed cost adjustment, returns.</summary>
     public const int PurchaseInvoiceNotLinkable = 65028;
+
+    // ----- 65030-65031: containers from a purchase invoice, the rules in one place (script 47) -----
+
+    /// <summary>The invoice cannot take containers now: the message is the first of its rules that fails.</summary>
+    public const int PurchaseInvoiceCannotTakeContainers = 65030;
+
+    /// <summary>More pieces than the invoice has outside containers and its order still allows; both figures in the message.</summary>
+    public const int PurchaseInvoiceTooManyPieces = 65031;
+
+    // ----- 65032: the attachment type of a purchase document file (script 48) -----
+
+    /// <summary>The attachment type is missing, inactive or not used for the document's kind (PO, PINV, PRET).</summary>
+    public const int PurchaseAttachmentType = 65032;
 
     // ----- 65029: one item per supplier invoice (script 45) -----
 
@@ -316,6 +335,15 @@ public static class SqlErrors
 
     public const int LogisticsInUse = 70014;
 
+    /// <summary>A container is not where the movement starts: its previous movement ends elsewhere (save and start).</summary>
+    public const int ContainerNotAtFrom = 70015;
+
+    /// <summary>Start: the previous movement of a container is not completed yet.</summary>
+    public const int PreviousMovementOpen = 70016;
+
+    /// <summary>(48) The attachment type of a container attachment is missing, inactive or not used for containers.</summary>
+    public const int ContainerAttachmentType = 70017;
+
     // ----- 71xxx: customer receipts - payment methods, cash / bank accounts, receipts -----
     public const int ReceiptValidation = 71000;
     public const int ReceiptConcurrency = 71004;
@@ -345,6 +373,9 @@ public static class SqlErrors
 
     /// <summary>A receipt created by a Cash invoice cannot be reversed on its own.</summary>
     public const int ReceiptAutomatic = 71015;
+
+    /// <summary>(48) The attachment type of a receipt file is missing, inactive or not used for receipts.</summary>
+    public const int ReceiptAttachmentType = 71016;
 
     // ----- 72xxx: global settings -----
     public const int SettingValidation = 72000;

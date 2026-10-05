@@ -332,7 +332,7 @@ public sealed class StockDocumentService : IStockDocumentService
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<int>> AddFileAsync(
-        int id, string fileName, string contentType, byte[] content, int userId,
+        int id, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         // CREATE RATHER THAN VIEW. An attachment is evidence for the document — a delivery note, a
@@ -345,13 +345,57 @@ public sealed class StockDocumentService : IStockDocumentService
 
         try
         {
-            var fileId = await _documents.AddFileAsync(id, fileName, contentType, content, userId, cancellationToken);
+            var fileId = await _documents.AddFileAsync(id, fileName, contentType, content, fields, userId, cancellationToken);
             return Result<int>.Success(fileId);
         }
         catch (BusinessRuleException ex)
         {
             var failure = Describe(ex);
             return Result<int>.Failure(failure.Type, failure.Message, failure.Code);
+        }
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int id, int? attachmentTypeId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        var found = await ReadAsync(id, permissions, DocumentAction.View, cancellationToken);
+        if (found.IsFailure)
+        {
+            return Result<IReadOnlyList<DocumentFileDto>>.Failure(
+                found.ErrorType, found.Error ?? NotFoundMessage, found.Code ?? "NOT_FOUND");
+        }
+
+        return Result<IReadOnlyList<DocumentFileDto>>.Success(
+            await _documents.ListFilesAsync(id, attachmentTypeId, cancellationToken: cancellationToken));
+    }
+
+    public async Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int id, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        // CREATE, as for the upload: the type of a file is part of the evidence.
+        var found = await ReadAsync(id, permissions, DocumentAction.Create, cancellationToken);
+        if (found.IsFailure)
+        {
+            return Result<DocumentFileDto>.Failure(found.ErrorType, found.Error ?? NotFoundMessage, found.Code ?? "NOT_FOUND");
+        }
+
+        if ((await _documents.ListFilesAsync(id, fileId: fileId, cancellationToken: cancellationToken)).Count == 0)
+        {
+            return Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND");
+        }
+
+        try
+        {
+            var file = await _documents.UpdateFileAsync(fileId, fields, userId, cancellationToken);
+            return file is null
+                ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
+                : Result<DocumentFileDto>.Success(file);
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return Result<DocumentFileDto>.Failure(failure.Type, failure.Message, failure.Code);
         }
     }
 
@@ -620,6 +664,7 @@ public sealed class StockDocumentService : IStockDocumentService
         SqlErrors.StockDocumentMasterInactive => new RuleFailure(ErrorType.Validation, exception.Message, "MASTER_INACTIVE"),
         SqlErrors.StockDocumentNoLines => new RuleFailure(ErrorType.Validation, exception.Message, "NO_LINES"),
         SqlErrors.StockDocumentInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
+        SqlErrors.StockDocumentAttachmentType => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 

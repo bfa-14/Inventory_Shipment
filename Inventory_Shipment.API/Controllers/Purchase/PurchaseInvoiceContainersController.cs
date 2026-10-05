@@ -28,14 +28,18 @@ public sealed class PurchaseInvoiceContainersController : ControllerBase
         _containers = containers;
     }
 
-    /// <summary>Per item: invoiced, pieces per container, containers needed, linked, not linked; and the linked containers.</summary>
+    /// <summary>
+    /// Per item: invoiced, pieces per container, containers needed, linked, not linked; the linked containers; and the
+    /// state (script 47): canAddContainers / reason, canTurnOnShipped, the figures of the add, canLink / linkReason. Any
+    /// purchase invoice answers 200 - the rules are in the state, never a 409.
+    /// </summary>
     [HttpGet]
     [HasPermission(Permissions.Purchase.InvoicesView)]
     [ProducesResponseType<InvoiceContainerSummaryDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<InvoiceContainerSummaryDto>> Get(int id, CancellationToken cancellationToken)
     {
-        var result = await _containers.GetSummaryAsync(id, User.GetPermissions(), cancellationToken);
+        var result = await _containers.GetSummaryAsync(id, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

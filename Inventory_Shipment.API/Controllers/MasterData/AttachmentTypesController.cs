@@ -10,9 +10,9 @@ using Microsoft.AspNetCore.Mvc;
 namespace Inventory_Shipment.API.Controllers.MasterData;
 
 /// <summary>
-/// The category / sub type of a container file (Shipping / Bill of Lading, Customs / FERI...).
-/// One "manage" permission for the list and the writes; the LOOKUP is open to any signed-in user,
-/// because the container page picks from it.
+/// The category / sub type of a file (Shipping / Bill of Lading, Purchase / Proforma Invoice...) and the document
+/// kinds it is used for (script 48). One "manage" permission for the list page and the writes; what an upload
+/// dialog reads - the types of a document kind, the lookup, the kinds - is open to any signed-in user.
 /// </summary>
 [ApiController]
 [Route("api/masterdata/attachment-types")]
@@ -26,12 +26,27 @@ public sealed class AttachmentTypesController : ControllerBase
         _attachmentTypes = attachmentTypes;
     }
 
+    /// <summary>
+    /// The list page (attachment types manage). With documentKind (CONTAINER, PO, PINV...): the types used for that
+    /// kind, the active ones unless isActive says otherwise - what its upload dialog offers - for anyone signed in.
+    /// </summary>
     [HttpGet]
-    [HasPermission(Permissions.MasterData.AttachmentTypesManage)]
+    [Authorize]
     [ProducesResponseType<PagedResult<AttachmentTypeDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
     public async Task<ActionResult<PagedResult<AttachmentTypeDto>>> Search([FromQuery] AttachmentTypeQuery query, CancellationToken cancellationToken)
     {
-        var result = await _attachmentTypes.SearchAsync(query, cancellationToken);
+        var result = await _attachmentTypes.SearchAsync(query, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>The document kinds a type can be used for: [{ code, name }], in the order of the pages.</summary>
+    [HttpGet("document-kinds")]
+    [Authorize]
+    [ProducesResponseType<IReadOnlyList<AttachmentDocumentKindDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<AttachmentDocumentKindDto>>> DocumentKinds(CancellationToken cancellationToken)
+    {
+        var result = await _attachmentTypes.GetDocumentKindsAsync(cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -40,9 +55,9 @@ public sealed class AttachmentTypesController : ControllerBase
     [ProducesResponseType<IReadOnlyList<AttachmentTypeLookupDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<AttachmentTypeLookupDto>>> Lookup(
         [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null, [FromQuery] string? appliesTo = null,
-        CancellationToken cancellationToken = default)
+        [FromQuery] string? documentKind = null, CancellationToken cancellationToken = default)
     {
-        var result = await _attachmentTypes.LookupAsync(activeOnly, includeId, appliesTo, cancellationToken);
+        var result = await _attachmentTypes.LookupAsync(activeOnly, includeId, appliesTo, documentKind, cancellationToken);
         return result.ToActionResult(this);
     }
 

@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Receipts;
 
 namespace Inventory_Shipment.Service.Interfaces;
@@ -57,8 +58,17 @@ public interface IReceiptService
 
     /// <summary>Returns the new file's id. Needs sales.receipts.create.</summary>
     Task<Result<int>> AddFileAsync(
-        int receiptId, int? attachmentTypeId, string? note, string fileName, string contentType, byte[] content, int userId,
+        int receiptId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>The files with their type, date and note, newest first; one type when asked.</summary>
+    Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int receiptId, int? attachmentTypeId, CancellationToken cancellationToken = default);
+
+    /// <summary>The type, date and note of a file (not on a reversed receipt). Needs sales.receipts.create.</summary>
+    Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int receiptId, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 
     Task<Result<ReceiptFileContent>> GetFileAsync(int receiptId, int fileId, CancellationToken cancellationToken = default);
 

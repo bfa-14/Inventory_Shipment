@@ -1,3 +1,4 @@
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Purchase;
 
 namespace Inventory_Shipment.Repository.Interfaces;
@@ -55,9 +56,18 @@ public interface IPurchaseDocumentRepository
     Task<PurchaseRateResolutionDto?> ResolveRateAsync(
         int currencyId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default);
 
+    /// <summary>The file with its type (required, used for the document's kind), date and note (script 48).</summary>
     Task<int> AddFileAsync(
-        int documentId, string fileName, string contentType, byte[] content, int userId,
+        int documentId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default);
+
+    /// <summary>The files of a document with their type, date and note, newest first; one type, or one file, when asked.</summary>
+    Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
+        int documentId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default);
+
+    /// <summary>The type, date and note of a file (the upload's checks); the file as it now stands.</summary>
+    Task<DocumentFileDto?> UpdateFileAsync(
+        int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
 
     Task<PurchaseDocumentFileContent?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);
 

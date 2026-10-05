@@ -154,8 +154,23 @@ public record ContainerListDto : ContainerStatusFlags
 
     public int TotalReceivedBase { get; init; }
     public decimal TotalOilQty { get; init; }
-    public int? MaxUnits { get; init; }
-    public decimal? UtilizationPct { get; init; }
+
+    /* Capacity (script 50): the fill from the items' Container units - a WARNING, NEVER A BLOCK. */
+
+    /// <summary>Sum of quantity / pieces per container of each item, in %; null when an item has no Container unit.</summary>
+    public decimal? FillPct { get; init; }
+
+    /// <summary>Every item of the container has a Container unit (Item Definition).</summary>
+    public bool CapacityKnown { get; init; }
+
+    /// <summary>The item codes without a Container unit ("TEST46-C, UI-LAMP-01"), when CapacityKnown is false.</summary>
+    public string? MissingContainerUnitItems { get; init; }
+
+    /// <summary>Pieces still fitting: a container of ONE item only (negative when over capacity).</summary>
+    public int? RemainingPcs { get; init; }
+
+    public bool IsOverCapacity { get; init; }
+
     public string? BlNo { get; init; }
     public DateTime? BlDate { get; init; }
     public DateTime? DispatchDate { get; init; }
@@ -233,6 +248,10 @@ public sealed class ContainerLineDto
     public string PoUnitTypeName { get; init; } = string.Empty;
 
     public int PoPackingFormula { get; init; }
+
+    /// <summary>(50) Pieces of the item in a full container (its Container unit); null when it has none.</summary>
+    public int? PcsPerContainer { get; init; }
+
     public int Quantity { get; init; }
     public int QuantityBase { get; init; }
     public bool OilIncluded { get; init; }
@@ -429,12 +448,19 @@ public sealed class ContainerAttachmentDto
 {
     public int Id { get; init; }
     public int ContainerId { get; init; }
+
+    /// <summary>Filled by the attachments list (api/logistics/containers/attachments), which can span containers.</summary>
+    public string? ContainerRef { get; init; }
+
     public int? MovementId { get; init; }
     public string? MovementNo { get; init; }
     public int? ChargeId { get; init; }
     public int? AttachmentTypeId { get; init; }
     public string? Category { get; init; }
     public string? SubType { get; init; }
+
+    /// <summary>No type, or typed "Other" (script 48): the page asks to choose a real one.</summary>
+    public bool IsOther => Documents.AttachmentRules.IsOther(AttachmentTypeId, Category, SubType);
 
     /// <summary>The stored file; the same id on every container the upload went to.</summary>
     public int FileId { get; init; }
@@ -487,9 +513,6 @@ public sealed record ContainerDto : ContainerStatusFlags
     public string ContainerTypeCode { get; init; } = string.Empty;
     public string ContainerTypeName { get; init; } = string.Empty;
 
-    /// <summary>The type's own capacity, for "reset to the type" next to the editable <see cref="MaxUnits"/>.</summary>
-    public int? TypeMaxUnits { get; init; }
-
     public decimal? MaxWeightKg { get; init; }
     public decimal? MaxVolumeCbm { get; init; }
     public string? SealNo { get; init; }
@@ -537,16 +560,27 @@ public sealed record ContainerDto : ContainerStatusFlags
     public DateTime? BlDate { get; init; }
     public string? BlNotes { get; init; }
 
-    /* Capacity. A WARNING, NEVER A BLOCK: the numbers are here so the page can colour the bar and
-       say "over capacity"; the save refuses only when the caller has not confirmed the override. */
-    public int? MaxUnits { get; init; }
     public int TotalLines { get; init; }
     public int TotalAllocatedBase { get; init; }
     public int TotalReceivedBase { get; init; }
     public decimal TotalOilQty { get; init; }
-    public decimal? UtilizationPct { get; init; }
-    public int? RemainingCapacityBase { get; init; }
-    public bool IsOverCapacity => MaxUnits is { } max && TotalAllocatedBase > max;
+
+    /* The save refuses above 100 % only when the caller has not confirmed the override. */
+    /* Capacity (script 50): the fill from the items' Container units - a WARNING, NEVER A BLOCK. */
+
+    /// <summary>Sum of quantity / pieces per container of each item, in %; null when an item has no Container unit.</summary>
+    public decimal? FillPct { get; init; }
+
+    /// <summary>Every item of the container has a Container unit (Item Definition).</summary>
+    public bool CapacityKnown { get; init; }
+
+    /// <summary>The item codes without a Container unit ("TEST46-C, UI-LAMP-01"), when CapacityKnown is false.</summary>
+    public string? MissingContainerUnitItems { get; init; }
+
+    /// <summary>Pieces still fitting: a container of ONE item only (negative when over capacity).</summary>
+    public int? RemainingPcs { get; init; }
+
+    public bool IsOverCapacity { get; init; }
 
     public int BranchId { get; init; }
     public string BranchCode { get; init; } = string.Empty;
@@ -843,9 +877,7 @@ public sealed class SaveContainerRequest
     [StringLength(500)]
     public string? BlNotes { get; init; }
 
-    /// <summary>Null = the container type's capacity (or, on an update, the capacity already set).</summary>
-    [Range(1, int.MaxValue)]
-    public int? MaxUnits { get; init; }
+    /* maxUnits from an older page is ignored (an unknown member): the capacity is the items' Container units. */
 
     [Range(1, int.MaxValue)]
     public int BranchId { get; init; }

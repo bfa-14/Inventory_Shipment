@@ -13,6 +13,15 @@ public interface IPurchaseInvoiceContainerRepository
 
     Task<IReadOnlyList<InvoiceLinkCandidateDto>> GetCandidatesAsync(int invoiceId, CancellationToken cancellationToken = default);
 
+    /// <summary>purchase.usp_PurchaseInvoice_ContainerState: the rules for the invoice, with userId the permissions too.</summary>
+    Task<InvoiceContainerStateDto?> GetStateAsync(int invoiceId, int? userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// purchase.usp_PurchaseInvoice_CheckContainers: 65030 with the first rule the invoice fails - action Add (rules 1-8,
+    /// quantityBase = the pieces of the new containers), Plan (1-7) or Link (1-6) - or 65031 above the most it may take.
+    /// </summary>
+    Task CheckAsync(int invoiceId, string action, int? quantityBase, CancellationToken cancellationToken = default);
+
     Task<InvoiceContainerSummaryDto> LinkAsync(
         int invoiceId, IReadOnlyList<ContainerLineQuantityRequest> links, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default);

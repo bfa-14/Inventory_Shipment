@@ -40,6 +40,30 @@ public sealed class PurchaseInvoiceContainerRepository : IPurchaseInvoiceContain
         return rows.AsList();
     }
 
+    public async Task<InvoiceContainerStateDto?> GetStateAsync(int invoiceId, int? userId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<InvoiceContainerStateDto>(new CommandDefinition(
+            "purchase.usp_PurchaseInvoice_ContainerState", new { Id = invoiceId, UserId = userId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+    }
+
+    public async Task CheckAsync(int invoiceId, string action, int? quantityBase, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            await connection.ExecuteAsync(new CommandDefinition(
+                "purchase.usp_PurchaseInvoice_CheckContainers",
+                new { InvoiceId = invoiceId, Action = action, QuantityBase = quantityBase },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public Task<InvoiceContainerSummaryDto> LinkAsync(
         int invoiceId, IReadOnlyList<ContainerLineQuantityRequest> links, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default)
@@ -74,8 +98,8 @@ public sealed class PurchaseInvoiceContainerRepository : IPurchaseInvoiceContain
             var created = await connection.QuerySingleAsync<CreatedContainerDto>(new CommandDefinition(
                 """
                 SELECT Seq = 1, ContainerId = c.Id, c.ContainerRef, c.Status, c.TotalLines, c.TotalAllocatedBase,
-                       c.MaxUnits, c.UtilizationPct, c.RowVersion
-                FROM logistics.Containers c WHERE c.Id = @ContainerId
+                       fl.FillPct, fl.CapacityKnown, fl.IsOverCapacity, c.RowVersion
+                FROM logistics.Containers c CROSS APPLY logistics.fn_ContainerFill(c.Id) fl WHERE c.Id = @ContainerId
                 """,
                 new { ContainerId = containerId }, transaction, cancellationToken: cancellationToken));
 
