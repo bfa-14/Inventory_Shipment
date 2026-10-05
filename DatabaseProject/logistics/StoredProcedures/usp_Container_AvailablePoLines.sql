@@ -1,6 +1,6 @@
-/* ================================================================== 6. Order lines that can still be loaded */
+/* ================================================================== 8. Order lines to load */
 
--- Re-created (43) from the body of script 27: the lines of an invoice shipped in containers are not "invoiced directly".
+-- Re-created (50) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
 CREATE   PROCEDURE logistics.usp_Container_AvailablePoLines
     @PurchaseOrderId INT           = NULL,
     @SupplierId      INT           = NULL,
@@ -28,7 +28,7 @@ BEGIN
            l.UnitPrice, l.DiscountPercent,
            UnitValueBase = l.LineTotal / d.ExchangeRate / NULLIF(l.QuantityBase, 0),
            ItemOilQtyPerUnit = i.OilQtyPerUnit,
-           PcPerContainer = cnt.PackingFormula,
+           PcPerContainer = cnt.PcsPerContainer,
            i.WeightKg, i.VolumeCbm
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
@@ -48,9 +48,7 @@ BEGIN
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8 AND (@ContainerId IS NULL OR cl.ContainerId <> @ContainerId)) oth
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  WHERE cl.PoLineId = l.Id AND cl.ContainerId = @ContainerId) here
-    OUTER APPLY (SELECT TOP (1) u.PackingFormula FROM inventory.ItemUnits u
-                 INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
-                 WHERE u.ItemId = l.ItemId AND t.IsContainer = 1) cnt
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(l.ItemId) cnt
     WHERE dt.Code = N'PO' AND d.Status = 2
       AND (@PurchaseOrderId IS NULL OR d.Id = @PurchaseOrderId)
       AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)

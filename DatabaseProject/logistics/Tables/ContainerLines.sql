@@ -35,14 +35,8 @@ CREATE TABLE [logistics].[ContainerLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerLines_PoLine]
-    ON [logistics].[ContainerLines]([PoLineId] ASC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_ContainerLines_Container]
-    ON [logistics].[ContainerLines]([ContainerId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerLines_Item]
+    ON [logistics].[ContainerLines]([ItemId] ASC);
 
 
 GO
@@ -53,8 +47,14 @@ CREATE NONCLUSTERED INDEX [IX_ContainerLines_Order]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerLines_Item]
-    ON [logistics].[ContainerLines]([ItemId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerLines_Container]
+    ON [logistics].[ContainerLines]([ContainerId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ContainerLines_PoLine]
+    ON [logistics].[ContainerLines]([PoLineId] ASC);
 
 
 GO

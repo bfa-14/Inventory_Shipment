@@ -1,5 +1,7 @@
-/* ================================================================== 12. Link an invoice to container lines */
+/* ================================================================== 7. LinkContainers: the check first */
 
+-- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers);
+-- a draft is no longer switched to "shipped in containers" here: rule 4 has it turned on first.
 -- A draft, or a posted invoice shipped in containers (receipt mode 2), takes container lines of its own order. Its
 -- lines of that order line outside containers are SPLIT: the linked part becomes a line of its own (same item, unit,
 -- price, discount, warehouse), the rest stays unlinked. A part that is not a whole number of the line's unit is put in
@@ -28,6 +30,8 @@ BEGIN
         WHERE d.Id = @InvoiceId;
 
         IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        -- (47) the invoice's rules 1-6 first: the same sentences as the state of the page
+        EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @InvoiceId, @Action = N'Link';
         IF @TypeCode <> N'PINV' OR @OrderId IS NULL
             THROW 65028, 'Only a purchase invoice created from a purchase order can be linked to containers.', 1;
         IF @Status NOT IN (1, 2) THROW 65010, 'A cancelled invoice cannot be linked to containers.', 1;

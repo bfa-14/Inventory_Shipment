@@ -1,8 +1,7 @@
-/* ================================================================== 13. Attachments: per container, general or per movement / charge */
+/* ================================================================== 9. Containers (CONTAINER) */
 
--- One upload for one or several containers: the file is stored once, one record per container.
--- With @MovementId every container must be in the movement. With @ChargeId the record of each container points to
--- that container's charge of the same group (a provider invoice covering several containers).
+-- Re-created (48) from the body of script 27: the type required and used for containers (it was optional); the note
+-- takes 500 characters.
 CREATE   PROCEDURE logistics.usp_ContainerAttachment_Add
     @ContainerIds     logistics.tvp_IdList READONLY,
     @MovementId       INT            = NULL,
@@ -12,7 +11,7 @@ CREATE   PROCEDURE logistics.usp_ContainerAttachment_Add
     @ContentType      NVARCHAR(100),
     @SizeBytes        INT,
     @Content          VARBINARY(MAX),
-    @Note             NVARCHAR(300)  = NULL,
+    @Note             NVARCHAR(500)  = NULL,
     @DocumentDate     DATE           = NULL,
     @UserId           INT            = NULL
 AS
@@ -31,8 +30,8 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
     IF @FileName IS NULL THROW 70000, 'The file name is required.', 1;
     IF @SizeBytes IS NULL OR @SizeBytes <= 0 OR @Content IS NULL THROW 70000, 'The file is empty.', 1;
-    IF @AttachmentTypeId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @AttachmentTypeId)
-        THROW 70000, 'Attachment type not found.', 1;
+    -- (48) the type is required, active and used for containers
+    EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'CONTAINER', 70017;
     IF EXISTS (SELECT 1 FROM @Ids x WHERE NOT EXISTS (SELECT 1 FROM logistics.Containers c WHERE c.Id = x.Id))
         THROW 70006, 'A selected container no longer exists.', 1;
     IF @MovementId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @MovementId)

@@ -5,7 +5,7 @@ CREATE TABLE [logistics].[ContainerAttachments] (
     [ChargeId]         INT              NULL,
     [AttachmentTypeId] INT              NULL,
     [FileId]           INT              NOT NULL,
-    [Note]             NVARCHAR (300)   NULL,
+    [Note]             NVARCHAR (500)   NULL,
     [DocumentDate]     DATE             NULL,
     [GroupId]          UNIQUEIDENTIFIER NULL,
     [CreatedAtUtc]     DATETIME2 (3)    CONSTRAINT [DF_ContainerAttachments_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
@@ -22,14 +22,8 @@ CREATE TABLE [logistics].[ContainerAttachments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Movement]
-    ON [logistics].[ContainerAttachments]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Container]
-    ON [logistics].[ContainerAttachments]([ContainerId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Charge]
+    ON [logistics].[ContainerAttachments]([ChargeId] ASC) WHERE ([ChargeId] IS NOT NULL);
 
 
 GO
@@ -40,8 +34,14 @@ CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_File]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Charge]
-    ON [logistics].[ContainerAttachments]([ChargeId] ASC) WHERE ([ChargeId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Container]
+    ON [logistics].[ContainerAttachments]([ContainerId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Movement]
+    ON [logistics].[ContainerAttachments]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
 
 
 GO

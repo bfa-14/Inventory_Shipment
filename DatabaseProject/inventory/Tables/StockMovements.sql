@@ -34,15 +34,15 @@ CREATE NONCLUSTERED INDEX [IX_StockMovements_WarehouseDate]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_StockMovements_Document]
-    ON [inventory].[StockMovements]([DocumentFamily] ASC, [DocumentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_StockMovements_ItemWarehouseDate]
+    ON [inventory].[StockMovements]([ItemId] ASC, [WarehouseId] ASC, [MovementDate] ASC)
+    INCLUDE([QuantityBase], [UnitCostBase]);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_StockMovements_ItemWarehouseDate]
-    ON [inventory].[StockMovements]([ItemId] ASC, [WarehouseId] ASC, [MovementDate] ASC)
-    INCLUDE([QuantityBase], [UnitCostBase]);
+CREATE NONCLUSTERED INDEX [IX_StockMovements_Document]
+    ON [inventory].[StockMovements]([DocumentFamily] ASC, [DocumentId] ASC);
 
 
 GO

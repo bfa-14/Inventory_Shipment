@@ -1,4 +1,8 @@
--- 6 charge allocations per line, 7 attachments, 8 audit.
+/* ================================================================== 6. The container: get */
+
+-- Re-created (50) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
+-- MissingContainerUnitItems, RemainingPcs, IsOverCapacity) instead of MaxUnits / TypeMaxUnits / UtilizationPct /
+-- RemainingCapacityBase; the lines give each item's PcsPerContainer.
 CREATE   PROCEDURE logistics.usp_Container_Get
     @Id INT
 AS
@@ -7,7 +11,7 @@ BEGIN
 
     SELECT c.Id, c.DocumentTypeId, c.ContainerRef, c.ContainerNo,
            c.ContainerTypeId, ct.TypeCode AS ContainerTypeCode, ct.TypeName AS ContainerTypeName,
-           TypeMaxUnits = ct.MaxUnits, ct.MaxWeightKg, ct.MaxVolumeCbm,
+           ct.MaxWeightKg, ct.MaxVolumeCbm,
            c.SealNo, c.CustomsSealNo, c.Description,
            c.OrderDate, c.OrderMonthKey, OrderMonth = FORMAT(c.OrderDate, N'MMM-yyyy', N'en-US'),
            c.ShippingMethod, c.CountryOfOrigin,
@@ -20,9 +24,8 @@ BEGIN
            c.FinalDestinationId, fd.PortName AS FinalDestinationName,
            c.DispatchDate, c.Eta, c.FreeDays, c.LastFreeDay, c.GrossWeightKg, c.VolumeCbm, c.Packages,
            c.BlNo, c.BlDate, c.BlNotes,
-           c.MaxUnits, c.TotalLines, c.TotalAllocatedBase, c.TotalReceivedBase, c.TotalOilQty, c.UtilizationPct,
-           RemainingCapacityBase = CASE WHEN c.MaxUnits IS NOT NULL THEN c.MaxUnits - c.TotalAllocatedBase END,
-           IsOverCapacity = CASE WHEN c.MaxUnits IS NOT NULL AND c.TotalAllocatedBase > c.MaxUnits THEN 1 ELSE 0 END,
+           c.TotalLines, c.TotalAllocatedBase, c.TotalReceivedBase, c.TotalOilQty,
+           fl.FillPct, fl.CapacityKnown, fl.MissingContainerUnitItems, fl.RemainingPcs, fl.IsOverCapacity,
            c.BranchId, b.BranchCode, b.BranchName, c.WarehouseId, w.WarehouseCode, w.WarehouseName,
            c.TruckNo, c.WaybillNo, c.DeclarationNo, c.FeriNo,
            c.ActualPortArrival, c.BorderCrossingDate, c.CustomsReleaseDate,
@@ -53,6 +56,7 @@ BEGIN
     INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
     INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
     LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
     LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
     LEFT  JOIN masterdata.Parties mps       ON mps.Id = mpo.SupplierId
     LEFT  JOIN masterdata.Parties fw        ON fw.Id = c.ForwarderId
@@ -97,6 +101,7 @@ BEGIN
            cl.ItemId, i.ItemCode, i.ItemName, i.Model, br.BrandName,
            cl.ItemUnitId, ut.UnitTypeName, cl.PackingFormula,
            PoUnitTypeName = pt.UnitTypeName, PoPackingFormula = pol.PackingFormula,
+           PcsPerContainer = ipc.PcsPerContainer,
            cl.Quantity, cl.QuantityBase, cl.OilIncluded, cl.OilQtyPerUnit, cl.TotalOilQty,
            OrderedBase = pol.QuantityBase,
            LoadedElsewhereBase = ISNULL(oth.Qty, 0),
@@ -124,6 +129,7 @@ BEGIN
     INNER JOIN masterdata.Brands br              ON br.Id = i.BrandId
     INNER JOIN inventory.ItemUnits iu            ON iu.Id = cl.ItemUnitId
     INNER JOIN masterdata.UnitTypes ut           ON ut.Id = iu.UnitTypeId
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(cl.ItemId) ipc
     OUTER APPLY (SELECT Qty = SUM(o.QuantityBase) FROM logistics.ContainerLines o
                  INNER JOIN logistics.Containers oc ON oc.Id = o.ContainerId
                  WHERE o.PoLineId = cl.PoLineId AND o.ContainerId <> cl.ContainerId AND oc.Status <> 8) oth

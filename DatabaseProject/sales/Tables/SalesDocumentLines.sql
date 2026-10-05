@@ -42,14 +42,14 @@ CREATE TABLE [sales].[SalesDocumentLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocumentLines_Item]
-    ON [sales].[SalesDocumentLines]([ItemId] ASC);
+CREATE NONCLUSTERED INDEX [IX_SalesDocumentLines_Document]
+    ON [sales].[SalesDocumentLines]([DocumentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocumentLines_Document]
-    ON [sales].[SalesDocumentLines]([DocumentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_SalesDocumentLines_Item]
+    ON [sales].[SalesDocumentLines]([ItemId] ASC);
 
 
 GO

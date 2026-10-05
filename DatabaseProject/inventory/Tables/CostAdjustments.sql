@@ -22,14 +22,14 @@ CREATE TABLE [inventory].[CostAdjustments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_CostAdjustments_Source]
-    ON [inventory].[CostAdjustments]([SourceKind] ASC, [SourceId] ASC);
+CREATE NONCLUSTERED INDEX [IX_CostAdjustments_ItemDate]
+    ON [inventory].[CostAdjustments]([ItemId] ASC, [AdjustmentDate] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_CostAdjustments_ItemDate]
-    ON [inventory].[CostAdjustments]([ItemId] ASC, [AdjustmentDate] ASC);
+CREATE NONCLUSTERED INDEX [IX_CostAdjustments_Source]
+    ON [inventory].[CostAdjustments]([SourceKind] ASC, [SourceId] ASC);
 
 
 GO

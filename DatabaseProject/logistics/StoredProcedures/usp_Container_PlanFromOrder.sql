@@ -1,15 +1,20 @@
-/* ================================================================== 8. PlanFromOrder: for an invoice of the order */
+/* ================================================================== 4. Auto-plan: pieces per container from the item */
 
--- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before) plans only what that invoice has outside containers.
+-- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only
+-- (logistics.fn_ItemPcsPerContainer); @Capacities and the container type's MaxUnits are no longer read; an item without
+-- a Container unit stops the plan (69000).
 CREATE   PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
     @ContainerTypeId INT,
     @MixRemainders   BIT = 1,       -- 0 = the rest of every order line gets its own container
-    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- pieces per container typed by the user (optional)
+    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (50) ignored: the items' Container units only
     @ForInvoiceId    INT = NULL      -- (43) only what this invoice of the order has outside containers
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (47) a proposal for an invoice: the invoice's rules 1-7 first
+    IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
                    WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
@@ -17,10 +22,6 @@ BEGIN
         THROW 69000, 'The purchase order must be approved and still open.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId AND IsActive = 1)
         THROW 69000, 'Container type not found or inactive.', 1;
-    IF EXISTS (SELECT 1 FROM @Capacities WHERE PcsPerContainer <= 0)
-        THROW 69000, 'Pieces per container must be greater than zero.', 1;
-
-    DECLARE @TypeCap INT = (SELECT MaxUnits FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId);
     DECLARE @Msg NVARCHAR(400);
 
     -- order lines: what can still be loaded (ordered - invoiced without container - loaded in other containers)
@@ -32,7 +33,7 @@ BEGIN
         OrderedBase   INT          NOT NULL,
         AvailableBase INT          NOT NULL,
         Cap           INT          NULL,
-        CapSource     NVARCHAR(10) NOT NULL,     -- Entered | Item | Type | None
+        CapSource     NVARCHAR(20) NOT NULL,     -- (50) Item Definition | None
         OilIncluded   BIT          NOT NULL,
         Remaining     INT          NOT NULL
     );
@@ -41,16 +42,12 @@ BEGIN
            CASE WHEN @ForInvoiceId IS NOT NULL AND inv.UnlinkedBase < l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
                 THEN inv.UnlinkedBase
                 ELSE l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) END,
-           COALESCE(cap.PcsPerContainer, NULLIF(cnt.PackingFormula, 0), @TypeCap),
-           CASE WHEN cap.PcsPerContainer IS NOT NULL THEN N'Entered'
-                WHEN cnt.PackingFormula > 0 THEN N'Item'
-                WHEN @TypeCap IS NOT NULL THEN N'Type'
-                ELSE N'None' END,
+           cnt.PcsPerContainer,
+           CASE WHEN cnt.PcsPerContainer IS NOT NULL THEN N'Item Definition' ELSE N'None' END,
            CASE WHEN i.OilQtyPerUnit > 0 THEN 1 ELSE 0 END,
            0
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN inventory.Items i ON i.Id = l.ItemId
-    LEFT  JOIN @Capacities cap   ON cap.ItemId = l.ItemId
     LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@ForInvoiceId) inv ON inv.PoLineId = l.Id
     OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                  INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
@@ -58,14 +55,10 @@ BEGIN
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8) oth
-    OUTER APPLY (SELECT TOP (1) u.PackingFormula FROM inventory.ItemUnits u
-                 INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
-                 WHERE u.ItemId = l.ItemId AND t.IsContainer = 1
-                 ORDER BY u.Id) cnt
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(l.ItemId) cnt
     WHERE l.DocumentId = @PurchaseOrderId AND (@ForInvoiceId IS NULL OR inv.UnlinkedBase > 0);
 
-    SELECT TOP (1) @Msg = N'Line ' + CAST(l.PoLineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): the number of pieces per container '
-                        + N'is unknown. Enter it, or give the item a Container unit or the container type a capacity.'
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.PoLineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
     FROM @Lines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
     WHERE l.AvailableBase > 0 AND l.Cap IS NULL
     ORDER BY l.PoLineNumber;
@@ -184,12 +177,9 @@ BEGIN
     IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
         THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
 
-    -- 1: containers. MaxUnits = equivalent capacity in pieces; a container full within 0.0001 % counts as full
-    --    (the same rule as usp_Container_CreateBatch, so an unedited plan never raises the capacity warning).
+    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 50).
     SELECT x.Seq, x.ItemCount, x.Units,
            FillPct  = CAST(ROUND(100 * x.Fill, 1) AS DECIMAL(9,1)),
-           MaxUnits = CASE WHEN x.Fill <= 1.000001 AND FLOOR(x.Units / x.Fill + 0.000001) < x.Units THEN x.Units
-                           ELSE CAST(FLOOR(x.Units / x.Fill + 0.000001) AS INT) END,
            ItemSummary = CASE WHEN x.ItemCount = 1 THEN x.FirstItem ELSE N'Mixed - ' + CAST(x.ItemCount AS NVARCHAR(10)) + N' items' END
     FROM (SELECT p.Seq,
                  ItemCount = COUNT(DISTINCT l.ItemId),

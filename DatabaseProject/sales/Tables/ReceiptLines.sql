@@ -22,14 +22,14 @@ CREATE TABLE [sales].[ReceiptLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ReceiptLines_Account]
-    ON [sales].[ReceiptLines]([CashBankAccountId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ReceiptLines_Method]
+    ON [sales].[ReceiptLines]([PaymentMethodId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ReceiptLines_Method]
-    ON [sales].[ReceiptLines]([PaymentMethodId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ReceiptLines_Account]
+    ON [sales].[ReceiptLines]([CashBankAccountId] ASC);
 
 
 GO

@@ -1,3 +1,8 @@
+/* ================================================================== 4. Start: previous movements completed, every container fits */
+
+-- Re-created (49) from the body of script 46: Start checks the place rules of fn_ContainerFitForMovement (70015) after
+-- the previous movements (70016), and refuses a movement without containers in the words of the page.
+-- Status changes of a movement. @Action: Start | Complete | Cancel. The containers' status and dates follow.
 CREATE   PROCEDURE logistics.usp_Movement_SetStatus
     @Id         INT,
     @Action     NVARCHAR(10),
@@ -15,8 +20,9 @@ BEGIN
     IF @Date IS NULL SET @Date = CAST(SYSUTCDATETIME() AS DATE);
     IF @Action IS NULL OR @Action NOT IN (N'Start', N'Complete', N'Cancel') THROW 70000, 'Action must be Start, Complete or Cancel.', 1;
 
-    DECLARE @Status TINYINT, @StartDate DATE, @Label NVARCHAR(300);
+    DECLARE @Status TINYINT, @StartDate DATE, @Label NVARCHAR(300), @FromPlaceId INT, @ToPlaceId INT, @MovementTypeId INT;
     SELECT @Status = m.Status, @StartDate = m.StartDate,
+           @FromPlaceId = m.FromPlaceId, @ToPlaceId = m.ToPlaceId, @MovementTypeId = m.MovementTypeId,
            @Label = m.MovementNo + N' ' + mt.TypeName + N': ' + fp.PortName + N' ' + NCHAR(8594) + N' ' + tp.PortName
     FROM logistics.Movements m WITH (UPDLOCK, HOLDLOCK)
     INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
@@ -32,7 +38,9 @@ BEGIN
     IF @Action = N'Complete' AND @Date < @StartDate THROW 70000, 'The end date cannot be earlier than the start date.', 1;
     IF @Action = N'Cancel' AND @Status = 4 THROW 70010, 'The movement is already cancelled.', 1;
     IF @Action = N'Cancel' AND @Reason IS NULL THROW 70000, 'A cancellation reason is required.', 1;
-    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action <> N'Cancel'
+    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action = N'Start'
+        THROW 70000, 'Tick at least one container before starting.', 1;
+    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action = N'Complete'
         THROW 70000, 'The movement has no containers.', 1;
 
     DECLARE @Msg NVARCHAR(400);
@@ -54,6 +62,28 @@ BEGIN
         WHERE mc.MovementId = @Id
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
+
+        -- the place rules (script 49): the previous movement of every container is completed (70016), then every
+        -- container fits the movement's From, To and stage (70015) - the rules of Save, fn_ContainerFitForMovement
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N': the previous movement ' + p.PreviousMovementNo + N' (' + pf.PortName
+                              + N' ' + NCHAR(8594) + N' ' + p.PlaceName + N') is not completed yet.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        INNER JOIN logistics.fn_ContainerPlaceForMovement(@Id) p ON p.ContainerId = mc.ContainerId
+        INNER JOIN logistics.Movements pm ON pm.Id = p.PreviousMovementId
+        INNER JOIN masterdata.Ports pf    ON pf.Id = pm.FromPlaceId
+        WHERE mc.MovementId = @Id AND p.PreviousStatus <> 3
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70016, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        INNER JOIN logistics.fn_ContainerFitForMovement(@Id, @FromPlaceId, @ToPlaceId, @MovementTypeId) p ON p.ContainerId = mc.ContainerId
+        INNER JOIN masterdata.Ports f     ON f.Id = @FromPlaceId
+        WHERE mc.MovementId = @Id AND p.Fits = 0
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70015, @Msg, 1;
     END
     IF @Action = N'Cancel'
     BEGIN

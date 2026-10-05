@@ -1,3 +1,7 @@
+/* ================================================================== 3. Save: every container fits the movement */
+
+-- Re-created (49) from the body of script 46: the place rules of fn_ContainerFitForMovement (70015 with the reason).
+-- Planned movements: everything editable. In progress: header and containers editable (start date too), no end date.
 CREATE   PROCEDURE logistics.usp_Movement_Save
     @Id              INT            = NULL,
     @MovementTypeId  INT,
@@ -70,6 +74,16 @@ BEGIN
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
     END
+
+    -- the place rules (script 49): every container of the movement, added or kept, fits its From, To and stage
+    SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
+    FROM @ContainerIds x
+    INNER JOIN logistics.Containers c ON c.Id = x.Id
+    INNER JOIN logistics.fn_ContainerFitForMovement(@Id, @FromPlaceId, @ToPlaceId, @MovementTypeId) p ON p.ContainerId = x.Id
+    INNER JOIN masterdata.Ports f ON f.Id = @FromPlaceId
+    WHERE p.Fits = 0
+    ORDER BY c.ContainerRef;
+    IF @Msg IS NOT NULL THROW 70015, @Msg, 1;
 
     DECLARE @Affected TABLE (ContainerId INT PRIMARY KEY);
 

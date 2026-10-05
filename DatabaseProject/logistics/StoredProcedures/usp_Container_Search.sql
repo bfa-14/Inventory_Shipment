@@ -1,5 +1,7 @@
-/* ================================================================== 9. Containers: search, details */
+/* ================================================================== 7. The containers: search */
 
+-- Re-created (50) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
+-- UtilizationPct.
 CREATE   PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
     @ContainerRef        NVARCHAR(30)  = NULL,
@@ -67,7 +69,7 @@ BEGIN
            InvoicingStatus = CASE WHEN ISNULL(inv.PostedQty, 0) = 0 THEN 0
                                   WHEN inv.PostedQty >= ISNULL(ln.Qty, 0) THEN 2 ELSE 1 END,     -- 0 none, 1 partly, 2 fully (posted)
            TotalReceivedBase = c.TotalReceivedBase, c.TotalOilQty,
-           c.MaxUnits, c.UtilizationPct,
+           fl.FillPct, fl.CapacityKnown, fl.MissingContainerUnitItems, fl.RemainingPcs, fl.IsOverCapacity,
            c.BlNo, c.BlDate, c.DispatchDate, c.Eta, c.ActualPortArrival, c.CustomsReleaseDate, c.OffloadedDate,
            c.FreeDays, c.LastFreeDay,
            DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL
@@ -87,6 +89,7 @@ BEGIN
     LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
     LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
     LEFT  JOIN security.Users cu            ON cu.Id = c.CreatedBy
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
     OUTER APPLY (SELECT OrderCount = COUNT(DISTINCT cl.PurchaseOrderId), SupplierCount = COUNT(DISTINCT d.SupplierId),
                         FirstOrder = MIN(d.DocumentNumber), FirstSupplier = MIN(sp.PartyName)
                  FROM logistics.ContainerLines cl

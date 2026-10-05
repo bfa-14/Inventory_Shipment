@@ -1,6 +1,7 @@
-/* ================================================================== 9. CreateBatch: for an invoice of the order */
+/* ================================================================== 5. Create from a plan */
 
--- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before), passed to usp_Container_Save.
+-- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only; an item without
+-- one stops the batch (69000); the containers get no MaxUnits; the answer gives their fill.
 CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
     @ContainerTypeId     INT,
@@ -17,7 +18,7 @@ CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @Eta                 DATE           = NULL,
     @FreeDays            INT            = NULL,
     @Plan                logistics.tvp_ContainerPlanLine READONLY,
-    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- the same values as for the proposal
+    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (50) ignored: the items' Container units only
     @AllowOverCapacity   BIT            = 0,
     @Confirm             BIT            = 0,                      -- 1 = the new containers are confirmed at once
     @UserId              INT            = NULL,
@@ -28,6 +29,13 @@ BEGIN
     SET XACT_ABORT ON;
 
     IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    -- (47) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    IF @ForInvoiceId IS NOT NULL
+    BEGIN
+        DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
+        EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Add', @QuantityBase = @ForInvoiceQty;
+    END
 
     DECLARE @OrderBranch INT, @OrderWarehouse INT, @OrderNo NVARCHAR(30);
     SELECT @OrderBranch = d.BranchId, @OrderWarehouse = d.WarehouseId, @OrderNo = d.DocumentNumber
@@ -45,8 +53,6 @@ BEGIN
         THROW 69000, 'Every planned quantity must be greater than zero.', 1;
     IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
         THROW 69000, 'At most 200 containers can be created at once.', 1;
-    IF EXISTS (SELECT 1 FROM @Capacities WHERE PcsPerContainer <= 0)
-        THROW 69000, 'Pieces per container must be greater than zero.', 1;
 
     DECLARE @Msg NVARCHAR(400);
     IF EXISTS (SELECT 1 FROM @Plan p LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
@@ -56,37 +62,24 @@ BEGIN
         THROW 69000, @Msg, 1;
     END
 
-    -- pieces per container of every item, as in the proposal
-    DECLARE @TypeCap INT = (SELECT MaxUnits FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId);
-    DECLARE @Caps TABLE (ItemId INT NOT NULL PRIMARY KEY, Cap INT NULL);
-    INSERT INTO @Caps (ItemId, Cap)
-    SELECT x.ItemId, COALESCE(cap.PcsPerContainer, NULLIF(cnt.PackingFormula, 0), @TypeCap)
-    FROM (SELECT DISTINCT pol.ItemId
-          FROM @Plan p INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId) x
-    LEFT JOIN @Capacities cap ON cap.ItemId = x.ItemId
-    OUTER APPLY (SELECT TOP (1) u.PackingFormula FROM inventory.ItemUnits u
-                 INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
-                 WHERE u.ItemId = x.ItemId AND t.IsContainer = 1
-                 ORDER BY u.Id) cnt;
+    -- (50) every planned item has a Container unit, as the proposal requires
+    SELECT TOP (1) @Msg = N'Line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
+    FROM @Plan p
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
+    INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(pol.ItemId) cnt
+    WHERE cnt.PcsPerContainer IS NULL
+    ORDER BY pol.LineNumber;
+    IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
 
-    -- containers in plan order, each with its equivalent capacity in pieces (NULL = the type's capacity); a container
-    -- full within 0.0001 % counts as full, as in usp_Container_PlanFromOrder
-    DECLARE @Seqs TABLE (Seq INT NOT NULL PRIMARY KEY, Ord INT NOT NULL, MaxUnits INT NULL);
-    INSERT INTO @Seqs (Seq, Ord, MaxUnits)
-    SELECT x.Seq, ROW_NUMBER() OVER (ORDER BY x.Seq),
-           CASE WHEN x.KnownCaps < x.LineCount THEN NULL
-                WHEN x.Fill <= 1.000001 AND FLOOR(x.Units / x.Fill + 0.000001) < x.Units THEN x.Units
-                ELSE CAST(FLOOR(x.Units / x.Fill + 0.000001) AS INT) END
-    FROM (SELECT p.Seq, LineCount = COUNT(*), KnownCaps = COUNT(c.Cap), Units = SUM(p.QuantityBase),
-                 Fill = SUM(CAST(p.QuantityBase AS DECIMAL(38,20)) / c.Cap)
-          FROM @Plan p
-          INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
-          INNER JOIN @Caps c                            ON c.ItemId = pol.ItemId
-          GROUP BY p.Seq) x;
+    -- containers in plan order
+    DECLARE @Seqs TABLE (Seq INT NOT NULL PRIMARY KEY, Ord INT NOT NULL);
+    INSERT INTO @Seqs (Seq, Ord)
+    SELECT x.Seq, ROW_NUMBER() OVER (ORDER BY x.Seq) FROM (SELECT DISTINCT Seq FROM @Plan) x;
 
     DECLARE @Created TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
     DECLARE @L logistics.tvp_ContainerLoadLine;
-    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @Max INT, @NewId INT, @Lock INT;
+    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @NewId INT, @Lock INT;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -128,9 +121,9 @@ BEGIN
         END
 
         DECLARE plan_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
-            SELECT Seq, Ord, MaxUnits FROM @Seqs ORDER BY Ord;
+            SELECT Seq, Ord FROM @Seqs ORDER BY Ord;
         OPEN plan_cur;
-        FETCH NEXT FROM plan_cur INTO @Seq, @Ord, @Max;
+        FETCH NEXT FROM plan_cur INTO @Seq, @Ord;
         WHILE @@FETCH_STATUS = 0
         BEGIN
             DELETE FROM @L;
@@ -156,7 +149,6 @@ BEGIN
                  @FinalDestinationId  = @FinalDestinationId,
                  @Eta                 = @Eta,
                  @FreeDays            = @FreeDays,
-                 @MaxUnits            = @Max,
                  @BranchId            = @BranchId,
                  @WarehouseId         = @WarehouseId,
                  @Lines               = @L,
@@ -169,7 +161,7 @@ BEGIN
                 EXEC logistics.usp_Container_Confirm @Id = @NewId, @UserId = @UserId;
 
             INSERT INTO @Created (Seq, ContainerId) VALUES (@Seq, @NewId);
-            FETCH NEXT FROM plan_cur INTO @Seq, @Ord, @Max;
+            FETCH NEXT FROM plan_cur INTO @Seq, @Ord;
         END
         CLOSE plan_cur;
         DEALLOCATE plan_cur;
@@ -188,10 +180,12 @@ BEGIN
         THROW;
     END CATCH
 
-    SELECT x.Seq, c.Id AS ContainerId, c.ContainerRef, c.Status, c.TotalLines, c.TotalAllocatedBase, c.MaxUnits, c.UtilizationPct,
+    SELECT x.Seq, c.Id AS ContainerId, c.ContainerRef, c.Status, c.TotalLines, c.TotalAllocatedBase,
+           fl.FillPct, fl.CapacityKnown, fl.IsOverCapacity,
            c.RowVersion
     FROM @Created x
     INNER JOIN logistics.Containers c ON c.Id = x.ContainerId
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
     ORDER BY x.Seq;
 END
 

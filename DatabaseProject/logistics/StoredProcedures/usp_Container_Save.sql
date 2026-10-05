@@ -1,6 +1,7 @@
-/* ================================================================== 7. Container_Save: for an invoice of the order */
+/* ================================================================== 3. Save: the fill check */
 
--- Re-created (43) from the body of script 27: + @ForInvoiceId (default NULL = as before); invoices shipped in containers are not "invoiced directly".
+-- Re-created (50) from the body of script 47: the capacity is the fill from the items' Container units, checked on the
+-- lines written (69007, overridable); @MaxUnits is kept and ignored, a new container gets no MaxUnits.
 CREATE   PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
     @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
@@ -30,7 +31,7 @@ CREATE   PROCEDURE logistics.usp_Container_Save
     @BlNo                NVARCHAR(30)   = NULL,
     @BlDate              DATE           = NULL,
     @BlNotes             NVARCHAR(500)  = NULL,
-    @MaxUnits            INT            = NULL,   -- NULL = the container type's capacity
+    @MaxUnits            INT            = NULL,   -- (50) ignored: the capacity is the items' Container units
     @BranchId            INT,
     @WarehouseId         INT            = NULL,
     @TruckNo             NVARCHAR(30)   = NULL,
@@ -63,6 +64,13 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
+    -- (47) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
+    BEGIN
+        DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
+        EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Add', @QuantityBase = @ForInvoiceQty;
+    END
+
     IF @OrderDate IS NULL THROW 69000, 'Order date is required.', 1;
     IF @ShippingMethod NOT IN (N'Sea', N'Air', N'Road') THROW 69000, 'Shipping method must be Sea, Air or Road.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId AND IsActive = 1)
@@ -72,7 +80,6 @@ BEGIN
     IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
         THROW 69000, 'Offloading warehouse not found or inactive.', 1;
     IF @FreeDays IS NOT NULL AND @FreeDays < 0 THROW 69000, 'Free days cannot be negative.', 1;
-    IF @MaxUnits IS NOT NULL AND @MaxUnits <= 0 THROW 69000, 'Maximum units must be greater than zero.', 1;
     IF @DispatchDate IS NOT NULL AND @Eta IS NOT NULL AND @Eta < @DispatchDate
         THROW 69000, 'The ETA cannot be earlier than the dispatch date.', 1;
     IF @ContainerNo IS NOT NULL AND EXISTS (SELECT 1 FROM logistics.Containers
@@ -170,19 +177,6 @@ BEGIN
         IF @Msg IS NOT NULL THROW 70014, @Msg, 1;
     END
 
-    -- Capacity: a warning that the caller can override, never a hard block.
-    DECLARE @Capacity INT = @MaxUnits;
-    IF @Capacity IS NULL AND @Id IS NOT NULL SELECT @Capacity = MaxUnits FROM logistics.Containers WHERE Id = @Id;
-    IF @Capacity IS NULL SELECT @Capacity = MaxUnits FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId;
-
-    DECLARE @Allocated INT = ISNULL((SELECT SUM(QuantityBase) FROM @Lines), 0);
-    IF @Capacity IS NOT NULL AND @Allocated > @Capacity AND ISNULL(@AllowOverCapacity, 0) = 0
-    BEGIN
-        SET @Msg = N'The container holds ' + CAST(@Capacity AS NVARCHAR(10)) + N' units and ' + CAST(@Allocated AS NVARCHAR(10))
-                 + N' are loaded. Confirm to load it above its capacity.';
-        THROW 69007, @Msg, 1;
-    END
-
     BEGIN TRY
         BEGIN TRANSACTION;
 
@@ -201,7 +195,7 @@ BEGIN
                     @OrderDate, @ShippingMethod, @CountryOfOrigin, @ForwarderId, @TransporterId,
                     @ShippingLine, @VesselName, @VoyageNo, @BookingNo, @PortOfLoadingId, @PortOfDestinationId, @FinalDestinationId,
                     @DispatchDate, @Eta, @FreeDays, @GrossWeightKg, @VolumeCbm, @Packages, @BlNo, @BlDate, @BlNotes,
-                    @Capacity, @BranchId, @WarehouseId, @TruckNo, @WaybillNo, @DeclarationNo, @FeriNo,
+                    NULL, @BranchId, @WarehouseId, @TruckNo, @WaybillNo, @DeclarationNo, @FeriNo,
                     @ActualPortArrival, @BorderCrossingDate, @CustomsReleaseDate, @StatusNote, @Notes, 1, @UserId);
             SET @Id = SCOPE_IDENTITY();
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
@@ -216,7 +210,7 @@ BEGIN
                 VoyageNo = @VoyageNo, BookingNo = @BookingNo, PortOfLoadingId = @PortOfLoadingId, PortOfDestinationId = @PortOfDestinationId,
                 FinalDestinationId = @FinalDestinationId, DispatchDate = @DispatchDate, Eta = @Eta, FreeDays = @FreeDays,
                 GrossWeightKg = @GrossWeightKg, VolumeCbm = @VolumeCbm, Packages = @Packages, BlNo = @BlNo, BlDate = @BlDate, BlNotes = @BlNotes,
-                MaxUnits = @Capacity, BranchId = @BranchId, WarehouseId = @WarehouseId, TruckNo = @TruckNo, WaybillNo = @WaybillNo,
+                BranchId = @BranchId, WarehouseId = @WarehouseId, TruckNo = @TruckNo, WaybillNo = @WaybillNo,
                 DeclarationNo = @DeclarationNo, FeriNo = @FeriNo, ActualPortArrival = @ActualPortArrival,
                 BorderCrossingDate = @BorderCrossingDate, CustomsReleaseDate = @CustomsReleaseDate, StatusNote = @StatusNote, Notes = @Notes,
                 UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
@@ -259,6 +253,27 @@ BEGIN
         INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
         CROSS APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
         WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId);
+
+        -- (50) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
+        -- never a hard block; unknown (an item without a Container unit) = no warning. Checked on the lines just written,
+        -- so the refusal rolls the whole save back.
+        IF ISNULL(@AllowOverCapacity, 0) = 0 AND EXISTS (SELECT 1 FROM logistics.fn_ContainerFill(@Id) f WHERE f.IsOverCapacity = 1)
+        BEGIN
+            -- %% : THROW reads a single % as a format specification ("% f" would swallow the sign and the f).
+            SELECT @Msg = LEFT(N'This container would be ' + CAST(CAST(ROUND(f.FillPct, 0) AS INT) AS NVARCHAR(10)) + N' %% full: '
+                               + x.Parts + N'. Confirm to load it above its capacity.', 400)
+            FROM logistics.fn_ContainerFill(@Id) f
+            CROSS APPLY (SELECT Parts = STRING_AGG(CAST(q.Qty AS NVARCHAR(20)) + N' pcs of ' + q.ItemCode + N' ('
+                                                   + CAST(q.Pcs AS NVARCHAR(20)) + N' per container)', N', ')
+                                        WITHIN GROUP (ORDER BY q.ItemCode)
+                         FROM (SELECT i.ItemCode, Qty = SUM(cl.QuantityBase), Pcs = p.PcsPerContainer
+                               FROM logistics.ContainerLines cl
+                               INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                               CROSS APPLY logistics.fn_ItemPcsPerContainer(cl.ItemId) p
+                               WHERE cl.ContainerId = @Id
+                               GROUP BY i.ItemCode, p.PcsPerContainer) q) x;
+            THROW 69007, @Msg, 1;
+        END
 
         EXEC logistics.usp_Container_ReallocateCharges @Id;
         EXEC logistics.usp_Container_RefreshStatus @Id;
