@@ -51,6 +51,19 @@ Server=.;Database=Inventory_Shipment;Trusted_Connection=True;Encrypt=True;TrustS
 
 If your SSMS server name is different (for example `.\SQLEXPRESS` or `(localdb)\MSSQLLocalDB`), change `ConnectionStrings:DefaultConnection` to match.
 
+## Deploy to a server
+
+`deploy/` runs the API, the web app and SQL Server on one Linux server with Docker, behind HTTPS. On the
+server, as root:
+
+```bash
+git clone https://github.com/bfa-14/Inventory_Shipment.git /opt/inventory/Inventory_Shipment
+/opt/inventory/Inventory_Shipment/deploy/setup.sh
+```
+
+Requirements, updates, backups, moving your data from your PC and troubleshooting are in
+[`deploy/README.md`](deploy/README.md).
+
 ## API surface
 
 Base path `/api`. Everything except login/refresh requires `Authorization: Bearer <accessToken>`.
