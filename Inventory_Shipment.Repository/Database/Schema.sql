@@ -36171,14 +36171,3630 @@ GO
 SET NOEXEC OFF;
 GO
 
--- ===== 46: Logistics - movements and their containers (place rule, picker, numbers matched) =====
+-- ===== 46: Supplier payments - foundation =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* ==================================================================================================
+   46: Supplier payments - foundation (US-PAY-001, Phase 1)
+   --------------------------------------------------------------------------------------------------
+   Money going OUT to a supplier or a service provider: the mirror of the customer receipt (35-36).
+   A payment has payment lines (method, currency, amount, rate to the payment currency, the cash or
+   bank account it left from, cheque details), may be allocated to purchase invoices OR to container
+   charges - never both - and can carry files.
+
+   THIS SCRIPT BUILDS THE GROUND, NOT THE PAYMENT. It creates:
+     - purchase.Payments, PaymentLines, PaymentAllocations, PaymentFiles, PaymentAudit - empty and
+       constrained;
+     - the document type PAY (PAY-2026-0001), numbered at the first save like a receipt;
+     - purchase.fn_InvoiceSettlement and logistics.fn_ContainerChargeSettlement: what a purchase
+       invoice / container charge has been paid and still owes;
+     - attachment types for payments (AppliesTo = Payment), and type names unique PER LIST;
+     - the payment permissions.
+   Save / post / reverse / allocate arrive in Phase 2.
+
+   THE CONTROL CURRENCY IS THE PAYMENT'S OWN (the header currency):
+     header      Amount in the payment currency, ExchangeRate = units of it per 1 base currency
+                 (1 USD = 2,800 CDF stores 2800, as everywhere), AmountBase = Amount / ExchangeRate.
+     line        Amount in the line currency x RateToPayment = AmountPaymentCurrency. RateToPayment is
+                 the MULTIPLIER the page shows ("Exchange Rate to Payment Currency"), frozen at posting.
+     allocation  AmountDocCurrency in the INVOICE's / CHARGE's currency x RateToPayment =
+                 AmountPaymentCurrency; its base value is AmountDocCurrency / the document's own stored
+                 rate, so settling a document in full lands exactly on its base total.
+   Balancing is done in the payment currency: header = SUM(lines) (= SUM(allocations) when allocated).
+
+   PAID AND OUTSTANDING ARE NOT STORED. A document's paid amount is the sum of its LIVE allocations on
+   POSTED payments, so reversing a payment gives the balance back with nothing to repair; RemovedAtUtc
+   lets an allocation of an unapplied advance be taken back without deleting the row that proves it.
+   A purchase invoice's outstanding is its total LESS posted purchase returns made from it.
+
+   Requires scripts up to 45 (35-36 for the payment methods and accounts). Idempotent.
+   ================================================================================================== */
+
+IF OBJECT_ID(N'masterdata.PaymentMethods', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.CashBankAccounts', N'U') IS NULL
+   OR OBJECT_ID(N'purchase.PurchaseDocuments', N'U') IS NULL
+   OR OBJECT_ID(N'logistics.ContainerCharges', N'U') IS NULL
+   OR COL_LENGTH(N'masterdata.AttachmentTypes', N'AppliesTo') IS NULL
+BEGIN
+    RAISERROR ('Run the earlier scripts (35-36 and the purchase / logistics scripts) before script 46.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. The payment tables */
+
+IF OBJECT_ID(N'purchase.Payments', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.Payments
+    (
+        Id             INT IDENTITY(1,1) NOT NULL,
+        PaymentNumber  NVARCHAR(30)   NULL,                    -- PAY-2026-0001, assigned at the first save
+        PaymentDate    DATE           NOT NULL,
+        PayeeId        INT            NOT NULL,                -- masterdata.Parties (IsSupplier)
+        BranchId       INT            NOT NULL,
+        PaymentType    TINYINT        NOT NULL CONSTRAINT DF_Payments_PaymentType DEFAULT (1),   -- 1 Free Payment, 2 Purchase Invoice Payment, 3 Container Charge Payment
+        CurrencyId     INT            NOT NULL,                -- the payment (control) currency
+        Amount         DECIMAL(18,2)  NOT NULL,                -- in the payment currency
+        ExchangeRate   DECIMAL(18,6)  NOT NULL CONSTRAINT DF_Payments_Rate DEFAULT (1),          -- units of the currency per 1 base
+        AmountBase     AS (CONVERT(DECIMAL(18,2), Amount / ExchangeRate)) PERSISTED,
+        Reference      NVARCHAR(100)  NULL,
+        Notes          NVARCHAR(500)  NULL,
+        Status         TINYINT        NOT NULL CONSTRAINT DF_Payments_Status DEFAULT (1),        -- 1 Draft, 2 Posted, 3 Reversed
+        PostedAtUtc    DATETIME2(3)   NULL,
+        PostedBy       INT            NULL,
+        ReversedAtUtc  DATETIME2(3)   NULL,
+        ReversedBy     INT            NULL,
+        ReverseReason  NVARCHAR(500)  NULL,
+        CreatedAtUtc   DATETIME2(3)   NOT NULL CONSTRAINT DF_Payments_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy      INT            NULL,
+        UpdatedAtUtc   DATETIME2(3)   NULL,
+        UpdatedBy      INT            NULL,
+        RowVersion     ROWVERSION     NOT NULL,
+        CONSTRAINT PK_Payments PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_Payments_PaymentType CHECK (PaymentType IN (1, 2, 3)),
+        CONSTRAINT CK_Payments_Status      CHECK (Status IN (1, 2, 3)),
+        CONSTRAINT CK_Payments_Amount      CHECK (Amount > 0),
+        CONSTRAINT CK_Payments_Rate        CHECK (ExchangeRate > 0),
+        CONSTRAINT CK_Payments_Posting     CHECK (Status = 1 OR (PostedAtUtc IS NOT NULL AND PostedBy IS NOT NULL)),
+        CONSTRAINT CK_Payments_Reversal    CHECK (Status <> 3 OR (ReversedAtUtc IS NOT NULL AND ReversedBy IS NOT NULL)),
+        CONSTRAINT FK_Payments_Payee       FOREIGN KEY (PayeeId)    REFERENCES masterdata.Parties (Id),
+        CONSTRAINT FK_Payments_Branch      FOREIGN KEY (BranchId)   REFERENCES masterdata.Branches (Id),
+        CONSTRAINT FK_Payments_Currency    FOREIGN KEY (CurrencyId) REFERENCES masterdata.Currencies (Id),
+        CONSTRAINT FK_Payments_PostedBy    FOREIGN KEY (PostedBy)   REFERENCES security.Users (Id),
+        CONSTRAINT FK_Payments_ReversedBy  FOREIGN KEY (ReversedBy) REFERENCES security.Users (Id),
+        CONSTRAINT FK_Payments_CreatedBy   FOREIGN KEY (CreatedBy)  REFERENCES security.Users (Id),
+        CONSTRAINT FK_Payments_UpdatedBy   FOREIGN KEY (UpdatedBy)  REFERENCES security.Users (Id)
+    );
+    CREATE UNIQUE NONCLUSTERED INDEX UX_Payments_Number ON purchase.Payments (PaymentNumber) WHERE PaymentNumber IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_Payments_Payee  ON purchase.Payments (PayeeId, PaymentDate DESC);
+    CREATE NONCLUSTERED INDEX IX_Payments_Status ON purchase.Payments (Status, PaymentDate DESC);
+    PRINT 'Created purchase.Payments';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PaymentLines', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PaymentLines
+    (
+        Id                    INT IDENTITY(1,1) NOT NULL,
+        PaymentId             INT            NOT NULL,
+        LineNumber            INT            NOT NULL,
+        PaymentMethodId       INT            NOT NULL,
+        CurrencyId            INT            NOT NULL,             -- the currency actually paid on this line
+        Amount                DECIMAL(18,2)  NOT NULL,             -- in the line currency
+        RateToPayment         DECIMAL(24,12) NOT NULL CONSTRAINT DF_PaymentLines_Rate DEFAULT (1),   -- multiplier: line currency -> payment currency (12 places: 1 / 2800 CDF)
+        AmountPaymentCurrency AS (CONVERT(DECIMAL(18,2), ROUND(Amount * RateToPayment, 2))) PERSISTED,
+        AmountBase            DECIMAL(18,2)  NOT NULL CONSTRAINT DF_PaymentLines_AmountBase DEFAULT (0),   -- AmountPaymentCurrency / header rate, written by the save
+        CashBankAccountId     INT            NOT NULL,             -- where the money left from; its currency must be the line's
+        Reference             NVARCHAR(100)  NULL,                 -- transfer / reference number
+        ChequeNo              NVARCHAR(50)   NULL,                 -- cheque lines only
+        ChequeDate            DATE           NULL,
+        ChequeDueDate         DATE           NULL,
+        ClearanceStatus       TINYINT        NULL,                 -- cheque lines: 1 Pending, 2 Cleared, 3 Returned
+        ClearanceUpdatedAtUtc DATETIME2(3)   NULL,
+        ClearanceUpdatedBy    INT            NULL,
+        CONSTRAINT PK_PaymentLines PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_PaymentLines_Number UNIQUE (PaymentId, LineNumber),
+        CONSTRAINT CK_PaymentLines_Amount    CHECK (Amount > 0),
+        CONSTRAINT CK_PaymentLines_Rate      CHECK (RateToPayment > 0),
+        CONSTRAINT CK_PaymentLines_Clearance CHECK (ClearanceStatus IS NULL OR ClearanceStatus IN (1, 2, 3)),
+        CONSTRAINT FK_PaymentLines_Payment   FOREIGN KEY (PaymentId)          REFERENCES purchase.Payments (Id),
+        CONSTRAINT FK_PaymentLines_Method    FOREIGN KEY (PaymentMethodId)    REFERENCES masterdata.PaymentMethods (Id),
+        CONSTRAINT FK_PaymentLines_Currency  FOREIGN KEY (CurrencyId)         REFERENCES masterdata.Currencies (Id),
+        CONSTRAINT FK_PaymentLines_Account   FOREIGN KEY (CashBankAccountId)  REFERENCES masterdata.CashBankAccounts (Id),
+        CONSTRAINT FK_PaymentLines_ClearedBy FOREIGN KEY (ClearanceUpdatedBy) REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_PaymentLines_Method  ON purchase.PaymentLines (PaymentMethodId);
+    CREATE NONCLUSTERED INDEX IX_PaymentLines_Account ON purchase.PaymentLines (CashBankAccountId);
+    PRINT 'Created purchase.PaymentLines';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PaymentAllocations', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PaymentAllocations
+    (
+        Id                    INT IDENTITY(1,1) NOT NULL,
+        PaymentId             INT            NOT NULL,
+        DocumentKind          NVARCHAR(10)   NOT NULL,             -- PINV (purchase invoice) | CHARGE (container charge)
+        PurchaseDocumentId    INT            NULL,                 -- PINV
+        ContainerChargeId     INT            NULL,                 -- CHARGE
+        AmountDocCurrency     DECIMAL(18,2)  NOT NULL,             -- entered in the DOCUMENT's currency
+        DocExchangeRate       DECIMAL(18,6)  NOT NULL,             -- the document's own stored rate (per 1 base), snapshotted
+        AmountBase            AS (CONVERT(DECIMAL(18,2), AmountDocCurrency / DocExchangeRate)) PERSISTED,
+        RateToPayment         DECIMAL(24,12) NOT NULL CONSTRAINT DF_PaymentAllocations_Rate DEFAULT (1),   -- multiplier: document currency -> payment currency
+        AmountPaymentCurrency AS (CONVERT(DECIMAL(18,2), ROUND(AmountDocCurrency * RateToPayment, 2))) PERSISTED,
+        AllocatedAtUtc        DATETIME2(3)   NOT NULL CONSTRAINT DF_PaymentAllocations_At DEFAULT (SYSUTCDATETIME()),
+        AllocatedBy           INT            NULL,
+        RemovedAtUtc          DATETIME2(3)   NULL,                 -- a taken-back later allocation; the row stays as proof
+        RemovedBy             INT            NULL,
+        CONSTRAINT PK_PaymentAllocations PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_PaymentAllocations_Kind     CHECK ((DocumentKind = N'PINV'   AND PurchaseDocumentId IS NOT NULL AND ContainerChargeId IS NULL)
+                                                      OR (DocumentKind = N'CHARGE' AND ContainerChargeId IS NOT NULL AND PurchaseDocumentId IS NULL)),
+        CONSTRAINT CK_PaymentAllocations_Amount   CHECK (AmountDocCurrency > 0),
+        CONSTRAINT CK_PaymentAllocations_DocRate  CHECK (DocExchangeRate > 0),
+        CONSTRAINT CK_PaymentAllocations_PayRate  CHECK (RateToPayment > 0),
+        CONSTRAINT CK_PaymentAllocations_Removed  CHECK ((RemovedAtUtc IS NULL AND RemovedBy IS NULL) OR (RemovedAtUtc IS NOT NULL AND RemovedBy IS NOT NULL)),
+        CONSTRAINT FK_PaymentAllocations_Payment   FOREIGN KEY (PaymentId)          REFERENCES purchase.Payments (Id),
+        CONSTRAINT FK_PaymentAllocations_Invoice   FOREIGN KEY (PurchaseDocumentId) REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_PaymentAllocations_Charge    FOREIGN KEY (ContainerChargeId)  REFERENCES logistics.ContainerCharges (Id),
+        CONSTRAINT FK_PaymentAllocations_By        FOREIGN KEY (AllocatedBy)        REFERENCES security.Users (Id),
+        CONSTRAINT FK_PaymentAllocations_RemovedBy FOREIGN KEY (RemovedBy)          REFERENCES security.Users (Id)
+    );
+    -- THE INDEXES THE LISTS WILL LEAN ON: paid = SUM over a document's live allocations.
+    CREATE NONCLUSTERED INDEX IX_PaymentAllocations_Invoice ON purchase.PaymentAllocations (PurchaseDocumentId)
+        INCLUDE (PaymentId, AmountDocCurrency, RemovedAtUtc) WHERE PurchaseDocumentId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_PaymentAllocations_Charge ON purchase.PaymentAllocations (ContainerChargeId)
+        INCLUDE (PaymentId, AmountDocCurrency, RemovedAtUtc) WHERE ContainerChargeId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_PaymentAllocations_Payment ON purchase.PaymentAllocations (PaymentId);
+    PRINT 'Created purchase.PaymentAllocations';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PaymentFiles', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PaymentFiles
+    (
+        Id               INT IDENTITY(1,1) NOT NULL,
+        PaymentId        INT            NOT NULL,
+        AttachmentTypeId INT            NULL,                     -- Type / Sub Type, from masterdata.AttachmentTypes (AppliesTo = Payment)
+        Note             NVARCHAR(300)  NULL,
+        FileName         NVARCHAR(255)  NOT NULL,
+        ContentType      NVARCHAR(100)  NOT NULL,
+        SizeBytes        INT            NOT NULL,
+        Content          VARBINARY(MAX) NOT NULL,
+        CreatedAtUtc     DATETIME2(3)   NOT NULL CONSTRAINT DF_PaymentFiles_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy        INT            NULL,
+        CONSTRAINT PK_PaymentFiles PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_PaymentFiles_Size CHECK (SizeBytes > 0),
+        CONSTRAINT FK_PaymentFiles_Payment   FOREIGN KEY (PaymentId)        REFERENCES purchase.Payments (Id),
+        CONSTRAINT FK_PaymentFiles_Type      FOREIGN KEY (AttachmentTypeId) REFERENCES masterdata.AttachmentTypes (Id),
+        CONSTRAINT FK_PaymentFiles_CreatedBy FOREIGN KEY (CreatedBy)        REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_PaymentFiles_Payment ON purchase.PaymentFiles (PaymentId);
+    PRINT 'Created purchase.PaymentFiles';
+END
+GO
+
+IF OBJECT_ID(N'purchase.PaymentAudit', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.PaymentAudit
+    (
+        Id        BIGINT IDENTITY(1,1) NOT NULL,
+        PaymentId INT           NOT NULL,
+        Action    NVARCHAR(20)  NOT NULL,   -- Created | Updated | Posted | Reversed | Allocated | Deallocated | ChequeStatus | FileAdded | FileDeleted
+        Details   NVARCHAR(500) NULL,
+        UserId    INT           NULL,
+        AtUtc     DATETIME2(3)  NOT NULL CONSTRAINT DF_PaymentAudit_AtUtc DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_PaymentAudit PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT FK_PaymentAudit_Payment FOREIGN KEY (PaymentId) REFERENCES purchase.Payments (Id),
+        CONSTRAINT FK_PaymentAudit_User    FOREIGN KEY (UserId)    REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_PaymentAudit_Payment ON purchase.PaymentAudit (PaymentId, AtUtc DESC);
+    PRINT 'Created purchase.PaymentAudit';
+END
+GO
+
+/* ================================================================== 2. Document type PAY */
+
+IF EXISTS (SELECT 1 FROM sys.check_constraints
+           WHERE name = N'CK_DocumentTypes_Family'
+             AND parent_object_id = OBJECT_ID(N'inventory.DocumentTypes')
+             AND [definition] NOT LIKE N'%Payment%')
+BEGIN
+    DECLARE @Def NVARCHAR(MAX) = (SELECT [definition] FROM sys.check_constraints
+                                  WHERE name = N'CK_DocumentTypes_Family' AND parent_object_id = OBJECT_ID(N'inventory.DocumentTypes'));
+    -- Whatever families exist today, plus Payment: a later script may have added one this one does not know about.
+    DECLARE @NewDef NVARCHAR(MAX) = N'(' + @Def + N' OR [Family]=N''Payment'')';
+    IF @NewDef = @Def THROW 73000, 'Could not extend CK_DocumentTypes_Family with Payment.', 1;
+    ALTER TABLE inventory.DocumentTypes DROP CONSTRAINT CK_DocumentTypes_Family;
+    EXEC (N'ALTER TABLE inventory.DocumentTypes ADD CONSTRAINT CK_DocumentTypes_Family CHECK ' + @NewDef);
+    PRINT 'DocumentTypes: family Payment allowed';
+END
+GO
+
+MERGE inventory.DocumentTypes AS t
+USING (VALUES (N'PAY', N'Supplier Payment', N'Payment', 0, N'PAY-', 0, 0)) AS s (Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, RequiresReason)
+ON t.Code = s.Code
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, RequiresReason)
+    VALUES (s.Code, s.Name, s.Family, s.StockDirection, s.NumberPrefix, s.NumberOnPost, s.RequiresReason);
+GO
+
+/* Numbered at the FIRST SAVE (NumberOnPost = 0), with the year and four digits, shared across branches:
+   PAY-2026-0001, as the mockup shows. The WHERE keeps a re-run from touching a configuration somebody
+   has since changed on purpose. */
+UPDATE inventory.DocumentTypes
+SET DefaultPricing = N'None', PriceEditable = 0, NumberPerBranch = 0, YearInNumber = 1, NumberLength = 4
+WHERE Code = N'PAY' AND NextNumber = 1 AND UpdatedAtUtc IS NULL;
+GO
+
+/* ================================================================== 3. What a document has been paid */
+
+/* ONE DEFINITION OF "PAID" for a purchase invoice. Inline, so the optimizer folds it into the calling
+   query. Only a POSTED purchase invoice has a payment status.
+     Returned     posted purchase returns made from it, in the invoice's currency
+     Paid         live allocations on POSTED payments, in the invoice's currency
+     Outstanding  Total - Returned - Paid                                                           */
+CREATE OR ALTER FUNCTION purchase.fn_InvoiceSettlement (@DocumentId INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT r.ReturnedAmount, p.PaidAmount,
+           OutstandingAmount = CASE WHEN d.Status = 2 AND d.DocumentTypeId = t.Id THEN d.TotalAmount - r.ReturnedAmount - p.PaidAmount END,
+           PaymentStatus     = CASE WHEN d.Status <> 2 OR d.DocumentTypeId <> t.Id THEN NULL
+                                    WHEN d.TotalAmount - r.ReturnedAmount - p.PaidAmount <= 0.005 THEN N'Paid'
+                                    WHEN p.PaidAmount <= 0 THEN N'Unpaid'
+                                    ELSE N'Partial' END
+    FROM purchase.PurchaseDocuments d
+    CROSS APPLY (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'PINV') t
+    CROSS APPLY (SELECT ReturnedAmount = CONVERT(DECIMAL(18,2), ISNULL((SELECT SUM(q.Amount)
+                                                 FROM (SELECT Amount = CASE WHEN x.CurrencyId = d.CurrencyId THEN x.TotalAmount
+                                                                            ELSE ROUND(x.TotalAmountBase * d.ExchangeRate, 2) END
+                                                       FROM purchase.PurchaseDocuments x
+                                                       INNER JOIN inventory.DocumentTypes xt ON xt.Id = x.DocumentTypeId AND xt.Code = N'PRET'
+                                                       WHERE x.SourceDocumentId = d.Id AND x.Status = 2) q), 0))) r
+    CROSS APPLY (SELECT PaidAmount = ISNULL((SELECT SUM(a.AmountDocCurrency)
+                                             FROM purchase.PaymentAllocations a
+                                             INNER JOIN purchase.Payments pay ON pay.Id = a.PaymentId
+                                             WHERE a.PurchaseDocumentId = d.Id AND a.RemovedAtUtc IS NULL AND pay.Status = 2), 0)) p
+    WHERE d.Id = @DocumentId
+);
+GO
+
+/* The same for a container charge: only a POSTED charge owes anything. */
+CREATE OR ALTER FUNCTION logistics.fn_ContainerChargeSettlement (@ChargeId INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT p.PaidAmount,
+           OutstandingAmount = CASE WHEN c.Status = 2 THEN c.Amount - p.PaidAmount END,
+           PaymentStatus     = CASE WHEN c.Status <> 2 THEN NULL
+                                    WHEN c.Amount - p.PaidAmount <= 0.005 THEN N'Paid'
+                                    WHEN p.PaidAmount <= 0 THEN N'Unpaid'
+                                    ELSE N'Partial' END
+    FROM logistics.ContainerCharges c
+    CROSS APPLY (SELECT PaidAmount = ISNULL((SELECT SUM(a.AmountDocCurrency)
+                                             FROM purchase.PaymentAllocations a
+                                             INNER JOIN purchase.Payments pay ON pay.Id = a.PaymentId
+                                             WHERE a.ContainerChargeId = c.Id AND a.RemovedAtUtc IS NULL AND pay.Status = 2), 0)) p
+    WHERE c.Id = @ChargeId
+);
+GO
+
+/* ================================================================== 4. Attachment types for payments */
+
+-- Payment joins the lists a type can belong to.
+IF EXISTS (SELECT 1 FROM sys.check_constraints
+           WHERE name = N'CK_AttachmentTypes_AppliesTo' AND parent_object_id = OBJECT_ID(N'masterdata.AttachmentTypes')
+             AND [definition] NOT LIKE N'%Payment%')
+BEGIN
+    ALTER TABLE masterdata.AttachmentTypes DROP CONSTRAINT CK_AttachmentTypes_AppliesTo;
+    ALTER TABLE masterdata.AttachmentTypes ADD CONSTRAINT CK_AttachmentTypes_AppliesTo CHECK (AppliesTo IN (N'Logistics', N'Receipt', N'Payment'));
+    PRINT 'AttachmentTypes: AppliesTo Payment allowed';
+END
+GO
+
+-- A type name is unique within ITS list: receipts and payments may both have "Cheque / Cheque Copy".
+IF EXISTS (SELECT 1 FROM sys.key_constraints WHERE name = N'UQ_AttachmentTypes_Name' AND parent_object_id = OBJECT_ID(N'masterdata.AttachmentTypes'))
+   AND NOT EXISTS (SELECT 1 FROM sys.index_columns ic
+                   INNER JOIN sys.indexes i ON i.object_id = ic.object_id AND i.index_id = ic.index_id
+                   INNER JOIN sys.columns c ON c.object_id = ic.object_id AND c.column_id = ic.column_id
+                   WHERE i.name = N'UQ_AttachmentTypes_Name' AND i.object_id = OBJECT_ID(N'masterdata.AttachmentTypes') AND c.name = N'AppliesTo')
+BEGIN
+    ALTER TABLE masterdata.AttachmentTypes DROP CONSTRAINT UQ_AttachmentTypes_Name;
+    ALTER TABLE masterdata.AttachmentTypes ADD CONSTRAINT UQ_AttachmentTypes_Name UNIQUE (Category, SubType, AppliesTo);
+    PRINT 'AttachmentTypes: names unique per list';
+END
+GO
+
+/* The spec's Type / Sub Type pairs. Matched on the pair WITHIN the Payment list, so a re-run changes
+   nothing and a renamed row is left alone. */
+MERGE masterdata.AttachmentTypes AS t
+USING (VALUES
+    (N'Bank Transfer', N'SWIFT Copy',      10),
+    (N'Cheque',        N'Cheque Copy',     20),
+    (N'Cash',          N'Payment Voucher', 30),
+    (N'Other',         N'Supplier Advice', 40),
+    (N'Bank',          N'Bank Statement',  50),
+    (N'Other',         N'Other',           60)
+) AS s (Category, SubType, SortOrder)
+ON t.Category = s.Category AND t.SubType = s.SubType AND t.AppliesTo = N'Payment'
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Category, SubType, SortOrder, AppliesTo) VALUES (s.Category, s.SubType, s.SortOrder, N'Payment');
+GO
+
+/* ================================================================== 5. The shared lists learn about payments */
+
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Save
+    @Id         INT          = NULL,
+    @Category   NVARCHAR(30),
+    @SubType    NVARCHAR(60),
+    @SortOrder  INT          = 0,
+    @IsActive   BIT          = 1,
+    @RowVersion BINARY(8)    = NULL,
+    @UserId     INT          = NULL,
+    @NewId      INT OUTPUT,
+    /* NULL = leave it alone on an update, and Logistics on an insert: every caller that predates the
+       column keeps doing exactly what it did. */
+    @AppliesTo  NVARCHAR(12) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Category = NULLIF(LTRIM(RTRIM(@Category)), N'');
+    SET @SubType = NULLIF(LTRIM(RTRIM(@SubType)), N'');
+    SET @AppliesTo = NULLIF(LTRIM(RTRIM(@AppliesTo)), N'');
+    IF @Category IS NULL THROW 69000, 'Category is required.', 1;
+    IF @SubType IS NULL THROW 69000, 'Sub type is required.', 1;
+    IF @AppliesTo IS NOT NULL AND @AppliesTo NOT IN (N'Logistics', N'Receipt', N'Payment') THROW 69000, 'Applies to must be Logistics, Receipt or Payment.', 1;
+    /* Unique PER LIST: a receipt and a payment may both have a "Cheque / Cheque Copy". The list a row
+       belongs to is the one it is being saved into, or the one it already has when that is not said. */
+    DECLARE @List NVARCHAR(12) = COALESCE(@AppliesTo, (SELECT AppliesTo FROM masterdata.AttachmentTypes WHERE Id = @Id), N'Logistics');
+    IF EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Category = @Category AND SubType = @SubType AND AppliesTo = @List AND (@Id IS NULL OR Id <> @Id))
+        THROW 69013, 'This category and sub type already exist.', 1;
+
+    IF @Id IS NULL
+    BEGIN
+        INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, IsActive, AppliesTo, CreatedBy)
+        VALUES (@Category, @SubType, ISNULL(@SortOrder, 0), ISNULL(@IsActive, 1), ISNULL(@AppliesTo, N'Logistics'), @UserId);
+        SET @NewId = SCOPE_IDENTITY();
+    END
+    ELSE
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id) THROW 69006, 'Attachment type not found.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 69004, 'This attachment type was modified by another user. Reload the page and try again.', 1;
+        UPDATE masterdata.AttachmentTypes
+        SET Category = @Category, SubType = @SubType, SortOrder = ISNULL(@SortOrder, 0), IsActive = ISNULL(@IsActive, 1),
+            AppliesTo = ISNULL(@AppliesTo, AppliesTo),
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+        SET @NewId = @Id;
+    END
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id) THROW 69006, 'Attachment type not found.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.ReceiptFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId = @Id)
+        THROW 69014, 'This attachment type is used by documents and cannot be deleted. Deactivate it instead.', 1;
+    DELETE FROM masterdata.AttachmentTypes WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_PaymentMethod_Search
+    @Search        NVARCHAR(100) = NULL,
+    @IsActive      BIT           = NULL,
+    @SortColumn    NVARCHAR(30)  = N'MethodCode',   -- MethodCode | MethodName | IsActive
+    @SortDirection NVARCHAR(4)   = N'ASC',
+    @PageNumber    INT           = 1,
+    @PageSize      INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'MethodCode', N'MethodName', N'IsActive') SET @SortColumn = N'MethodCode';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT m.Id, m.MethodCode, m.MethodName, m.Description, m.IsActive,
+           UsedCount = (SELECT COUNT(*) FROM sales.ReceiptLines x WHERE x.PaymentMethodId = m.Id)
+                     + (SELECT COUNT(*) FROM purchase.PaymentLines y WHERE y.PaymentMethodId = m.Id),
+           m.CreatedAtUtc, m.CreatedBy, m.UpdatedAtUtc, m.UpdatedBy, m.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM masterdata.PaymentMethods m
+    WHERE (@Search IS NULL OR m.MethodCode LIKE N'%' + @Search + N'%' OR m.MethodName LIKE N'%' + @Search + N'%')
+      AND (@IsActive IS NULL OR m.IsActive = @IsActive)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'MethodCode' THEN m.MethodCode WHEN N'MethodName' THEN m.MethodName END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'MethodCode' THEN m.MethodCode WHEN N'MethodName' THEN m.MethodName END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(m.IsActive AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(m.IsActive AS INT) END DESC,
+        m.MethodCode ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_PaymentMethod_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.PaymentMethods WHERE Id = @Id) THROW 71006, 'Payment method not found.', 1;
+    IF EXISTS (SELECT 1 FROM sales.ReceiptLines WHERE PaymentMethodId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PaymentLines WHERE PaymentMethodId = @Id)
+        THROW 71014, 'This payment method is used by receipts or supplier payments and cannot be deleted. Deactivate it instead.', 1;
+    DELETE FROM masterdata.PaymentMethods WHERE Id = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_CashBankAccount_Search
+    @Search        NVARCHAR(100) = NULL,
+    @AccountType   NVARCHAR(10)  = NULL,
+    @CurrencyId    INT           = NULL,
+    @IsActive      BIT           = NULL,
+    @SortColumn    NVARCHAR(30)  = N'AccountCode',   -- AccountCode | AccountName | AccountType | CurrencyCode | IsActive
+    @SortDirection NVARCHAR(4)   = N'ASC',
+    @PageNumber    INT           = 1,
+    @PageSize      INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @AccountType = NULLIF(LTRIM(RTRIM(@AccountType)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'AccountCode', N'AccountName', N'AccountType', N'CurrencyCode', N'IsActive') SET @SortColumn = N'AccountCode';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'ASC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT a.Id, a.AccountCode, a.AccountName, a.AccountType, a.CurrencyId, c.CurrencyCode,
+           a.BranchId, BranchName = b.BranchName, a.Description, a.IsActive,
+           UsedCount = (SELECT COUNT(*) FROM sales.ReceiptLines x WHERE x.CashBankAccountId = a.Id)
+                     + (SELECT COUNT(*) FROM purchase.PaymentLines y WHERE y.CashBankAccountId = a.Id),
+           a.CreatedAtUtc, a.CreatedBy, a.UpdatedAtUtc, a.UpdatedBy, a.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM masterdata.CashBankAccounts a
+    INNER JOIN masterdata.Currencies c ON c.Id = a.CurrencyId
+    LEFT JOIN masterdata.Branches b ON b.Id = a.BranchId
+    WHERE (@Search IS NULL OR a.AccountCode LIKE N'%' + @Search + N'%' OR a.AccountName LIKE N'%' + @Search + N'%')
+      AND (@AccountType IS NULL OR a.AccountType = @AccountType)
+      AND (@CurrencyId IS NULL OR a.CurrencyId = @CurrencyId)
+      AND (@IsActive IS NULL OR a.IsActive = @IsActive)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'AccountCode' THEN a.AccountCode WHEN N'AccountName' THEN a.AccountName
+                                                                 WHEN N'AccountType' THEN a.AccountType WHEN N'CurrencyCode' THEN c.CurrencyCode END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'AccountCode' THEN a.AccountCode WHEN N'AccountName' THEN a.AccountName
+                                                                 WHEN N'AccountType' THEN a.AccountType WHEN N'CurrencyCode' THEN c.CurrencyCode END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'IsActive' THEN CAST(a.IsActive AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'IsActive' THEN CAST(a.IsActive AS INT) END DESC,
+        a.AccountCode ASC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_CashBankAccount_Save
+    @Id          INT           = NULL,
+    @AccountCode NVARCHAR(20),
+    @AccountName NVARCHAR(100),
+    @AccountType NVARCHAR(10),
+    @CurrencyId  INT,
+    @BranchId    INT           = NULL,
+    @Description NVARCHAR(500) = NULL,
+    @IsActive    BIT           = 1,
+    @RowVersion  BINARY(8)     = NULL,
+    @UserId      INT           = NULL,
+    @NewId       INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @AccountCode = UPPER(NULLIF(LTRIM(RTRIM(@AccountCode)), N''));
+    SET @AccountName = NULLIF(LTRIM(RTRIM(@AccountName)), N'');
+    SET @AccountType = NULLIF(LTRIM(RTRIM(@AccountType)), N'');
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    IF @AccountCode IS NULL THROW 71000, 'Account code is required.', 1;
+    IF @AccountName IS NULL THROW 71000, 'Account name is required.', 1;
+    IF @AccountType IS NULL OR @AccountType NOT IN (N'Cash', N'Bank') THROW 71000, 'Account type must be Cash or Bank.', 1;
+    IF @CurrencyId IS NULL OR NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 71000, 'Currency not found or inactive.', 1;
+    IF @BranchId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 71000, 'Branch not found or inactive.', 1;
+    IF EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE AccountCode = @AccountCode AND (@Id IS NULL OR Id <> @Id))
+        THROW 71013, 'This account code already exists.', 1;
+
+    IF @Id IS NULL
+    BEGIN
+        INSERT INTO masterdata.CashBankAccounts (AccountCode, AccountName, AccountType, CurrencyId, BranchId, Description, IsActive, CreatedBy)
+        VALUES (@AccountCode, @AccountName, @AccountType, @CurrencyId, @BranchId, @Description, ISNULL(@IsActive, 1), @UserId);
+        SET @NewId = SCOPE_IDENTITY();
+    END
+    ELSE
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE Id = @Id) THROW 71006, 'Cash / bank account not found.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 71004, 'This account was modified by another user. Reload the page and try again.', 1;
+
+        /* A used account keeps its currency. Receipt lines were checked against it when they were
+           saved, and changing it afterwards would leave posted money sitting in the wrong one. */
+        IF EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE Id = @Id AND CurrencyId <> @CurrencyId)
+           AND (EXISTS (SELECT 1 FROM sales.ReceiptLines WHERE CashBankAccountId = @Id)
+                OR EXISTS (SELECT 1 FROM purchase.PaymentLines WHERE CashBankAccountId = @Id))
+            THROW 71000, 'The currency of an account that receipts or supplier payments already use cannot be changed.', 1;
+
+        UPDATE masterdata.CashBankAccounts
+        SET AccountCode = @AccountCode, AccountName = @AccountName, AccountType = @AccountType, CurrencyId = @CurrencyId,
+            BranchId = @BranchId, Description = @Description, IsActive = ISNULL(@IsActive, 1),
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+        SET @NewId = @Id;
+    END
+END
+GO
+
+CREATE OR ALTER PROCEDURE masterdata.usp_CashBankAccount_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE Id = @Id) THROW 71006, 'Cash / bank account not found.', 1;
+    IF EXISTS (SELECT 1 FROM sales.ReceiptLines WHERE CashBankAccountId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PaymentLines WHERE CashBankAccountId = @Id)
+        THROW 71014, 'This account is used by receipts or supplier payments and cannot be deleted. Deactivate it instead.', 1;
+    DELETE FROM masterdata.CashBankAccounts WHERE Id = @Id;
+END
+GO
+
+/* ================================================================== 6. Permissions */
+
+MERGE security.Permissions AS target
+USING
+(
+    VALUES
+        (N'purchase.payments.view',     N'View Supplier Payments',     N'Purchase', N'See supplier payments and the invoices or charges they paid.',                            1230),
+        (N'purchase.payments.create',   N'Create Supplier Payments',   N'Purchase', N'Create and edit draft supplier payments, and attach files to them.',                      1240),
+        (N'purchase.payments.post',     N'Post Supplier Payments',     N'Purchase', N'Post a supplier payment: it starts paying the invoices or charges it is allocated to.',   1250),
+        (N'purchase.payments.reverse',  N'Reverse Supplier Payments',  N'Purchase', N'Reverse a posted supplier payment; what it paid is owed again.',                           1260),
+        (N'purchase.payments.delete',   N'Delete Supplier Payments',   N'Purchase', N'Delete draft supplier payments.',                                                         1270),
+        (N'purchase.payments.allocate', N'Allocate Supplier Payments', N'Purchase', N'Apply the unapplied advance of a posted payment to invoices or charges, or take it back.', 1280)
+) AS source (Code, Name, Module, Description, SortOrder)
+ON target.Code = source.Code
+WHEN MATCHED THEN
+    UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+WHEN NOT MATCHED BY TARGET THEN
+    INSERT (Code, Name, Module, Description, SortOrder)
+    VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+GO
+
+-- System roles get everything; a Manager everything but reversing and deleting, as for receipts.
+INSERT INTO security.RolePermissions (RoleId, PermissionId)
+SELECT r.Id, p.Id
+FROM security.Roles r
+CROSS JOIN security.Permissions p
+WHERE p.Code LIKE N'purchase.payments.%'
+  AND (r.IsSystem = 1
+       OR (r.Name = N'Manager' AND p.Code IN (N'purchase.payments.view', N'purchase.payments.create', N'purchase.payments.post', N'purchase.payments.allocate')))
+  AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+GO
+
+/* ================================================================== 7. Check */
+
+SELECT Code, Name, Family, NumberPrefix FROM inventory.DocumentTypes WHERE Code = N'PAY';
+SELECT Category, SubType, AppliesTo FROM masterdata.AttachmentTypes WHERE AppliesTo = N'Payment' ORDER BY SortOrder;
+SELECT Code, Name FROM security.Permissions WHERE Code LIKE N'purchase.payments.%' ORDER BY SortOrder;
+PRINT 'Script 46 applied: supplier payments foundation.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 47: Supplier payments - logic =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* ==================================================================================================
+   47: Supplier payments - logic (US-PAY-001, Phase 2)
+   --------------------------------------------------------------------------------------------------
+   What a supplier payment DOES, all of it here so the page cannot get round it.
+
+     usp_Payment_Save          a draft: header, payment lines, allocations (replaced as a whole)
+     usp_Payment_Post          the controls of sections 3, 7 and 11, then Draft -> Posted
+     usp_Payment_Reverse       Posted -> Reversed, with a reason; nothing is deleted
+     usp_Payment_Delete        drafts only
+     usp_Payment_Allocate      a posted FREE payment's unapplied advance -> invoices OR charges
+     usp_Payment_Deallocate    take one such allocation back (the row stays as proof)
+     usp_Payment_SetChequeStatus   Pending / Cleared / Returned on a cheque line of a posted payment
+     usp_Payment_Get / _Search
+     usp_Payment_OpenDocuments the invoices / charges of a payee that still owe something
+     usp_Payment_RateToPayment the multiplier a line or allocation pre-fills
+     usp_PaymentFile_Add / _Get / _Delete
+
+   THE RULES
+     - Payee: an active SUPPLIER. Branch active. Payment Type 1 Free, 2 Purchase Invoice, 3 Container Charge.
+     - Header rate: units of the payment currency per 1 base (1 for the base currency), the official rate
+       on the payment date unless typed.
+     - Line: its account must hold the line's currency and be usable from the payment's branch. RateToPayment
+       (line currency -> payment currency) is 1 when the currencies match, else what was typed, else
+       header rate / the official rate of the line currency on the payment date. A CHEQUE line (method code
+       CHQ) needs a cheque number and date and starts Pending; other lines carry no cheque fields.
+     - Allocation: Free -> none; Purchase Invoice -> posted purchase invoices of this payee only; Container
+       Charge -> posted container charges billed by this payee only. Never above what the document still
+       owes (posted payments only - drafts settle under a lock when they post). Entered in the document's
+       currency; RateToPayment pre-filled from the official rates like a line.
+     - Post: at least one line; header Amount = SUM(lines in payment currency) and, for types 2 / 3,
+       = SUM(allocations in payment currency), each within 0.01, in the PAYMENT currency. The documents are
+       locked while what they owe is re-read. Rates are frozen as stored.
+     - Reverse: a posted payment only. A Free payment that has since been applied must have those
+       allocations removed first. Reversing stops its allocations counting: the documents owe again.
+     - Free payment, allocated later: to invoices OR to charges, never both (the first allocation decides),
+       within its unapplied balance in the payment currency.
+
+   ALSO: a posted purchase invoice / container charge with live payment allocations cannot be cancelled;
+   purchase invoice and container charge lists and reads return Paid, Outstanding and PaymentStatus.
+
+   Errors 73xxx: 73000 validation, 73004 concurrency, 73005 not editable, 73006 not found,
+                 73008 unbalanced, 73009 allocation above outstanding, 73010 invalid status,
+                 73011 unapplied exceeded, 73012 has allocations.
+   Requires script 46. Idempotent.
+   ================================================================================================== */
+
+IF OBJECT_ID(N'purchase.Payments', N'U') IS NULL OR OBJECT_ID(N'purchase.fn_InvoiceSettlement', N'IF') IS NULL
+BEGIN
+    RAISERROR ('Run script 46 before script 47.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. Table types */
+
+IF TYPE_ID(N'purchase.tvp_PaymentLine') IS NULL
+BEGIN
+    CREATE TYPE purchase.tvp_PaymentLine AS TABLE
+    (
+        LineNumber        INT            NOT NULL PRIMARY KEY,
+        PaymentMethodId   INT            NOT NULL,
+        CurrencyId        INT            NOT NULL,
+        Amount            DECIMAL(18,2)  NOT NULL,
+        RateToPayment     DECIMAL(24,12) NULL,       -- NULL = from the official rates (1 when the currency is the payment's)
+        CashBankAccountId INT            NOT NULL,
+        Reference         NVARCHAR(100)  NULL,
+        ChequeNo          NVARCHAR(50)   NULL,
+        ChequeDate        DATE           NULL,
+        ChequeDueDate     DATE           NULL
+    );
+    PRINT 'Created type purchase.tvp_PaymentLine';
+END
+GO
+
+IF TYPE_ID(N'purchase.tvp_PaymentAllocation') IS NULL
+BEGIN
+    CREATE TYPE purchase.tvp_PaymentAllocation AS TABLE
+    (
+        DocumentKind  NVARCHAR(10)   NOT NULL,       -- PINV | CHARGE
+        DocumentId    INT            NOT NULL,       -- purchase.PurchaseDocuments.Id | logistics.ContainerCharges.Id
+        Amount        DECIMAL(18,2)  NOT NULL,       -- in the DOCUMENT's currency
+        RateToPayment DECIMAL(24,12) NULL,           -- NULL = from the official rates
+        PRIMARY KEY (DocumentKind, DocumentId)
+    );
+    PRINT 'Created type purchase.tvp_PaymentAllocation';
+END
+GO
+
+/* ================================================================== 2. Rates and documents, defined once */
+
+/* The multiplier from one currency to the payment currency: 1 when they are the same; otherwise the
+   payment's rate over the other currency's official rate on the date (both per 1 base). NULL when the
+   other currency has no rate - the caller turns that into a message. */
+CREATE OR ALTER FUNCTION purchase.fn_RateToPayment (@FromCurrencyId INT, @PaymentCurrencyId INT, @PaymentRate DECIMAL(18,6), @AsOfDate DATE)
+RETURNS DECIMAL(24,12)
+AS
+BEGIN
+    IF @FromCurrencyId = @PaymentCurrencyId RETURN 1;
+    DECLARE @FromRate DECIMAL(18,6) = masterdata.fn_GetRate(@FromCurrencyId, 1, @AsOfDate);
+    IF @FromRate IS NULL OR @FromRate <= 0 OR @PaymentRate IS NULL OR @PaymentRate <= 0 RETURN NULL;
+    RETURN CONVERT(DECIMAL(24,12), CONVERT(DECIMAL(38,18), @PaymentRate) / @FromRate);
+END
+GO
+
+/* ONE ROW PER PAYABLE DOCUMENT, whatever its kind: what the allocation tables, the open-documents list and
+   the checks read. Number, date, payee, currency and rate, total, paid / outstanding / status, the
+   container(s) it concerns and, for a charge, its type. */
+CREATE OR ALTER FUNCTION purchase.fn_PayableDocument (@Kind NVARCHAR(10), @DocumentId INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT DocumentKind = N'PINV', DocumentId = d.Id, d.DocumentNumber, d.DocumentDate, PayeeId = d.SupplierId,
+           d.CurrencyId, c.CurrencyCode, c.DecimalPlaces, d.ExchangeRate,
+           DocumentTotal = d.TotalAmount, st.ReturnedAmount, st.PaidAmount, st.OutstandingAmount, st.PaymentStatus,
+           ContainerRef = (SELECT STRING_AGG(r.ContainerRef, N', ') WITHIN GROUP (ORDER BY r.ContainerRef)
+                           FROM (SELECT DISTINCT k.ContainerRef
+                                 FROM purchase.PurchaseDocumentLines l
+                                 INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                                 INNER JOIN logistics.Containers k      ON k.Id = cl.ContainerId
+                                 WHERE l.DocumentId = d.Id) r),
+           ChargeTypeName = CAST(NULL AS NVARCHAR(100)), Reference = d.SupplierReference
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN masterdata.Currencies c ON c.Id = d.CurrencyId
+    CROSS APPLY purchase.fn_InvoiceSettlement(d.Id) st
+    WHERE @Kind = N'PINV' AND d.Id = @DocumentId
+    UNION ALL
+    SELECT N'CHARGE', ch.Id, N'CHG-' + RIGHT(N'000000' + CAST(ch.Id AS NVARCHAR(10)), 6), ch.ChargeDate, ch.ProviderPartyId,
+           ch.CurrencyId, c.CurrencyCode, c.DecimalPlaces, ch.ExchangeRate,
+           ch.Amount, CAST(0 AS DECIMAL(18,2)), st.PaidAmount, st.OutstandingAmount, st.PaymentStatus,
+           k.ContainerRef, t.ChargeName, ch.Reference
+    FROM logistics.ContainerCharges ch
+    INNER JOIN masterdata.Currencies c ON c.Id = ch.CurrencyId
+    INNER JOIN logistics.Containers k  ON k.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t  ON t.Id = ch.ChargeTypeId
+    CROSS APPLY logistics.fn_ContainerChargeSettlement(ch.Id) st
+    WHERE @Kind = N'CHARGE' AND ch.Id = @DocumentId
+);
+GO
+
+/* ================================================================== 3. Save (a draft) */
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Save
+    @Id           INT            = NULL,           -- NULL = create
+    @PaymentDate  DATE,
+    @PayeeId      INT,
+    @BranchId     INT,
+    @PaymentType  TINYINT        = 1,              -- 1 Free Payment, 2 Purchase Invoice Payment, 3 Container Charge Payment
+    @CurrencyId   INT,
+    @Amount       DECIMAL(18,2),
+    @ExchangeRate DECIMAL(18,6)  = NULL,           -- NULL = the official rate on the payment date
+    @Reference    NVARCHAR(100)  = NULL,
+    @Notes        NVARCHAR(500)  = NULL,
+    @Lines        purchase.tvp_PaymentLine READONLY,
+    @Allocations  purchase.tvp_PaymentAllocation READONLY,
+    @RowVersion   BINARY(8)      = NULL,
+    @UserId       INT            = NULL,
+    @NewId        INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @Reference = NULLIF(LTRIM(RTRIM(@Reference)), N'');
+    SET @PaymentType = ISNULL(@PaymentType, 1);
+
+    IF @PaymentDate IS NULL THROW 73000, 'Payment Date is required.', 1;
+    -- A day of tolerance, as on the invoices: the date is the reader's local one, the check is UTC.
+    IF @PaymentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE)) THROW 73000, 'Payment Date cannot be in the future.', 1;
+    IF @PayeeId IS NULL OR NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @PayeeId AND IsSupplier = 1 AND IsActive = 1)
+        THROW 73000, 'Payee not found, inactive, or not a supplier.', 1;
+    IF @BranchId IS NULL OR NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 73000, 'Branch not found or inactive.', 1;
+    IF @PaymentType NOT IN (1, 2, 3) THROW 73000, 'Payment Type must be Free Payment, Purchase Invoice Payment or Container Charge Payment.', 1;
+    IF @CurrencyId IS NULL OR NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 73000, 'Payment Currency not found or inactive.', 1;
+    IF @Amount IS NULL OR @Amount <= 0 THROW 73000, 'Payment Amount must be greater than zero.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 73000, 'Exchange rate must be greater than zero.', 1;
+
+    /* THE HEADER RATE. The base currency is always 1, whatever was typed; any other takes what was typed,
+       else the official rate on the payment date, else it is an error the reader can fix. */
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1) SET @ExchangeRate = 1;
+    SET @ExchangeRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, 1, @PaymentDate));
+    IF @ExchangeRate IS NULL
+    BEGIN
+        DECLARE @RateMsg NVARCHAR(300) = N'No official exchange rate is defined for ' + (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId)
+            + N' on or before ' + CONVERT(NVARCHAR(10), @PaymentDate, 120) + N'. Add one in Master Data > Exchange Rates or enter the rate manually.';
+        THROW 73000, @RateMsg, 1;
+    END
+
+    /* EVERY LINE IS JUDGED, and the first failing one is named. */
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + x.Problem
+    FROM @Lines l
+    LEFT JOIN masterdata.PaymentMethods pm   ON pm.Id = l.PaymentMethodId
+    LEFT JOIN masterdata.Currencies cu       ON cu.Id = l.CurrencyId
+    LEFT JOIN masterdata.CashBankAccounts a  ON a.Id = l.CashBankAccountId
+    LEFT JOIN masterdata.Currencies ac       ON ac.Id = a.CurrencyId
+    CROSS APPLY (SELECT Problem =
+        CASE WHEN pm.Id IS NULL OR pm.IsActive = 0 THEN N'payment method not found or inactive.'
+             WHEN cu.Id IS NULL OR cu.IsActive = 0 THEN N'currency not found or inactive.'
+             WHEN l.Amount IS NULL OR l.Amount <= 0 THEN N'amount must be greater than zero.'
+             WHEN l.RateToPayment IS NOT NULL AND l.RateToPayment <= 0 THEN N'exchange rate must be greater than zero.'
+             WHEN a.Id IS NULL OR a.IsActive = 0 THEN N'cash / bank account not found or inactive.'
+             WHEN a.CurrencyId <> l.CurrencyId THEN N'account ' + a.AccountCode + N' holds ' + ac.CurrencyCode + N', not ' + cu.CurrencyCode + N'.'
+             WHEN a.BranchId IS NOT NULL AND a.BranchId <> @BranchId THEN N'account ' + a.AccountCode + N' is not available for this payment''s branch.'
+             WHEN pm.MethodCode = N'CHQ' AND NULLIF(LTRIM(RTRIM(l.ChequeNo)), N'') IS NULL THEN N'a cheque needs its Cheque No.'
+             WHEN pm.MethodCode = N'CHQ' AND l.ChequeDate IS NULL THEN N'a cheque needs its Cheque Date.'
+             WHEN pm.MethodCode = N'CHQ' AND l.ChequeDueDate IS NOT NULL AND l.ChequeDueDate < l.ChequeDate THEN N'the cheque''s due date is before its date.'
+             WHEN l.RateToPayment IS NULL AND purchase.fn_RateToPayment(l.CurrencyId, @CurrencyId, @ExchangeRate, @PaymentDate) IS NULL
+                  THEN N'no official exchange rate is defined for ' + cu.CurrencyCode + N' on or before ' + CONVERT(NVARCHAR(10), @PaymentDate, 120) + N'.'
+        END) x
+    WHERE x.Problem IS NOT NULL
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 73000, @Msg, 1;
+
+    /* ALLOCATIONS: none on a Free payment; only the type's own kind of document otherwise - a payment never
+       mixes invoices and charges. Only POSTED documents of THIS payee, never above what they still owe
+       (posted payments only: a competing draft is settled under a lock when one of them posts). */
+    IF @PaymentType = 1 AND EXISTS (SELECT 1 FROM @Allocations)
+        THROW 73000, 'A Free Payment cannot be allocated to documents. Choose Purchase Invoice or Container Charge Payment, or allocate it after posting.', 1;
+    IF @PaymentType = 2 AND EXISTS (SELECT 1 FROM @Allocations WHERE DocumentKind <> N'PINV')
+        THROW 73000, 'A Purchase Invoice Payment can only be allocated to purchase invoices.', 1;
+    IF @PaymentType = 3 AND EXISTS (SELECT 1 FROM @Allocations WHERE DocumentKind <> N'CHARGE')
+        THROW 73000, 'A Container Charge Payment can only be allocated to container charges.', 1;
+
+    SELECT TOP (1) @Msg = CASE a.DocumentKind WHEN N'PINV' THEN N'Purchase invoice ' ELSE N'Charge ' END
+                          + ISNULL(pd.DocumentNumber, N'#' + CAST(a.DocumentId AS NVARCHAR(10))) + N': ' + x.Problem
+    FROM @Allocations a
+    OUTER APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd
+    CROSS APPLY (SELECT Problem =
+        CASE WHEN pd.DocumentId IS NULL THEN N'not found.'
+             WHEN pd.PaymentStatus IS NULL THEN N'only a posted document can be paid.'
+             WHEN ISNULL(pd.PayeeId, -1) <> @PayeeId THEN N'it does not belong to this payee.'
+             WHEN a.Amount IS NULL OR a.Amount <= 0 THEN N'the allocated amount must be greater than zero.'
+             WHEN a.RateToPayment IS NOT NULL AND a.RateToPayment <= 0 THEN N'exchange rate must be greater than zero.'
+             WHEN a.RateToPayment IS NULL AND purchase.fn_RateToPayment(pd.CurrencyId, @CurrencyId, @ExchangeRate, @PaymentDate) IS NULL
+                  THEN N'no official exchange rate is defined for ' + pd.CurrencyCode + N' on or before ' + CONVERT(NVARCHAR(10), @PaymentDate, 120) + N'.'
+        END) x
+    WHERE x.Problem IS NOT NULL
+    ORDER BY a.DocumentKind, a.DocumentId;
+    IF @Msg IS NOT NULL THROW 73000, @Msg, 1;
+
+    SELECT TOP (1) @Msg = CASE a.DocumentKind WHEN N'PINV' THEN N'Purchase invoice ' ELSE N'Charge ' END + pd.DocumentNumber + N': '
+                          + FORMAT(a.Amount, N'N2', N'en-US') + N' is more than its outstanding ' + FORMAT(pd.OutstandingAmount, N'N2', N'en-US') + N' ' + pd.CurrencyCode + N'.'
+    FROM @Allocations a
+    CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd
+    WHERE a.Amount > pd.OutstandingAmount + 0.005
+    ORDER BY a.DocumentKind, a.DocumentId;
+    IF @Msg IS NOT NULL THROW 73009, @Msg, 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            -- Numbered at the FIRST SAVE, inside this transaction: a save that fails gives the number back.
+            DECLARE @Number NVARCHAR(30);
+            EXEC inventory.usp_DocumentType_NextNumber @Code = N'PAY', @DocumentNumber = @Number OUTPUT;
+
+            INSERT INTO purchase.Payments (PaymentNumber, PaymentDate, PayeeId, BranchId, PaymentType, CurrencyId, Amount, ExchangeRate, Reference, Notes, Status, CreatedBy)
+            VALUES (@Number, @PaymentDate, @PayeeId, @BranchId, @PaymentType, @CurrencyId, @Amount, @ExchangeRate, @Reference, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId) VALUES (@Id, N'Created', N'Draft ' + @Number, @UserId);
+        END
+        ELSE
+        BEGIN
+            DECLARE @Status TINYINT;
+            SELECT @Status = Status FROM purchase.Payments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+            IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+            IF @Status <> 1 THROW 73005, 'Only a draft payment can be edited.', 1;
+            IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.Payments WHERE Id = @Id AND RowVersion = @RowVersion)
+                THROW 73004, 'This payment was modified by another user. Reload the page and try again.', 1;
+
+            UPDATE purchase.Payments
+            SET PaymentDate = @PaymentDate, PayeeId = @PayeeId, BranchId = @BranchId, PaymentType = @PaymentType,
+                CurrencyId = @CurrencyId, Amount = @Amount, ExchangeRate = @ExchangeRate, Reference = @Reference, Notes = @Notes,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+
+            DELETE FROM purchase.PaymentAllocations WHERE PaymentId = @Id;
+            DELETE FROM purchase.PaymentLines WHERE PaymentId = @Id;
+
+            INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header, ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' payment line(s) and '
+                    + CAST((SELECT COUNT(*) FROM @Allocations) AS NVARCHAR(10)) + N' allocation(s) saved', @UserId);
+        END
+
+        -- A cheque line starts Pending; any other line carries no cheque fields, whatever was sent.
+        INSERT INTO purchase.PaymentLines (PaymentId, LineNumber, PaymentMethodId, CurrencyId, Amount, RateToPayment, CashBankAccountId, Reference,
+                                           ChequeNo, ChequeDate, ChequeDueDate, ClearanceStatus)
+        SELECT @Id, l.LineNumber, l.PaymentMethodId, l.CurrencyId, l.Amount,
+               CASE WHEN l.CurrencyId = @CurrencyId THEN 1 ELSE COALESCE(l.RateToPayment, purchase.fn_RateToPayment(l.CurrencyId, @CurrencyId, @ExchangeRate, @PaymentDate)) END,
+               l.CashBankAccountId, NULLIF(LTRIM(RTRIM(l.Reference)), N''),
+               CASE WHEN pm.MethodCode = N'CHQ' THEN NULLIF(LTRIM(RTRIM(l.ChequeNo)), N'') END,
+               CASE WHEN pm.MethodCode = N'CHQ' THEN l.ChequeDate END,
+               CASE WHEN pm.MethodCode = N'CHQ' THEN l.ChequeDueDate END,
+               CASE WHEN pm.MethodCode = N'CHQ' THEN 1 END
+        FROM @Lines l
+        INNER JOIN masterdata.PaymentMethods pm ON pm.Id = l.PaymentMethodId;
+
+        -- The base value of each line, at the header's rate.
+        UPDATE purchase.PaymentLines SET AmountBase = CONVERT(DECIMAL(18,2), ROUND(AmountPaymentCurrency / @ExchangeRate, 2)) WHERE PaymentId = @Id;
+
+        -- THE DOCUMENT'S OWN RATE IS SNAPSHOTTED, so the base value of an allocation can never move.
+        INSERT INTO purchase.PaymentAllocations (PaymentId, DocumentKind, PurchaseDocumentId, ContainerChargeId, AmountDocCurrency, DocExchangeRate, RateToPayment, AllocatedBy)
+        SELECT @Id, a.DocumentKind,
+               CASE WHEN a.DocumentKind = N'PINV' THEN a.DocumentId END,
+               CASE WHEN a.DocumentKind = N'CHARGE' THEN a.DocumentId END,
+               a.Amount, pd.ExchangeRate,
+               CASE WHEN pd.CurrencyId = @CurrencyId THEN 1 ELSE COALESCE(a.RateToPayment, purchase.fn_RateToPayment(pd.CurrencyId, @CurrencyId, @ExchangeRate, @PaymentDate)) END,
+               @UserId
+        FROM @Allocations a
+        CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd;
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 4. Post */
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @Type TINYINT, @PayeeId INT, @Amount DECIMAL(18,2), @Number NVARCHAR(30), @Cur NVARCHAR(10);
+        SELECT @Status = p.Status, @Type = p.PaymentType, @PayeeId = p.PayeeId, @Amount = p.Amount, @Number = p.PaymentNumber, @Cur = c.CurrencyCode
+        FROM purchase.Payments p WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN masterdata.Currencies c ON c.Id = p.CurrencyId
+        WHERE p.Id = @Id;
+
+        IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+        IF @Status <> 1 THROW 73010, 'Only a draft payment can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.Payments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 73004, 'This payment was modified by another user. Reload the page and try again.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+
+        IF NOT EXISTS (SELECT 1 FROM purchase.PaymentLines WHERE PaymentId = @Id)
+            THROW 73000, 'At least one Payment Detail line is required before the payment can be posted.', 1;
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Parties p INNER JOIN purchase.Payments x ON x.PayeeId = p.Id WHERE x.Id = @Id AND p.IsActive = 1 AND p.IsSupplier = 1)
+            THROW 73000, 'The payee is no longer an active supplier.', 1;
+
+        /* A LIST ENTRY CAN BE DEACTIVATED BETWEEN THE SAVE AND THE POST: the draft must still be valid when
+           it moves money. */
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': '
+                              + CASE WHEN pm.IsActive = 0 THEN N'the payment method ' + pm.MethodCode + N' is no longer active.'
+                                     ELSE N'the account ' + a.AccountCode + N' is no longer active.' END
+        FROM purchase.PaymentLines l
+        INNER JOIN masterdata.PaymentMethods pm  ON pm.Id = l.PaymentMethodId
+        INNER JOIN masterdata.CashBankAccounts a ON a.Id = l.CashBankAccountId
+        WHERE l.PaymentId = @Id AND (pm.IsActive = 0 OR a.IsActive = 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 73000, @Msg, 1;
+
+        /* THE KEY CONTROL (section 3): header = payment details, in the PAYMENT currency, within 0.01 -
+           converting several currencies rounds each line. */
+        DECLARE @LinesTotal DECIMAL(18,2) = (SELECT ISNULL(SUM(AmountPaymentCurrency), 0) FROM purchase.PaymentLines WHERE PaymentId = @Id);
+        IF ABS(@Amount - @LinesTotal) > 0.01
+        BEGIN
+            SET @Msg = N'Unbalanced Payment - Payment Details Total (' + FORMAT(@LinesTotal, N'N2', N'en-US') + N' ' + @Cur
+                     + N') does not match the Payment Amount (' + FORMAT(@Amount, N'N2', N'en-US') + N' ' + @Cur + N').';
+            THROW 73008, @Msg, 1;
+        END
+
+        IF @Type IN (2, 3)
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM purchase.PaymentAllocations WHERE PaymentId = @Id)
+                THROW 73008, 'Unbalanced Allocation - Total allocated amount must equal the Payment Amount. Allocate the payment to at least one document.', 1;
+
+            DECLARE @AllocTotal DECIMAL(18,2) = (SELECT ISNULL(SUM(AmountPaymentCurrency), 0) FROM purchase.PaymentAllocations WHERE PaymentId = @Id);
+            IF ABS(@Amount - @AllocTotal) > 0.01
+            BEGIN
+                SET @Msg = N'Unbalanced Allocation - Total allocated amount (' + FORMAT(@AllocTotal, N'N2', N'en-US') + N' ' + @Cur
+                         + N') must equal the Payment Amount (' + FORMAT(@Amount, N'N2', N'en-US') + N' ' + @Cur + N').';
+                THROW 73008, @Msg, 1;
+            END
+
+            /* LOCK THE DOCUMENTS, THEN READ WHAT THEY OWE. Two drafts paying the same invoice each looked
+               fine when saved; whichever posts second must see the first one's money. */
+            DECLARE @LockedInv TABLE (Id INT PRIMARY KEY);
+            INSERT INTO @LockedInv (Id)
+            SELECT d.Id FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+            WHERE d.Id IN (SELECT PurchaseDocumentId FROM purchase.PaymentAllocations WHERE PaymentId = @Id AND PurchaseDocumentId IS NOT NULL);
+            DECLARE @LockedCh TABLE (Id INT PRIMARY KEY);
+            INSERT INTO @LockedCh (Id)
+            SELECT c.Id FROM logistics.ContainerCharges c WITH (UPDLOCK, HOLDLOCK)
+            WHERE c.Id IN (SELECT ContainerChargeId FROM purchase.PaymentAllocations WHERE PaymentId = @Id AND ContainerChargeId IS NOT NULL);
+
+            SELECT TOP (1) @Msg = CASE a.DocumentKind WHEN N'PINV' THEN N'Purchase invoice ' ELSE N'Charge ' END + pd.DocumentNumber + N': '
+                                  + CASE WHEN pd.PaymentStatus IS NULL THEN N'it is no longer posted, so it cannot be paid.'
+                                         ELSE N'it does not belong to this payee.' END
+            FROM purchase.PaymentAllocations a
+            CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, ISNULL(a.PurchaseDocumentId, a.ContainerChargeId)) pd
+            WHERE a.PaymentId = @Id AND (pd.PaymentStatus IS NULL OR ISNULL(pd.PayeeId, -1) <> @PayeeId)
+            ORDER BY pd.DocumentNumber;
+            IF @Msg IS NOT NULL THROW 73000, @Msg, 1;
+
+            SELECT TOP (1) @Msg = CASE a.DocumentKind WHEN N'PINV' THEN N'Purchase invoice ' ELSE N'Charge ' END + pd.DocumentNumber + N': '
+                                  + FORMAT(a.AmountDocCurrency, N'N2', N'en-US') + N' is more than its outstanding '
+                                  + FORMAT(pd.OutstandingAmount, N'N2', N'en-US') + N' ' + pd.CurrencyCode
+                                  + N' - another payment may have been posted against it since this draft was saved.'
+            FROM purchase.PaymentAllocations a
+            CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, ISNULL(a.PurchaseDocumentId, a.ContainerChargeId)) pd
+            WHERE a.PaymentId = @Id AND a.AmountDocCurrency > pd.OutstandingAmount + 0.005
+            ORDER BY pd.DocumentNumber;
+            IF @Msg IS NOT NULL THROW 73009, @Msg, 1;
+        END
+
+        UPDATE purchase.Payments
+        SET Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', @Number + N' - ' + FORMAT(@Amount, N'N2', N'en-US') + N' ' + @Cur, @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 5. Reverse */
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Reverse
+    @Id         INT,
+    @Reason     NVARCHAR(500),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 73000, 'A reason is required to reverse a payment.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @Type TINYINT;
+        SELECT @Status = Status, @Type = PaymentType FROM purchase.Payments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+
+        IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+        IF @Status <> 2 THROW 73010, 'Only a posted payment can be reversed.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.Payments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 73004, 'This payment was modified by another user. Reload the page and try again.', 1;
+
+        /* A FREE PAYMENT THAT HAS SINCE PAID DOCUMENTS CANNOT JUST VANISH: they would go back to owing money
+           nobody told them about. Its allocations are removed first, so somebody decides about each one. An
+           allocated payment's own allocations are part of it: reversing it simply stops them counting. */
+        IF @Type = 1 AND EXISTS (SELECT 1 FROM purchase.PaymentAllocations WHERE PaymentId = @Id AND RemovedAtUtc IS NULL)
+            THROW 73012, 'This payment has been applied to documents since it was posted. Remove those allocations before reversing it.', 1;
+
+        UPDATE purchase.Payments
+        SET Status = 3, ReversedAtUtc = SYSUTCDATETIME(), ReversedBy = @UserId, ReverseReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId) VALUES (@Id, N'Reversed', @Reason, @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. Delete (a draft) */
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT;
+        SELECT @Status = Status FROM purchase.Payments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+        IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+        -- A posted payment moved money and a reversed one proves it did: neither is ever deleted.
+        IF @Status <> 1 THROW 73010, 'Only a draft payment can be deleted. A posted payment is corrected by reversing it.', 1;
+
+        DELETE FROM purchase.PaymentFiles WHERE PaymentId = @Id;
+        DELETE FROM purchase.PaymentAllocations WHERE PaymentId = @Id;
+        DELETE FROM purchase.PaymentLines WHERE PaymentId = @Id;
+        DELETE FROM purchase.PaymentAudit WHERE PaymentId = @Id;
+        DELETE FROM purchase.Payments WHERE Id = @Id;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 7. Allocate a Free payment's advance later */
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Allocate
+    @PaymentId   INT,
+    @Allocations purchase.tvp_PaymentAllocation READONLY,
+    @RowVersion  BINARY(8) = NULL,
+    @UserId      INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM @Allocations) THROW 73000, 'Choose at least one document to allocate to.', 1;
+    IF (SELECT COUNT(DISTINCT DocumentKind) FROM @Allocations) > 1
+        THROW 73000, 'A payment is allocated to purchase invoices OR to container charges, never both.', 1;
+    IF EXISTS (SELECT 1 FROM @Allocations WHERE DocumentKind NOT IN (N'PINV', N'CHARGE'))
+        THROW 73000, 'Unknown document kind.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @Type TINYINT, @PayeeId INT, @Amount DECIMAL(18,2), @CurrencyId INT, @Rate DECIMAL(18,6), @Cur NVARCHAR(10);
+        SELECT @Status = p.Status, @Type = p.PaymentType, @PayeeId = p.PayeeId, @Amount = p.Amount, @CurrencyId = p.CurrencyId,
+               @Rate = p.ExchangeRate, @Cur = c.CurrencyCode
+        FROM purchase.Payments p WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN masterdata.Currencies c ON c.Id = p.CurrencyId
+        WHERE p.Id = @PaymentId;
+
+        IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+        IF @Status <> 2 THROW 73010, 'Only a posted payment can be allocated.', 1;
+        IF @Type <> 1 THROW 73010, 'Only a Free Payment can be allocated later; an invoice or charge payment is already allocated.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.Payments WHERE Id = @PaymentId AND RowVersion = @RowVersion)
+            THROW 73004, 'This payment was modified by another user. Reload the page and try again.', 1;
+
+        -- Decision 6: the first allocation decides the kind; a payment never mixes invoices and charges.
+        IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations x WHERE x.PaymentId = @PaymentId AND x.RemovedAtUtc IS NULL
+                   AND x.DocumentKind <> (SELECT TOP (1) DocumentKind FROM @Allocations))
+            THROW 73000, 'This payment is already allocated to another kind of document; a payment never mixes purchase invoices and container charges.', 1;
+
+        DECLARE @LockedInv TABLE (Id INT PRIMARY KEY);
+        INSERT INTO @LockedInv (Id)
+        SELECT d.Id FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        WHERE d.Id IN (SELECT DocumentId FROM @Allocations WHERE DocumentKind = N'PINV');
+        DECLARE @LockedCh TABLE (Id INT PRIMARY KEY);
+        INSERT INTO @LockedCh (Id)
+        SELECT c.Id FROM logistics.ContainerCharges c WITH (UPDLOCK, HOLDLOCK)
+        WHERE c.Id IN (SELECT DocumentId FROM @Allocations WHERE DocumentKind = N'CHARGE');
+
+        DECLARE @Msg NVARCHAR(400);
+        DECLARE @Today DATE = CAST(SYSUTCDATETIME() AS DATE);
+        SELECT TOP (1) @Msg = CASE a.DocumentKind WHEN N'PINV' THEN N'Purchase invoice ' ELSE N'Charge ' END
+                              + ISNULL(pd.DocumentNumber, N'#' + CAST(a.DocumentId AS NVARCHAR(10))) + N': ' + x.Problem
+        FROM @Allocations a
+        OUTER APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd
+        CROSS APPLY (SELECT Problem =
+            CASE WHEN pd.DocumentId IS NULL THEN N'not found.'
+                 WHEN pd.PaymentStatus IS NULL THEN N'only a posted document can be paid.'
+                 WHEN ISNULL(pd.PayeeId, -1) <> @PayeeId THEN N'it does not belong to this payee.'
+                 WHEN a.Amount IS NULL OR a.Amount <= 0 THEN N'the allocated amount must be greater than zero.'
+                 WHEN a.Amount > pd.OutstandingAmount + 0.005 THEN FORMAT(a.Amount, N'N2', N'en-US') + N' is more than its outstanding '
+                                                                  + FORMAT(pd.OutstandingAmount, N'N2', N'en-US') + N' ' + pd.CurrencyCode + N'.'
+                 WHEN a.RateToPayment IS NOT NULL AND a.RateToPayment <= 0 THEN N'exchange rate must be greater than zero.'
+                 WHEN a.RateToPayment IS NULL AND purchase.fn_RateToPayment(pd.CurrencyId, @CurrencyId, @Rate, @Today) IS NULL
+                      THEN N'no official exchange rate is defined for ' + pd.CurrencyCode + N'.'
+            END) x
+        WHERE x.Problem IS NOT NULL
+        ORDER BY a.DocumentKind, a.DocumentId;
+        IF @Msg IS NOT NULL THROW 73009, @Msg, 1;
+
+        /* WHAT IS LEFT TO ALLOCATE, in the payment currency: the amount less its live allocations. */
+        DECLARE @Applied DECIMAL(18,2) = (SELECT ISNULL(SUM(AmountPaymentCurrency), 0) FROM purchase.PaymentAllocations WHERE PaymentId = @PaymentId AND RemovedAtUtc IS NULL);
+        DECLARE @Unapplied DECIMAL(18,2) = @Amount - @Applied;
+        DECLARE @New DECIMAL(18,2) = (SELECT ISNULL(SUM(CONVERT(DECIMAL(18,2), ROUND(a.Amount * CASE WHEN pd.CurrencyId = @CurrencyId THEN 1
+                                                    ELSE COALESCE(a.RateToPayment, purchase.fn_RateToPayment(pd.CurrencyId, @CurrencyId, @Rate, @Today)) END, 2))), 0)
+                                      FROM @Allocations a CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd);
+        IF @New > @Unapplied + 0.01
+        BEGIN
+            SET @Msg = N'This payment has only ' + FORMAT(@Unapplied, N'N2', N'en-US') + N' ' + @Cur + N' unapplied, but '
+                     + FORMAT(@New, N'N2', N'en-US') + N' ' + @Cur + N' was allocated.';
+            THROW 73011, @Msg, 1;
+        END
+
+        INSERT INTO purchase.PaymentAllocations (PaymentId, DocumentKind, PurchaseDocumentId, ContainerChargeId, AmountDocCurrency, DocExchangeRate, RateToPayment, AllocatedBy)
+        SELECT @PaymentId, a.DocumentKind,
+               CASE WHEN a.DocumentKind = N'PINV' THEN a.DocumentId END,
+               CASE WHEN a.DocumentKind = N'CHARGE' THEN a.DocumentId END,
+               a.Amount, pd.ExchangeRate,
+               CASE WHEN pd.CurrencyId = @CurrencyId THEN 1 ELSE COALESCE(a.RateToPayment, purchase.fn_RateToPayment(pd.CurrencyId, @CurrencyId, @Rate, @Today)) END,
+               @UserId
+        FROM @Allocations a
+        CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd;
+
+        INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+        VALUES (@PaymentId, N'Allocated', CAST((SELECT COUNT(*) FROM @Allocations) AS NVARCHAR(10)) + N' document(s), '
+                + FORMAT(@New, N'N2', N'en-US') + N' ' + @Cur, @UserId);
+
+        UPDATE purchase.Payments SET UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @PaymentId;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Deallocate
+    @AllocationId INT,
+    @UserId       INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @PaymentId INT, @Removed DATETIME2(3), @Amount DECIMAL(18,2), @Kind NVARCHAR(10), @DocId INT;
+        SELECT @PaymentId = PaymentId, @Removed = RemovedAtUtc, @Amount = AmountDocCurrency, @Kind = DocumentKind,
+               @DocId = ISNULL(PurchaseDocumentId, ContainerChargeId)
+        FROM purchase.PaymentAllocations WHERE Id = @AllocationId;
+        IF @PaymentId IS NULL THROW 73006, 'Allocation not found.', 1;
+
+        DECLARE @Status TINYINT, @Type TINYINT;
+        SELECT @Status = Status, @Type = PaymentType FROM purchase.Payments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @PaymentId;
+        IF @Removed IS NOT NULL THROW 73010, 'This allocation has already been removed.', 1;
+        IF @Status <> 2 THROW 73010, 'Only an allocation of a posted payment can be removed.', 1;
+        -- An invoice / charge payment's allocations ARE the payment: taking one away would unbalance it.
+        IF @Type <> 1 THROW 73010, 'The allocations of an invoice or charge payment are part of it. Reverse the payment instead.', 1;
+
+        UPDATE purchase.PaymentAllocations SET RemovedAtUtc = SYSUTCDATETIME(), RemovedBy = @UserId WHERE Id = @AllocationId;
+
+        INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+        VALUES (@PaymentId, N'Deallocated', ISNULL((SELECT DocumentNumber FROM purchase.fn_PayableDocument(@Kind, @DocId)), N'#' + CAST(@DocId AS NVARCHAR(10)))
+                + N', ' + FORMAT(@Amount, N'N2', N'en-US'), @UserId);
+
+        UPDATE purchase.Payments SET UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @PaymentId;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 8. Cheque clearance (decision 5) */
+
+/* THE ONE FIELD OF A POSTED PAYMENT THAT STILL MOVES: a cheque is Pending until the bank clears or returns
+   it. Changing it moves no money - a returned cheque is dealt with by reversing the payment. */
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_SetChequeStatus
+    @LineId          INT,
+    @ClearanceStatus TINYINT,        -- 1 Pending, 2 Cleared, 3 Returned
+    @UserId          INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF @ClearanceStatus NOT IN (1, 2, 3) THROW 73000, 'Clearance status must be Pending, Cleared or Returned.', 1;
+
+    DECLARE @PaymentId INT, @Status TINYINT, @Old TINYINT, @IsCheque BIT, @ChequeNo NVARCHAR(50);
+    SELECT @PaymentId = l.PaymentId, @Status = p.Status, @Old = l.ClearanceStatus, @ChequeNo = l.ChequeNo,
+           @IsCheque = CASE WHEN pm.MethodCode = N'CHQ' THEN 1 ELSE 0 END
+    FROM purchase.PaymentLines l
+    INNER JOIN purchase.Payments p ON p.Id = l.PaymentId
+    INNER JOIN masterdata.PaymentMethods pm ON pm.Id = l.PaymentMethodId
+    WHERE l.Id = @LineId;
+
+    IF @PaymentId IS NULL THROW 73006, 'Payment line not found.', 1;
+    IF @IsCheque = 0 THROW 73000, 'Only a cheque line has a clearance status.', 1;
+    IF @Status <> 2 THROW 73010, 'The clearance status is kept for a posted payment only.', 1;
+    IF @Old = @ClearanceStatus RETURN;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        UPDATE purchase.PaymentLines
+        SET ClearanceStatus = @ClearanceStatus, ClearanceUpdatedAtUtc = SYSUTCDATETIME(), ClearanceUpdatedBy = @UserId
+        WHERE Id = @LineId;
+
+        INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+        VALUES (@PaymentId, N'ChequeStatus', N'Cheque ' + ISNULL(@ChequeNo, N'') + N': '
+                + CASE ISNULL(@Old, 1) WHEN 1 THEN N'Pending' WHEN 2 THEN N'Cleared' ELSE N'Returned' END + N' -> '
+                + CASE @ClearanceStatus WHEN 1 THEN N'Pending' WHEN 2 THEN N'Cleared' ELSE N'Returned' END, @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 9. Get */
+
+-- Five result sets: the payment, its lines, its allocations, its files, its audit trail (newest first).
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT p.Id, p.PaymentNumber, p.PaymentDate, p.PayeeId, py.PartyCode AS PayeeCode, py.PartyName AS PayeeName, py.Address AS PayeeAddress,
+           p.BranchId, b.BranchCode, b.BranchName, p.PaymentType,
+           p.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
+           p.Amount, p.ExchangeRate, p.AmountBase, bc.CurrencyCode AS BaseCurrencyCode,
+           p.Reference, p.Notes, p.Status,
+           LinesTotal     = ISNULL(ln.Total, 0),
+           AllocatedTotal = ISNULL(al.Total, 0),
+           -- Only a posted FREE payment holds an advance; an allocated one is spent by definition.
+           UnappliedAmount = CASE WHEN p.Status = 2 AND p.PaymentType = 1 THEN p.Amount - ISNULL(al.Total, 0) ELSE 0 END,
+           AllocationKind = al.Kind,
+           p.PostedAtUtc, p.PostedBy, pu.FullName AS PostedByName,
+           p.ReversedAtUtc, p.ReversedBy, ru.FullName AS ReversedByName, p.ReverseReason,
+           p.CreatedAtUtc, p.CreatedBy, cu.FullName AS CreatedByName, p.UpdatedAtUtc, p.UpdatedBy, uu.FullName AS UpdatedByName,
+           p.RowVersion
+    FROM purchase.Payments p
+    INNER JOIN masterdata.Parties py    ON py.Id = p.PayeeId
+    INNER JOIN masterdata.Branches b    ON b.Id = p.BranchId
+    INNER JOIN masterdata.Currencies c  ON c.Id = p.CurrencyId
+    LEFT  JOIN masterdata.Currencies bc ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
+    OUTER APPLY (SELECT Total = SUM(AmountPaymentCurrency) FROM purchase.PaymentLines WHERE PaymentId = p.Id) ln
+    OUTER APPLY (SELECT Total = SUM(AmountPaymentCurrency), Kind = MIN(DocumentKind)
+                 FROM purchase.PaymentAllocations WHERE PaymentId = p.Id AND RemovedAtUtc IS NULL) al
+    LEFT  JOIN security.Users pu ON pu.Id = p.PostedBy
+    LEFT  JOIN security.Users ru ON ru.Id = p.ReversedBy
+    LEFT  JOIN security.Users cu ON cu.Id = p.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = p.UpdatedBy
+    WHERE p.Id = @Id;
+
+    SELECT l.Id, l.PaymentId, l.LineNumber, l.PaymentMethodId, pm.MethodCode, pm.MethodName,
+           IsCheque = CAST(CASE WHEN pm.MethodCode = N'CHQ' THEN 1 ELSE 0 END AS BIT),
+           l.CurrencyId, cu.CurrencyCode, cu.DecimalPlaces, l.Amount, l.RateToPayment, l.AmountPaymentCurrency, l.AmountBase,
+           l.CashBankAccountId, a.AccountCode, a.AccountName, l.Reference,
+           l.ChequeNo, l.ChequeDate, l.ChequeDueDate, l.ClearanceStatus,
+           ClearanceStatusName = CASE l.ClearanceStatus WHEN 1 THEN N'Pending' WHEN 2 THEN N'Cleared' WHEN 3 THEN N'Returned' END,
+           l.ClearanceUpdatedAtUtc, xu.FullName AS ClearanceUpdatedByName
+    FROM purchase.PaymentLines l
+    INNER JOIN masterdata.PaymentMethods pm  ON pm.Id = l.PaymentMethodId
+    INNER JOIN masterdata.Currencies cu      ON cu.Id = l.CurrencyId
+    INNER JOIN masterdata.CashBankAccounts a ON a.Id = l.CashBankAccountId
+    LEFT  JOIN security.Users xu ON xu.Id = l.ClearanceUpdatedBy
+    WHERE l.PaymentId = @Id
+    ORDER BY l.LineNumber;
+
+    /* PreviouslyPaid is what OTHER posted payments have paid the document: this payment's own share is
+       taken out when it is posted and still live, so a draft and a posted payment read the same. */
+    SELECT al.Id, al.PaymentId, al.DocumentKind, DocumentId = ISNULL(al.PurchaseDocumentId, al.ContainerChargeId),
+           pd.DocumentNumber, pd.DocumentDate, pd.ContainerRef, pd.ChargeTypeName, pd.Reference AS DocumentReference,
+           pd.CurrencyId AS DocumentCurrencyId, pd.CurrencyCode AS DocumentCurrencyCode, pd.DecimalPlaces AS DocumentDecimalPlaces,
+           pd.DocumentTotal, pd.ReturnedAmount,
+           PreviouslyPaid = pd.PaidAmount - CASE WHEN p.Status = 2 AND al.RemovedAtUtc IS NULL THEN al.AmountDocCurrency ELSE 0 END,
+           pd.OutstandingAmount, pd.PaymentStatus,
+           al.AmountDocCurrency, al.DocExchangeRate, al.RateToPayment, al.AmountPaymentCurrency, al.AmountBase,
+           al.AllocatedAtUtc, au.FullName AS AllocatedByName, al.RemovedAtUtc, xu.FullName AS RemovedByName
+    FROM purchase.PaymentAllocations al
+    INNER JOIN purchase.Payments p ON p.Id = al.PaymentId
+    CROSS APPLY purchase.fn_PayableDocument(al.DocumentKind, ISNULL(al.PurchaseDocumentId, al.ContainerChargeId)) pd
+    LEFT  JOIN security.Users au ON au.Id = al.AllocatedBy
+    LEFT  JOIN security.Users xu ON xu.Id = al.RemovedBy
+    WHERE al.PaymentId = @Id
+    ORDER BY al.AllocatedAtUtc, al.Id;
+
+    SELECT f.Id, f.PaymentId, f.AttachmentTypeId, t.Category, t.SubType, f.Note, f.FileName, f.ContentType, f.SizeBytes,
+           f.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM purchase.PaymentFiles f
+    LEFT JOIN masterdata.AttachmentTypes t ON t.Id = f.AttachmentTypeId
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.PaymentId = @Id
+    ORDER BY f.CreatedAtUtc, f.Id;
+
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM purchase.PaymentAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.PaymentId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+END
+GO
+
+/* ================================================================== 10. Search */
+
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_Search
+    @Search        NVARCHAR(100) = NULL,           -- number, reference, payee code / name, notes
+    @PayeeId       INT           = NULL,
+    @BranchId      INT           = NULL,
+    @Status        TINYINT       = NULL,           -- 1 Draft | 2 Posted | 3 Reversed
+    @PaymentType   TINYINT       = NULL,           -- 1 Free | 2 Purchase Invoice | 3 Container Charge
+    @CurrencyId    INT           = NULL,
+    @DateFrom      DATE          = NULL,
+    @DateTo        DATE          = NULL,
+    @SortColumn    NVARCHAR(30)  = N'PaymentDate', -- PaymentNumber | PaymentDate | PayeeName | Status | AmountBase | CreatedAtUtc
+    @SortDirection NVARCHAR(4)   = N'DESC',
+    @PageNumber    INT           = 1,
+    @PageSize      INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'PaymentNumber', N'PaymentDate', N'PayeeName', N'Status', N'AmountBase', N'CreatedAtUtc')
+        SET @SortColumn = N'PaymentDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT p.Id, p.PaymentNumber, p.PaymentDate, p.PayeeId, py.PartyCode AS PayeeCode, py.PartyName AS PayeeName,
+           p.BranchId, b.BranchName, p.PaymentType, p.CurrencyId, c.CurrencyCode, c.DecimalPlaces,
+           p.Amount, p.ExchangeRate, p.AmountBase, p.Reference, p.Status,
+           Methods = (SELECT STRING_AGG(m.MethodName, N', ') WITHIN GROUP (ORDER BY m.MethodName)
+                      FROM (SELECT DISTINCT pm.MethodName FROM purchase.PaymentLines l
+                            INNER JOIN masterdata.PaymentMethods pm ON pm.Id = l.PaymentMethodId WHERE l.PaymentId = p.Id) m),
+           AllocatedAmount = ISNULL(al.Total, 0),
+           UnappliedAmount = CASE WHEN p.Status = 2 AND p.PaymentType = 1 THEN p.Amount - ISNULL(al.Total, 0) ELSE 0 END,
+           DocumentCount   = ISNULL(al.Docs, 0),
+           p.PostedAtUtc, pu.FullName AS PostedByName, p.ReversedAtUtc,
+           p.CreatedAtUtc, cu.FullName AS CreatedByName, p.UpdatedAtUtc, p.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM purchase.Payments p
+    INNER JOIN masterdata.Parties py   ON py.Id = p.PayeeId
+    INNER JOIN masterdata.Branches b   ON b.Id = p.BranchId
+    INNER JOIN masterdata.Currencies c ON c.Id = p.CurrencyId
+    OUTER APPLY (SELECT Total = SUM(AmountPaymentCurrency), Docs = COUNT(*)
+                 FROM purchase.PaymentAllocations WHERE PaymentId = p.Id AND RemovedAtUtc IS NULL) al
+    LEFT  JOIN security.Users cu ON cu.Id = p.CreatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = p.PostedBy
+    WHERE (@Search IS NULL OR p.PaymentNumber LIKE N'%' + @Search + N'%' OR p.Reference LIKE N'%' + @Search + N'%'
+           OR py.PartyCode LIKE N'%' + @Search + N'%' OR py.PartyName LIKE N'%' + @Search + N'%' OR p.Notes LIKE N'%' + @Search + N'%')
+      AND (@PayeeId IS NULL OR p.PayeeId = @PayeeId)
+      AND (@BranchId IS NULL OR p.BranchId = @BranchId)
+      AND (@Status IS NULL OR p.Status = @Status)
+      AND (@PaymentType IS NULL OR p.PaymentType = @PaymentType)
+      AND (@CurrencyId IS NULL OR p.CurrencyId = @CurrencyId)
+      AND (@DateFrom IS NULL OR p.PaymentDate >= @DateFrom)
+      AND (@DateTo IS NULL OR p.PaymentDate <= @DateTo)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'PaymentNumber' THEN p.PaymentNumber WHEN N'PayeeName' THEN py.PartyName END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'PaymentNumber' THEN p.PaymentNumber WHEN N'PayeeName' THEN py.PartyName END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'PaymentDate' THEN p.PaymentDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'PaymentDate' THEN p.PaymentDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(p.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(p.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'AmountBase' THEN p.AmountBase END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'AmountBase' THEN p.AmountBase END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN p.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN p.CreatedAtUtc END DESC,
+        p.PaymentDate DESC, p.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+/* ================================================================== 11. What a payee is still owed */
+
+/* The documents the allocation table lists: this payee's POSTED purchase invoices (PINV) or container
+   charges (CHARGE) with something left to pay, oldest first. Fully paid ones never appear. When the
+   payment's currency, rate and date are given, DefaultRateToPayment is the multiplier the row pre-fills. */
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_OpenDocuments
+    @PayeeId           INT,
+    @DocumentKind      NVARCHAR(10),          -- PINV | CHARGE
+    @PaymentCurrencyId INT           = NULL,
+    @PaymentRate       DECIMAL(18,6) = NULL,
+    @AsOfDate          DATE          = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @AsOfDate IS NULL SET @AsOfDate = CAST(SYSUTCDATETIME() AS DATE);
+    IF @DocumentKind NOT IN (N'PINV', N'CHARGE') THROW 73000, 'Document kind must be PINV or CHARGE.', 1;
+
+    SELECT pd.DocumentKind, pd.DocumentId, pd.DocumentNumber, pd.DocumentDate, pd.ContainerRef, pd.ChargeTypeName, pd.Reference AS DocumentReference,
+           pd.CurrencyId, pd.CurrencyCode, pd.DecimalPlaces, pd.ExchangeRate,
+           pd.DocumentTotal, pd.ReturnedAmount, PreviouslyPaid = pd.PaidAmount, pd.OutstandingAmount, pd.PaymentStatus,
+           OutstandingBase = CONVERT(DECIMAL(18,2), pd.OutstandingAmount / pd.ExchangeRate),
+           DefaultRateToPayment = CASE WHEN @PaymentCurrencyId IS NULL THEN NULL
+                                       ELSE purchase.fn_RateToPayment(pd.CurrencyId, @PaymentCurrencyId,
+                                            COALESCE(@PaymentRate, masterdata.fn_GetRate(@PaymentCurrencyId, 1, @AsOfDate)), @AsOfDate) END
+    FROM (SELECT d.Id FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PINV'
+          WHERE @DocumentKind = N'PINV' AND d.SupplierId = @PayeeId AND d.Status = 2
+          UNION ALL
+          SELECT Id FROM logistics.ContainerCharges WHERE @DocumentKind = N'CHARGE' AND ProviderPartyId = @PayeeId AND Status = 2) ids
+    CROSS APPLY purchase.fn_PayableDocument(@DocumentKind, ids.Id) pd
+    WHERE pd.PaymentStatus IN (N'Unpaid', N'Partial') AND pd.OutstandingAmount > 0.005
+    ORDER BY pd.DocumentDate, pd.DocumentId;
+END
+GO
+
+/* The multiplier a line or an allocation pre-fills: from a currency to the payment currency, on a date.
+   NULL when either has no official rate (a warning on the page, never an error here). */
+CREATE OR ALTER PROCEDURE purchase.usp_Payment_RateToPayment
+    @FromCurrencyId    INT,
+    @PaymentCurrencyId INT,
+    @PaymentRate       DECIMAL(18,6) = NULL,  -- NULL = the payment currency's official rate on the date
+    @AsOfDate          DATE          = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @AsOfDate IS NULL SET @AsOfDate = CAST(SYSUTCDATETIME() AS DATE);
+    DECLARE @PayRate DECIMAL(18,6) = COALESCE(@PaymentRate, masterdata.fn_GetRate(@PaymentCurrencyId, 1, @AsOfDate));
+    SELECT FromCurrencyId = @FromCurrencyId, PaymentCurrencyId = @PaymentCurrencyId, PaymentRate = @PayRate,
+           FromRate = masterdata.fn_GetRate(@FromCurrencyId, 1, @AsOfDate),
+           RateToPayment = purchase.fn_RateToPayment(@FromCurrencyId, @PaymentCurrencyId, @PayRate, @AsOfDate);
+END
+GO
+
+/* ================================================================== 12. Files */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Add
+    @PaymentId        INT,
+    @AttachmentTypeId INT            = NULL,
+    @Note             NVARCHAR(300)  = NULL,
+    @FileName         NVARCHAR(255),
+    @ContentType      NVARCHAR(100),
+    @SizeBytes        INT,
+    @Content          VARBINARY(MAX),
+    @UserId           INT            = NULL,
+    @NewId            INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.Payments WHERE Id = @PaymentId);
+    IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+    -- Evidence keeps arriving after a payment is posted (a SWIFT copy, a bank statement), so a posted payment
+    -- takes files. A reversed one is closed.
+    IF @Status = 3 THROW 73005, 'A reversed payment is closed; files can no longer be added.', 1;
+    IF @AttachmentTypeId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @AttachmentTypeId AND AppliesTo = N'Payment' AND IsActive = 1)
+        THROW 73000, 'Attachment type not found, inactive, or not one for payments.', 1;
+    IF @SizeBytes IS NULL OR @SizeBytes <= 0 THROW 73000, 'The file is empty.', 1;
+
+    INSERT INTO purchase.PaymentFiles (PaymentId, AttachmentTypeId, Note, FileName, ContentType, SizeBytes, Content, CreatedBy)
+    VALUES (@PaymentId, @AttachmentTypeId, @Note, @FileName, @ContentType, @SizeBytes, @Content, @UserId);
+    SET @NewId = SCOPE_IDENTITY();
+
+    INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId) VALUES (@PaymentId, N'FileAdded', @FileName, @UserId);
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Get
+    @PaymentId INT, @FileId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, PaymentId, FileName, ContentType, SizeBytes, Content
+    FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Delete
+    @PaymentId INT, @FileId INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.Payments WHERE Id = @PaymentId);
+    IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+    -- Evidence of a posted payment is not removable: that is what it is evidence of.
+    IF @Status <> 1 THROW 73005, 'Files can only be removed from a draft payment.', 1;
+
+    DECLARE @Name NVARCHAR(255) = (SELECT FileName FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId);
+    IF @Name IS NULL THROW 73006, 'File not found.', 1;
+
+    DELETE FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId;
+    INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId) VALUES (@PaymentId, N'FileDeleted', @Name, @UserId);
+END
+GO
+
+/* ================================================================== 13. Purchase invoices and container charges learn what they were paid */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Search
+    @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
+    @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
+                                               -- (45) the item code of a supplier invoice
+    @BranchId         INT          = NULL,
+    @WarehouseId      INT          = NULL,
+    @SupplierId       INT          = NULL,
+    @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted (PO: approved) | 3 Cancelled | 4 Closed | 5 Pending approval
+    @InvoicingStatus  TINYINT      = NULL,     -- purchase orders: 0 not invoiced | 1 partially | 2 fully
+    @DateFrom         DATE         = NULL,
+    @DateTo           DATE         = NULL,
+    @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | SupplierName | Status | TotalAmount | CreatedAtUtc
+    @SortDirection    NVARCHAR(4)  = N'DESC',
+    @PageNumber       INT          = 1,
+    @PageSize         INT          = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'DocumentNumber', N'DocumentDate', N'SupplierName', N'Status', N'TotalAmount', N'CreatedAtUtc')
+        SET @SortColumn = N'DocumentDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT d.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.BranchId, b.BranchName, d.WarehouseId, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, c.CurrencyCode, c.Symbol AS CurrencySymbol, c.DecimalPlaces, d.ExchangeRate,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode,
+           d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,
+           DraftInvoiceCount = CASE WHEN dt.Code = N'PO' THEN (SELECT COUNT(*) FROM purchase.PurchaseDocuments x WHERE x.SourceDocumentId = d.Id AND x.Status = 1) END,
+           -- (45) the item of a supplier invoice (the one of its first line) and how many it holds (more than 1: made before 45)
+           ItemId = itm.ItemId, ItemCode = itm.ItemCode, ItemName = itm.ItemName, ItemCount = itm.ItemCount,
+           d.ApprovalRequestedAtUtc, d.ApprovedAtUtc, apu.FullName AS ApprovedByName,
+           d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
+           d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           COUNT(*) OVER () AS TotalCount
+    FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    OUTER APPLY (SELECT Ordered = SUM(QuantityBase), Invoiced = SUM(ReceivedQuantityBase)
+                 FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) prog
+    OUTER APPLY (SELECT TOP (1) fl.ItemId, fi.ItemCode, fi.ItemName,
+                        ItemCount = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id)
+                 FROM purchase.PurchaseDocumentLines fl INNER JOIN inventory.Items fi ON fi.Id = fl.ItemId
+                 WHERE fl.DocumentId = d.Id AND dt.Code = N'PINV'
+                 ORDER BY fl.LineNumber) itm
+    WHERE dt.Family = N'Purchase'
+      AND (@DocumentTypeCode IS NULL OR dt.Code = @DocumentTypeCode)
+      AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.SupplierReference LIKE N'%' + @Search + N'%'
+           OR d.ExporterReference LIKE N'%' + @Search + N'%' OR d.CommercialInvoiceNo LIKE N'%' + @Search + N'%'
+           OR sp.PartyCode LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%' OR d.Notes LIKE N'%' + @Search + N'%'
+           OR (dt.Code = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines sl INNER JOIN inventory.Items si ON si.Id = sl.ItemId
+                                             WHERE sl.DocumentId = d.Id AND si.ItemCode LIKE N'%' + @Search + N'%')))
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR d.WarehouseId = @WarehouseId)
+      AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)
+      AND (@Status IS NULL OR d.Status = @Status)
+      AND (@InvoicingStatus IS NULL OR (dt.Code = N'PO' AND
+           CASE WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0 WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END = @InvoicingStatus))
+      AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
+      AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END DESC,
+        d.DocumentDate DESC, d.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT d.Id, d.DocumentTypeId, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection, dt.NumberOnPost,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate,
+           d.BranchId, b.BranchCode, b.BranchName, d.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName, sp.Phone AS SupplierPhone, sp.Email AS SupplierEmail, sp.Address AS SupplierAddress,
+           d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
+           d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode, d.Notes, d.Status,
+           IsContainerBound = CAST(CASE WHEN EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x
+                                                    WHERE x.DocumentId = d.Id AND x.ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END AS BIT),
+           ContainerCount = CASE WHEN dt.Code = N'PO'
+                                 THEN (SELECT COUNT(DISTINCT cl.ContainerId) FROM logistics.ContainerLines cl
+                                       INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
+                                       WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8)
+                                 ELSE (SELECT COUNT(DISTINCT cl.ContainerId) FROM purchase.PurchaseDocumentLines x
+                                       INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+                                       WHERE x.DocumentId = d.Id) END,
+           LoadedBase = CASE WHEN dt.Code = N'PO'
+                             THEN ISNULL((SELECT SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                                          INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
+                                          WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8), 0) END,
+           ContainerChargesBase = cch.Share,
+           ContainersNeeded = need.Containers,     -- (43) invoices: sum over the items of the pieces / pieces per container
+           d.ApprovalRequestedAtUtc, d.ApprovalRequestedBy, rqu.FullName AS ApprovalRequestedByName,
+           d.ApprovedAtUtc, d.ApprovedBy, apu.FullName AS ApprovedByName, d.ApprovalChannel,
+           d.RejectedAtUtc, d.RejectedBy, rju.FullName AS RejectedByName, d.RejectReason,
+           OrderedBase = prog.Ordered, InvoicedBase = prog.Invoiced, InDraftInvoicesBase = ISNULL(drf.InDraft, 0),
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,      -- 0 not, 1 partially, 2 fully invoiced
+           d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalChargesBase, d.TotalLandedCostBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber, sdt.Code AS SourceDocumentTypeCode,
+           d.SourceShortageId, sh.DocumentNumber AS SourceShortageNumber,
+           d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
+           d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
+           d.ClosedAtUtc, d.ClosedBy, ku.FullName AS ClosedByName, d.CloseReason,
+           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
+           d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
+    FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN masterdata.Currencies bc   ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN inventory.DocumentTypes sdt ON sdt.Id = src.DocumentTypeId
+    LEFT  JOIN inventory.ShortageDocuments sh ON sh.Id = d.SourceShortageId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = d.CancelledBy
+    LEFT  JOIN security.Users ku ON ku.Id = d.ClosedBy
+    LEFT  JOIN security.Users rqu ON rqu.Id = d.ApprovalRequestedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    LEFT  JOIN security.Users rju ON rju.Id = d.RejectedBy
+    OUTER APPLY (SELECT Ordered = SUM(pl.QuantityBase), Invoiced = SUM(pl.ReceivedQuantityBase)
+                 FROM purchase.PurchaseDocumentLines pl WHERE pl.DocumentId = d.Id) prog
+    OUTER APPLY (SELECT InDraft = SUM(x.QuantityBase)
+                 FROM purchase.PurchaseDocumentLines pl
+                 INNER JOIN purchase.PurchaseDocumentLines x ON x.SourceLineId = pl.Id
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId AND xd.Status = 1
+                 WHERE pl.DocumentId = d.Id) drf
+    OUTER APPLY (SELECT Share = SUM(a.AmountBase * CAST(x.QuantityBase AS DECIMAL(18,6)) / NULLIF(cl.QuantityBase, 0))
+                 FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN logistics.ContainerLines cl            ON cl.Id = x.ContainerLineId
+                 INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id
+                 INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                 WHERE x.DocumentId = d.Id) cch
+    OUTER APPLY (SELECT Containers = CASE WHEN dt.Code = N'PINV'
+                                          THEN CAST(SUM(CAST(s.InvoicedBase AS DECIMAL(19,4)) / s.PcsPerContainer) AS DECIMAL(18,2)) END
+                 FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) need
+    WHERE d.Id = @Id;
+
+    SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, iu.Barcode, l.PackingFormula,
+           l.WarehouseId, w.WarehouseCode, w.WarehouseName, l.ExpiryDate,
+           l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal,
+           l.UnitCostBase, LandedCostBase = l.UnitCostBase, l.FobCostBase, l.AllocatedChargesBase,
+           l.ReceivedQuantityBase, l.ReturnedQuantityBase, l.ShippedQuantityBase,
+           AllocatedToContainersBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Allocated, 0)
+                                            WHEN l.ContainerLineId IS NOT NULL THEN l.QuantityBase ELSE 0 END,
+           TransitBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Transit, 0)
+                              WHEN lct.Status IN (3, 4, 5) THEN l.QuantityBase ELSE 0 END,
+           RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
+           AvailableForContainerBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - ISNULL(ct.Allocated, 0) - ISNULL(dir.Qty, 0) END,
+           InvoicedDirectBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.Qty, 0) END,
+           l.ContainerLineId, ContainerId = lcl.ContainerId, ContainerRef = lct.ContainerRef, ContainerNo = lct.ContainerNo,
+           ContainerStatus = lct.Status,
+           ContainerChargesBase = CASE WHEN l.ContainerLineId IS NOT NULL THEN ISNULL(lch.Share, 0) END,
+           EstimatedLandedCostBase = CASE WHEN l.ContainerLineId IS NOT NULL
+                                          THEN COALESCE(lcl.LandedCostBase,
+                                                        ISNULL(l.FobCostBase, l.LineTotal / NULLIF(d.ExchangeRate, 0) / NULLIF(l.QuantityBase, 0))
+                                                        + ISNULL(lch.Share, 0) / NULLIF(l.QuantityBase, 0)) END,
+           InDraftDocumentsBase = ISNULL(dr.Qty, 0),
+           AvailableToInvoiceBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase - ISNULL(dr.Qty, 0) END,
+           l.ImportRowNumber, l.Notes, l.SourceLineId,
+           OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+    INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+    INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+    INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
+    INNER JOIN masterdata.Warehouses w      ON w.Id = l.WarehouseId
+    OUTER APPLY (SELECT Allocated = SUM(cl.QuantityBase),
+                        Transit   = SUM(CASE WHEN c.Status IN (3, 4, 5) THEN cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0) ELSE 0 END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                 WHERE cl.PoLineId = l.Id AND c.Status <> 8) ct
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2 AND dt.Code = N'PO') dir
+    LEFT  JOIN logistics.ContainerLines lcl ON lcl.Id = l.ContainerLineId
+    LEFT  JOIN logistics.Containers lct     ON lct.Id = lcl.ContainerId
+    OUTER APPLY (SELECT Charges = SUM(a.AmountBase)
+                 FROM logistics.ContainerChargeAllocations a
+                 INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                 WHERE a.ContainerLineId = l.ContainerLineId) lcc
+    OUTER APPLY (SELECT Share = lcc.Charges * CAST(l.QuantityBase AS DECIMAL(18,6)) / NULLIF(lcl.QuantityBase, 0)) lch
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1) dr
+    WHERE l.DocumentId = @Id
+    ORDER BY l.LineNumber;
+
+    SELECT f.Id, f.DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM purchase.PurchaseDocumentFiles f
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.DocumentId = @Id
+    ORDER BY f.CreatedAtUtc DESC;
+
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM purchase.PurchaseDocumentAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.DocumentId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+
+    SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN purchase.PurchaseDocuments x ON x.Id = d.SourceDocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE d.Id = @Id
+    UNION ALL
+    SELECT N'Child', x.Id, dt.Code, dt.Name, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments x
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE x.SourceDocumentId = @Id
+    ORDER BY Relation DESC, DocumentDate, Id;
+
+    -- 6: charges of the invoice (kind PINV), of its landed cost adjustments (kind LCA) and, for an import, the charges of
+    --    its containers (kind CNT, read-only: DocumentId = container, AdjustmentStatus = charge status) with ShareBase =
+    --    the part that falls on this invoice's lines.
+    SELECT c.Id, c.DocumentKind, c.DocumentId, SourceNumber = CASE WHEN c.DocumentKind = N'LCA' THEN lca.DocumentNumber ELSE d.DocumentNumber END,
+           c.LineNumber, c.ChargeTypeId, ct.ChargeCode, ct.ChargeName, c.Description, c.ProviderPartyId, pp.PartyName AS ProviderName, c.Reference,
+           c.CurrencyId, cur.CurrencyCode, c.RateType, c.ExchangeRate, c.Amount, c.AmountBase, c.AllocationMethod, c.IncludeInLandedCost, c.IncludedInSupplierInvoice, c.Notes,
+           AllocatedBase = (SELECT SUM(AmountBase) FROM purchase.PurchaseChargeAllocations x WHERE x.ChargeId = c.Id),
+           AdjustmentStatus = lca.Status,
+           ContainerId = CAST(NULL AS INT), ContainerRef = CAST(NULL AS NVARCHAR(30)), ChargeDate = CAST(NULL AS DATE),
+           ChargeStatus = CAST(NULL AS TINYINT), ShareBase = CAST(NULL AS DECIMAL(18,2))
+    FROM purchase.PurchaseCharges c
+    INNER JOIN purchase.ChargeTypes ct ON ct.Id = c.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = c.CurrencyId
+    LEFT  JOIN masterdata.Parties pp ON pp.Id = c.ProviderPartyId
+    LEFT  JOIN purchase.PurchaseDocuments d ON d.Id = c.DocumentId AND c.DocumentKind = N'PINV'
+    LEFT  JOIN purchase.LandedCostAdjustments lca ON lca.Id = c.DocumentId AND c.DocumentKind = N'LCA'
+    WHERE (c.DocumentKind = N'PINV' AND c.DocumentId = @Id)
+       OR (c.DocumentKind = N'LCA' AND lca.SourceInvoiceId = @Id)
+    UNION ALL
+    SELECT ch.Id, N'CNT', ch.ContainerId, cn.ContainerRef,
+           CAST(ROW_NUMBER() OVER (ORDER BY cn.ContainerRef, ch.ChargeDate, ch.Id) AS INT),
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName, ch.Reference,
+           ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase, ch.AllocationMethod, ch.IncludeInLandedCost,
+           CAST(0 AS BIT), ch.Notes,
+           ISNULL(s.Share, 0), ch.Status,
+           ch.ContainerId, cn.ContainerRef, ch.ChargeDate, ch.Status, CAST(ISNULL(s.Share, 0) AS DECIMAL(18,2))
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.Containers cn   ON cn.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    OUTER APPLY (SELECT Share = SUM(a.AmountBase * CAST(l.QuantityBase AS DECIMAL(18,6)) / NULLIF(cl.QuantityBase, 0))
+                 FROM purchase.PurchaseDocumentLines l
+                 INNER JOIN logistics.ContainerLines cl            ON cl.Id = l.ContainerLineId
+                 INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id AND a.ChargeId = ch.Id
+                 WHERE l.DocumentId = @Id) s
+    WHERE ch.Status IN (1, 2)
+      AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                  INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                  WHERE l.DocumentId = @Id AND cl.ContainerId = ch.ContainerId)
+    ORDER BY 2, 3, 5;
+
+    -- 7: containers of the document: for an order the containers carrying its lines, for an invoice its containers.
+    SELECT ct.Id, ct.ContainerRef, ct.ContainerNo, ct.Status, ct.DispatchDate, ct.Eta, ct.OffloadedDate,
+           ct.CurrentLocation, w.WarehouseCode, w.WarehouseName,
+           AllocatedBase = ISNULL(x.Allocated, 0), ReceivedBase = ISNULL(x.Received, 0), InvoicedBase = ISNULL(x.Invoiced, 0),
+           ct.ContainerTypeId, ctt.TypeCode AS ContainerTypeCode, ct.PurchaseOrderId
+    FROM logistics.Containers ct
+    INNER JOIN masterdata.ContainerTypes ctt ON ctt.Id = ct.ContainerTypeId
+    LEFT  JOIN masterdata.Warehouses w       ON w.Id = ct.WarehouseId
+    CROSS APPLY (SELECT Allocated = SUM(q.Allocated), Received = SUM(q.Received), Invoiced = SUM(q.Invoiced)
+                 FROM (SELECT Allocated = cl.QuantityBase, Received = ISNULL(cl.ReceivedQuantityBase, 0),
+                              Invoiced = ISNULL((SELECT SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                                                 INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                                                 WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (2, 4)), 0)
+                       FROM logistics.ContainerLines cl
+                       WHERE cl.ContainerId = ct.Id AND cl.PurchaseOrderId = @Id
+                       UNION ALL
+                       SELECT l.QuantityBase, l.ReceivedQuantityBase, l.QuantityBase
+                       FROM purchase.PurchaseDocumentLines l
+                       INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                       WHERE l.DocumentId = @Id AND cl.ContainerId = ct.Id) q) x
+    WHERE ct.Status <> 8
+      AND (EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = ct.Id AND cl.PurchaseOrderId = @Id)
+           OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                      INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                      WHERE l.DocumentId = @Id AND cl.ContainerId = ct.Id))
+    ORDER BY ct.ContainerRef;
+
+    -- 8: approval requests and decisions (purchase orders).
+    SELECT a.Id, a.RequestNo, a.ApproverUserId, u.FullName AS ApproverName, u.Email AS ApproverEmail,
+           a.Status, a.ExpiresAtUtc, a.DecidedAtUtc, a.DecisionNote, a.Channel, a.RequestedAtUtc, ru.FullName AS RequestedByName
+    FROM purchase.PurchaseOrderApprovals a
+    INNER JOIN security.Users u ON u.Id = a.ApproverUserId
+    LEFT  JOIN security.Users ru ON ru.Id = a.RequestedBy
+    WHERE a.DocumentId = @Id
+    ORDER BY a.RequestNo DESC, a.Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 65000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @SourceId INT, @Number NVARCHAR(30), @ReceiptMode TINYINT;
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @SourceId = d.SourceDocumentId,
+               @Number = d.DocumentNumber, @ReceiptMode = d.ReceiptMode
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status NOT IN (2, 4) THROW 65010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE SourceDocumentId = @Id AND Status IN (2, 4))
+            THROW 65011, 'This document cannot be cancelled: posted documents were created from it. Cancel those first.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @Id AND Status = 2)
+            THROW 65011, 'This invoice cannot be cancelled: posted landed cost adjustments refer to it. Cancel those first.', 1;
+        -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+        IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+                   WHERE a.PurchaseDocumentId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+            THROW 65011, 'This invoice cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
+
+        DECLARE @Ct NVARCHAR(400);
+        IF @TypeCode = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                         WHERE cl.PurchaseOrderId = @Id AND c.Status <> 8)
+            THROW 65021, 'This purchase order is loaded into containers. Cancel those containers (or remove its lines from them) first.', 1;
+        SELECT TOP (1) @Ct = N'This invoice cannot be cancelled: container ' + c.ContainerRef + N' was already offloaded with it. Reverse the offload first.'
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        WHERE l.DocumentId = @Id AND c.Status IN (6, 7)
+        ORDER BY c.ContainerRef;
+        IF @Ct IS NOT NULL THROW 69012, @Ct, 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        IF @Direction = 1 AND @ReceiptMode = 1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Cannot cancel: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N' left, but this document added ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
+        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+               m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
+        FROM inventory.StockMovements m
+        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = @TypeCode AND m.DocumentId = @Id AND m.IsReversal = 0;
+
+        IF @TypeCode = N'PINV'
+            UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = 0 WHERE DocumentId = @Id;
+
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase - x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 4 AND CloseReason = N'Fully received')
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 2, ClosedAtUtc = NULL, ClosedBy = NULL, CloseReason = NULL WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Updated', N'Re-opened: ' + @Number + N' was cancelled', @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase - x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        UPDATE purchase.PurchaseDocuments
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        -- A cancelled receipt / return changes the cost history: replay the ledger for the items concerned.
+        IF @Direction <> 0
+        BEGIN
+            DECLARE @ItemId INT;
+            DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+            OPEN items; FETCH NEXT FROM items INTO @ItemId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC inventory.usp_Item_RebuildCosts @ItemId;
+                FETCH NEXT FROM items INTO @ItemId;
+            END
+            CLOSE items; DEALLOCATE items;
+        END
+
+        -- containers of an import: the value basis of their charges changed
+        DECLARE @Cid INT;
+        DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+            SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+            WHERE l.DocumentId = @Id;
+        OPEN cts;
+        FETCH NEXT FROM cts INTO @Cid;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@Cid, N'Updated', LEFT(N'Purchase invoice ' + ISNULL(@Number, N'') + N' cancelled: ' + @Reason, 500), @UserId);
+            FETCH NEXT FROM cts INTO @Cid;
+        END
+        CLOSE cts;
+        DEALLOCATE cts;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Search
+    @Search          NVARCHAR(100) = NULL,   -- container ref / no., reference, description, provider
+    @ContainerId     INT           = NULL,
+    @MovementId      INT           = NULL,
+    @ChargeTypeId    INT           = NULL,
+    @ProviderPartyId INT           = NULL,
+    @Status          TINYINT       = NULL,
+    @DateFrom        DATE          = NULL,
+    @DateTo          DATE          = NULL,
+    @SortColumn      NVARCHAR(30)  = N'ChargeDate',   -- ChargeDate | ContainerRef | ChargeName | AmountBase | Status | CreatedAtUtc
+    @SortDirection   NVARCHAR(4)   = N'DESC',
+    @PageNumber      INT           = 1,
+    @PageSize        INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ChargeDate', N'ContainerRef', N'ChargeName', N'AmountBase', N'Status', N'CreatedAtUtc') SET @SortColumn = N'ChargeDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus,
+           ch.MovementId, m.MovementNo, ch.GroupId,
+           GroupSize = CASE WHEN ch.GroupId IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM logistics.ContainerCharges g WHERE g.GroupId = ch.GroupId) END,
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName AS ProviderName, ch.Reference,
+           ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload,
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ChargeId = ch.Id),
+           ch.PostedAtUtc, ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.RowVersion,
+           TotalAmountBase = SUM(ch.AmountBase) OVER (),
+           -- (47) supplier payments: posted charges only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           COUNT(*) OVER () AS TotalCount
+    FROM logistics.ContainerCharges ch
+    OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
+    INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    LEFT  JOIN logistics.Movements m     ON m.Id = ch.MovementId
+    LEFT  JOIN security.Users cu         ON cu.Id = ch.CreatedBy
+    WHERE (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
+           OR ch.Reference LIKE N'%' + @Search + N'%' OR ch.Description LIKE N'%' + @Search + N'%' OR pp.PartyName LIKE N'%' + @Search + N'%')
+      AND (@ContainerId IS NULL OR ch.ContainerId = @ContainerId)
+      AND (@MovementId IS NULL OR ch.MovementId = @MovementId)
+      AND (@ChargeTypeId IS NULL OR ch.ChargeTypeId = @ChargeTypeId)
+      AND (@ProviderPartyId IS NULL OR ch.ProviderPartyId = @ProviderPartyId)
+      AND (@Status IS NULL OR ch.Status = @Status)
+      AND (@DateFrom IS NULL OR ch.ChargeDate >= @DateFrom)
+      AND (@DateTo IS NULL OR ch.ChargeDate <= @DateTo)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ChargeName' THEN t.ChargeName END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ChargeName' THEN t.ChargeName END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'ChargeDate' THEN ch.ChargeDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'ChargeDate' THEN ch.ChargeDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'AmountBase' THEN ch.AmountBase END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'AmountBase' THEN ch.AmountBase END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(ch.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(ch.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN ch.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN ch.CreatedAtUtc END DESC,
+        ch.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus,
+           ch.MovementId, m.MovementNo, ch.GroupId,
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName AS ProviderName, ch.Reference,
+           ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload, ch.Notes,
+           ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, xu.FullName AS CancelledByName, ch.CancelReason,
+           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion,
+           -- (47) supplier payments: posted charges only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
+    FROM logistics.ContainerCharges ch
+    OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
+    INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    LEFT  JOIN logistics.Movements m     ON m.Id = ch.MovementId
+    LEFT  JOIN security.Users pu ON pu.Id = ch.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = ch.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = ch.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = ch.UpdatedBy
+    WHERE ch.Id = @Id;
+
+    SELECT cl.Id AS ContainerLineId, cl.LineNumber, cl.ItemId, i.ItemCode, i.ItemName,
+           QuantityBase = ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase),
+           a.Basis, AmountBase = ISNULL(a.AmountBase, 0), IsManual = ISNULL(a.IsManual, 0),
+           PerUnitBase = ISNULL(a.AmountBase, 0) / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0)
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.ContainerLines cl ON cl.ContainerId = ch.ContainerId
+    INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+    LEFT  JOIN logistics.ContainerChargeAllocations a ON a.ChargeId = ch.Id AND a.ContainerLineId = cl.Id
+    WHERE ch.Id = @Id
+    ORDER BY cl.LineNumber;
+
+    SELECT a.Id, a.ContainerId, a.MovementId, a.AttachmentTypeId, at.Category, at.SubType,
+           a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM logistics.ContainerAttachments a
+    INNER JOIN logistics.Files f ON f.Id = a.FileId
+    LEFT  JOIN masterdata.AttachmentTypes at ON at.Id = a.AttachmentTypeId
+    LEFT  JOIN security.Users u ON u.Id = a.CreatedBy
+    WHERE a.ChargeId = @Id
+    ORDER BY a.CreatedAtUtc DESC;
+
+    SELECT g.Id, g.ContainerId, c.ContainerRef, c.ContainerNo, g.Amount, g.AmountBase, g.Status, g.RowVersion
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.ContainerCharges g ON g.GroupId = ch.GroupId AND g.Id <> ch.Id
+    INNER JOIN logistics.Containers c       ON c.Id = g.ContainerId
+    WHERE ch.Id = @Id AND ch.GroupId IS NOT NULL
+    ORDER BY c.ContainerRef;
+END
+GO
+
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 70000, 'A cancellation reason is required.', 1;
+
+    DECLARE @ContainerId INT, @Status TINYINT, @CtStatus TINYINT, @InCost BIT, @Label NVARCHAR(200);
+    SELECT @ContainerId = ch.ContainerId, @Status = ch.Status, @CtStatus = c.Status,
+           @InCost = CASE WHEN c.Status = 6 AND ch.IncludeInLandedCost = 1 AND (ch.AppliedAtOffload = 1 OR ch.AdjustedAfterOffload = 1) THEN 1 ELSE 0 END,
+           @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    WHERE ch.Id = @Id;
+
+    IF @ContainerId IS NULL THROW 70006, 'Charge not found.', 1;
+    IF @Status <> 2 THROW 70010, 'Only a posted charge can be cancelled (delete a draft instead).', 1;
+    -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+    IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+               WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+        THROW 70010, 'This charge cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
+    IF @CtStatus = 7 THROW 70010, 'The container is closed. Reopen it first.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        UPDATE logistics.ContainerCharges
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+        IF @InCost = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @Id, -1, @UserId;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        VALUES (@ContainerId, N'Updated', LEFT(N'Charge cancelled: ' + @Label + N' - ' + @Reason
+                                               + CASE WHEN @InCost = 1 THEN N' (item costs adjusted back)' ELSE N'' END, 500), @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 14. Check */
+
+SELECT name FROM sys.objects WHERE schema_id = SCHEMA_ID(N'purchase') AND (name LIKE N'usp_Payment%' OR name LIKE N'fn_%Payment%' OR name = N'fn_PayableDocument') ORDER BY name;
+PRINT 'Script 47 applied: supplier payments logic.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 48: Invoice lines - warehouse of any branch =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* ==================================================================================================
+   48: Invoice lines - warehouse of any branch
+   --------------------------------------------------------------------------------------------------
+   A line of a sales or purchase document (orders, invoices, returns) may now take a warehouse of ANY
+   branch, not only of the branch in the document header. The warehouse must still exist and be active.
+
+     usp_PurchaseDocument_ValidateInput / usp_SalesDocument_ValidateInput   no branch test on a line, nor on
+         the header warehouse (the first line's when none is sent; it only labels the document in lists)
+     usp_PurchaseDocument_Post / usp_SalesDocument_Post                      no branch test on a line;
+         each stock movement is booked to the branch of the line's warehouse (where the stock is)
+     usp_InvoiceImport_Validate                                              an imported row may name a
+         warehouse of another branch, and its stock is checked like any other row's
+
+   UNCHANGED: the Excel import's default warehouse (the one rows without a warehouse take) must still be a
+   warehouse of the header branch; Inventory In / Out documents keep their branch rule.
+   ================================================================================================== */
+
+IF OBJECT_ID(N'purchase.usp_PurchaseDocument_Post', N'P') IS NULL OR OBJECT_ID(N'sales.usp_InvoiceImport_Validate', N'P') IS NULL
+BEGIN
+    RAISERROR ('The sales and purchase document scripts must run before script 48.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_ValidateInput
+    @DocumentTypeCode   NVARCHAR(20),
+    @DocumentDate       DATE,
+    @ExpectedDate       DATE,
+    @BranchId           INT,
+    @WarehouseId        INT = NULL,
+    @SupplierId         INT,
+    @CurrencyId         INT,             -- NULL = supplier default currency, else base
+    @RateType           TINYINT,
+    @ExchangeRate       DECIMAL(18,6),   -- NULL = resolve
+    @MaxDiscountPercent DECIMAL(9,4),
+    @SourceDocumentId   INT,
+    @Lines              purchase.tvp_PurchaseDocumentLine READONLY,
+    @DocumentTypeId     INT OUTPUT,
+    @StockDirection     SMALLINT OUTPUT,
+    @ResolvedCurrencyId INT OUTPUT,
+    @ResolvedRate       DECIMAL(18,6) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Purchase' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL THROW 65008, 'Document type not found, inactive, or not a purchase document.', 1;
+
+    IF @DocumentDate IS NULL THROW 65000, 'Document Date is required.', 1;
+    /* ONE DAY OF TOLERANCE, because this compares a LOCAL date against a UTC one. The date on the
+       document is the one the reader sees on their own clock; SYSUTCDATETIME() is the server's in
+       UTC. East of Greenwich the two disagree for the first hours after midnight - at 00:20 in
+       Beirut (UTC+3) it is still yesterday in UTC, so a document dated today was refused as being
+       in the future. A day covers every offset without letting a genuinely future date through by
+       more than one. */
+    IF @DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 65000, 'Document Date cannot be in the future.', 1;
+    IF @ExpectedDate IS NOT NULL AND @ExpectedDate < @DocumentDate THROW 65000, 'Expected / due date cannot be before the Document Date.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 65008, 'Branch not found or inactive.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+        THROW 65008, 'The header warehouse must be an active warehouse.', 1;
+    IF @SupplierId IS NULL THROW 65000, 'Supplier is required.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1)
+        THROW 65008, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
+
+    SET @ResolvedCurrencyId = COALESCE(@CurrencyId,
+                                       (SELECT DefaultCurrencyId FROM masterdata.Parties WHERE Id = @SupplierId),
+                                       (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1));
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId AND IsActive = 1)
+        THROW 65008, 'Currency not found or inactive.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) THROW 65000, 'Rate type must be Official, Non-official or Market.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 65000, 'Exchange rate must be greater than zero.', 1;
+    SET @ResolvedRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@ResolvedCurrencyId, @RateType, @DocumentDate));
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId AND IsBaseCurrency = 1) SET @ResolvedRate = 1;
+    IF @ResolvedRate IS NULL
+    BEGIN
+        DECLARE @Cur NVARCHAR(3) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId);
+        DECLARE @RateMsg NVARCHAR(300) = N'No ' + CASE @RateType WHEN 1 THEN N'official' WHEN 2 THEN N'non-official' ELSE N'market' END
+                                       + N' exchange rate is defined for ' + @Cur + N' on or before ' + CONVERT(NVARCHAR(10), @DocumentDate, 120)
+                                       + N'. Add one in Master Data > Exchange Rates or enter the rate manually.';
+        THROW 65008, @RateMsg, 1;
+    END
+
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    IF @MaxDiscountPercent > 100 SET @MaxDiscountPercent = 100;
+
+    -- Source document rules.
+    IF @SourceDocumentId IS NOT NULL
+    BEGIN
+        DECLARE @SrcType NVARCHAR(20), @SrcStatus TINYINT, @SrcSupplier INT, @SrcBranch INT;
+        SELECT @SrcType = dt.Code, @SrcStatus = d.Status, @SrcSupplier = d.SupplierId, @SrcBranch = d.BranchId
+        FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceDocumentId;
+        IF @SrcType IS NULL THROW 65011, 'Source document not found.', 1;
+        IF (@DocumentTypeCode = N'PINV' AND @SrcType <> N'PO') OR (@DocumentTypeCode = N'PRET' AND @SrcType <> N'PINV') OR @DocumentTypeCode = N'PO'
+            THROW 65011, 'A purchase invoice can only come from a purchase order and a return from a purchase invoice.', 1;
+        IF @SrcStatus <> 2 THROW 65011, 'The source document must be posted (and, for an order, still open).', 1;
+        IF @SrcSupplier <> @SupplierId THROW 65011, 'The supplier must be the supplier of the source document.', 1;
+        IF @SrcBranch <> @BranchId THROW 65011, 'The branch must be the branch of the source document.', 1;
+        IF EXISTS (SELECT 1 FROM @Lines l WHERE l.SourceLineId IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines s WHERE s.Id = l.SourceLineId AND s.DocumentId = @SourceDocumentId))
+            THROW 65011, 'A line refers to a source line that does not belong to the source document.', 1;
+    END
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+        CASE WHEN i.Id IS NULL THEN N'item not found.'
+             WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+             WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
+             WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
+             WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
+                  THEN N'discount must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(12)) + N'%.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    LEFT JOIN masterdata.Warehouses w  ON w.Id = l.WarehouseId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
+       OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocument_ValidateInput
+    @DocumentTypeCode   NVARCHAR(20),
+    @DocumentDate       DATE,
+    @DueDate            DATE,
+    @BranchId           INT,
+    @WarehouseId        INT = NULL,
+    @ClientId           INT,
+    @SalesmanId         INT,
+    @PriceListId        INT,
+    @RateType           TINYINT,
+    @ExchangeRate       DECIMAL(18,6),
+    @MaxDiscountPercent DECIMAL(9,4),
+    @Lines              sales.tvp_SalesDocumentLine READONLY,
+    @DocumentTypeId     INT OUTPUT,
+    @StockDirection     SMALLINT OUTPUT,
+    @CurrencyId         INT OUTPUT,
+    @ResolvedRate       DECIMAL(18,6) OUTPUT,
+    /* THE INVOICE CURRENCY, when the header chose one that is not the price list's. NULL keeps the
+       old behaviour: the invoice is issued in the currency its price list prices in. */
+    @InvoiceCurrencyId  INT = NULL,
+    /* The rate of the PRICE LIST's currency, so the caller can convert a list price into the
+       invoice currency. Equal to @ResolvedRate whenever the two currencies are the same. */
+    @PriceRate          DECIMAL(18,6) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Sales' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL THROW 64008, 'Document type not found, inactive, or not a sales document.', 1;
+
+    IF @DocumentDate IS NULL THROW 64000, 'Document Date is required.', 1;
+    /* ONE DAY OF TOLERANCE, because this compares a LOCAL date against a UTC one. The date on the
+       document is the one the reader sees on their own clock; SYSUTCDATETIME() is the server's in
+       UTC. East of Greenwich the two disagree for the first hours after midnight - at 00:20 in
+       Beirut (UTC+3) it is still yesterday in UTC, so a document dated today was refused as being
+       in the future. A day covers every offset without letting a genuinely future date through by
+       more than one. */
+    IF @DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 64000, 'Document Date cannot be in the future.', 1;
+    IF @DueDate IS NOT NULL AND @DueDate < @DocumentDate THROW 64000, 'Due Date cannot be before the Document Date.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 64008, 'Branch not found or inactive.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+        THROW 64008, 'The header warehouse must be an active warehouse.', 1;
+    IF @ClientId IS NULL THROW 64000, 'Client is required.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ClientId AND IsClient = 1 AND IsActive = 1)
+        THROW 64008, 'Client not found, inactive, or not flagged as a client.', 1;
+    IF @SalesmanId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SalesmanId AND IsSalesman = 1 AND IsActive = 1)
+        THROW 64008, 'Salesman not found, inactive, or not flagged as a salesman.', 1;
+    IF @PriceListId IS NULL THROW 64000, 'Price List is required.', 1;
+
+    /* THE PRICE LIST'S CURRENCY prices the lines; the INVOICE's currency is what the customer is
+       billed in. They were always the same, and by default still are. When the header chooses a
+       different one, both rates are resolved: the caller converts a list price into the invoice
+       currency with @ResolvedRate / @PriceRate. */
+    DECLARE @PriceCurrencyId INT;
+    SELECT @PriceCurrencyId = CurrencyId FROM masterdata.PriceLists WHERE Id = @PriceListId AND IsActive = 1;
+    IF @PriceCurrencyId IS NULL THROW 64008, 'Price list not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @PriceCurrencyId AND IsActive = 1)
+        THROW 64008, 'The price list currency is inactive.', 1;
+
+    SET @CurrencyId = ISNULL(@InvoiceCurrencyId, @PriceCurrencyId);
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 64008, 'The invoice currency was not found or is inactive.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) THROW 64000, 'Rate type must be Official, Non-official or Market.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 64000, 'Exchange rate must be greater than zero.', 1;
+
+    /* The price list's rate is never the typed one: @ExchangeRate is the rate the header states for
+       the INVOICE currency, and using it to undo the list currency would price the lines twice. */
+    SET @PriceRate = masterdata.fn_GetRate(@PriceCurrencyId, @RateType, @DocumentDate);
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @PriceCurrencyId AND IsBaseCurrency = 1) SET @PriceRate = 1;
+
+    SET @ResolvedRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @DocumentDate));
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1) SET @ResolvedRate = 1;
+
+    IF @PriceRate IS NULL
+    BEGIN
+        DECLARE @PriceCur NVARCHAR(3) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @PriceCurrencyId);
+        DECLARE @PriceMsg NVARCHAR(300) = N'No ' + CASE @RateType WHEN 1 THEN N'official' WHEN 2 THEN N'non-official' ELSE N'market' END
+                                        + N' exchange rate is defined for the price list currency ' + @PriceCur
+                                        + N' on or before ' + CONVERT(NVARCHAR(10), @DocumentDate, 120)
+                                        + N'. Add one in Master Data > Exchange Rates.';
+        THROW 64008, @PriceMsg, 1;
+    END
+    IF @ResolvedRate IS NULL
+    BEGIN
+        DECLARE @Cur NVARCHAR(3) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId);
+        DECLARE @RateMsg NVARCHAR(300) = N'No ' + CASE @RateType WHEN 1 THEN N'official' WHEN 2 THEN N'non-official' ELSE N'market' END
+                                       + N' exchange rate is defined for ' + @Cur + N' on or before ' + CONVERT(NVARCHAR(10), @DocumentDate, 120)
+                                       + N'. Add one in Master Data > Exchange Rates or enter the rate manually.';
+        THROW 64008, @RateMsg, 1;
+    END
+
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    IF @MaxDiscountPercent > 100 SET @MaxDiscountPercent = 100;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+        CASE WHEN i.Id IS NULL THEN N'item not found.'
+             WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+             WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
+             WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
+             WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
+                  THEN N'discount must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(12)) + N'%.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    LEFT JOIN masterdata.Warehouses w  ON w.Id = l.WarehouseId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
+       OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
+    ORDER BY l.LineNumber;
+
+    IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
+END
+
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Post
+    @Id         INT,
+    @RowVersion   BINARY(8) = NULL,
+    @UserId       INT       = NULL,
+    @FromApproval BIT       = 0      -- 1 = called by the approval
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE,
+                @BranchId INT, @SupplierId INT, @Rate DECIMAL(18,6), @SourceId INT, @ReceiptMode TINYINT;
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @SupplierId = d.SupplierId, @Rate = d.ExchangeRate,
+               @SourceId = d.SourceDocumentId, @ReceiptMode = d.ReceiptMode
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 1 AND @Status <> 5
+            THROW 65010, 'Only a purchase order waiting for approval can be approved.', 1;
+        IF (@TypeCode <> N'PO' OR ISNULL(@FromApproval, 0) = 0) AND @Status <> 1
+            THROW 65010, 'Only draft documents can be posted.', 1;
+
+        DECLARE @PostedWithoutApproval BIT = CASE WHEN @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 0 THEN 1 ELSE 0 END;
+        IF @PostedWithoutApproval = 1 AND purchase.fn_PurchaseOrder_NeedsApproval(@Id) = 1
+            THROW 65013, 'This order needs approval: send it for approval.', 1;
+
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
+            THROW 65009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        -- (45) A supplier invoice holds ONE item: a draft saved with several before script 45 is split first.
+        IF @TypeCode = N'PINV' AND (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) > 1
+        BEGIN
+            DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id),
+                    @ItemCodes NVARCHAR(400);
+            SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+            FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+                  FROM purchase.PurchaseDocumentLines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+                  WHERE l.DocumentId = @Id
+                  GROUP BY l.ItemId, i.ItemCode
+                  ORDER BY MIN(l.LineNumber)) x;
+            SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+            THROW 65029, @ItemCodes, 1;
+        END
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
+            THROW 65008, 'The supplier is inactive.', 1;
+
+        -- Imports: the goods are received by the container, not by this posting.
+        DECLARE @ReceiveNow BIT = CASE WHEN @TypeCode = N'PINV' AND @ReceiptMode = 2 THEN 0 ELSE 1 END;
+
+        DECLARE @FromContainers BIT = CASE WHEN @TypeCode = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
+                                                                                WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END;
+        -- (43) Shipped in containers: an imported invoice, linked to its containers now or later. Lines not in a container
+        --      yet are allowed: they enter the stock at the offload of the containers they are linked to afterwards.
+        IF @TypeCode = N'PINV' AND @ReceiptMode = 2
+        BEGIN
+            IF NULLIF(LTRIM(RTRIM((SELECT ExporterReference FROM purchase.PurchaseDocuments WHERE Id = @Id))), N'') IS NULL
+                THROW 65018, 'The exporter reference is required on an imported invoice. Enter it before posting.', 1;
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+                THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+        END
+
+        IF @FromContainers = 1
+        BEGIN
+
+            DECLARE @CtMsg NVARCHAR(400);
+            SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                    + CASE WHEN c.Status IN (6, 7, 8) THEN N'the container is already offloaded, closed or cancelled.'
+                                           ELSE CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Posted, 0) AS NVARCHAR(20))
+                                                + N' in posted invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.' END
+            FROM (SELECT ContainerLineId, Here = SUM(QuantityBase) FROM purchase.PurchaseDocumentLines
+                  WHERE DocumentId = @Id GROUP BY ContainerLineId) q
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+            INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+            INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+            OUTER APPLY (SELECT Posted = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                         INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                         WHERE pil.ContainerLineId = cl.Id AND pd.Status IN (2, 4) AND pd.Id <> @Id) o
+            WHERE c.Status IN (6, 7, 8) OR q.Here + ISNULL(o.Posted, 0) > cl.QuantityBase
+            ORDER BY c.ContainerRef, cl.LineNumber;
+            IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+        END
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.' END
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+
+        IF @SourceId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 2)
+                THROW 65011, 'The source document is no longer open (cancelled or closed).', 1;
+
+            IF @TypeCode = N'PINV'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units invoiced but only ' + CAST(s.QuantityBase - s.ReceivedQuantityBase AS NVARCHAR(20)) + N' remain on the order line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReceivedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+            IF @TypeCode = N'PRET'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units returned but only ' + CAST(s.QuantityBase - s.ReturnedQuantityBase AS NVARCHAR(20)) + N' can still be returned from the invoice line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReturnedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+        END
+
+        IF @Direction = -1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        IF @TypeCode = N'PINV'
+        BEGIN
+            -- FOB per base unit, then charges allocated over the lines, then landed cost per base unit.
+            EXEC purchase.usp_PurchaseCharges_Allocate N'PINV', @Id, @Id;
+
+            UPDATE l
+            SET FobCostBase = (l.LineTotal / @Rate) / l.QuantityBase,
+                AllocatedChargesBase = ISNULL(a.Total, 0),
+                UnitCostBase = ((l.LineTotal / @Rate) + ISNULL(a.Total, 0)) / l.QuantityBase
+            FROM purchase.PurchaseDocumentLines l
+            OUTER APPLY (SELECT SUM(x.AmountBase) AS Total
+                         FROM purchase.PurchaseChargeAllocations x
+                         INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                         WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'PINV' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1) a
+            WHERE l.DocumentId = @Id;
+
+            UPDATE d
+            SET TotalChargesBase = ISNULL(x.Charges, 0), TotalLandedCostBase = d.TotalAmountBase + ISNULL(x.Charges, 0)
+            FROM purchase.PurchaseDocuments d
+            CROSS APPLY (SELECT SUM(AllocatedChargesBase) AS Charges FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
+        END
+        ELSE IF @TypeCode = N'PRET'
+            UPDATE l SET UnitCostBase = ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
+            FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+
+        IF @Direction = 1 AND @ReceiveNow = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0), l.FobCostBase FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId, 1;
+        END
+
+        IF @Direction <> 0 AND @ReceiveNow = 1
+        BEGIN
+            DECLARE @MovementDate DATETIME2(3) =
+                DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            -- (48) the branch of the line's warehouse, which need not be the document's branch
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, w.BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+                   N'Purchase', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
+            FROM purchase.PurchaseDocumentLines l
+            INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+            WHERE l.DocumentId = @Id;
+
+            IF @Direction = 1
+                UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = QuantityBase WHERE DocumentId = @Id;
+        END
+
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceId AND ReceivedQuantityBase < QuantityBase)
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = N'Fully received' WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Closed', N'Fully received by ' + @Number, @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        UPDATE purchase.PurchaseDocuments
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
+                                + CASE WHEN @Direction <> 0 AND @ReceiveNow = 1 THEN N' written to the stock ledger'
+                                       WHEN @ReceiveNow = 0 THEN N'; stock will be received when the container is offloaded'
+                                       WHEN @PostedWithoutApproval = 1 THEN N' (approval not needed)'
+                                       ELSE N' (order approved)' END
+                                + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END, @UserId);
+
+        -- A purchase order posted without approval: the user who posts it is recorded as approver, as an approval does.
+        IF @PostedWithoutApproval = 1
+        BEGIN
+            UPDATE purchase.PurchaseDocuments SET ApprovedAtUtc = SYSUTCDATETIME(), ApprovedBy = @UserId WHERE Id = @Id;
+
+            DECLARE @RequireApproval BIT, @ApprovalLimit DECIMAL(19, 4);
+            SELECT @RequireApproval = RequireApproval, @ApprovalLimit = ApprovalLimitBase FROM purchase.ApprovalSettings WHERE Id = 1;
+            INSERT INTO purchase.PurchaseOrderApprovalEvents (PurchaseDocumentId, EventType, UserId, Note)
+            VALUES (@Id, 7, @UserId,
+                    CASE WHEN @RequireApproval = 0 THEN N'Approval not required'
+                         ELSE N'Under the approval limit of ' + FORMAT(@ApprovalLimit, N'N2', N'en-US')
+                              + ISNULL(N' ' + (SELECT TOP (1) CurrencyCode FROM masterdata.Currencies
+                                               WHERE IsBaseCurrency = 1 AND IsActive = 1), N'') END);
+        END
+
+        -- containers of an import: the invoice is known now (value basis of the charges, history)
+        IF @FromContainers = 1
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+                INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                WHERE l.DocumentId = @Id;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                VALUES (@Cid, N'Updated', N'Purchase invoice ' + @Number + N' posted', @UserId);
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
+
+        COMMIT TRANSACTION;
+        IF ISNULL(@FromApproval, 0) = 0 SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocument_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL,
+    @AcknowledgeOutOfStock BIT = 0   -- 1 = the user has seen the out-of-stock warning and chose to proceed
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT,
+                @Rate DECIMAL(18,6), @SourceId INT,
+                @PayType TINYINT, @MethodId INT, @AccountId INT, @PayRef NVARCHAR(100), @ClientId INT, @CurId INT, @Total DECIMAL(18,2);
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @Rate = d.ExchangeRate, @SourceId = d.SourceDocumentId,
+               @PayType = d.PaymentType, @MethodId = d.ReceiptMethodId, @AccountId = d.ReceiptAccountId, @PayRef = d.PaymentReference,
+               @ClientId = d.ClientId, @CurId = d.CurrencyId, @Total = d.TotalAmount
+        FROM sales.SalesDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 64006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 64010, 'Only draft documents can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 64004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM sales.SalesDocumentLines WHERE DocumentId = @Id)
+            THROW 64009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.' END
+        FROM sales.SalesDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
+
+        IF NOT EXISTS (SELECT 1 FROM sales.SalesDocuments d INNER JOIN masterdata.Parties p ON p.Id = d.ClientId WHERE d.Id = @Id AND p.IsActive = 1)
+            THROW 64008, 'The client is inactive.', 1;
+
+        /* PAYMENT TYPE IS MANDATORY, and a Cash invoice must say where the money went. Judged here, before
+           anything moves, so a refusal costs nothing: the account has to hold the invoice's currency
+           and be usable by its branch, exactly what the receipt will be checked for a moment later. */
+        IF @TypeCode = N'SINV'
+        BEGIN
+            IF @PayType IS NULL THROW 64000, 'Choose a Payment Type (Cash or On Account) before posting.', 1;
+            IF @PayType = 1
+            BEGIN
+                IF @Total <= 0 THROW 64000, 'A Cash invoice must have a total above zero.', 1;
+                IF @MethodId IS NULL THROW 64000, 'A Cash invoice needs a Receipt Method.', 1;
+                IF @AccountId IS NULL THROW 64000, 'A Cash invoice needs a Cash / Bank Account.', 1;
+                IF NOT EXISTS (SELECT 1 FROM masterdata.PaymentMethods WHERE Id = @MethodId AND IsActive = 1)
+                    THROW 64000, 'The receipt method is no longer active.', 1;
+                SELECT @Msg = CASE WHEN a.IsActive = 0 THEN N'The account ' + a.AccountCode + N' is no longer active.'
+                                   WHEN a.CurrencyId <> @CurId THEN N'The account ' + a.AccountCode + N' holds ' + ac.CurrencyCode
+                                        + N', but this invoice is in ' + ic.CurrencyCode + N'. Choose an account in ' + ic.CurrencyCode + N'.'
+                                   WHEN a.BranchId IS NOT NULL AND a.BranchId <> @BranchId THEN N'The account ' + a.AccountCode + N' is not available for this invoice''s branch.' END
+                FROM masterdata.CashBankAccounts a
+                INNER JOIN masterdata.Currencies ac ON ac.Id = a.CurrencyId
+                INNER JOIN masterdata.Currencies ic ON ic.Id = @CurId
+                WHERE a.Id = @AccountId;
+                IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
+            END
+        END
+
+        -- A return created from an invoice cannot exceed what that invoice line still holds.
+        IF @TypeCode = N'SRET' AND @SourceId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM sales.SalesDocuments WHERE Id = @SourceId AND Status = 2)
+                THROW 64010, 'The original invoice is no longer posted.', 1;
+            SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                 + N' base units returned but only ' + CAST(s.QuantityBase - s.ReturnedQuantityBase AS NVARCHAR(20)) + N' can still be returned from the invoice line.'
+            FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM sales.SalesDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+            INNER JOIN sales.SalesDocumentLines s ON s.Id = x.SourceLineId
+            INNER JOIN inventory.Items i ON i.Id = s.ItemId
+            WHERE x.Qty > s.QuantityBase - s.ReturnedQuantityBase
+            ORDER BY x.LineNumber;
+            IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
+        END
+
+        /* OUT-OF-STOCK POLICY. Every item + warehouse the invoice asks more of than the warehouse holds is a
+           SHORTAGE, judged by that warehouse's policy (its own override, else the global setting):
+             not allowed          -> refused outright (64007), exactly as before;
+             allowed              -> refused with 64016 until the caller confirms (@AcknowledgeOutOfStock = 1),
+                                     because the warning is shown even when the setting is on;
+             allowed + confirmed  -> posts, stock goes negative, and each shortage is written to the audit. */
+        DECLARE @Short TABLE (ItemId INT NOT NULL, WarehouseId INT NOT NULL, ItemCode NVARCHAR(30) NOT NULL, WarehouseCode NVARCHAR(20) NOT NULL,
+                              Needed INT NOT NULL, OnHand INT NOT NULL, Allowed BIT NOT NULL, PolicySource NVARCHAR(10) NOT NULL);
+        IF @Direction = -1
+        BEGIN
+            INSERT INTO @Short (ItemId, WarehouseId, ItemCode, WarehouseCode, Needed, OnHand, Allowed, PolicySource)
+            SELECT x.ItemId, x.WarehouseId, i.ItemCode, w.WarehouseCode, x.Qty, inventory.fn_StockOnHand(x.ItemId, x.WarehouseId), p.Allowed, p.Source
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM sales.SalesDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            CROSS APPLY sales.fn_OutOfStockPolicy(x.WarehouseId) p
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId);
+
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + s.ItemCode + N' in ' + s.WarehouseCode + N': available '
+                                 + CAST(s.OnHand AS NVARCHAR(20)) + N', required ' + CAST(s.Needed AS NVARCHAR(20)) + N' (base units).'
+            FROM @Short s WHERE s.Allowed = 0 ORDER BY s.ItemCode;
+            IF @Msg IS NOT NULL THROW 64007, @Msg, 1;
+
+            IF @AcknowledgeOutOfStock = 0 AND EXISTS (SELECT 1 FROM @Short)
+            BEGIN
+                DECLARE @OosMsg NVARCHAR(2000) =
+                    (SELECT N'Out of stock - confirmation required: '
+                            + STRING_AGG(s.ItemCode + N' in ' + s.WarehouseCode + N' (available ' + CAST(s.OnHand AS NVARCHAR(20)) + N', selling ' + CAST(s.Needed AS NVARCHAR(20)) + N')', N'; ')
+                     FROM @Short s);
+                THROW 64016, @OosMsg, 1;
+            END
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        -- Frozen cost snapshots: invoices take the moving average; returns keep the original invoice COGS (fallback: average).
+        UPDATE l
+        SET UnitCostBase = ISNULL(CASE WHEN @Direction = 1 THEN l.UnitCostBase END, ISNULL(i.AverageCost, 0)),
+            FobCostAtSale = i.FobCost, LastCostAtSale = i.LastCost
+        FROM sales.SalesDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        WHERE l.DocumentId = @Id;
+
+        UPDATE l
+        SET NetSalesBase = ROUND(l.LineTotal / @Rate, 2),
+            CogsBase = ROUND(l.QuantityBase * l.UnitCostBase, 2),
+            GrossProfitBase = ROUND(l.LineTotal / @Rate, 2) - ROUND(l.QuantityBase * l.UnitCostBase, 2),
+            GrossProfitPct = CASE WHEN l.LineTotal > 0 THEN ROUND(100.0 * (ROUND(l.LineTotal / @Rate, 2) - ROUND(l.QuantityBase * l.UnitCostBase, 2)) / ROUND(l.LineTotal / @Rate, 2), 2) END
+        FROM sales.SalesDocumentLines l
+        WHERE l.DocumentId = @Id;
+
+        IF @Direction = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0), NULL FROM sales.SalesDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId, 0;
+        END
+
+        IF @Direction <> 0
+        BEGIN
+            DECLARE @MovementDate DATETIME2(3) =
+                DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            -- (48) the branch of the line's warehouse, which need not be the document's branch
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, w.BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+                   N'Sales', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
+            FROM sales.SalesDocumentLines l
+            INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+            WHERE l.DocumentId = @Id;
+        END
+
+        -- The confirmed out-of-stock sales, with what the warehouse holds AFTER this invoice (it may be negative).
+        IF EXISTS (SELECT 1 FROM @Short)
+            INSERT INTO sales.OutOfStockSaleAudit (SalesDocumentId, DocumentNumber, ItemId, ItemCode, WarehouseId, QuantitySold, StockBefore, InventoryAfter, UserId, SaleStatus, PolicySource)
+            SELECT @Id, @Number, s.ItemId, s.ItemCode, s.WarehouseId, s.Needed, s.OnHand, inventory.fn_StockOnHand(s.ItemId, s.WarehouseId), @UserId, N'OutOfStockOverride', s.PolicySource
+            FROM @Short s;
+
+        IF @TypeCode = N'SRET' AND @SourceId IS NOT NULL
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase + x.Qty
+            FROM sales.SalesDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM sales.SalesDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+        UPDATE d
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            TotalCostBase = ISNULL(x.Cost, 0), TotalGrossProfitBase = ISNULL(x.Gp, 0), UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        FROM sales.SalesDocuments d
+        CROSS APPLY (SELECT SUM(CogsBase) AS Cost, SUM(GrossProfitBase) AS Gp FROM sales.SalesDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM sales.SalesDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
+                                + CASE WHEN @Direction <> 0 THEN N' written to the stock ledger' ELSE N'' END, @UserId);
+
+        /* A CASH INVOICE PAYS FOR ITSELF, through the receipt module and not beside it. The invoice is
+           already Posted in this transaction (so it can be paid), the receipt is saved against it for
+           its whole total at the invoice's own rate (so it balances to the cent) and posted, and the
+           link is written. Any refusal throws, which rolls the invoice back too: both or neither. */
+        IF @TypeCode = N'SINV' AND @PayType = 1
+        BEGIN
+            DECLARE @RcLines sales.tvp_ReceiptLine, @RcAllocs sales.tvp_ReceiptAllocation, @ReceiptId INT, @ReceiptNo NVARCHAR(30);
+            DECLARE @RcNote NVARCHAR(1000) = N'Automatic receipt for invoice ' + @Number;
+            INSERT INTO @RcLines (LineNumber, PaymentMethodId, CurrencyId, Amount, ExchangeRate, CashBankAccountId, Reference)
+            VALUES (1, @MethodId, @CurId, @Total, @Rate, @AccountId, @PayRef);
+            INSERT INTO @RcAllocs (SalesDocumentId, Amount) VALUES (@Id, @Total);
+
+            EXEC sales.usp_Receipt_Save @Id = NULL, @ReceiptDate = @DocumentDate, @ClientId = @ClientId, @BranchId = @BranchId,
+                 @PaymentType = 2, @CurrencyId = @CurId, @Amount = @Total, @ExchangeRate = @Rate, @Notes = @RcNote,
+                 @Lines = @RcLines, @Allocations = @RcAllocs, @RowVersion = NULL, @UserId = @UserId, @NewId = @ReceiptId OUTPUT;
+
+            UPDATE sales.Receipts SET SourceSalesDocumentId = @Id WHERE Id = @ReceiptId;
+            SELECT @ReceiptNo = ReceiptNumber FROM sales.Receipts WHERE Id = @ReceiptId;
+            INSERT INTO sales.ReceiptAudit (ReceiptId, Action, Details, UserId)
+            VALUES (@ReceiptId, N'AutoCreated', N'Created automatically by posting invoice ' + @Number, @UserId);
+
+            EXEC sales.usp_Receipt_Post @Id = @ReceiptId, @RowVersion = NULL, @UserId = @UserId;
+
+            INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'ReceiptPosted', N'Cash sale: receipt ' + @ReceiptNo + N' posted for ' + FORMAT(@Total, N'N2', N'en-US'), @UserId);
+        END
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_InvoiceImport_Validate
+    @BranchId            INT,
+    @DefaultWarehouseId  INT,
+    @PriceListId         INT           = NULL,  -- NULL = cost mode (inventory / purchase): Unit Price column = cost, no price list checks
+    @AllowPriceOverride  BIT           = 0,
+    @MaxDiscountPercent  DECIMAL(9,4)  = 100,
+    @Rows                sales.tvp_InvoiceImportRow READONLY,
+    @CheckStock          BIT           = 0,     -- 1 = cumulative stock check per item + warehouse (outgoing documents)
+    @DocumentTypeCode    NVARCHAR(20)  = NULL   -- the page's document type; rows for another type become Errors
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 61008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 61008, 'The default warehouse is not an active warehouse of the selected branch.', 1;
+    IF @PriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @PriceListId AND IsActive = 1)
+        THROW 61008, 'Price list not found or inactive.', 1;
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    SET @CheckStock = ISNULL(@CheckStock, 0);
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+
+    DECLARE @PageTypeName NVARCHAR(100), @Family NVARCHAR(20);
+    IF @DocumentTypeCode IS NOT NULL
+    BEGIN
+        SELECT @PageTypeName = Name, @Family = Family FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode;
+        IF @PageTypeName IS NULL THROW 61008, 'Document type not found.', 1;
+    END
+    -- Unit preference: 1 = sales unit first, 2 = purchase unit first, 0 = base unit first.
+    DECLARE @UnitPref TINYINT = CASE WHEN @Family = N'Sales' OR (@Family IS NULL AND @PriceListId IS NOT NULL) THEN 1
+                                     WHEN @Family = N'Purchase' THEN 2 ELSE 0 END;
+
+    DECLARE @Today DATE = CAST(SYSUTCDATETIME() AS DATE);
+
+    ;WITH resolved AS
+    (
+        SELECT r.RowNumber,
+               ItemRef      = NULLIF(LTRIM(RTRIM(r.ItemRef)), N''),
+               UnitName     = NULLIF(LTRIM(RTRIM(r.UnitName)), N''),
+               WarehouseRef = NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N''),
+               r.Quantity, r.RawQuantity, ManualPrice = r.UnitPrice, r.DiscountPercent, r.ExpiryDate, r.RawExpiryDate,
+               Notes        = NULLIF(LTRIM(RTRIM(r.Notes)), N''),
+               RowTypeRef   = NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N''),
+               rt.RowTypeCode, rt.RowTypeName,
+               it.ItemId, it.ItemCode, it.ItemName, it.ItemActive, it.BarcodeUnitId,
+               u.ItemUnitId, u.UnitTypeName, u.PackingFormula,
+               w.WarehouseId, w.WarehouseCode, w.WarehouseName, w.WarehouseActive, w.WarehouseBranchId,
+               pr.BranchPrice, pr.AllBranchesPrice
+        FROM @Rows r
+        OUTER APPLY
+        (
+            SELECT TOP (1) dt.Code AS RowTypeCode, dt.Name AS RowTypeName
+            FROM inventory.DocumentTypes dt
+            WHERE NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N'') IS NOT NULL
+              AND (dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) OR dt.Name = LTRIM(RTRIM(r.DocumentTypeCode)))
+            ORDER BY CASE WHEN dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) THEN 0 ELSE 1 END
+        ) rt
+        OUTER APPLY
+        (
+            SELECT TOP (1) i.Id AS ItemId, i.ItemCode, i.ItemName, i.IsActive AS ItemActive, bu.Id AS BarcodeUnitId
+            FROM inventory.Items i
+            LEFT JOIN inventory.ItemUnits bu ON bu.ItemId = i.Id AND bu.Barcode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'')
+            WHERE i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') OR bu.Id IS NOT NULL
+            ORDER BY CASE WHEN i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') THEN 0 ELSE 1 END
+        ) it
+        OUTER APPLY
+        (
+            SELECT TOP (1) iu.Id AS ItemUnitId, t.UnitTypeName, iu.PackingFormula
+            FROM inventory.ItemUnits iu
+            INNER JOIN masterdata.UnitTypes t ON t.Id = iu.UnitTypeId
+            WHERE iu.ItemId = it.ItemId
+              AND (   (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NOT NULL
+                       AND (t.UnitTypeName = LTRIM(RTRIM(r.UnitName)) OR iu.SkuCode = LTRIM(RTRIM(r.UnitName))))
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NOT NULL AND iu.Id = it.BarcodeUnitId)
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NULL))
+            ORDER BY CASE @UnitPref WHEN 1 THEN CASE WHEN iu.IsSalesUnit = 1 THEN 0 ELSE 1 END
+                                    WHEN 2 THEN CASE WHEN iu.IsPurchaseUnit = 1 THEN 0 ELSE 1 END
+                                    ELSE CASE WHEN iu.IsBaseUnit = 1 THEN 0 ELSE 1 END END,
+                     iu.IsBaseUnit DESC, iu.PackingFormula
+        ) u
+        OUTER APPLY
+        (
+            SELECT TOP (1) wh.Id AS WarehouseId, wh.WarehouseCode, wh.WarehouseName, wh.IsActive AS WarehouseActive, wh.BranchId AS WarehouseBranchId
+            FROM masterdata.Warehouses wh
+            WHERE (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NOT NULL
+                   AND (wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) OR wh.WarehouseName = LTRIM(RTRIM(r.WarehouseRef))))
+               OR (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NULL AND wh.Id = @DefaultWarehouseId)
+            ORDER BY CASE WHEN wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) THEN 0 ELSE 1 END
+        ) w
+        OUTER APPLY
+        (
+            SELECT BranchPrice      = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId = @BranchId AND IsActive = 1),
+                   AllBranchesPrice = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId IS NULL AND IsActive = 1)
+        ) pr
+    ),
+    stocked AS
+    (
+        SELECT x.*,
+               QtyBase    = CASE WHEN x.ItemUnitId IS NOT NULL AND x.Quantity IS NOT NULL AND x.Quantity > 0 AND x.Quantity = FLOOR(x.Quantity)
+                                 THEN CAST(x.Quantity AS INT) * x.PackingFormula ELSE 0 END,
+               OnHandBase = CASE WHEN x.ItemId IS NOT NULL AND x.WarehouseId IS NOT NULL THEN inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) END,
+               AllowOos   = CASE WHEN x.WarehouseId IS NOT NULL THEN (SELECT p.Allowed FROM sales.fn_OutOfStockPolicy(x.WarehouseId) p) END
+        FROM resolved x
+    ),
+    running AS
+    (
+        SELECT s.*,
+               RequiredBase = SUM(s.QtyBase) OVER (PARTITION BY s.ItemId, s.WarehouseId ORDER BY s.RowNumber ROWS UNBOUNDED PRECEDING),
+               EarlierRows  = STUFF((SELECT N', ' + CAST(s2.RowNumber AS NVARCHAR(10))
+                                     FROM stocked s2
+                                     WHERE s2.ItemId = s.ItemId AND s2.WarehouseId = s.WarehouseId AND s2.QtyBase > 0 AND s2.RowNumber < s.RowNumber
+                                     ORDER BY s2.RowNumber FOR XML PATH(N''), TYPE).value(N'.', N'NVARCHAR(MAX)'), 1, 2, N'')
+        FROM stocked s
+    ),
+    judged AS
+    (
+        SELECT x.*,
+               SystemPrice = COALESCE(x.BranchPrice, x.AllBranchesPrice),
+               EffectiveDiscount = ISNULL(x.DiscountPercent, 0),
+               Err0 = CASE WHEN x.RowTypeRef IS NOT NULL AND x.RowTypeCode IS NULL THEN N'Document Type ''' + x.RowTypeRef + N''' does not exist.'
+                           WHEN x.RowTypeCode IS NOT NULL AND @DocumentTypeCode IS NOT NULL AND x.RowTypeCode <> @DocumentTypeCode
+                                THEN N'This row is for ' + x.RowTypeName + N' (' + x.RowTypeCode + N'), not for ' + @PageTypeName + N'.' END,
+               Err1 = CASE WHEN x.ItemRef IS NULL THEN N'Item Code / Barcode is required.'
+                           WHEN x.ItemId IS NULL THEN N'Item Code ' + x.ItemRef + N' does not exist.'
+                           WHEN x.ItemActive = 0 THEN N'Item ' + x.ItemCode + N' is inactive.' END,
+               Err2 = CASE WHEN x.Quantity IS NULL AND x.RawQuantity IS NOT NULL THEN N'Quantity ''' + x.RawQuantity + N''' is not a number.'
+                           WHEN x.Quantity IS NULL OR x.Quantity <= 0 THEN N'Quantity must be greater than zero.'
+                           WHEN x.Quantity <> FLOOR(x.Quantity) THEN N'Quantity must be a whole number of pieces.' END,
+               Err3 = CASE WHEN x.ItemId IS NOT NULL AND x.UnitName IS NOT NULL AND x.ItemUnitId IS NULL
+                                THEN N'Unit ''' + x.UnitName + N''' is not configured for Item ' + x.ItemCode + N'.'
+                           WHEN x.ItemId IS NOT NULL AND x.ItemUnitId IS NULL THEN N'Item ' + x.ItemCode + N' has no units configured.' END,
+               Err4 = CASE WHEN x.WarehouseRef IS NOT NULL AND x.WarehouseId IS NULL THEN N'Warehouse ' + x.WarehouseRef + N' does not exist.'
+                           WHEN x.WarehouseActive = 0 THEN N'Warehouse ' + x.WarehouseCode + N' is inactive.' END,
+               Err5 = CASE WHEN @PriceListId IS NOT NULL AND x.ItemUnitId IS NOT NULL
+                            AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NULL
+                            AND NOT (x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1)
+                                THEN N'No selling price was found for Item ' + x.ItemCode + N', Unit ' + x.UnitTypeName + N', and the selected Price List.'
+                           WHEN x.ManualPrice IS NOT NULL AND x.ManualPrice < 0 THEN N'Unit Price cannot be negative.' END,
+               Err6 = CASE WHEN ISNULL(x.DiscountPercent, 0) < 0 OR ISNULL(x.DiscountPercent, 0) > @MaxDiscountPercent
+                                THEN N'Discount % must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(20)) + N'.' END,
+               Err7 = CASE WHEN x.ExpiryDate IS NULL AND x.RawExpiryDate IS NOT NULL THEN N'Expiry Date ''' + x.RawExpiryDate + N''' is not a valid date.' END,
+               Err8 = CASE WHEN @CheckStock = 1 AND NOT (@DocumentTypeCode = N'SINV' AND ISNULL(x.AllowOos, 0) = 1) AND x.QtyBase > 0 AND x.WarehouseId IS NOT NULL AND x.RequiredBase > ISNULL(x.OnHandBase, 0)
+                                THEN N'Insufficient stock for ' + x.ItemCode + N' in ' + x.WarehouseCode + N': available ' + CAST(ISNULL(x.OnHandBase, 0) AS NVARCHAR(20))
+                                     + N', required ' + CAST(x.RequiredBase AS NVARCHAR(20))
+                                     + CASE WHEN x.EarlierRows IS NULL THEN N'' ELSE N' (with rows ' + x.EarlierRows + N')' END + N'.' END,
+               Warn4 = CASE WHEN @CheckStock = 1 AND @DocumentTypeCode = N'SINV' AND ISNULL(x.AllowOos, 0) = 1 AND x.QtyBase > 0 AND x.WarehouseId IS NOT NULL
+                             AND x.RequiredBase > ISNULL(x.OnHandBase, 0)
+                                THEN N'Out of stock: ' + x.ItemCode + N' in ' + x.WarehouseCode + N' - available ' + CAST(ISNULL(x.OnHandBase, 0) AS NVARCHAR(20))
+                                     + N', selling ' + CAST(x.RequiredBase AS NVARCHAR(20)) + N'. Posting will ask you to confirm.' END,
+               Warn1 = CASE WHEN @PriceListId IS NOT NULL AND x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 0 AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NOT NULL
+                                THEN N'Manual price ignored - system price ' + CAST(COALESCE(x.BranchPrice, x.AllBranchesPrice) AS NVARCHAR(30)) + N' used (no price override permission).' END,
+               Warn2 = CASE WHEN x.ExpiryDate IS NOT NULL AND x.ExpiryDate < @Today THEN N'Expiry date is in the past.' END,
+               Warn3 = CASE WHEN @UnitPref = 1 AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsSalesUnit = 1)
+                                THEN N'No sales unit is flagged for this item - the base unit was used.'
+                            WHEN @UnitPref = 2 AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsPurchaseUnit = 1)
+                                THEN N'No purchase unit is flagged for this item - the base unit was used.' END
+        FROM running x
+    )
+    SELECT j.RowNumber,
+           Status  = CASE WHEN COALESCE(j.Err0, j.Err1, j.Err2, j.Err3, j.Err4, j.Err5, j.Err6, j.Err7, j.Err8) IS NOT NULL THEN N'Error'
+                          WHEN COALESCE(j.Warn1, j.Warn2, j.Warn3, j.Warn4) IS NOT NULL THEN N'Warning'
+                          ELSE N'Valid' END,
+           Message = NULLIF(LTRIM(CONCAT(ISNULL(j.Err0 + N' ', N''), ISNULL(j.Err1 + N' ', N''), ISNULL(j.Err2 + N' ', N''), ISNULL(j.Err3 + N' ', N''), ISNULL(j.Err4 + N' ', N''),
+                                         ISNULL(j.Err5 + N' ', N''), ISNULL(j.Err6 + N' ', N''), ISNULL(j.Err7 + N' ', N''), ISNULL(j.Err8 + N' ', N''),
+                                         ISNULL(j.Warn1 + N' ', N''), ISNULL(j.Warn2 + N' ', N''), ISNULL(j.Warn3 + N' ', N''), ISNULL(j.Warn4, N''))), N''),
+           RowDocumentTypeCode = ISNULL(j.RowTypeCode, @DocumentTypeCode),
+           j.ItemRef, j.ItemId, j.ItemCode, j.ItemName,
+           j.ItemUnitId, j.UnitTypeName, j.PackingFormula,
+           j.WarehouseId, j.WarehouseCode, j.WarehouseName,
+           Quantity    = CASE WHEN j.Quantity IS NOT NULL AND j.Quantity > 0 AND j.Quantity = FLOOR(j.Quantity) THEN CAST(j.Quantity AS INT) END,
+           UnitPrice   = CASE WHEN @PriceListId IS NULL THEN j.ManualPrice
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN j.ManualPrice
+                              ELSE j.SystemPrice END,
+           PriceSource = CASE WHEN @PriceListId IS NULL THEN CASE WHEN j.ManualPrice IS NOT NULL THEN N'Manual' END
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN N'Manual'
+                              WHEN j.BranchPrice IS NOT NULL THEN N'Branch'
+                              WHEN j.AllBranchesPrice IS NOT NULL THEN N'AllBranches' END,
+           ManualPrice = j.ManualPrice,
+           DiscountPercent = j.EffectiveDiscount,
+           j.ExpiryDate, j.Notes,
+           j.OnHandBase, j.RequiredBase
+    FROM judged j
+    ORDER BY j.RowNumber;
+END
+GO
+
+PRINT 'Script 48 applied: invoice lines may use a warehouse of any branch.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 49: Attachments - edit and delete everywhere =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* ==================================================================================================
+   49: Attachments - edit and delete everywhere
+   --------------------------------------------------------------------------------------------------
+   Every attachment can now be EDITED as well as deleted: its details and, optionally, the file itself
+   (a new version replaces the old one in the same place in the list).
+
+     inventory.usp_ItemFile_Update            file name; optionally a new file
+     inventory.usp_StockDocumentFile_Update   file name; optionally a new file           (audited)
+     sales.usp_SalesDocumentFile_Update       file name; optionally a new file           (audited)
+     purchase.usp_PurchaseDocumentFile_Update file name; optionally a new file           (audited)
+     sales.usp_ReceiptFile_Update             type, note, file name; optionally a new file (audited)
+     purchase.usp_PaymentFile_Update          type, note, file name; optionally a new file (audited)
+     logistics.usp_ContainerAttachment_Update type, note, document date, file name; optionally a new
+                                              file - for this container only or for every container
+                                              sharing the upload                          (audited)
+
+   WHEN: at any status of the document. The one exception is a REVERSED receipt or payment, which is
+   closed: its files can be neither edited nor deleted (as they could not be added). So
+   usp_ReceiptFile_Delete and usp_PaymentFile_Delete now also work on a POSTED receipt / payment.
+
+   A NEW FILE keeps the rules of an added one (not empty; the API checks the type and the size).
+   Leaving it out keeps the stored file and only changes the details.
+   ================================================================================================== */
+
+IF OBJECT_ID(N'purchase.usp_PaymentFile_Delete', N'P') IS NULL OR OBJECT_ID(N'logistics.usp_ContainerAttachment_Delete', N'P') IS NULL
+BEGIN
+    RAISERROR ('Run scripts up to 47 before script 49.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. Items */
+
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_Update
+    @Id          INT,
+    @FileName    NVARCHAR(255),
+    @ContentType NVARCHAR(100)  = NULL,   -- with @Content: a new version of the file
+    @SizeBytes   INT            = NULL,
+    @Content     VARBINARY(MAX) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+    IF NOT EXISTS (SELECT 1 FROM inventory.ItemFiles WHERE Id = @Id) THROW 56006, 'File not found.', 1;
+    IF @FileName IS NULL THROW 56000, 'File name is required.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 56000, 'The file is empty.', 1;
+
+    UPDATE inventory.ItemFiles
+    SET FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+END
+GO
+
+/* ================================================================== 2. Inventory In / Out, sales and purchase documents */
+
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocumentFile_Update
+    @Id INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+    DECLARE @DocumentId INT, @Old NVARCHAR(255);
+    SELECT @DocumentId = DocumentId, @Old = FileName FROM inventory.StockDocumentFiles WHERE Id = @Id;
+    IF @DocumentId IS NULL THROW 62006, 'File not found.', 1;
+    IF @FileName IS NULL THROW 62000, 'File name is required.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 62000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE inventory.StockDocumentFiles
+    SET FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+    INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId)
+    VALUES (@DocumentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                              + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocumentFile_Update
+    @Id INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+    DECLARE @DocumentId INT, @Old NVARCHAR(255);
+    SELECT @DocumentId = DocumentId, @Old = FileName FROM sales.SalesDocumentFiles WHERE Id = @Id;
+    IF @DocumentId IS NULL THROW 64006, 'File not found.', 1;
+    IF @FileName IS NULL THROW 64000, 'File name is required.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 64000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE sales.SalesDocumentFiles
+    SET FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+    INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+    VALUES (@DocumentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                              + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Update
+    @Id INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+    DECLARE @DocumentId INT, @Old NVARCHAR(255);
+    SELECT @DocumentId = DocumentId, @Old = FileName FROM purchase.PurchaseDocumentFiles WHERE Id = @Id;
+    IF @DocumentId IS NULL THROW 65006, 'File not found.', 1;
+    IF @FileName IS NULL THROW 65000, 'File name is required.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 65000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE purchase.PurchaseDocumentFiles
+    SET FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+    INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+    VALUES (@DocumentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                              + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+END
+GO
+
+/* ================================================================== 3. Customer receipts */
+
+CREATE OR ALTER PROCEDURE sales.usp_ReceiptFile_Update
+    @ReceiptId        INT,
+    @FileId           INT,
+    @AttachmentTypeId INT            = NULL,
+    @Note             NVARCHAR(300)  = NULL,
+    @FileName         NVARCHAR(255),
+    @ContentType      NVARCHAR(100)  = NULL,
+    @SizeBytes        INT            = NULL,
+    @Content          VARBINARY(MAX) = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+
+    DECLARE @Status TINYINT = (SELECT Status FROM sales.Receipts WHERE Id = @ReceiptId);
+    IF @Status IS NULL THROW 71006, 'Receipt not found.', 1;
+    IF @Status = 3 THROW 71005, 'A reversed receipt is closed; its files can no longer be changed.', 1;
+    DECLARE @Old NVARCHAR(255), @OldType INT;
+    SELECT @Old = FileName, @OldType = AttachmentTypeId FROM sales.ReceiptFiles WHERE Id = @FileId AND ReceiptId = @ReceiptId;
+    IF @Old IS NULL THROW 71006, 'File not found.', 1;
+    IF @FileName IS NULL THROW 71000, 'File name is required.', 1;
+    -- a type kept as it was may since have been deactivated; a NEW choice must be an active receipt type
+    IF @AttachmentTypeId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @AttachmentTypeId AND AppliesTo = N'Receipt'
+                                                     AND (IsActive = 1 OR @AttachmentTypeId = @OldType))
+        THROW 71000, 'Attachment type not found, inactive, or not one for receipts.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 71000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE sales.ReceiptFiles
+    SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, FileName = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @FileId AND ReceiptId = @ReceiptId;
+    INSERT INTO sales.ReceiptAudit (ReceiptId, Action, Details, UserId)
+    VALUES (@ReceiptId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                             + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_ReceiptFile_Delete
+    @ReceiptId INT, @FileId INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT = (SELECT Status FROM sales.Receipts WHERE Id = @ReceiptId);
+    IF @Status IS NULL THROW 71006, 'Receipt not found.', 1;
+    -- (49) a draft or a posted receipt; a reversed one is closed. Every removal is in the receipt's audit.
+    IF @Status = 3 THROW 71005, 'A reversed receipt is closed; its files can no longer be removed.', 1;
+
+    DECLARE @Name NVARCHAR(255) = (SELECT FileName FROM sales.ReceiptFiles WHERE Id = @FileId AND ReceiptId = @ReceiptId);
+    IF @Name IS NULL THROW 71006, 'File not found.', 1;
+
+    DELETE FROM sales.ReceiptFiles WHERE Id = @FileId AND ReceiptId = @ReceiptId;
+    INSERT INTO sales.ReceiptAudit (ReceiptId, Action, Details, UserId) VALUES (@ReceiptId, N'FileDeleted', @Name, @UserId);
+END
+GO
+
+/* ================================================================== 4. Supplier payments */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Update
+    @PaymentId        INT,
+    @FileId           INT,
+    @AttachmentTypeId INT            = NULL,
+    @Note             NVARCHAR(300)  = NULL,
+    @FileName         NVARCHAR(255),
+    @ContentType      NVARCHAR(100)  = NULL,
+    @SizeBytes        INT            = NULL,
+    @Content          VARBINARY(MAX) = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.Payments WHERE Id = @PaymentId);
+    IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+    IF @Status = 3 THROW 73005, 'A reversed payment is closed; its files can no longer be changed.', 1;
+    DECLARE @Old NVARCHAR(255), @OldType INT;
+    SELECT @Old = FileName, @OldType = AttachmentTypeId FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId;
+    IF @Old IS NULL THROW 73006, 'File not found.', 1;
+    IF @FileName IS NULL THROW 73000, 'File name is required.', 1;
+    IF @AttachmentTypeId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @AttachmentTypeId AND AppliesTo = N'Payment'
+                                                     AND (IsActive = 1 OR @AttachmentTypeId = @OldType))
+        THROW 73000, 'Attachment type not found, inactive, or not one for payments.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 73000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE purchase.PaymentFiles
+    SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, FileName = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @FileId AND PaymentId = @PaymentId;
+    INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+    VALUES (@PaymentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                             + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Delete
+    @PaymentId INT, @FileId INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.Payments WHERE Id = @PaymentId);
+    IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+    -- (49) a draft or a posted payment; a reversed one is closed. Every removal is in the payment's audit.
+    IF @Status = 3 THROW 73005, 'A reversed payment is closed; its files can no longer be removed.', 1;
+
+    DECLARE @Name NVARCHAR(255) = (SELECT FileName FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId);
+    IF @Name IS NULL THROW 73006, 'File not found.', 1;
+
+    DELETE FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId;
+    INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId) VALUES (@PaymentId, N'FileDeleted', @Name, @UserId);
+END
+GO
+
+/* ================================================================== 5. Container documents */
+
+/* One upload may be shared by several containers (attached to them together). @AllShared = 1 edits the
+   upload for every one of them, like deleting it everywhere; 0 edits this container's attachment only -
+   and a new file then becomes this container's own copy, leaving the others on the old one. */
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerAttachment_Update
+    @Id               INT,
+    @AllShared        BIT            = 0,
+    @AttachmentTypeId INT            = NULL,
+    @Note             NVARCHAR(300)  = NULL,
+    @DocumentDate     DATE           = NULL,
+    @FileName         NVARCHAR(255),
+    @ContentType      NVARCHAR(100)  = NULL,
+    @SizeBytes        INT            = NULL,
+    @Content          VARBINARY(MAX) = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+    SET @FileName = NULLIF(LTRIM(RTRIM(@FileName)), N'');
+    SET @AllShared = ISNULL(@AllShared, 0);
+
+    DECLARE @FileId INT, @Old NVARCHAR(255);
+    SELECT @FileId = a.FileId, @Old = f.FileName
+    FROM logistics.ContainerAttachments a INNER JOIN logistics.Files f ON f.Id = a.FileId
+    WHERE a.Id = @Id;
+    IF @FileId IS NULL THROW 70006, 'Attachment not found.', 1;
+    IF @FileName IS NULL THROW 70000, 'The file name is required.', 1;
+    IF @AttachmentTypeId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @AttachmentTypeId)
+        THROW 70000, 'Attachment type not found.', 1;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 70000, 'The file is empty.', 1;
+
+    DECLARE @Shared BIT = CASE WHEN EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE FileId = @FileId AND Id <> @Id) THEN 1 ELSE 0 END;
+    DECLARE @Rows TABLE (Id INT PRIMARY KEY, ContainerId INT NOT NULL);
+    INSERT INTO @Rows (Id, ContainerId)
+    SELECT Id, ContainerId FROM logistics.ContainerAttachments WHERE Id = @Id OR (@AllShared = 1 AND FileId = @FileId);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Shared = 1 AND @AllShared = 0 AND (@Content IS NOT NULL OR @FileName <> @Old)
+        BEGIN
+            -- this container's own copy: the others keep the upload as it was
+            INSERT INTO logistics.Files (FileName, ContentType, SizeBytes, Content, CreatedBy)
+            SELECT @FileName,
+                   CASE WHEN @Content IS NULL THEN f.ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+                   CASE WHEN @Content IS NULL THEN f.SizeBytes ELSE @SizeBytes END,
+                   ISNULL(@Content, f.Content), @UserId
+            FROM logistics.Files f WHERE f.Id = @FileId;
+            UPDATE logistics.ContainerAttachments SET FileId = SCOPE_IDENTITY(), GroupId = NULL WHERE Id = @Id;
+        END
+        ELSE
+            UPDATE logistics.Files
+            SET FileName    = @FileName,
+                ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+                SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+                Content     = ISNULL(@Content, Content)
+            WHERE Id = @FileId;
+
+        UPDATE a SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, DocumentDate = @DocumentDate
+        FROM logistics.ContainerAttachments a INNER JOIN @Rows r ON r.Id = a.Id;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT DISTINCT r.ContainerId, N'Updated',
+               LEFT(N'Attachment edited: ' + CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                    + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId
+        FROM @Rows r;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+PRINT 'Script 49 applied: attachments can be edited and deleted everywhere.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 50: Logistics - movements and their containers (place rule, picker, numbers matched) =====
 
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 GO
 
 /* =====================================================================================
-   Inventory_Shipment - 46: MOVEMENTS AND THEIR CONTAINERS - the place rule, the container picker, numbers matched
+   Inventory_Shipment - 50: MOVEMENTS AND THEIR CONTAINERS - the place rule, the container picker, numbers matched
                             from a list (prompt 43)
 
    The place rule
@@ -36416,7 +40032,7 @@ BEGIN
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
     END
 
-    -- the place rule (script 46): every container of the movement, added or kept, is where its previous movement ends
+    -- the place rule (script 50): every container of the movement, added or kept, is where its previous movement ends
     SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is at ' + p.PlaceName + N' (end of ' + p.PreviousMovementNo
                           + N'); this movement starts from ' + f.PortName
                           + N'. Change the From, or record the movement that brings it here first.'
@@ -36568,7 +40184,7 @@ BEGIN
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
 
-        -- the place rule (script 46): the previous movement of every container is completed and ends at the From
+        -- the place rule (script 50): the previous movement of every container is completed and ends at the From
         DECLARE @Err INT;
         SELECT TOP (1) @Err = CASE WHEN p.PreviousStatus <> 3 THEN 70016 ELSE 70015 END,
                @Msg = CASE WHEN p.PreviousStatus <> 3
@@ -36810,20 +40426,20 @@ CROSS APPLY logistics.fn_ContainerPlaceForMovement(m.Id) p
 WHERE m.Status IN (1, 2) AND p.ContainerId = mc.ContainerId AND p.PlaceId <> m.FromPlaceId
 ORDER BY m.MovementNo, c.ContainerRef;
 
-PRINT 'Script 46 applied: the place rule of movements (70015, 70016), container candidates and numbers matched for a movement.';
+PRINT 'Script 50 applied: the place rule of movements (70015, 70016), container candidates and numbers matched for a movement.';
 GO
 
 SET NOEXEC OFF;
 GO
 
--- ===== 47: Purchase invoice - containers from the invoice, the rules in one place =====
+-- ===== 51: Purchase invoice - containers from the invoice, the rules in one place =====
 
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 GO
 
 /* =====================================================================================
-   Inventory_Shipment - 47: CONTAINERS FROM A PURCHASE INVOICE - the rules in one place (prompt 44 A1)
+   Inventory_Shipment - 51: CONTAINERS FROM A PURCHASE INVOICE - the rules in one place (prompt 44 A1)
 
    Bilal could not create containers from a purchase invoice. Prompt 41 (script 43) built the path - containers created
    on the invoice's order and linked to the invoice in one transaction - but its rules were spread over the API, the
@@ -37024,7 +40640,7 @@ GO
 
 /* ================================================================== 4. Container_Save: the check first, for an invoice */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
 -- Re-created (43) from the body of script 27: + @ForInvoiceId (default NULL = as before); invoices shipped in containers are not "invoiced directly".
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
@@ -37088,7 +40704,7 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
-    -- (47) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
     IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
@@ -37307,7 +40923,7 @@ GO
 
 /* ================================================================== 5. PlanFromOrder: the check first, for an invoice */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
 -- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before) plans only what that invoice has outside containers.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
@@ -37319,7 +40935,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- (47) a proposal for an invoice: the invoice's rules 1-7 first
+    -- (51) a proposal for an invoice: the invoice's rules 1-7 first
     IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
@@ -37541,7 +41157,7 @@ GO
 
 /* ================================================================== 6. CreateBatch: the check first, for an invoice */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
 -- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before), passed to usp_Container_Save.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
@@ -37571,7 +41187,7 @@ BEGIN
 
     IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
 
-    -- (47) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    -- (51) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
     IF @ForInvoiceId IS NOT NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
@@ -37747,7 +41363,7 @@ GO
 
 /* ================================================================== 7. LinkContainers: the check first */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers);
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers);
 -- a draft is no longer switched to "shipped in containers" here: rule 4 has it turned on first.
 -- A draft, or a posted invoice shipped in containers (receipt mode 2), takes container lines of its own order. Its
 -- lines of that order line outside containers are SPLIT: the linked part becomes a line of its own (same item, unit,
@@ -37777,7 +41393,7 @@ BEGIN
         WHERE d.Id = @InvoiceId;
 
         IF @Status IS NULL THROW 65006, 'Document not found.', 1;
-        -- (47) the invoice's rules 1-6 first: the same sentences as the state of the page
+        -- (51) the invoice's rules 1-6 first: the same sentences as the state of the page
         EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @InvoiceId, @Action = N'Link';
         IF @TypeCode <> N'PINV' OR @OrderId IS NULL
             THROW 65028, 'Only a purchase invoice created from a purchase order can be linked to containers.', 1;
@@ -38015,20 +41631,20 @@ CROSS APPLY purchase.fn_PurchaseInvoice_ContainerState(d.Id) s
 WHERE dt.Code = N'PINV' AND d.Status IN (1, 2)
 ORDER BY d.Id;
 
-PRINT 'Script 47 applied: one place for the rules of a purchase invoice taking containers (state, check; 65030, 65031).';
+PRINT 'Script 51 applied: one place for the rules of a purchase invoice taking containers (state, check; 65030, 65031).';
 GO
 
 SET NOEXEC OFF;
 GO
 
--- ===== 48: Attachments - attachment types on every document (used for, type / date / note of every file) =====
+-- ===== 52: Attachments - attachment types on every document (used for, type / date / note of every file) =====
 
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 GO
 
 /* =====================================================================================
-   Inventory_Shipment - 48: ATTACHMENT TYPES EVERYWHERE (prompt 40 A1)
+   Inventory_Shipment - 52: ATTACHMENT TYPES EVERYWHERE (prompt 40 A1)
 
    Every file attached to a document now has a TYPE (masterdata.AttachmentTypes: Category / SubType), a document date
    and a note, as the containers' attachments always had. An attachment type says what it is USED FOR: the document
@@ -38053,9 +41669,10 @@ GO
      DocumentKind = 'CONTAINER' (containers, their movements and charges) or the document type code of the document
      (PO, PINV, PRET, SO, SINV, SRET, RCPT, INV_IN, INV_OUT) - masterdata.fn_AttachmentDocumentKinds lists them.
      First run only (the usages table empty): every type keeps the list it was on - AppliesTo 'Logistics' ->
-     CONTAINER, AppliesTo 'Receipt' -> RCPT (the container pages and the receipt page offer what they offered); the
-     type "Other" (the existing Other / Other, else General / Other) is used for every kind; and a few common types
-     are added where missing (see section 2). AppliesTo stays (additive only) but no procedure reads it any more.
+     CONTAINER, AppliesTo 'Receipt' -> RCPT, AppliesTo 'Payment' -> PAY (script 55) - the pages offer what they
+     offered; the type "Other" (the existing Other / Other, else General / Other) is used for every kind; and a few
+     common types are added where missing (see section 2). AppliesTo stays (additive only): no list is read from it
+     any more, but a name is unique within its AppliesTo (script 46).
 
    Files
      Purchase, sales and stock document files gain AttachmentTypeId, DocumentDate and Note (NVARCHAR(500)); receipt
@@ -38137,7 +41754,7 @@ GO
 IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages)
 BEGIN
     INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
-    SELECT Id, CASE WHEN AppliesTo = N'Receipt' THEN N'RCPT' ELSE N'CONTAINER' END FROM masterdata.AttachmentTypes;
+    SELECT Id, CASE AppliesTo WHEN N'Receipt' THEN N'RCPT' WHEN N'Payment' THEN N'PAY' ELSE N'CONTAINER' END FROM masterdata.AttachmentTypes;
 
     IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE SubType = N'Other' AND Category IN (N'Other', N'General'))
         INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, AppliesTo) VALUES (N'General', N'Other', 999, N'Logistics');
@@ -38254,7 +41871,7 @@ GO
 
 /* ================================================================== 5. Purchase documents (PO, PINV, PRET) */
 
--- Re-created (48) from the body of script 21: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 21: + the type (required, used for the document's kind), date and note.
 CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,
@@ -38319,7 +41936,7 @@ GO
 
 /* ================================================================== 6. Sales documents (SO, SINV, SRET) */
 
--- Re-created (48) from the body of script 17: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 17: + the type (required, used for the document's kind), date and note.
 CREATE OR ALTER PROCEDURE sales.usp_SalesDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,
@@ -38383,7 +42000,7 @@ GO
 
 /* ================================================================== 7. Inventory In / Out (INV_IN, INV_OUT) */
 
--- Re-created (48) from the body of script 15: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 15: + the type (required, used for the document's kind), date and note.
 CREATE OR ALTER PROCEDURE inventory.usp_StockDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,
@@ -38447,7 +42064,7 @@ GO
 
 /* ================================================================== 8. Customer receipts (RCPT) */
 
--- Re-created (48) from the body of script 36: the type required and used for receipts (it was optional and checked
+-- Re-created (52) from the body of script 36: the type required and used for receipts (it was optional and checked
 -- on AppliesTo), + @DocumentDate; the note takes 500 characters.
 CREATE OR ALTER PROCEDURE sales.usp_ReceiptFile_Add
     @ReceiptId        INT,
@@ -38521,7 +42138,7 @@ GO
 
 /* ================================================================== 9. Containers (CONTAINER) */
 
--- Re-created (48) from the body of script 27: the type required and used for containers (it was optional); the note
+-- Re-created (52) from the body of script 27: the type required and used for containers (it was optional); the note
 -- takes 500 characters.
 CREATE OR ALTER PROCEDURE logistics.usp_ContainerAttachment_Add
     @ContainerIds     logistics.tvp_IdList READONLY,
@@ -38551,7 +42168,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
     IF @FileName IS NULL THROW 70000, 'The file name is required.', 1;
     IF @SizeBytes IS NULL OR @SizeBytes <= 0 OR @Content IS NULL THROW 70000, 'The file is empty.', 1;
-    -- (48) the type is required, active and used for containers
+    -- (52) the type is required, active and used for containers
     EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'CONTAINER', 70017;
     IF EXISTS (SELECT 1 FROM @Ids x WHERE NOT EXISTS (SELECT 1 FROM logistics.Containers c WHERE c.Id = x.Id))
         THROW 70006, 'A selected container no longer exists.', 1;
@@ -38676,7 +42293,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: the list of a document kind (@DocumentKind); @AppliesTo, which the
+-- Re-created (52) from the body of script 36: the list of a document kind (@DocumentKind); @AppliesTo, which the
 -- pages written before still pass, answers as before (Logistics = containers, Receipt = receipts).
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Lookup
     @ActiveOnly   BIT          = 1,
@@ -38697,7 +42314,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: + UsedFor (the kinds, comma separated) and the @DocumentKind filter.
+-- Re-created (52) from the body of script 36: + UsedFor (the kinds, comma separated) and the @DocumentKind filter.
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Search
     @Search        NVARCHAR(100) = NULL,
     @Category      NVARCHAR(30)  = NULL,
@@ -38706,7 +42323,7 @@ CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Search
     @SortDirection NVARCHAR(4)   = N'ASC',
     @PageNumber    INT           = 1,
     @PageSize      INT           = 10,
-    @DocumentKind  NVARCHAR(20)  = NULL            -- (48) the types used for this kind
+    @DocumentKind  NVARCHAR(20)  = NULL            -- (52) the types used for this kind
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -38744,7 +42361,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: + UsedFor.
+-- Re-created (52) from the body of script 36: + UsedFor.
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Get
     @Id INT
 AS
@@ -38760,7 +42377,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: + @UsedFor - the kinds, comma separated (CONTAINER,PO,PINV...), at
+-- Re-created (52) from the body of script 36: + @UsedFor - the kinds, comma separated (CONTAINER,PO,PINV...), at
 -- least one; NULL = unchanged on an update, and on an insert the kind of @AppliesTo (Receipt = RCPT, else CONTAINER).
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Save
     @Id         INT          = NULL,
@@ -38843,7 +42460,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: refused while ANY file uses the type (every attachment table).
+-- Re-created (52) from the body of script 36: refused while ANY file uses the type (every attachment table).
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Delete
     @Id INT, @UserId INT = NULL
 AS
@@ -38904,23 +42521,23 @@ SELECT a.Id, a.Category, a.SubType, a.IsActive,
 FROM masterdata.AttachmentTypes a
 ORDER BY a.SortOrder, a.Category, a.SubType;
 
-PRINT 'Script 48 applied: attachment types used for every document kind; every file has a type, a date and a note.';
+PRINT 'Script 52 applied: attachment types used for every document kind; every file has a type, a date and a note.';
 GO
 
 SET NOEXEC OFF;
 GO
 
--- ===== 49: Logistics - movements: the place rules of a container (port of loading, Origin stage) =====
+-- ===== 53: Logistics - movements: the place rules of a container (port of loading, Origin stage) =====
 
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 GO
 
 /* =====================================================================================
-   Inventory_Shipment - 49: MOVEMENTS - THE PLACE RULES OF A CONTAINER (prompt 45 A1)
+   Inventory_Shipment - 53: MOVEMENTS - THE PLACE RULES OF A CONTAINER (prompt 45 A1)
 
    Why: MOV-2026-000046 (LOAD, Dar es Salaam -> Chennai) started with KTG-2026-0018, a container that never moved. The
-   place rule of script 46 only looked at containers that HAD moved (never moved = no place = any From), and Start
+   place rule of script 50 only looked at containers that HAD moved (never moved = no place = any From), and Start
    only checked containers with a previous movement. A container that never moved now starts from its port of loading.
 
    The rules (one place: logistics.fn_ContainerFitForMovement, used by Save, Start, the candidates and the matching)
@@ -38932,7 +42549,7 @@ GO
        loading on this container: check it.'
      - An Origin-stage movement only takes containers that never moved. Reason: 'Loading at the supplier is only for
        containers that have not moved yet.'
-     - Start, as before (script 46): the previous movement of every container is completed (70016), checked first.
+     - Start, as before (script 50): the previous movement of every container is completed (70016), checked first.
      - Start of a movement without containers: 'Tick at least one container before starting.' (70000; SetStatus said
        'The movement has no containers.', which Complete keeps). Save already refused it ('Select at least one
        container.').
@@ -38940,16 +42557,16 @@ GO
    Objects
      logistics.fn_ContainerFitForMovement (new): per container for a movement (@MovementId NULL = a new one), its From,
        To and type: the place (PlaceName = the port of loading of a container that never moved), Fits, Reason, Note.
-       logistics.fn_ContainerPlaceForMovement (script 46) stays as it is: the previous movement of a container.
-     logistics.fn_Movement_ContainerCheck: + @ToPlaceId, @MovementTypeId (re-created from the body of script 46).
-     logistics.usp_Movement_Save, usp_Movement_SetStatus: the rules above (re-created from the bodies of script 46).
+       logistics.fn_ContainerPlaceForMovement (script 50) stays as it is: the previous movement of a container.
+     logistics.fn_Movement_ContainerCheck: + @ToPlaceId, @MovementTypeId (re-created from the body of script 50).
+     logistics.usp_Movement_Save, usp_Movement_SetStatus: the rules above (re-created from the bodies of script 50).
      logistics.usp_Movement_ContainerCandidates, usp_Movement_MatchContainers: + @ToPlaceId, @MovementTypeId at the end
        (NULL = the saved movement's; a new movement without a type is not of the Origin stage); same result sets.
 
    Errors: 70015 the container does not fit the From (Save and Start; the message carries the reason), 70016 previous
            movement not completed (Start), 70000 validation - no new number.
 
-   Requires script 46. Idempotent, additive: re-applied at every API start-up through Schema.sql.
+   Requires script 50. Idempotent, additive: re-applied at every API start-up through Schema.sql.
    ===================================================================================== */
 GO
 
@@ -38957,7 +42574,7 @@ IF OBJECT_ID(N'logistics.fn_ContainerPlaceForMovement', N'IF') IS NULL
    OR OBJECT_ID(N'logistics.usp_Movement_MatchContainers', N'P') IS NULL
    OR COL_LENGTH(N'masterdata.MovementTypes', N'Stage') IS NULL
 BEGIN
-    RAISERROR ('Run script 46 before this script.', 16, 1);
+    RAISERROR ('Run script 50 before this script.', 16, 1);
     SET NOEXEC ON;
 END
 GO
@@ -38997,7 +42614,7 @@ GO
 
 /* ================================================================== 2. The checks of a movement's Save, per container */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId, the place rules of
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, the place rules of
 -- fn_ContainerFitForMovement (PlaceName is the port of loading of a container that never moved).
 -- Every container with the columns of the picker and the checks of usp_Movement_Save for @MovementId (NULL = a new,
 -- planned movement) leaving from @FromPlaceId for @ToPlaceId with the type @MovementTypeId. For a container not on the movement: offloaded / closed / cancelled,
@@ -39061,7 +42678,7 @@ GO
 
 /* ================================================================== 3. Save: every container fits the movement */
 
--- Re-created (49) from the body of script 46: the place rules of fn_ContainerFitForMovement (70015 with the reason).
+-- Re-created (53) from the body of script 50: the place rules of fn_ContainerFitForMovement (70015 with the reason).
 -- Planned movements: everything editable. In progress: header and containers editable (start date too), no end date.
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_Save
     @Id              INT            = NULL,
@@ -39136,7 +42753,7 @@ BEGIN
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
     END
 
-    -- the place rules (script 49): every container of the movement, added or kept, fits its From, To and stage
+    -- the place rules (script 53): every container of the movement, added or kept, fits its From, To and stage
     SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
     FROM @ContainerIds x
     INNER JOIN logistics.Containers c ON c.Id = x.Id
@@ -39228,7 +42845,7 @@ GO
 
 /* ================================================================== 4. Start: previous movements completed, every container fits */
 
--- Re-created (49) from the body of script 46: Start checks the place rules of fn_ContainerFitForMovement (70015) after
+-- Re-created (53) from the body of script 50: Start checks the place rules of fn_ContainerFitForMovement (70015) after
 -- the previous movements (70016), and refuses a movement without containers in the words of the page.
 -- Status changes of a movement. @Action: Start | Complete | Cancel. The containers' status and dates follow.
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_SetStatus
@@ -39291,7 +42908,7 @@ BEGIN
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
 
-        -- the place rules (script 49): the previous movement of every container is completed (70016), then every
+        -- the place rules (script 53): the previous movement of every container is completed (70016), then every
         -- container fits the movement's From, To and stage (70015) - the rules of Save, fn_ContainerFitForMovement
         SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N': the previous movement ' + p.PreviousMovementNo + N' (' + pf.PortName
                               + N' ' + NCHAR(8594) + N' ' + p.PlaceName + N') is not completed yet.'
@@ -39370,7 +42987,7 @@ GO
 
 /* ================================================================== 5. Candidates of a movement */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
 -- saved movement's) for the place rules of an Origin-stage movement.
 -- The containers that can join a movement (@MovementId NULL = a new one) leaving from @FromPlaceId (the From on the
 -- page, saved or not): not on the movement, not offloaded / closed / cancelled. @IncludeBlocked = 1 also lists the
@@ -39385,8 +43002,8 @@ CREATE OR ALTER PROCEDURE logistics.usp_Movement_ContainerCandidates
     @IncludeBlocked  BIT           = 0,
     @PageNumber      INT           = 1,
     @PageSize        INT           = 200,
-    @ToPlaceId       INT           = NULL,   -- (49) the To on the page
-    @MovementTypeId  INT           = NULL    -- (49) the type on the page
+    @ToPlaceId       INT           = NULL,   -- (53) the To on the page
+    @MovementTypeId  INT           = NULL    -- (53) the type on the page
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -39434,15 +43051,15 @@ GO
 
 /* ================================================================== 6. Container numbers matched for a movement */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId, as the candidates.
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, as the candidates.
 -- One row per number (empty ones ignored), in the input order. Result: Ready | AlreadyOnMovement | NotFound |
 -- Ambiguous | Blocked | Duplicate; Reason and Note are the texts of the candidates (fn_Movement_ContainerCheck).
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_MatchContainers
     @MovementId  INT = NULL,
     @FromPlaceId INT,
     @Numbers     logistics.tvp_TextList READONLY,
-    @ToPlaceId      INT = NULL,   -- (49) the To on the page
-    @MovementTypeId INT = NULL    -- (49) the type on the page
+    @ToPlaceId      INT = NULL,   -- (53) the To on the page
+    @MovementTypeId INT = NULL    -- (53) the type on the page
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -39554,20 +43171,20 @@ CROSS APPLY logistics.fn_ContainerFitForMovement(m.Id, m.FromPlaceId, m.ToPlaceI
 WHERE m.Status IN (1, 2) AND p.ContainerId = mc.ContainerId AND p.PreviousMovementId IS NULL AND c.PortOfLoadingId IS NULL
 ORDER BY m.MovementNo, c.ContainerRef;
 
-PRINT 'Script 49 applied: the place rules of movements in one function - a container that never moved starts from its port of loading, an Origin-stage movement takes only containers that never moved.';
+PRINT 'Script 53 applied: the place rules of movements in one function - a container that never moved starts from its port of loading, an Origin-stage movement takes only containers that never moved.';
 GO
 
 SET NOEXEC OFF;
 GO
 
--- ===== 50: Logistics - container capacity from the items' Container units (fill, auto-plan) =====
+-- ===== 54: Logistics - container capacity from the items' Container units (fill, auto-plan) =====
 
 SET QUOTED_IDENTIFIER ON;
 SET ANSI_NULLS ON;
 GO
 
 /* =====================================================================================
-   Inventory_Shipment - 50: CONTAINER CAPACITY FROM THE ITEMS' CONTAINER UNITS (prompt 46 A1)
+   Inventory_Shipment - 54: CONTAINER CAPACITY FROM THE ITEMS' CONTAINER UNITS (prompt 46 A1)
 
    (docs/prompts/46-container-capacity-from-item-units.md was not found anywhere: the rules below are the prompt's.)
 
@@ -39593,7 +43210,7 @@ GO
 
    Objects
      logistics.fn_ItemPcsPerContainer, logistics.fn_ContainerFill (new)
-     Re-created from their current bodies (scripts 24, 27, 43, 47):
+     Re-created from their current bodies (scripts 24, 27, 43, 51):
        logistics.usp_Container_Save          the fill check (69007), @MaxUnits ignored, no MaxUnits written
        logistics.usp_Container_PlanFromOrder pieces per container from the item only (CapacitySource 'Item Definition'),
                                              result 1 without MaxUnits
@@ -39613,7 +43230,7 @@ GO
 
    Errors: 69007 over capacity (new message), 69000 an item without a Container unit in an auto-plan - no new number.
 
-   Requires scripts 43 and 47. Idempotent, additive: re-applied at every API start-up through Schema.sql.
+   Requires scripts 43 and 51. Idempotent, additive: re-applied at every API start-up through Schema.sql.
    ===================================================================================== */
 GO
 
@@ -39621,7 +43238,7 @@ IF OBJECT_ID(N'purchase.usp_PurchaseInvoice_CheckContainers', N'P') IS NULL
    OR OBJECT_ID(N'purchase.usp_PurchaseInvoice_ContainerSummary', N'P') IS NULL
    OR COL_LENGTH(N'masterdata.UnitTypes', N'IsContainer') IS NULL
 BEGIN
-    RAISERROR ('Run scripts 43 and 47 before this script.', 16, 1);
+    RAISERROR ('Run scripts 43 and 51 before this script.', 16, 1);
     SET NOEXEC ON;
 END
 GO
@@ -39675,7 +43292,7 @@ GO
 
 /* ================================================================== 3. Save: the fill check */
 
--- Re-created (50) from the body of script 47: the capacity is the fill from the items' Container units, checked on the
+-- Re-created (54) from the body of script 51: the capacity is the fill from the items' Container units, checked on the
 -- lines written (69007, overridable); @MaxUnits is kept and ignored, a new container gets no MaxUnits.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
@@ -39706,7 +43323,7 @@ CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @BlNo                NVARCHAR(30)   = NULL,
     @BlDate              DATE           = NULL,
     @BlNotes             NVARCHAR(500)  = NULL,
-    @MaxUnits            INT            = NULL,   -- (50) ignored: the capacity is the items' Container units
+    @MaxUnits            INT            = NULL,   -- (54) ignored: the capacity is the items' Container units
     @BranchId            INT,
     @WarehouseId         INT            = NULL,
     @TruckNo             NVARCHAR(30)   = NULL,
@@ -39739,7 +43356,7 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
-    -- (47) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
     IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
@@ -39929,7 +43546,7 @@ BEGIN
         CROSS APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
         WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId);
 
-        -- (50) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
+        -- (54) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
         -- never a hard block; unknown (an item without a Container unit) = no warning. Checked on the lines just written,
         -- so the refusal rolls the whole save back.
         IF ISNULL(@AllowOverCapacity, 0) = 0 AND EXISTS (SELECT 1 FROM logistics.fn_ContainerFill(@Id) f WHERE f.IsOverCapacity = 1)
@@ -39965,20 +43582,20 @@ GO
 
 /* ================================================================== 4. Auto-plan: pieces per container from the item */
 
--- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only
+-- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only
 -- (logistics.fn_ItemPcsPerContainer); @Capacities and the container type's MaxUnits are no longer read; an item without
 -- a Container unit stops the plan (69000).
 CREATE OR ALTER PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
     @ContainerTypeId INT,
     @MixRemainders   BIT = 1,       -- 0 = the rest of every order line gets its own container
-    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (50) ignored: the items' Container units only
+    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (54) ignored: the items' Container units only
     @ForInvoiceId    INT = NULL      -- (43) only what this invoice of the order has outside containers
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- (47) a proposal for an invoice: the invoice's rules 1-7 first
+    -- (51) a proposal for an invoice: the invoice's rules 1-7 first
     IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
@@ -39998,7 +43615,7 @@ BEGIN
         OrderedBase   INT          NOT NULL,
         AvailableBase INT          NOT NULL,
         Cap           INT          NULL,
-        CapSource     NVARCHAR(20) NOT NULL,     -- (50) Item Definition | None
+        CapSource     NVARCHAR(20) NOT NULL,     -- (54) Item Definition | None
         OilIncluded   BIT          NOT NULL,
         Remaining     INT          NOT NULL
     );
@@ -40142,7 +43759,7 @@ BEGIN
     IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
         THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
 
-    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 50).
+    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 54).
     SELECT x.Seq, x.ItemCount, x.Units,
            FillPct  = CAST(ROUND(100 * x.Fill, 1) AS DECIMAL(9,1)),
            ItemSummary = CASE WHEN x.ItemCount = 1 THEN x.FirstItem ELSE N'Mixed - ' + CAST(x.ItemCount AS NVARCHAR(10)) + N' items' END
@@ -40185,7 +43802,7 @@ GO
 
 /* ================================================================== 5. Create from a plan */
 
--- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only; an item without
+-- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only; an item without
 -- one stops the batch (69000); the containers get no MaxUnits; the answer gives their fill.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
@@ -40203,7 +43820,7 @@ CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @Eta                 DATE           = NULL,
     @FreeDays            INT            = NULL,
     @Plan                logistics.tvp_ContainerPlanLine READONLY,
-    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (50) ignored: the items' Container units only
+    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (54) ignored: the items' Container units only
     @AllowOverCapacity   BIT            = 0,
     @Confirm             BIT            = 0,                      -- 1 = the new containers are confirmed at once
     @UserId              INT            = NULL,
@@ -40215,7 +43832,7 @@ BEGIN
 
     IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
 
-    -- (47) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    -- (51) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
     IF @ForInvoiceId IS NOT NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
@@ -40247,7 +43864,7 @@ BEGIN
         THROW 69000, @Msg, 1;
     END
 
-    -- (50) every planned item has a Container unit, as the proposal requires
+    -- (54) every planned item has a Container unit, as the proposal requires
     SELECT TOP (1) @Msg = N'Line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
     FROM @Plan p
     INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
@@ -40377,7 +43994,7 @@ GO
 
 /* ================================================================== 6. The container: get */
 
--- Re-created (50) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
+-- Re-created (54) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
 -- MissingContainerUnitItems, RemainingPcs, IsOverCapacity) instead of MaxUnits / TypeMaxUnits / UtilizationPct /
 -- RemainingCapacityBase; the lines give each item's PcsPerContainer.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Get
@@ -40619,7 +44236,7 @@ GO
 
 /* ================================================================== 7. The containers: search */
 
--- Re-created (50) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
+-- Re-created (54) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
 -- UtilizationPct.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
@@ -40789,7 +44406,7 @@ GO
 
 /* ================================================================== 8. Order lines to load */
 
--- Re-created (50) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
+-- Re-created (54) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
 CREATE OR ALTER PROCEDURE logistics.usp_Container_AvailablePoLines
     @PurchaseOrderId INT           = NULL,
     @SupplierId      INT           = NULL,
@@ -40850,7 +44467,7 @@ GO
 
 /* ================================================================== 9. A purchase invoice and its containers */
 
--- Re-created (50) from the body of script 43: PcsPerContainer from logistics.fn_ItemPcsPerContainer.
+-- Re-created (54) from the body of script 43: PcsPerContainer from logistics.fn_ItemPcsPerContainer.
 CREATE OR ALTER FUNCTION purchase.fn_PurchaseInvoice_ItemContainers (@InvoiceId INT)
 RETURNS TABLE
 AS
@@ -40860,7 +44477,7 @@ RETURN
            LinkedBase       = SUM(CASE WHEN l.ContainerLineId IS NOT NULL THEN l.QuantityBase ELSE 0 END),
            UnlinkedBase     = SUM(CASE WHEN l.ContainerLineId IS NULL THEN l.QuantityBase ELSE 0 END),
            ContainersLinked = COUNT(DISTINCT cl.ContainerId),
-           PcsPerContainer  = NULLIF(MAX(ISNULL(cnt.PcsPerContainer, 0)), 0)   -- (50) no NULL in the aggregate
+           PcsPerContainer  = NULLIF(MAX(ISNULL(cnt.PcsPerContainer, 0)), 0)   -- (54) no NULL in the aggregate
     FROM purchase.PurchaseDocumentLines l
     LEFT  JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
     CROSS APPLY logistics.fn_ItemPcsPerContainer(l.ItemId) cnt
@@ -40868,7 +44485,7 @@ RETURN
     GROUP BY l.ItemId;
 GO
 
--- Re-created (50) from the body of script 43: "share of the container" = the invoice's pieces of the item / the item's
+-- Re-created (54) from the body of script 43: "share of the container" = the invoice's pieces of the item / the item's
 -- pieces per container (its Container unit); MaxUnits is no longer returned (PcsPerContainer instead).
 CREATE OR ALTER PROCEDURE purchase.usp_PurchaseInvoice_ContainerSummary
     @InvoiceId INT
@@ -40903,12 +44520,12 @@ GO
 
 /* ================================================================== 10. Container types: MaxUnits ignored */
 
--- Re-created (50) from the body of script 24: @MaxUnits is kept and ignored (neither required nor written).
+-- Re-created (54) from the body of script 24: @MaxUnits is kept and ignored (neither required nor written).
 CREATE OR ALTER PROCEDURE masterdata.usp_ContainerType_Save
     @Id           INT           = NULL,
     @TypeCode     NVARCHAR(10),
     @TypeName     NVARCHAR(100),
-    @MaxUnits     INT           = NULL,   -- (50) ignored: a container's capacity is its items' Container units
+    @MaxUnits     INT           = NULL,   -- (54) ignored: a container's capacity is its items' Container units
     @MaxWeightKg  DECIMAL(18,3) = NULL,
     @MaxVolumeCbm DECIMAL(18,3) = NULL,
     @Description  NVARCHAR(500) = NULL,
@@ -40996,7 +44613,604 @@ CROSS APPLY logistics.fn_ContainerFill(c.Id) f
 WHERE c.Status < 6 AND f.IsOverCapacity = 1
 ORDER BY f.FillPct DESC, c.ContainerRef;
 
-PRINT 'Script 50 applied: container capacity from the items'' Container units - one function for pieces per container, one for the fill; no typed or container type capacity any more.';
+PRINT 'Script 54 applied: container capacity from the items'' Container units - one function for pieces per container, one for the fill; no typed or container type capacity any more.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 55: Attachments - one edit for every file (name, file, type, date, note); payments on the Used-for list =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* ==================================================================================================
+   Inventory_Shipment - 55: ATTACHMENTS - ONE EDIT FOR EVERY FILE, PAYMENTS ON THE "USED FOR" LIST
+
+   Two attachment features were built side by side and are merged here:
+     - script 49 (edit and delete everywhere): a file's NAME and, optionally, a new version of the file in the
+       same place in the list - a container's for this container only or for every container sharing the upload;
+       receipt and payment files their type and note too;
+     - script 52 (attachment types everywhere): every file has a TYPE used for the document's kind
+       (masterdata.AttachmentTypeUsages), a document date and a note, edited with the upload's checks.
+   Both wrote the same seven procedures (the *File_Update ones, usp_ContainerAttachment_Update,
+   usp_AttachmentType_Save / _Delete), so whichever ran last silently replaced the other's. From here ONE edit
+   does both:
+
+     ..._Update  @AttachmentTypeId, @DocumentDate, @Note - the upload's checks: a type is required, active and used
+                 for the document's kind, except that a file may keep the type it has though it was deactivated
+                 since; @FileName (NULL keeps it); optionally @ContentType / @SizeBytes / @Content, a new version
+                 of the file (NULL keeps the stored one). Audited "old -> new (new file)". Answers the file's row
+                 (the List procedure's).
+       inventory.usp_StockDocumentFile_Update, sales.usp_SalesDocumentFile_Update,
+       purchase.usp_PurchaseDocumentFile_Update, sales.usp_ReceiptFile_Update, purchase.usp_PaymentFile_Update
+       (not on a reversed receipt / payment), logistics.usp_ContainerAttachment_Update (+ @AllShared: 1 = every
+       container holding the upload; 0 = this record only, and a new name or file then becomes its own copy while
+       the others keep the upload as it was).
+     inventory.usp_ItemFile_Update stays script 49's: an item's files have no type.
+
+   SUPPLIER PAYMENTS (scripts 46-47) JOIN THE "USED FOR" LIST as the kind PAY: the types of the Payment list are
+   used for PAY (once, while no type is), payment files gain DocumentDate, their note takes 500 characters, files
+   without a type get the Payment list's "Other / Other", and the type is then required: usp_PaymentFile_Add and
+   _Update check it with masterdata.usp_AttachmentType_CheckForKind (error 73013). usp_PaymentFile_List (new)
+   lists them like every other family's files.
+
+   Attachment types: names stay unique PER LIST (Category, SubType, AppliesTo - script 46's constraint); _Save
+   takes AppliesTo Payment as well as @UsedFor; _Lookup's @AppliesTo = Payment answers PAY; _Delete refuses a type
+   that any file of any table uses, payments included.
+
+   Requires scripts 46-49 and 52. Idempotent: re-applied at every API start-up through Schema.sql.
+   ================================================================================================== */
+
+IF OBJECT_ID(N'masterdata.usp_AttachmentType_CheckForKind', N'P') IS NULL
+   OR OBJECT_ID(N'masterdata.AttachmentTypeUsages', N'U') IS NULL
+   OR OBJECT_ID(N'purchase.PaymentFiles', N'U') IS NULL
+   OR OBJECT_ID(N'purchase.usp_PaymentFile_Delete', N'P') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 46-49 and 52 before script 55.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. The document kinds: + supplier payments */
+
+CREATE OR ALTER FUNCTION masterdata.fn_AttachmentDocumentKinds ()
+RETURNS TABLE
+AS
+RETURN
+SELECT k.Code, k.Name, k.Noun, k.SortOrder
+FROM (VALUES (N'CONTAINER', N'Containers',        N'containers',              10),
+             (N'PO',        N'Purchase orders',   N'purchase orders',         20),
+             (N'PINV',      N'Purchase invoices', N'purchase invoices',       30),
+             (N'PRET',      N'Purchase returns',  N'purchase returns',        40),
+             (N'SO',        N'Sales orders',      N'sales orders',            50),
+             (N'SINV',      N'Sales invoices',    N'sales invoices',          60),
+             (N'SRET',      N'Sales returns',     N'sales returns',           70),
+             (N'RCPT',      N'Customer receipts', N'customer receipts',       80),
+             (N'PAY',       N'Supplier payments', N'supplier payments',       85),
+             (N'INV_IN',    N'Inventory In',      N'Inventory In documents',  90),
+             (N'INV_OUT',   N'Inventory Out',     N'Inventory Out documents', 100)) k (Code, Name, Noun, SortOrder);
+GO
+
+-- Once, while no type is used for payments: the Payment list (script 46) is what the payment page offered.
+IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages WHERE DocumentKind = N'PAY')
+BEGIN
+    INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
+    SELECT Id, N'PAY' FROM masterdata.AttachmentTypes WHERE AppliesTo = N'Payment';
+    PRINT 'Attachment types: the Payment list is used for supplier payments (PAY).';
+END
+GO
+
+/* ================================================================== 2. Payment files: date, note, type required */
+
+IF COL_LENGTH(N'purchase.PaymentFiles', N'DocumentDate') IS NULL ALTER TABLE purchase.PaymentFiles ADD DocumentDate DATE NULL;
+IF COL_LENGTH(N'purchase.PaymentFiles', N'Note') < 1000 ALTER TABLE purchase.PaymentFiles ALTER COLUMN Note NVARCHAR(500) NULL;
+GO
+
+-- Files without a type are "Other": the one used for payments, else any "Other" (which is then used for payments).
+IF EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId IS NULL)
+BEGIN
+    DECLARE @Other INT = (SELECT TOP (1) t.Id FROM masterdata.AttachmentTypes t
+                          INNER JOIN masterdata.AttachmentTypeUsages u ON u.AttachmentTypeId = t.Id AND u.DocumentKind = N'PAY'
+                          WHERE t.SubType = N'Other' AND t.Category IN (N'Other', N'General')
+                          ORDER BY CASE t.Category WHEN N'Other' THEN 0 ELSE 1 END, t.Id);
+    IF @Other IS NULL
+        SET @Other = (SELECT TOP (1) Id FROM masterdata.AttachmentTypes
+                      WHERE SubType = N'Other' AND Category IN (N'Other', N'General')
+                      ORDER BY CASE AppliesTo WHEN N'Payment' THEN 0 ELSE 1 END, CASE Category WHEN N'Other' THEN 0 ELSE 1 END, Id);
+    IF @Other IS NOT NULL
+    BEGIN
+        UPDATE purchase.PaymentFiles SET AttachmentTypeId = @Other WHERE AttachmentTypeId IS NULL;
+        IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages WHERE AttachmentTypeId = @Other AND DocumentKind = N'PAY')
+            INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind) VALUES (@Other, N'PAY');
+    END
+END
+GO
+
+IF NOT EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId IS NULL)
+   AND EXISTS (SELECT 1 FROM sys.columns WHERE object_id = OBJECT_ID(N'purchase.PaymentFiles') AND name = N'AttachmentTypeId' AND is_nullable = 1)
+    ALTER TABLE purchase.PaymentFiles ALTER COLUMN AttachmentTypeId INT NOT NULL;
+GO
+
+/* ================================================================== 3. Purchase, sales and stock documents */
+
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Update
+    @Id INT, @AttachmentTypeId INT = NULL, @DocumentDate DATE = NULL, @Note NVARCHAR(500) = NULL,
+    @FileName NVARCHAR(255) = NULL, @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @DocumentId INT, @Old NVARCHAR(255), @OldType INT, @Kind NVARCHAR(20);
+    SELECT @DocumentId = f.DocumentId, @Old = f.FileName, @OldType = f.AttachmentTypeId, @Kind = dt.Code
+    FROM purchase.PurchaseDocumentFiles f
+    INNER JOIN purchase.PurchaseDocuments d ON d.Id = f.DocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE f.Id = @Id;
+    IF @DocumentId IS NULL THROW 65006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    -- the type the file has may stay though deactivated since; a new choice is checked as the upload's
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, @Kind, 65032;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 65000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE purchase.PurchaseDocumentFiles
+    SET AttachmentTypeId = @AttachmentTypeId, DocumentDate = @DocumentDate, Note = NULLIF(LTRIM(RTRIM(@Note)), N''),
+        FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+    INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+    VALUES (@DocumentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                              + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+
+    EXEC purchase.usp_PurchaseDocumentFile_List @DocumentId = @DocumentId, @FileId = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE sales.usp_SalesDocumentFile_Update
+    @Id INT, @AttachmentTypeId INT = NULL, @DocumentDate DATE = NULL, @Note NVARCHAR(500) = NULL,
+    @FileName NVARCHAR(255) = NULL, @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @DocumentId INT, @Old NVARCHAR(255), @OldType INT, @Kind NVARCHAR(20);
+    SELECT @DocumentId = f.DocumentId, @Old = f.FileName, @OldType = f.AttachmentTypeId, @Kind = dt.Code
+    FROM sales.SalesDocumentFiles f
+    INNER JOIN sales.SalesDocuments d ON d.Id = f.DocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE f.Id = @Id;
+    IF @DocumentId IS NULL THROW 64006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, @Kind, 64017;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 64000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE sales.SalesDocumentFiles
+    SET AttachmentTypeId = @AttachmentTypeId, DocumentDate = @DocumentDate, Note = NULLIF(LTRIM(RTRIM(@Note)), N''),
+        FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+    INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId)
+    VALUES (@DocumentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                              + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+
+    EXEC sales.usp_SalesDocumentFile_List @DocumentId = @DocumentId, @FileId = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocumentFile_Update
+    @Id INT, @AttachmentTypeId INT = NULL, @DocumentDate DATE = NULL, @Note NVARCHAR(500) = NULL,
+    @FileName NVARCHAR(255) = NULL, @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @DocumentId INT, @Old NVARCHAR(255), @OldType INT, @Kind NVARCHAR(20);
+    SELECT @DocumentId = f.DocumentId, @Old = f.FileName, @OldType = f.AttachmentTypeId, @Kind = dt.Code
+    FROM inventory.StockDocumentFiles f
+    INNER JOIN inventory.StockDocuments d ON d.Id = f.DocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE f.Id = @Id;
+    IF @DocumentId IS NULL THROW 62006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, @Kind, 62011;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 62000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE inventory.StockDocumentFiles
+    SET AttachmentTypeId = @AttachmentTypeId, DocumentDate = @DocumentDate, Note = NULLIF(LTRIM(RTRIM(@Note)), N''),
+        FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @Id;
+    INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId)
+    VALUES (@DocumentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                              + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+
+    EXEC inventory.usp_StockDocumentFile_List @DocumentId = @DocumentId, @FileId = @Id;
+END
+GO
+
+/* ================================================================== 4. Customer receipts (RCPT) */
+
+CREATE OR ALTER PROCEDURE sales.usp_ReceiptFile_Update
+    @ReceiptId INT, @FileId INT, @AttachmentTypeId INT = NULL, @DocumentDate DATE = NULL, @Note NVARCHAR(500) = NULL,
+    @FileName NVARCHAR(255) = NULL, @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @Status TINYINT = (SELECT Status FROM sales.Receipts WHERE Id = @ReceiptId);
+    IF @Status IS NULL THROW 71006, 'Receipt not found.', 1;
+    IF @Status = 3 THROW 71005, 'A reversed receipt is closed; its files can no longer be changed.', 1;
+    DECLARE @Old NVARCHAR(255), @OldType INT;
+    SELECT @Old = FileName, @OldType = AttachmentTypeId FROM sales.ReceiptFiles WHERE Id = @FileId AND ReceiptId = @ReceiptId;
+    IF @Old IS NULL THROW 71006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'RCPT', 71016;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 71000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE sales.ReceiptFiles
+    SET AttachmentTypeId = @AttachmentTypeId, DocumentDate = @DocumentDate, Note = NULLIF(LTRIM(RTRIM(@Note)), N''),
+        FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @FileId AND ReceiptId = @ReceiptId;
+    INSERT INTO sales.ReceiptAudit (ReceiptId, Action, Details, UserId)
+    VALUES (@ReceiptId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                             + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+
+    EXEC sales.usp_ReceiptFile_List @ReceiptId = @ReceiptId, @FileId = @FileId;
+END
+GO
+
+/* ================================================================== 5. Supplier payments (PAY) */
+
+-- Re-created (55) from the body of script 47: the type required and used for payments (it was optional and checked
+-- on AppliesTo), + @DocumentDate; the note takes 500 characters.
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Add
+    @PaymentId        INT,
+    @AttachmentTypeId INT            = NULL,
+    @Note             NVARCHAR(500)  = NULL,
+    @FileName         NVARCHAR(255),
+    @ContentType      NVARCHAR(100),
+    @SizeBytes        INT,
+    @Content          VARBINARY(MAX),
+    @UserId           INT            = NULL,
+    @NewId            INT OUTPUT,
+    @DocumentDate     DATE           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.Payments WHERE Id = @PaymentId);
+    IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+    -- Evidence keeps arriving after a payment is posted (a SWIFT copy, a bank statement), so a posted payment
+    -- takes files. A reversed one is closed.
+    IF @Status = 3 THROW 73005, 'A reversed payment is closed; files can no longer be added.', 1;
+    EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'PAY', 73013;
+    IF @SizeBytes IS NULL OR @SizeBytes <= 0 THROW 73000, 'The file is empty.', 1;
+
+    INSERT INTO purchase.PaymentFiles (PaymentId, AttachmentTypeId, Note, DocumentDate, FileName, ContentType, SizeBytes, Content, CreatedBy)
+    VALUES (@PaymentId, @AttachmentTypeId, @Note, @DocumentDate, @FileName, @ContentType, @SizeBytes, @Content, @UserId);
+    SET @NewId = SCOPE_IDENTITY();
+
+    INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId) VALUES (@PaymentId, N'FileAdded', @FileName, @UserId);
+END
+GO
+
+-- The files of a payment (one with @FileId), newest first, shaped like every other family's.
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_List
+    @PaymentId INT, @AttachmentTypeId INT = NULL, @FileId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT f.Id, f.PaymentId AS DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.AttachmentTypeId, t.Category, t.SubType,
+           IsOther = CAST(CASE WHEN t.SubType = N'Other' AND t.Category IN (N'Other', N'General') THEN 1 ELSE 0 END AS BIT),
+           f.DocumentDate, f.Note, f.CreatedAtUtc, f.CreatedBy, u.FullName AS CreatedByName
+    FROM purchase.PaymentFiles f
+    LEFT JOIN masterdata.AttachmentTypes t ON t.Id = f.AttachmentTypeId
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.PaymentId = @PaymentId AND (@AttachmentTypeId IS NULL OR f.AttachmentTypeId = @AttachmentTypeId) AND (@FileId IS NULL OR f.Id = @FileId)
+    ORDER BY f.CreatedAtUtc DESC, f.Id DESC;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_PaymentFile_Update
+    @PaymentId INT, @FileId INT, @AttachmentTypeId INT = NULL, @DocumentDate DATE = NULL, @Note NVARCHAR(500) = NULL,
+    @FileName NVARCHAR(255) = NULL, @ContentType NVARCHAR(100) = NULL, @SizeBytes INT = NULL, @Content VARBINARY(MAX) = NULL,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @Status TINYINT = (SELECT Status FROM purchase.Payments WHERE Id = @PaymentId);
+    IF @Status IS NULL THROW 73006, 'Payment not found.', 1;
+    IF @Status = 3 THROW 73005, 'A reversed payment is closed; its files can no longer be changed.', 1;
+    DECLARE @Old NVARCHAR(255), @OldType INT;
+    SELECT @Old = FileName, @OldType = AttachmentTypeId FROM purchase.PaymentFiles WHERE Id = @FileId AND PaymentId = @PaymentId;
+    IF @Old IS NULL THROW 73006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'PAY', 73013;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 73000, 'The file is empty.', 1;
+
+    BEGIN TRANSACTION;
+    UPDATE purchase.PaymentFiles
+    SET AttachmentTypeId = @AttachmentTypeId, DocumentDate = @DocumentDate, Note = NULLIF(LTRIM(RTRIM(@Note)), N''),
+        FileName    = @FileName,
+        ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content     = ISNULL(@Content, Content)
+    WHERE Id = @FileId AND PaymentId = @PaymentId;
+    INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
+    VALUES (@PaymentId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                             + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+    COMMIT TRANSACTION;
+
+    EXEC purchase.usp_PaymentFile_List @PaymentId = @PaymentId, @FileId = @FileId;
+END
+GO
+
+/* ================================================================== 6. Container documents (CONTAINER) */
+
+/* One upload may be shared by several containers (attached to them together). @AllShared = 1 edits the
+   upload and the type / date / note of every one of them, like deleting it everywhere; 0 edits this
+   container's record only - and a new name or file then becomes this container's own copy, leaving the
+   others on the upload as it was. Answers the record. */
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerAttachment_Update
+    @Id               INT,
+    @AllShared        BIT            = 0,
+    @AttachmentTypeId INT            = NULL,
+    @DocumentDate     DATE           = NULL,
+    @Note             NVARCHAR(500)  = NULL,
+    @FileName         NVARCHAR(255)  = NULL,
+    @ContentType      NVARCHAR(100)  = NULL,
+    @SizeBytes        INT            = NULL,
+    @Content          VARBINARY(MAX) = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+    SET @AllShared = ISNULL(@AllShared, 0);
+
+    DECLARE @FileId INT, @Old NVARCHAR(255), @OldType INT;
+    SELECT @FileId = a.FileId, @Old = f.FileName, @OldType = a.AttachmentTypeId
+    FROM logistics.ContainerAttachments a INNER JOIN logistics.Files f ON f.Id = a.FileId
+    WHERE a.Id = @Id;
+    IF @FileId IS NULL THROW 70006, 'Attachment not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'CONTAINER', 70017;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 70000, 'The file is empty.', 1;
+
+    DECLARE @Shared BIT = CASE WHEN EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE FileId = @FileId AND Id <> @Id) THEN 1 ELSE 0 END;
+    DECLARE @Rows TABLE (Id INT PRIMARY KEY, ContainerId INT NOT NULL);
+    INSERT INTO @Rows (Id, ContainerId)
+    SELECT Id, ContainerId FROM logistics.ContainerAttachments WHERE Id = @Id OR (@AllShared = 1 AND FileId = @FileId);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Shared = 1 AND @AllShared = 0 AND (@Content IS NOT NULL OR @FileName <> @Old)
+        BEGIN
+            -- this container's own copy: the others keep the upload as it was
+            INSERT INTO logistics.Files (FileName, ContentType, SizeBytes, Content, CreatedBy)
+            SELECT @FileName,
+                   CASE WHEN @Content IS NULL THEN f.ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+                   CASE WHEN @Content IS NULL THEN f.SizeBytes ELSE @SizeBytes END,
+                   ISNULL(@Content, f.Content), @UserId
+            FROM logistics.Files f WHERE f.Id = @FileId;
+            UPDATE logistics.ContainerAttachments SET FileId = SCOPE_IDENTITY(), GroupId = NULL WHERE Id = @Id;
+        END
+        ELSE
+            UPDATE logistics.Files
+            SET FileName    = @FileName,
+                ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+                SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+                Content     = ISNULL(@Content, Content)
+            WHERE Id = @FileId;
+
+        UPDATE a SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, DocumentDate = @DocumentDate
+        FROM logistics.ContainerAttachments a INNER JOIN @Rows r ON r.Id = a.Id;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT DISTINCT r.ContainerId, N'Updated',
+               LEFT(N'Attachment edited: ' + CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                    + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId
+        FROM @Rows r;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    EXEC logistics.usp_ContainerAttachment_List @Id = @Id;
+END
+GO
+
+/* ================================================================== 7. Master data: attachment types */
+
+-- Re-created (55) from the body of script 52: @AppliesTo, which the pages written before still pass, answers as
+-- before - Logistics = containers, Receipt = receipts - and Payment = supplier payments.
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Lookup
+    @ActiveOnly   BIT          = 1,
+    @IncludeId    INT          = NULL,
+    @AppliesTo    NVARCHAR(12) = N'Logistics',
+    @DocumentKind NVARCHAR(20) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @DocumentKind = ISNULL(NULLIF(LTRIM(RTRIM(@DocumentKind)), N''),
+                               CASE LTRIM(RTRIM(@AppliesTo)) WHEN N'Receipt' THEN N'RCPT' WHEN N'Payment' THEN N'PAY' ELSE N'CONTAINER' END);
+    SELECT a.Id, a.Category, a.SubType, DisplayName = a.Category + N' / ' + a.SubType, a.SortOrder, a.IsActive
+    FROM masterdata.AttachmentTypes a
+    WHERE (@ActiveOnly = 0 OR a.IsActive = 1 OR a.Id = @IncludeId)
+      AND (EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = a.Id AND u.DocumentKind = @DocumentKind)
+           OR a.Id = @IncludeId)
+    ORDER BY a.SortOrder, a.Category, a.SubType;
+END
+GO
+
+-- Re-created (55) from the bodies of scripts 46 and 52: @UsedFor (the kinds, comma separated, at least one; NULL =
+-- unchanged on an update, and on an insert the kind of @AppliesTo: Receipt = RCPT, Payment = PAY, else CONTAINER);
+-- AppliesTo may be Payment; a name is unique within its list (receipts and payments may both have "Cheque / Cheque
+-- Copy").
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Save
+    @Id         INT          = NULL,
+    @Category   NVARCHAR(30),
+    @SubType    NVARCHAR(60),
+    @SortOrder  INT          = 0,
+    @IsActive   BIT          = 1,
+    @RowVersion BINARY(8)    = NULL,
+    @UserId     INT          = NULL,
+    @NewId      INT OUTPUT,
+    /* NULL = leave it alone on an update, and Logistics on an insert: every caller that predates the
+       column keeps doing exactly what it did. */
+    @AppliesTo  NVARCHAR(12) = NULL,
+    @UsedFor    NVARCHAR(400) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Category = NULLIF(LTRIM(RTRIM(@Category)), N'');
+    SET @SubType = NULLIF(LTRIM(RTRIM(@SubType)), N'');
+    SET @AppliesTo = NULLIF(LTRIM(RTRIM(@AppliesTo)), N'');
+    IF @Category IS NULL THROW 69000, 'Category is required.', 1;
+    IF @SubType IS NULL THROW 69000, 'Sub type is required.', 1;
+    IF @AppliesTo IS NOT NULL AND @AppliesTo NOT IN (N'Logistics', N'Receipt', N'Payment') THROW 69000, 'Applies to must be Logistics, Receipt or Payment.', 1;
+    DECLARE @List NVARCHAR(12) = COALESCE(@AppliesTo, (SELECT AppliesTo FROM masterdata.AttachmentTypes WHERE Id = @Id), N'Logistics');
+    IF EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Category = @Category AND SubType = @SubType AND AppliesTo = @List AND (@Id IS NULL OR Id <> @Id))
+        THROW 69013, 'This category and sub type already exist.', 1;
+
+    DECLARE @Kinds TABLE (Code NVARCHAR(20) PRIMARY KEY);
+    IF @UsedFor IS NOT NULL
+    BEGIN
+        INSERT INTO @Kinds (Code)
+        SELECT DISTINCT UPPER(LTRIM(RTRIM(value))) FROM STRING_SPLIT(@UsedFor, N',') WHERE LTRIM(RTRIM(value)) <> N'';
+        IF NOT EXISTS (SELECT 1 FROM @Kinds) THROW 69000, 'Choose at least one document kind the type is used for.', 1;
+        DECLARE @Unknown NVARCHAR(20) = (SELECT TOP (1) x.Code FROM @Kinds x
+                                         WHERE NOT EXISTS (SELECT 1 FROM masterdata.fn_AttachmentDocumentKinds() k WHERE k.Code = x.Code));
+        IF @Unknown IS NOT NULL
+        BEGIN
+            DECLARE @Msg NVARCHAR(200) = N'Unknown document kind: ' + @Unknown + N'.';
+            THROW 69000, @Msg, 1;
+        END
+    END
+    ELSE IF @Id IS NULL
+        INSERT INTO @Kinds (Code) VALUES (CASE @AppliesTo WHEN N'Receipt' THEN N'RCPT' WHEN N'Payment' THEN N'PAY' ELSE N'CONTAINER' END);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        IF @Id IS NULL
+        BEGIN
+            INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, IsActive, AppliesTo, CreatedBy)
+            VALUES (@Category, @SubType, ISNULL(@SortOrder, 0), ISNULL(@IsActive, 1), ISNULL(@AppliesTo, N'Logistics'), @UserId);
+            SET @NewId = SCOPE_IDENTITY();
+        END
+        ELSE
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id) THROW 69006, 'Attachment type not found.', 1;
+            IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id AND RowVersion = @RowVersion)
+                THROW 69004, 'This attachment type was modified by another user. Reload the page and try again.', 1;
+            UPDATE masterdata.AttachmentTypes
+            SET Category = @Category, SubType = @SubType, SortOrder = ISNULL(@SortOrder, 0), IsActive = ISNULL(@IsActive, 1),
+                AppliesTo = ISNULL(@AppliesTo, AppliesTo),
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+            SET @NewId = @Id;
+        END
+
+        IF EXISTS (SELECT 1 FROM @Kinds)
+        BEGIN
+            DELETE FROM masterdata.AttachmentTypeUsages
+            WHERE AttachmentTypeId = @NewId AND DocumentKind NOT IN (SELECT Code FROM @Kinds);
+            INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
+            SELECT @NewId, x.Code FROM @Kinds x
+            WHERE NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = @NewId AND u.DocumentKind = x.Code);
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (55) from the bodies of scripts 46 and 52: refused while ANY file uses the type, payment files included.
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id) THROW 69006, 'Attachment type not found.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM logistics.ContainerFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.ReceiptFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.SalesDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM inventory.StockDocumentFiles WHERE AttachmentTypeId = @Id)
+        THROW 69014, 'This attachment type is used by documents and cannot be deleted. Deactivate it instead.', 1;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE FROM masterdata.AttachmentTypeUsages WHERE AttachmentTypeId = @Id;
+        DELETE FROM masterdata.AttachmentTypes WHERE Id = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 8. Check */
+
+SELECT o.ObjectName, ObjectType = ISNULL(so.type_desc, N'MISSING')
+FROM (VALUES (N'masterdata.fn_AttachmentDocumentKinds'),
+             (N'purchase.usp_PurchaseDocumentFile_Update'), (N'sales.usp_SalesDocumentFile_Update'), (N'inventory.usp_StockDocumentFile_Update'),
+             (N'sales.usp_ReceiptFile_Update'), (N'purchase.usp_PaymentFile_Add'), (N'purchase.usp_PaymentFile_List'),
+             (N'purchase.usp_PaymentFile_Update'), (N'logistics.usp_ContainerAttachment_Update'), (N'masterdata.usp_AttachmentType_Lookup'),
+             (N'masterdata.usp_AttachmentType_Save'), (N'masterdata.usp_AttachmentType_Delete')) o (ObjectName)
+LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
+ORDER BY ObjectType, o.ObjectName;                                    -- expected 12: 1 function, 11 procedures
+
+-- The types used for supplier payments.
+SELECT a.Id, a.Category, a.SubType, a.AppliesTo, a.IsActive
+FROM masterdata.AttachmentTypes a
+WHERE EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = a.Id AND u.DocumentKind = N'PAY')
+ORDER BY a.SortOrder, a.Category, a.SubType;
+
+PRINT 'Script 55 applied: one edit for every attachment (name, file, type, date, note); payments use the Used-for list.';
 GO
 
 SET NOEXEC OFF;

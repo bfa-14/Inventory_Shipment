@@ -722,7 +722,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     }
 
     public async Task<Result<DocumentFileDto>> UpdateFileAsync(
-        int id, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        int id, int fileId, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
     {
         var allowed = await AllowAsync(id, s => s.Create, permissions, cancellationToken);
@@ -739,7 +739,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         try
         {
-            var file = await _documents.UpdateFileAsync(fileId, fields, userId, cancellationToken);
+            var file = await _documents.UpdateFileAsync(fileId, edit, userId, cancellationToken);
             return file is null
                 ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
                 : Result<DocumentFileDto>.Success(file);
@@ -1052,11 +1052,11 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         // Script 45: a supplier invoice holds one item.
         SqlErrors.PurchaseInvoiceOneItem => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
 
-        // Script 47: the rules of an invoice taking containers - the state of the invoice, then the pieces asked.
+        // Script 51: the rules of an invoice taking containers - the state of the invoice, then the pieces asked.
         SqlErrors.PurchaseInvoiceCannotTakeContainers => new RuleFailure(ErrorType.Conflict, exception.Message, "CANNOT_TAKE_CONTAINERS"),
         SqlErrors.PurchaseInvoiceTooManyPieces => new RuleFailure(ErrorType.Validation, exception.Message, "TOO_MANY_PIECES"),
 
-        // Script 48: the attachment type of a file.
+        // Script 52: the attachment type of a file.
         SqlErrors.PurchaseAttachmentType => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };

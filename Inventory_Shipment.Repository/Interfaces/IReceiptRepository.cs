@@ -42,7 +42,7 @@ public interface IReceiptRepository
 
     Task<ReceiptRateDto?> ResolveRateAsync(int currencyId, DateOnly? asOfDate, CancellationToken cancellationToken = default);
 
-    /// <summary>The file with its type (required, used for receipts), date and note (script 48).</summary>
+    /// <summary>The file with its type (required, used for receipts), date and note (script 52).</summary>
     Task<int> AddFileAsync(
         int receiptId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default);
@@ -51,12 +51,15 @@ public interface IReceiptRepository
     Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
         int receiptId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default);
 
-    /// <summary>The type, date and note of a file (refused on a reversed receipt); the file as it now stands.</summary>
+    /// <summary>
+    /// The name, type, date and note of a file and, when content is given, its bytes (refused on a reversed receipt,
+    /// 71005); the file as it now stands.
+    /// </summary>
     Task<DocumentFileDto?> UpdateFileAsync(
-        int receiptId, int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
+        int receiptId, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default);
 
     Task<ReceiptFileContent?> GetFileAsync(int receiptId, int fileId, CancellationToken cancellationToken = default);
 
-    /// <summary>Drafts only: the evidence of a posted payment stays.</summary>
+    /// <summary>Drafts and posted receipts; a reversed one keeps its files (71005).</summary>
     Task DeleteFileAsync(int receiptId, int fileId, int userId, CancellationToken cancellationToken = default);
 }

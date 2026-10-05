@@ -107,9 +107,12 @@ public interface IPurchaseDocumentService
     Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
         int id, int? attachmentTypeId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    /// <summary>The type, date and note of a file (the upload's permission and checks); the file as it now stands.</summary>
+    /// <summary>
+    /// The name, type, date and note of a file and, when content is given, its bytes (the upload's permission and
+    /// checks); the file as it now stands.
+    /// </summary>
     Task<Result<DocumentFileDto>> UpdateFileAsync(
-        int id, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        int id, int fileId, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
     Task<Result<PurchaseDocumentFileContent>> GetFileAsync(

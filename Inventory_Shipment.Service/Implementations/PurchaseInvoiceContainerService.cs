@@ -20,7 +20,7 @@ namespace Inventory_Shipment.Service.Implementations;
 /// Refusals keep the procedures' sentences: the invoice's 65xxx are classified as the purchase documents classify
 /// them, the containers' 69xxx / 70xxx as the container services do.
 ///
-/// THE RULES ARE THE DATABASE'S (script 47): whether an invoice may take containers - and why not - is decided by
+/// THE RULES ARE THE DATABASE'S (script 51): whether an invoice may take containers - and why not - is decided by
 /// purchase.usp_PurchaseInvoice_CheckContainers, which the order's procedures also run first. It is asked here before
 /// anything is built, so a refusal names the invoice's rule (65030, or 65031 with the figures) and every answer carries
 /// the state the page shows. Only the permissions (rule 9) are checked in this class.
@@ -362,7 +362,7 @@ public sealed class PurchaseInvoiceContainerService : IPurchaseInvoiceContainerS
     }
 
     /// <summary>
-    /// The invoice's rules (script 47) for an action - Add (1-8, with the pieces asked), Plan (1-7) - asked of the
+    /// The invoice's rules (script 51) for an action - Add (1-8, with the pieces asked), Plan (1-7) - asked of the
     /// database before anything is built; null when they hold. Its refusal is the purchase documents' 65030 / 65031.
     /// </summary>
     private async Task<Result?> CheckRulesAsync(int invoiceId, string action, int? quantityBase, CancellationToken cancellationToken)

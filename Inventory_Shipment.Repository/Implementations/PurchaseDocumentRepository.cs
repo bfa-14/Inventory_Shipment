@@ -69,6 +69,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? ItemCode { get; init; }
         public string? ItemName { get; init; }
         public int? ItemCount { get; init; }
+        public decimal? PaidAmount { get; init; }
+        public decimal? ReturnedAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? CancelledAtUtc { get; init; }
@@ -114,6 +118,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             SourceDocumentId = SourceDocumentId,
             SourceDocumentNumber = SourceDocumentNumber,
             ReceivedPercent = ReceivedPercent,
+            PaidAmount = PaidAmount,
+            ReturnedAmount = ReturnedAmount,
+            OutstandingAmount = OutstandingAmount,
+            PaymentStatus = PaymentStatus,
             ItemId = ItemId,
             ItemCode = ItemCode,
             ItemName = ItemName,
@@ -220,6 +228,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal TotalAmountBase { get; init; }
         public decimal TotalChargesBase { get; init; }
         public decimal TotalLandedCostBase { get; init; }
+        public decimal? PaidAmount { get; init; }
+        public decimal? ReturnedAmount { get; init; }
+        public decimal? OutstandingAmount { get; init; }
+        public string? PaymentStatus { get; init; }
         public int? SourceDocumentId { get; init; }
         public string? SourceDocumentNumber { get; init; }
         public string? SourceDocumentTypeCode { get; init; }
@@ -446,6 +458,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             TotalAmountBase = header.TotalAmountBase,
             TotalChargesBase = header.TotalChargesBase,
             TotalLandedCostBase = header.TotalLandedCostBase,
+            PaidAmount = header.PaidAmount,
+            ReturnedAmount = header.ReturnedAmount,
+            OutstandingAmount = header.OutstandingAmount,
+            PaymentStatus = header.PaymentStatus,
             SourceDocumentId = header.SourceDocumentId,
             SourceDocumentNumber = header.SourceDocumentNumber,
             SourceDocumentTypeCode = header.SourceDocumentTypeCode,
@@ -730,16 +746,18 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     }
 
     public async Task<DocumentFileDto?> UpdateFileAsync(
-        int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+        int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
     {
-        var parameters = new
-        {
-            Id = fileId,
-            fields.AttachmentTypeId,
-            DocumentDate = fields.DocumentDate?.ToDateTime(TimeOnly.MinValue),
-            fields.Note,
-            UserId = userId,
-        };
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", fileId, DbType.Int32);
+        parameters.Add("@AttachmentTypeId", edit.Fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@DocumentDate", edit.Fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@Note", edit.Fields.Note, DbType.String, size: 500);
+        parameters.Add("@FileName", edit.FileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", edit.ContentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", edit.Content?.Length, DbType.Int32);
+        parameters.Add("@Content", edit.Content, DbType.Binary, size: -1);
+        parameters.Add("@UserId", userId, DbType.Int32);
 
         await using var connection = _connectionFactory.Create();
         try

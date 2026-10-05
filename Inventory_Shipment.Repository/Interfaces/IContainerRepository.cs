@@ -62,9 +62,12 @@ public interface IContainerRepository
     Task<IReadOnlyList<ContainerAttachmentDto>> ListAttachmentsAsync(
         int? containerId, int? movementId, int? attachmentTypeId, int? id = null, CancellationToken cancellationToken = default);
 
-    /// <summary>The type, date and note of one record (the upload's checks); the record as it now stands.</summary>
+    /// <summary>
+    /// The name, type, date and note of one record (the upload's checks) and, when content is given, its bytes - or
+    /// (allShared) of every container holding the file; the record as it now stands.
+    /// </summary>
     Task<ContainerAttachmentDto?> UpdateAttachmentAsync(
-        int id, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
+        int id, bool allShared, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default);
 
     /* ── many containers per order (script 28) ── */
 

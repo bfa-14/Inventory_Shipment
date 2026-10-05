@@ -3,7 +3,7 @@ using System.ComponentModel.DataAnnotations;
 namespace Inventory_Shipment.Model.DTOs.Documents;
 
 /// <summary>
-/// The rules every attachment endpoint shares (script 48): what a file may be, how big, how long its note. The
+/// The rules every attachment endpoint shares (script 52): what a file may be, how big, how long its note. The
 /// containers' list since script 27 - what a forwarder, a customs agent, a supplier or a customer sends.
 /// </summary>
 public static class AttachmentRules
@@ -17,6 +17,8 @@ public static class AttachmentRules
     public const long MaxRequestBytes = 2 * MaxFileBytes;
 
     public const int NoteMaxLength = 500;
+
+    public const int FileNameMaxLength = 255;
 
     public static readonly IReadOnlySet<string> AllowedExtensions = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
     {
@@ -64,7 +66,7 @@ public static class AttachmentRules
 }
 
 /// <summary>
-/// The type, date and note of a file: the form fields of an upload, the body of PUT .../files/{fileId}. The type is
+/// The type, date and note of a file: the form fields of an upload and of its edit (PUT .../files/{fileId}). The type is
 /// required and must be active and used for the document's kind (api/masterdata/attachment-types?documentKind=).
 /// </summary>
 public sealed class DocumentFileFields
@@ -76,6 +78,23 @@ public sealed class DocumentFileFields
 
     [StringLength(AttachmentRules.NoteMaxLength)]
     public string? Note { get; init; }
+}
+
+/// <summary>
+/// An edit of a file already attached (PUT .../files/{fileId}, multipart, script 55): its name, its type / date / note,
+/// and optionally a new version of the file, which replaces the stored one in the same place in the list.
+/// </summary>
+public sealed class DocumentFileEdit
+{
+    public string FileName { get; init; } = string.Empty;
+
+    public DocumentFileFields Fields { get; init; } = new();
+
+    /// <summary>The new version's content type; with <see cref="Content"/> only.</summary>
+    public string? ContentType { get; init; }
+
+    /// <summary>The new version of the file; null keeps the stored one.</summary>
+    public byte[]? Content { get; init; }
 }
 
 /// <summary>

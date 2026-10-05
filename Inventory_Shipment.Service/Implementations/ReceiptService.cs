@@ -247,7 +247,7 @@ public sealed class ReceiptService : IReceiptService
             await _receipts.ListFilesAsync(receiptId, attachmentTypeId, cancellationToken: cancellationToken));
 
     public async Task<Result<DocumentFileDto>> UpdateFileAsync(
-        int receiptId, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        int receiptId, int fileId, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Sales.ReceiptsCreate))
@@ -257,7 +257,7 @@ public sealed class ReceiptService : IReceiptService
 
         try
         {
-            var file = await _receipts.UpdateFileAsync(receiptId, fileId, fields, userId, cancellationToken);
+            var file = await _receipts.UpdateFileAsync(receiptId, fileId, edit, userId, cancellationToken);
             return file is null
                 ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
                 : Result<DocumentFileDto>.Success(file);

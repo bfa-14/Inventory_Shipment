@@ -5,7 +5,7 @@ namespace Inventory_Shipment.Model.DTOs.Logistics;
 
 /* ── auto-plan: the proposal (logistics.usp_Container_PlanFromOrder, nothing saved) ────────────── */
 
-/// <summary>Pieces of one item in a full container as an older dialog typed them: accepted and IGNORED (script 50).</summary>
+/// <summary>Pieces of one item in a full container as an older dialog typed them: accepted and IGNORED (script 54).</summary>
 public sealed class ItemCapacityRequest
 {
     public int ItemId { get; init; }
@@ -23,7 +23,7 @@ public sealed class AutoPlanRequest
     /// <summary>False = the rest of every order line gets its own container.</summary>
     public bool MixRemainders { get; init; } = true;
 
-    /// <summary>Ignored (script 50): the pieces per container are the items' Container units only.</summary>
+    /// <summary>Ignored (script 54): the pieces per container are the items' Container units only.</summary>
     public IReadOnlyList<ItemCapacityRequest>? Capacities { get; init; }
 
     /// <summary>
@@ -124,7 +124,7 @@ public sealed class PlanContainerRequest
 }
 
 /// <summary>
-/// Every container gets the same header. The pieces per container are the items' Container units (script 50): the
+/// Every container gets the same header. The pieces per container are the items' Container units (script 54): the
 /// capacities of an older page are accepted and ignored, and an item without a Container unit is refused (69000).
 /// </summary>
 public sealed class CreateContainersFromPlanRequest
@@ -184,7 +184,7 @@ public sealed class CreatedContainerDto
     public int TotalLines { get; init; }
     public int TotalAllocatedBase { get; init; }
 
-    /// <summary>(50) The fill from the items' Container units, in %; null when an item has none.</summary>
+    /// <summary>(54) The fill from the items' Container units, in %; null when an item has none.</summary>
     public decimal? FillPct { get; init; }
 
     public bool CapacityKnown { get; init; }

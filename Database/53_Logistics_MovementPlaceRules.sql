@@ -1,8 +1,8 @@
 /* =====================================================================================
-   Inventory_Shipment - 49: MOVEMENTS - THE PLACE RULES OF A CONTAINER (prompt 45 A1)
+   Inventory_Shipment - 53: MOVEMENTS - THE PLACE RULES OF A CONTAINER (prompt 45 A1)
 
    Why: MOV-2026-000046 (LOAD, Dar es Salaam -> Chennai) started with KTG-2026-0018, a container that never moved. The
-   place rule of script 46 only looked at containers that HAD moved (never moved = no place = any From), and Start
+   place rule of script 50 only looked at containers that HAD moved (never moved = no place = any From), and Start
    only checked containers with a previous movement. A container that never moved now starts from its port of loading.
 
    The rules (one place: logistics.fn_ContainerFitForMovement, used by Save, Start, the candidates and the matching)
@@ -14,7 +14,7 @@
        loading on this container: check it.'
      - An Origin-stage movement only takes containers that never moved. Reason: 'Loading at the supplier is only for
        containers that have not moved yet.'
-     - Start, as before (script 46): the previous movement of every container is completed (70016), checked first.
+     - Start, as before (script 50): the previous movement of every container is completed (70016), checked first.
      - Start of a movement without containers: 'Tick at least one container before starting.' (70000; SetStatus said
        'The movement has no containers.', which Complete keeps). Save already refused it ('Select at least one
        container.').
@@ -22,16 +22,16 @@
    Objects
      logistics.fn_ContainerFitForMovement (new): per container for a movement (@MovementId NULL = a new one), its From,
        To and type: the place (PlaceName = the port of loading of a container that never moved), Fits, Reason, Note.
-       logistics.fn_ContainerPlaceForMovement (script 46) stays as it is: the previous movement of a container.
-     logistics.fn_Movement_ContainerCheck: + @ToPlaceId, @MovementTypeId (re-created from the body of script 46).
-     logistics.usp_Movement_Save, usp_Movement_SetStatus: the rules above (re-created from the bodies of script 46).
+       logistics.fn_ContainerPlaceForMovement (script 50) stays as it is: the previous movement of a container.
+     logistics.fn_Movement_ContainerCheck: + @ToPlaceId, @MovementTypeId (re-created from the body of script 50).
+     logistics.usp_Movement_Save, usp_Movement_SetStatus: the rules above (re-created from the bodies of script 50).
      logistics.usp_Movement_ContainerCandidates, usp_Movement_MatchContainers: + @ToPlaceId, @MovementTypeId at the end
        (NULL = the saved movement's; a new movement without a type is not of the Origin stage); same result sets.
 
    Errors: 70015 the container does not fit the From (Save and Start; the message carries the reason), 70016 previous
            movement not completed (Start), 70000 validation - no new number.
 
-   Requires script 46. Idempotent, additive: re-applied at every API start-up through Schema.sql.
+   Requires script 50. Idempotent, additive: re-applied at every API start-up through Schema.sql.
    ===================================================================================== */
 
 USE [Inventory_Shipment];
@@ -41,7 +41,7 @@ IF OBJECT_ID(N'logistics.fn_ContainerPlaceForMovement', N'IF') IS NULL
    OR OBJECT_ID(N'logistics.usp_Movement_MatchContainers', N'P') IS NULL
    OR COL_LENGTH(N'masterdata.MovementTypes', N'Stage') IS NULL
 BEGIN
-    RAISERROR ('Run script 46 before this script.', 16, 1);
+    RAISERROR ('Run script 50 before this script.', 16, 1);
     SET NOEXEC ON;
 END
 GO
@@ -81,7 +81,7 @@ GO
 
 /* ================================================================== 2. The checks of a movement's Save, per container */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId, the place rules of
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, the place rules of
 -- fn_ContainerFitForMovement (PlaceName is the port of loading of a container that never moved).
 -- Every container with the columns of the picker and the checks of usp_Movement_Save for @MovementId (NULL = a new,
 -- planned movement) leaving from @FromPlaceId for @ToPlaceId with the type @MovementTypeId. For a container not on the movement: offloaded / closed / cancelled,
@@ -145,7 +145,7 @@ GO
 
 /* ================================================================== 3. Save: every container fits the movement */
 
--- Re-created (49) from the body of script 46: the place rules of fn_ContainerFitForMovement (70015 with the reason).
+-- Re-created (53) from the body of script 50: the place rules of fn_ContainerFitForMovement (70015 with the reason).
 -- Planned movements: everything editable. In progress: header and containers editable (start date too), no end date.
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_Save
     @Id              INT            = NULL,
@@ -220,7 +220,7 @@ BEGIN
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
     END
 
-    -- the place rules (script 49): every container of the movement, added or kept, fits its From, To and stage
+    -- the place rules (script 53): every container of the movement, added or kept, fits its From, To and stage
     SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
     FROM @ContainerIds x
     INNER JOIN logistics.Containers c ON c.Id = x.Id
@@ -312,7 +312,7 @@ GO
 
 /* ================================================================== 4. Start: previous movements completed, every container fits */
 
--- Re-created (49) from the body of script 46: Start checks the place rules of fn_ContainerFitForMovement (70015) after
+-- Re-created (53) from the body of script 50: Start checks the place rules of fn_ContainerFitForMovement (70015) after
 -- the previous movements (70016), and refuses a movement without containers in the words of the page.
 -- Status changes of a movement. @Action: Start | Complete | Cancel. The containers' status and dates follow.
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_SetStatus
@@ -375,7 +375,7 @@ BEGIN
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
 
-        -- the place rules (script 49): the previous movement of every container is completed (70016), then every
+        -- the place rules (script 53): the previous movement of every container is completed (70016), then every
         -- container fits the movement's From, To and stage (70015) - the rules of Save, fn_ContainerFitForMovement
         SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N': the previous movement ' + p.PreviousMovementNo + N' (' + pf.PortName
                               + N' ' + NCHAR(8594) + N' ' + p.PlaceName + N') is not completed yet.'
@@ -454,7 +454,7 @@ GO
 
 /* ================================================================== 5. Candidates of a movement */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
 -- saved movement's) for the place rules of an Origin-stage movement.
 -- The containers that can join a movement (@MovementId NULL = a new one) leaving from @FromPlaceId (the From on the
 -- page, saved or not): not on the movement, not offloaded / closed / cancelled. @IncludeBlocked = 1 also lists the
@@ -469,8 +469,8 @@ CREATE OR ALTER PROCEDURE logistics.usp_Movement_ContainerCandidates
     @IncludeBlocked  BIT           = 0,
     @PageNumber      INT           = 1,
     @PageSize        INT           = 200,
-    @ToPlaceId       INT           = NULL,   -- (49) the To on the page
-    @MovementTypeId  INT           = NULL    -- (49) the type on the page
+    @ToPlaceId       INT           = NULL,   -- (53) the To on the page
+    @MovementTypeId  INT           = NULL    -- (53) the type on the page
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -518,15 +518,15 @@ GO
 
 /* ================================================================== 6. Container numbers matched for a movement */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId, as the candidates.
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, as the candidates.
 -- One row per number (empty ones ignored), in the input order. Result: Ready | AlreadyOnMovement | NotFound |
 -- Ambiguous | Blocked | Duplicate; Reason and Note are the texts of the candidates (fn_Movement_ContainerCheck).
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_MatchContainers
     @MovementId  INT = NULL,
     @FromPlaceId INT,
     @Numbers     logistics.tvp_TextList READONLY,
-    @ToPlaceId      INT = NULL,   -- (49) the To on the page
-    @MovementTypeId INT = NULL    -- (49) the type on the page
+    @ToPlaceId      INT = NULL,   -- (53) the To on the page
+    @MovementTypeId INT = NULL    -- (53) the type on the page
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -638,7 +638,7 @@ CROSS APPLY logistics.fn_ContainerFitForMovement(m.Id, m.FromPlaceId, m.ToPlaceI
 WHERE m.Status IN (1, 2) AND p.ContainerId = mc.ContainerId AND p.PreviousMovementId IS NULL AND c.PortOfLoadingId IS NULL
 ORDER BY m.MovementNo, c.ContainerRef;
 
-PRINT 'Script 49 applied: the place rules of movements in one function - a container that never moved starts from its port of loading, an Origin-stage movement takes only containers that never moved.';
+PRINT 'Script 53 applied: the place rules of movements in one function - a container that never moved starts from its port of loading, an Origin-stage movement takes only containers that never moved.';
 GO
 
 SET NOEXEC OFF;

@@ -339,9 +339,19 @@ public sealed class ContainerRepository : IContainerRepository
     }
 
     public async Task<ContainerAttachmentDto?> UpdateAttachmentAsync(
-        int id, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+        int id, bool allShared, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
     {
-        var parameters = new { Id = id, fields.AttachmentTypeId, DocumentDate = ToDate(fields.DocumentDate), fields.Note, UserId = userId };
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", id, DbType.Int32);
+        parameters.Add("@AllShared", allShared, DbType.Boolean);
+        parameters.Add("@AttachmentTypeId", edit.Fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@DocumentDate", ToDate(edit.Fields.DocumentDate), DbType.Date);
+        parameters.Add("@Note", edit.Fields.Note, DbType.String, size: 500);
+        parameters.Add("@FileName", edit.FileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", edit.ContentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", edit.Content?.Length, DbType.Int32);
+        parameters.Add("@Content", edit.Content, DbType.Binary, size: -1);
+        parameters.Add("@UserId", userId, DbType.Int32);
 
         await using var connection = _connectionFactory.Create();
         try

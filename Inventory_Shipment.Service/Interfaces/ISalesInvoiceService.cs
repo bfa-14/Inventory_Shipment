@@ -106,9 +106,12 @@ public interface ISalesInvoiceService
     Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
         int id, int? attachmentTypeId, CancellationToken cancellationToken = default);
 
-    /// <summary>The type, date and note of a file (the upload's permission and checks); the file as it now stands.</summary>
+    /// <summary>
+    /// The name, type, date and note of a file and, when content is given, its bytes (the upload's permission and
+    /// checks); the file as it now stands.
+    /// </summary>
     Task<Result<DocumentFileDto>> UpdateFileAsync(
-        int id, int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
+        int id, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default);
 
     Task<Result<SalesDocumentFileContent>> GetFileAsync(int id, int fileId, CancellationToken cancellationToken = default);
 

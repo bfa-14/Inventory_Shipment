@@ -474,7 +474,7 @@ public sealed class MovementQuery
     public int PageSize { get; init; } = 10;
 }
 
-/* ── containers for a movement: the picker, numbers matched (script 46) ─────────────────────── */
+/* ── containers for a movement: the picker, numbers matched (script 50) ─────────────────────── */
 
 /* THE PLACE RULE: a container starts a movement where its previous movement ends — the To of its movement not
    cancelled with the highest id below this one. A container that never moved has no place and goes from any From.
@@ -490,10 +490,10 @@ public sealed class MovementContainerCandidateQuery
     /// <summary>The From on the page, saved or not. Required.</summary>
     public int? FromPlaceId { get; init; }
 
-    /// <summary>(49) The To on the page, saved or not: an Origin-stage movement takes a container whose port of loading is its To.</summary>
+    /// <summary>(53) The To on the page, saved or not: an Origin-stage movement takes a container whose port of loading is its To.</summary>
     public int? ToPlaceId { get; init; }
 
-    /// <summary>(49) The movement type on the page (its stage: Origin takes only containers that never moved).</summary>
+    /// <summary>(53) The movement type on the page (its stage: Origin takes only containers that never moved).</summary>
     public int? MovementTypeId { get; init; }
 
     /// <summary>Ref, container no., B/L, vessel, order no. or supplier (contains).</summary>
@@ -561,10 +561,10 @@ public sealed class MatchMovementContainersRequest
     /// <summary>The From on the page, saved or not. Required.</summary>
     public int? FromPlaceId { get; init; }
 
-    /// <summary>(49) The To on the page, saved or not: an Origin-stage movement takes a container whose port of loading is its To.</summary>
+    /// <summary>(53) The To on the page, saved or not: an Origin-stage movement takes a container whose port of loading is its To.</summary>
     public int? ToPlaceId { get; init; }
 
-    /// <summary>(49) The movement type on the page (its stage: Origin takes only containers that never moved).</summary>
+    /// <summary>(53) The movement type on the page (its stage: Origin takes only containers that never moved).</summary>
     public int? MovementTypeId { get; init; }
 
     /// <summary>

@@ -1,5 +1,5 @@
 /* =====================================================================================
-   Inventory_Shipment - 50: CONTAINER CAPACITY FROM THE ITEMS' CONTAINER UNITS (prompt 46 A1)
+   Inventory_Shipment - 54: CONTAINER CAPACITY FROM THE ITEMS' CONTAINER UNITS (prompt 46 A1)
 
    (docs/prompts/46-container-capacity-from-item-units.md was not found anywhere: the rules below are the prompt's.)
 
@@ -25,7 +25,7 @@
 
    Objects
      logistics.fn_ItemPcsPerContainer, logistics.fn_ContainerFill (new)
-     Re-created from their current bodies (scripts 24, 27, 43, 47):
+     Re-created from their current bodies (scripts 24, 27, 43, 51):
        logistics.usp_Container_Save          the fill check (69007), @MaxUnits ignored, no MaxUnits written
        logistics.usp_Container_PlanFromOrder pieces per container from the item only (CapacitySource 'Item Definition'),
                                              result 1 without MaxUnits
@@ -45,7 +45,7 @@
 
    Errors: 69007 over capacity (new message), 69000 an item without a Container unit in an auto-plan - no new number.
 
-   Requires scripts 43 and 47. Idempotent, additive: re-applied at every API start-up through Schema.sql.
+   Requires scripts 43 and 51. Idempotent, additive: re-applied at every API start-up through Schema.sql.
    ===================================================================================== */
 
 USE [Inventory_Shipment];
@@ -55,7 +55,7 @@ IF OBJECT_ID(N'purchase.usp_PurchaseInvoice_CheckContainers', N'P') IS NULL
    OR OBJECT_ID(N'purchase.usp_PurchaseInvoice_ContainerSummary', N'P') IS NULL
    OR COL_LENGTH(N'masterdata.UnitTypes', N'IsContainer') IS NULL
 BEGIN
-    RAISERROR ('Run scripts 43 and 47 before this script.', 16, 1);
+    RAISERROR ('Run scripts 43 and 51 before this script.', 16, 1);
     SET NOEXEC ON;
 END
 GO
@@ -109,7 +109,7 @@ GO
 
 /* ================================================================== 3. Save: the fill check */
 
--- Re-created (50) from the body of script 47: the capacity is the fill from the items' Container units, checked on the
+-- Re-created (54) from the body of script 51: the capacity is the fill from the items' Container units, checked on the
 -- lines written (69007, overridable); @MaxUnits is kept and ignored, a new container gets no MaxUnits.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
@@ -140,7 +140,7 @@ CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @BlNo                NVARCHAR(30)   = NULL,
     @BlDate              DATE           = NULL,
     @BlNotes             NVARCHAR(500)  = NULL,
-    @MaxUnits            INT            = NULL,   -- (50) ignored: the capacity is the items' Container units
+    @MaxUnits            INT            = NULL,   -- (54) ignored: the capacity is the items' Container units
     @BranchId            INT,
     @WarehouseId         INT            = NULL,
     @TruckNo             NVARCHAR(30)   = NULL,
@@ -173,7 +173,7 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
-    -- (47) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
     IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
@@ -363,7 +363,7 @@ BEGIN
         CROSS APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
         WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId);
 
-        -- (50) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
+        -- (54) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
         -- never a hard block; unknown (an item without a Container unit) = no warning. Checked on the lines just written,
         -- so the refusal rolls the whole save back.
         IF ISNULL(@AllowOverCapacity, 0) = 0 AND EXISTS (SELECT 1 FROM logistics.fn_ContainerFill(@Id) f WHERE f.IsOverCapacity = 1)
@@ -399,20 +399,20 @@ GO
 
 /* ================================================================== 4. Auto-plan: pieces per container from the item */
 
--- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only
+-- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only
 -- (logistics.fn_ItemPcsPerContainer); @Capacities and the container type's MaxUnits are no longer read; an item without
 -- a Container unit stops the plan (69000).
 CREATE OR ALTER PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
     @ContainerTypeId INT,
     @MixRemainders   BIT = 1,       -- 0 = the rest of every order line gets its own container
-    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (50) ignored: the items' Container units only
+    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (54) ignored: the items' Container units only
     @ForInvoiceId    INT = NULL      -- (43) only what this invoice of the order has outside containers
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- (47) a proposal for an invoice: the invoice's rules 1-7 first
+    -- (51) a proposal for an invoice: the invoice's rules 1-7 first
     IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
@@ -432,7 +432,7 @@ BEGIN
         OrderedBase   INT          NOT NULL,
         AvailableBase INT          NOT NULL,
         Cap           INT          NULL,
-        CapSource     NVARCHAR(20) NOT NULL,     -- (50) Item Definition | None
+        CapSource     NVARCHAR(20) NOT NULL,     -- (54) Item Definition | None
         OilIncluded   BIT          NOT NULL,
         Remaining     INT          NOT NULL
     );
@@ -576,7 +576,7 @@ BEGIN
     IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
         THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
 
-    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 50).
+    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 54).
     SELECT x.Seq, x.ItemCount, x.Units,
            FillPct  = CAST(ROUND(100 * x.Fill, 1) AS DECIMAL(9,1)),
            ItemSummary = CASE WHEN x.ItemCount = 1 THEN x.FirstItem ELSE N'Mixed - ' + CAST(x.ItemCount AS NVARCHAR(10)) + N' items' END
@@ -619,7 +619,7 @@ GO
 
 /* ================================================================== 5. Create from a plan */
 
--- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only; an item without
+-- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only; an item without
 -- one stops the batch (69000); the containers get no MaxUnits; the answer gives their fill.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
@@ -637,7 +637,7 @@ CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @Eta                 DATE           = NULL,
     @FreeDays            INT            = NULL,
     @Plan                logistics.tvp_ContainerPlanLine READONLY,
-    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (50) ignored: the items' Container units only
+    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (54) ignored: the items' Container units only
     @AllowOverCapacity   BIT            = 0,
     @Confirm             BIT            = 0,                      -- 1 = the new containers are confirmed at once
     @UserId              INT            = NULL,
@@ -649,7 +649,7 @@ BEGIN
 
     IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
 
-    -- (47) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    -- (51) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
     IF @ForInvoiceId IS NOT NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
@@ -681,7 +681,7 @@ BEGIN
         THROW 69000, @Msg, 1;
     END
 
-    -- (50) every planned item has a Container unit, as the proposal requires
+    -- (54) every planned item has a Container unit, as the proposal requires
     SELECT TOP (1) @Msg = N'Line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
     FROM @Plan p
     INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
@@ -811,7 +811,7 @@ GO
 
 /* ================================================================== 6. The container: get */
 
--- Re-created (50) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
+-- Re-created (54) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
 -- MissingContainerUnitItems, RemainingPcs, IsOverCapacity) instead of MaxUnits / TypeMaxUnits / UtilizationPct /
 -- RemainingCapacityBase; the lines give each item's PcsPerContainer.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Get
@@ -1053,7 +1053,7 @@ GO
 
 /* ================================================================== 7. The containers: search */
 
--- Re-created (50) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
+-- Re-created (54) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
 -- UtilizationPct.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
@@ -1223,7 +1223,7 @@ GO
 
 /* ================================================================== 8. Order lines to load */
 
--- Re-created (50) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
+-- Re-created (54) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
 CREATE OR ALTER PROCEDURE logistics.usp_Container_AvailablePoLines
     @PurchaseOrderId INT           = NULL,
     @SupplierId      INT           = NULL,
@@ -1284,7 +1284,7 @@ GO
 
 /* ================================================================== 9. A purchase invoice and its containers */
 
--- Re-created (50) from the body of script 43: PcsPerContainer from logistics.fn_ItemPcsPerContainer.
+-- Re-created (54) from the body of script 43: PcsPerContainer from logistics.fn_ItemPcsPerContainer.
 CREATE OR ALTER FUNCTION purchase.fn_PurchaseInvoice_ItemContainers (@InvoiceId INT)
 RETURNS TABLE
 AS
@@ -1294,7 +1294,7 @@ RETURN
            LinkedBase       = SUM(CASE WHEN l.ContainerLineId IS NOT NULL THEN l.QuantityBase ELSE 0 END),
            UnlinkedBase     = SUM(CASE WHEN l.ContainerLineId IS NULL THEN l.QuantityBase ELSE 0 END),
            ContainersLinked = COUNT(DISTINCT cl.ContainerId),
-           PcsPerContainer  = NULLIF(MAX(ISNULL(cnt.PcsPerContainer, 0)), 0)   -- (50) no NULL in the aggregate
+           PcsPerContainer  = NULLIF(MAX(ISNULL(cnt.PcsPerContainer, 0)), 0)   -- (54) no NULL in the aggregate
     FROM purchase.PurchaseDocumentLines l
     LEFT  JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
     CROSS APPLY logistics.fn_ItemPcsPerContainer(l.ItemId) cnt
@@ -1302,7 +1302,7 @@ RETURN
     GROUP BY l.ItemId;
 GO
 
--- Re-created (50) from the body of script 43: "share of the container" = the invoice's pieces of the item / the item's
+-- Re-created (54) from the body of script 43: "share of the container" = the invoice's pieces of the item / the item's
 -- pieces per container (its Container unit); MaxUnits is no longer returned (PcsPerContainer instead).
 CREATE OR ALTER PROCEDURE purchase.usp_PurchaseInvoice_ContainerSummary
     @InvoiceId INT
@@ -1337,12 +1337,12 @@ GO
 
 /* ================================================================== 10. Container types: MaxUnits ignored */
 
--- Re-created (50) from the body of script 24: @MaxUnits is kept and ignored (neither required nor written).
+-- Re-created (54) from the body of script 24: @MaxUnits is kept and ignored (neither required nor written).
 CREATE OR ALTER PROCEDURE masterdata.usp_ContainerType_Save
     @Id           INT           = NULL,
     @TypeCode     NVARCHAR(10),
     @TypeName     NVARCHAR(100),
-    @MaxUnits     INT           = NULL,   -- (50) ignored: a container's capacity is its items' Container units
+    @MaxUnits     INT           = NULL,   -- (54) ignored: a container's capacity is its items' Container units
     @MaxWeightKg  DECIMAL(18,3) = NULL,
     @MaxVolumeCbm DECIMAL(18,3) = NULL,
     @Description  NVARCHAR(500) = NULL,
@@ -1430,7 +1430,7 @@ CROSS APPLY logistics.fn_ContainerFill(c.Id) f
 WHERE c.Status < 6 AND f.IsOverCapacity = 1
 ORDER BY f.FillPct DESC, c.ContainerRef;
 
-PRINT 'Script 50 applied: container capacity from the items'' Container units - one function for pieces per container, one for the fill; no typed or container type capacity any more.';
+PRINT 'Script 54 applied: container capacity from the items'' Container units - one function for pieces per container, one for the fill; no typed or container type capacity any more.';
 GO
 
 SET NOEXEC OFF;

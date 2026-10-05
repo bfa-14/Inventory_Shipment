@@ -601,7 +601,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             await _invoices.ListFilesAsync(id, attachmentTypeId, cancellationToken: cancellationToken));
 
     public async Task<Result<DocumentFileDto>> UpdateFileAsync(
-        int id, int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+        int id, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
     {
         // The file of THIS document: file ids are sequential across every invoice.
         if ((await _invoices.ListFilesAsync(id, fileId: fileId, cancellationToken: cancellationToken)).Count == 0)
@@ -611,7 +611,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
         try
         {
-            var file = await _invoices.UpdateFileAsync(fileId, fields, userId, cancellationToken);
+            var file = await _invoices.UpdateFileAsync(fileId, edit, userId, cancellationToken);
             return file is null
                 ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
                 : Result<DocumentFileDto>.Success(file);

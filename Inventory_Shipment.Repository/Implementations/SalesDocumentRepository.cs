@@ -599,16 +599,18 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
     }
 
     public async Task<DocumentFileDto?> UpdateFileAsync(
-        int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default)
+        int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
     {
-        var parameters = new
-        {
-            Id = fileId,
-            fields.AttachmentTypeId,
-            DocumentDate = fields.DocumentDate?.ToDateTime(TimeOnly.MinValue),
-            fields.Note,
-            UserId = userId,
-        };
+        var parameters = new DynamicParameters();
+        parameters.Add("@Id", fileId, DbType.Int32);
+        parameters.Add("@AttachmentTypeId", edit.Fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@DocumentDate", edit.Fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@Note", edit.Fields.Note, DbType.String, size: 500);
+        parameters.Add("@FileName", edit.FileName, DbType.String, size: 255);
+        parameters.Add("@ContentType", edit.ContentType, DbType.String, size: 100);
+        parameters.Add("@SizeBytes", edit.Content?.Length, DbType.Int32);
+        parameters.Add("@Content", edit.Content, DbType.Binary, size: -1);
+        parameters.Add("@UserId", userId, DbType.Int32);
 
         await using var connection = _connectionFactory.Create();
         try

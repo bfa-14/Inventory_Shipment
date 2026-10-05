@@ -368,21 +368,33 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    /// <summary>The type, date and note of one record (this container only, not the others sharing the file).</summary>
+    /// <summary>
+    /// Multipart: fileName (required), attachmentTypeId (required: a type used for containers), and optionally
+    /// documentDate (yyyy-MM-dd), note and a file that replaces the stored one (none keeps it). allShared = true edits
+    /// every container holding the file; false this record only - a new name or file then becomes its own copy, the
+    /// others keep the upload as it was. Answers the record.
+    /// </summary>
     [HttpPut("attachments/{id:int}")]
     [HasPermission(Permissions.Containers.AttachmentsManage)]
+    [Consumes("multipart/form-data")]
     [ProducesResponseType<ContainerAttachmentDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
     public async Task<ActionResult<ContainerAttachmentDto>> UpdateAttachment(
-        int id, DocumentFileFields request, CancellationToken cancellationToken)
+        int id, [FromForm] string? fileName, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate,
+        [FromForm] string? note, IFormFile? file, [FromQuery] bool allShared = false, CancellationToken cancellationToken = default)
     {
-        if (this.RefuseFields(request) is { } refusal)
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        var (edit, refusal) = await this.ReadEditAsync(fileName, fields, file, cancellationToken);
+        if (refusal is not null)
         {
             return refusal;
         }
 
-        var result = await _containers.UpdateAttachmentAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _containers.UpdateAttachmentAsync(
+            id, allShared, edit!, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

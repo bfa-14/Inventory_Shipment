@@ -130,6 +130,13 @@ public record ContainerChargeListDto : ContainerChargeFlags
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
+
+    /* (47) Supplier payments - posted charges only; null otherwise. */
+    public decimal? PaidAmount { get; init; }
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid.</summary>
+    public string? PaymentStatus { get; init; }
 }
 
 /// <summary>The charge list: one page, and the total (base) of the WHOLE filter.</summary>
@@ -239,6 +246,13 @@ public sealed record ContainerChargeDto : ContainerChargeFlags
     public DateTime? UpdatedAtUtc { get; init; }
     public string? UpdatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
+
+    /* (47) Supplier payments - posted charges only; null otherwise. */
+    public decimal? PaidAmount { get; init; }
+    public decimal? OutstandingAmount { get; init; }
+
+    /// <summary>Unpaid, Partial or Paid.</summary>
+    public string? PaymentStatus { get; init; }
 
     /// <summary>Every line of the container, with this charge's share (0 when it took none).</summary>
     public IReadOnlyList<ContainerChargeShareDto> Allocations { get; init; } = [];

@@ -133,7 +133,7 @@ public static class SqlErrors
     /// <summary>The lifecycle forbids the move — posting something already posted, cancelling a draft.</summary>
     public const int StockDocumentInvalidStatus = 62010;
 
-    /// <summary>(48) The attachment type of a stock document file is missing, inactive or not used for its kind.</summary>
+    /// <summary>(52) The attachment type of a stock document file is missing, inactive or not used for its kind.</summary>
     public const int StockDocumentAttachmentType = 62011;
 
     // ----- 64xxx: sales - invoices (the Sales document family) -----
@@ -146,7 +146,7 @@ public static class SqlErrors
     /// <summary>The invoice sells more than a warehouse holds, the policy allows it, and the caller has not confirmed yet.</summary>
     public const int SalesDocumentOutOfStockConfirm = 64016;
 
-    /// <summary>(48) The attachment type of a sales document file is missing, inactive or not used for its kind.</summary>
+    /// <summary>(52) The attachment type of a sales document file is missing, inactive or not used for its kind.</summary>
     public const int SalesDocumentAttachmentType = 64017;
 
     /// <summary>Branch, warehouse, client, salesman or price list missing / inactive — or no exchange rate for the date.</summary>
@@ -194,7 +194,7 @@ public static class SqlErrors
     /// <summary>The invoice cannot be linked: not from an order, received on posting, landed cost adjustment, returns.</summary>
     public const int PurchaseInvoiceNotLinkable = 65028;
 
-    // ----- 65030-65031: containers from a purchase invoice, the rules in one place (script 47) -----
+    // ----- 65030-65031: containers from a purchase invoice, the rules in one place (script 51) -----
 
     /// <summary>The invoice cannot take containers now: the message is the first of its rules that fails.</summary>
     public const int PurchaseInvoiceCannotTakeContainers = 65030;
@@ -202,7 +202,7 @@ public static class SqlErrors
     /// <summary>More pieces than the invoice has outside containers and its order still allows; both figures in the message.</summary>
     public const int PurchaseInvoiceTooManyPieces = 65031;
 
-    // ----- 65032: the attachment type of a purchase document file (script 48) -----
+    // ----- 65032: the attachment type of a purchase document file (script 52) -----
 
     /// <summary>The attachment type is missing, inactive or not used for the document's kind (PO, PINV, PRET).</summary>
     public const int PurchaseAttachmentType = 65032;
@@ -341,7 +341,7 @@ public static class SqlErrors
     /// <summary>Start: the previous movement of a container is not completed yet.</summary>
     public const int PreviousMovementOpen = 70016;
 
-    /// <summary>(48) The attachment type of a container attachment is missing, inactive or not used for containers.</summary>
+    /// <summary>(52) The attachment type of a container attachment is missing, inactive or not used for containers.</summary>
     public const int ContainerAttachmentType = 70017;
 
     // ----- 71xxx: customer receipts - payment methods, cash / bank accounts, receipts -----
@@ -374,8 +374,31 @@ public static class SqlErrors
     /// <summary>A receipt created by a Cash invoice cannot be reversed on its own.</summary>
     public const int ReceiptAutomatic = 71015;
 
-    /// <summary>(48) The attachment type of a receipt file is missing, inactive or not used for receipts.</summary>
+    /// <summary>(52) The attachment type of a receipt file is missing, inactive or not used for receipts.</summary>
     public const int ReceiptAttachmentType = 71016;
+
+    // ----- 73xxx: supplier payments (scripts 46-47) -----
+    public const int PaymentValidation = 73000;
+    public const int PaymentConcurrency = 73004;
+    public const int PaymentNotEditable = 73005;
+    public const int PaymentNotFound = 73006;
+
+    /// <summary>The payment lines (or the allocations) do not add up to the Payment Amount in the payment currency.</summary>
+    public const int PaymentNotBalanced = 73008;
+
+    /// <summary>An allocation is more than what the invoice / charge still owes.</summary>
+    public const int PaymentAllocationExceeds = 73009;
+
+    public const int PaymentInvalidStatus = 73010;
+
+    /// <summary>A Free Payment's later allocation asks for more than its unapplied advance.</summary>
+    public const int PaymentUnappliedExceeded = 73011;
+
+    /// <summary>A Free Payment applied to documents cannot be reversed until those allocations are removed.</summary>
+    public const int PaymentHasAllocations = 73012;
+
+    /// <summary>(55) The attachment type of a payment file is missing, inactive or not used for supplier payments.</summary>
+    public const int PaymentAttachmentType = 73013;
 
     // ----- 72xxx: global settings -----
     public const int SettingValidation = 72000;
@@ -385,7 +408,7 @@ public static class SqlErrors
 
     // The ceiling moves with the newest block (71xxx is receipts): a ceiling left behind
     // its own module is how a deliberate THROW reaches the API as an unhandled database failure.
-    private const int LastBusinessRule = 72999;
+    private const int LastBusinessRule = 73999;
 
     private const int FirstSecurityRule = 50001;
     private const int LastSecurityRule = 50999;

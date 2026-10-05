@@ -353,20 +353,30 @@ public sealed class PurchaseDocumentsController : ControllerBase
             : this.ToProblem(result);
     }
 
-    /// <summary>The type, date and note of a file: the upload's permission and checks.</summary>
+    /// <summary>
+    /// Multipart: fileName (required), attachmentTypeId (required, as for the upload), and optionally documentDate
+    /// (yyyy-MM-dd), note and a file that replaces the stored one in the same place in the list (none keeps it). The
+    /// upload's permission and checks; answers the file's row.
+    /// </summary>
     [HttpPut("{id:int}/files/{fileId:int}")]
+    [Consumes("multipart/form-data")]
     [ProducesResponseType<DocumentFileDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
     public async Task<ActionResult<DocumentFileDto>> UpdateFile(
-        int id, int fileId, DocumentFileFields request, CancellationToken cancellationToken)
+        int id, int fileId, [FromForm] string? fileName, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate,
+        [FromForm] string? note, IFormFile? file, CancellationToken cancellationToken)
     {
-        if (this.RefuseFields(request) is { } refusal)
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        var (edit, refusal) = await this.ReadEditAsync(fileName, fields, file, cancellationToken);
+        if (refusal is not null)
         {
             return refusal;
         }
 
-        var result = await _documents.UpdateFileAsync(id, fileId, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _documents.UpdateFileAsync(id, fileId, edit!, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

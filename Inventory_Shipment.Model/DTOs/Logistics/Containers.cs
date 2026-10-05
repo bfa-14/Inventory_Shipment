@@ -155,7 +155,7 @@ public record ContainerListDto : ContainerStatusFlags
     public int TotalReceivedBase { get; init; }
     public decimal TotalOilQty { get; init; }
 
-    /* Capacity (script 50): the fill from the items' Container units - a WARNING, NEVER A BLOCK. */
+    /* Capacity (script 54): the fill from the items' Container units - a WARNING, NEVER A BLOCK. */
 
     /// <summary>Sum of quantity / pieces per container of each item, in %; null when an item has no Container unit.</summary>
     public decimal? FillPct { get; init; }
@@ -249,7 +249,7 @@ public sealed class ContainerLineDto
 
     public int PoPackingFormula { get; init; }
 
-    /// <summary>(50) Pieces of the item in a full container (its Container unit); null when it has none.</summary>
+    /// <summary>(54) Pieces of the item in a full container (its Container unit); null when it has none.</summary>
     public int? PcsPerContainer { get; init; }
 
     public int Quantity { get; init; }
@@ -459,7 +459,7 @@ public sealed class ContainerAttachmentDto
     public string? Category { get; init; }
     public string? SubType { get; init; }
 
-    /// <summary>No type, or typed "Other" (script 48): the page asks to choose a real one.</summary>
+    /// <summary>No type, or typed "Other" (script 52): the page asks to choose a real one.</summary>
     public bool IsOther => Documents.AttachmentRules.IsOther(AttachmentTypeId, Category, SubType);
 
     /// <summary>The stored file; the same id on every container the upload went to.</summary>
@@ -566,7 +566,7 @@ public sealed record ContainerDto : ContainerStatusFlags
     public decimal TotalOilQty { get; init; }
 
     /* The save refuses above 100 % only when the caller has not confirmed the override. */
-    /* Capacity (script 50): the fill from the items' Container units - a WARNING, NEVER A BLOCK. */
+    /* Capacity (script 54): the fill from the items' Container units - a WARNING, NEVER A BLOCK. */
 
     /// <summary>Sum of quantity / pieces per container of each item, in %; null when an item has no Container unit.</summary>
     public decimal? FillPct { get; init; }

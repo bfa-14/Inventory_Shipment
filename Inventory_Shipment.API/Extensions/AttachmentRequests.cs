@@ -24,6 +24,47 @@ public static class AttachmentRequests
         return error is null ? null : Refuse(controller, error, "VALIDATION");
     }
 
+    /// <summary>
+    /// The form of an edit (PUT .../files/{fileId}) read into a <see cref="DocumentFileEdit"/>: the name (required), the
+    /// type / date / note, and optionally a new version of the file with the upload's checks. Or the refusal.
+    /// </summary>
+    public static async Task<(DocumentFileEdit? Edit, ActionResult? Refusal)> ReadEditAsync(
+        this ControllerBase controller, string? fileName, DocumentFileFields fields, IFormFile? file,
+        CancellationToken cancellationToken)
+    {
+        var name = Path.GetFileName(fileName?.Trim() ?? string.Empty);
+        if (name.Length == 0)
+        {
+            return (null, Refuse(controller, "The file name is required.", "VALIDATION"));
+        }
+
+        if (name.Length > AttachmentRules.FileNameMaxLength)
+        {
+            return (null, Refuse(
+                controller, $"The file name is longer than {AttachmentRules.FileNameMaxLength} characters.", "VALIDATION"));
+        }
+
+        if (file is not null && AttachmentRules.CheckFile(file.FileName, file.Length) is { } fileError)
+        {
+            return (null, Refuse(controller, fileError, "INVALID_FILE"));
+        }
+
+        if (controller.RefuseFields(fields) is { } refusal)
+        {
+            return (null, refusal);
+        }
+
+        byte[]? content = null;
+        if (file is not null)
+        {
+            using var buffer = new MemoryStream();
+            await file.CopyToAsync(buffer, cancellationToken);
+            content = buffer.ToArray();
+        }
+
+        return (new DocumentFileEdit { FileName = name, Fields = fields, ContentType = file?.ContentType, Content = content }, null);
+    }
+
     private static BadRequestObjectResult Refuse(ControllerBase controller, string detail, string code)
         => controller.BadRequest(new ProblemDetails
         {

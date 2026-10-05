@@ -14,7 +14,7 @@ public class ContainerTypeDto
     public string TypeCode { get; init; } = string.Empty;
     public string TypeName { get; init; } = string.Empty;
 
-    /* No MaxUnits any more (script 50): a container's capacity is its items' Container units. */
+    /* No MaxUnits any more (script 54): a container's capacity is its items' Container units. */
     public decimal? MaxWeightKg { get; init; }
     public decimal? MaxVolumeCbm { get; init; }
     public string? Description { get; init; }
@@ -175,7 +175,7 @@ public class AttachmentTypeDto
     public int SortOrder { get; init; }
     public bool IsActive { get; init; }
 
-    /// <summary>(48) The document kinds whose upload dialogs offer the type: codes of attachment-types/document-kinds.</summary>
+    /// <summary>(52) The document kinds whose upload dialogs offer the type: codes of attachment-types/document-kinds.</summary>
     public IReadOnlyList<string> UsedFor { get; init; } = [];
 
     public DateTime CreatedAtUtc { get; init; }
@@ -213,7 +213,7 @@ public sealed class AttachmentTypeQuery
     /// <summary>Null = both, except with a document kind: then the active ones (what the upload dialog offers).</summary>
     public bool? IsActive { get; init; }
 
-    /// <summary>(48) Only the types used for this kind (CONTAINER, PO, PINV...).</summary>
+    /// <summary>(52) Only the types used for this kind (CONTAINER, PO, PINV...).</summary>
     public string? DocumentKind { get; init; }
 
     /// <summary>SortOrder, Category, SubType or IsActive.</summary>
@@ -234,11 +234,11 @@ public sealed class SaveAttachmentTypeRequest
     [StringLength(60, MinimumLength = 1)]
     public string SubType { get; init; } = string.Empty;
 
-    /// <summary>Logistics (container pages) or Receipt (customer receipts). Null keeps the row's current value; a new row defaults to Logistics.</summary>
-    [RegularExpression("^(Logistics|Receipt)$", ErrorMessage = "Applies to must be Logistics or Receipt.")]
+    /// <summary>Logistics (container pages), Receipt (customer receipts) or Payment (supplier payments). Null keeps the row's current value; a new row defaults to Logistics.</summary>
+    [RegularExpression("^(Logistics|Receipt|Payment)$", ErrorMessage = "Applies to must be Logistics, Receipt or Payment.")]
     public string? AppliesTo { get; init; }
 
-    /// <summary>(48) The document kinds the type is used for, at least one. Null keeps the row's list (a new row: from Applies to).</summary>
+    /// <summary>(52) The document kinds the type is used for, at least one. Null keeps the row's list (a new row: from Applies to).</summary>
     public IReadOnlyList<string>? UsedFor { get; init; }
 
     public int SortOrder { get; init; }

@@ -30,7 +30,7 @@ public sealed class PurchaseInvoiceContainersController : ControllerBase
 
     /// <summary>
     /// Per item: invoiced, pieces per container, containers needed, linked, not linked; the linked containers; and the
-    /// state (script 47): canAddContainers / reason, canTurnOnShipped, the figures of the add, canLink / linkReason. Any
+    /// state (script 51): canAddContainers / reason, canTurnOnShipped, the figures of the add, canLink / linkReason. Any
     /// purchase invoice answers 200 - the rules are in the state, never a 409.
     /// </summary>
     [HttpGet]

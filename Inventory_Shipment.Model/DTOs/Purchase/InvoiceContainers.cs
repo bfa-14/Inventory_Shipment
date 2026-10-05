@@ -44,10 +44,10 @@ public sealed class InvoiceLinkedContainerDto
     /// <summary>The invoice's pieces of that item on the container.</summary>
     public int QuantityBase { get; init; }
 
-    /// <summary>(50) The item's pieces in a full container (its Container unit); null when it has none.</summary>
+    /// <summary>(54) The item's pieces in a full container (its Container unit); null when it has none.</summary>
     public int? PcsPerContainer { get; init; }
 
-    /// <summary>QuantityBase / the item's pieces per container, in % (script 50; it was the container's Max units).</summary>
+    /// <summary>QuantityBase / the item's pieces per container, in % (script 54; it was the container's Max units).</summary>
     public decimal? ShareOfContainerPct { get; init; }
 
     /// <summary>Only a Draft or Confirmed container can still be unlinked.</summary>
@@ -59,12 +59,12 @@ public sealed class InvoiceContainerSummaryDto
     public IReadOnlyList<InvoiceContainerItemDto> Items { get; init; } = [];
     public IReadOnlyList<InvoiceLinkedContainerDto> Containers { get; init; } = [];
 
-    /// <summary>What the invoice can do with containers now, and why not (script 47). Set on every answer of the API.</summary>
+    /// <summary>What the invoice can do with containers now, and why not (script 51). Set on every answer of the API.</summary>
     public InvoiceContainerStateDto? State { get; init; }
 }
 
 /// <summary>
-/// What a purchase invoice can do with containers now (purchase.usp_PurchaseInvoice_ContainerState, script 47). The
+/// What a purchase invoice can do with containers now (purchase.usp_PurchaseInvoice_ContainerState, script 51). The
 /// rules: 1 a purchase invoice, draft or posted; 2 created from a purchase order; 3 one item (a draft); 4 shipped in
 /// containers; 5 its order approved, or closed; 6 pieces not in a container; 7 the order lines still allow pieces; 8 a
 /// new container of at most MaxAddQty pieces; 9 the caller's permissions. Reason is the first rule that fails, in the

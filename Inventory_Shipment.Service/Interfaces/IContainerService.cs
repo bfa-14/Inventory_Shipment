@@ -84,9 +84,12 @@ public interface IContainerService
         int? containerId, int? movementId, int? attachmentTypeId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
-    /// <summary>The type, date and note of one record. Needs containers.attachments.manage.</summary>
+    /// <summary>
+    /// The name, type, date and note of one record and, when content is given, its bytes; allShared = of every container
+    /// holding the file. Needs containers.attachments.manage.
+    /// </summary>
     Task<Result<ContainerAttachmentDto>> UpdateAttachmentAsync(
-        int id, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        int id, bool allShared, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
     /* ── many containers per order ── */

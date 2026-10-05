@@ -43,7 +43,7 @@ public interface IStockDocumentRepository
     /// <summary>Drafts only. A posted document is a record of something that happened and is never removed.</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>The file with its type (required, used for the document's kind), date and note (script 48).</summary>
+    /// <summary>The file with its type (required, used for the document's kind), date and note (script 52).</summary>
     Task<int> AddFileAsync(
         int documentId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default);
@@ -52,9 +52,12 @@ public interface IStockDocumentRepository
     Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
         int documentId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default);
 
-    /// <summary>The type, date and note of a file (the upload's checks); the file as it now stands.</summary>
+    /// <summary>
+    /// The name, type, date and note of a file (the upload's checks) and, when content is given, its bytes; the file as
+    /// it now stands.
+    /// </summary>
     Task<DocumentFileDto?> UpdateFileAsync(
-        int fileId, DocumentFileFields fields, int userId, CancellationToken cancellationToken = default);
+        int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>One attachment WITH its bytes. Null when there is no such file.</summary>
     Task<StockDocumentFileContent?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);

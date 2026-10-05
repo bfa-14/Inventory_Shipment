@@ -54,7 +54,7 @@ internal static class LogisticsRuleFailures
             SqlErrors.PurchaseChargesOnContainer => new(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
             SqlErrors.PurchaseOrderInContainers => new(ErrorType.Conflict, exception.Message, "PO_IN_CONTAINERS"),
             SqlErrors.LandedCostImportedInvoice => new(ErrorType.Conflict, exception.Message, "IMPORTED_INVOICE"),
-            // Script 47: the container procedures called for an invoice check its rules first.
+            // Script 51: the container procedures called for an invoice check its rules first.
             SqlErrors.PurchaseInvoiceCannotTakeContainers => new(ErrorType.Conflict, exception.Message, "CANNOT_TAKE_CONTAINERS"),
             SqlErrors.PurchaseInvoiceTooManyPieces => new(ErrorType.Validation, exception.Message, "TOO_MANY_PIECES"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),

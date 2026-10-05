@@ -83,6 +83,13 @@ public interface IItemRepository
     /// <summary>inventory.usp_ItemFile_Get - metadata plus the bytes, for download. Null when it is gone.</summary>
     Task<ItemFile?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// inventory.usp_ItemFile_Update - renames the file and, when content is given, replaces its bytes.
+    /// Throws 56000 / 56006.
+    /// </summary>
+    Task UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_ItemFile_Delete - throws 56006.</summary>
     Task DeleteFileAsync(int fileId, CancellationToken cancellationToken = default);
 }

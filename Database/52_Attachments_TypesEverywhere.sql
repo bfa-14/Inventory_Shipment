@@ -1,5 +1,5 @@
 /* =====================================================================================
-   Inventory_Shipment - 48: ATTACHMENT TYPES EVERYWHERE (prompt 40 A1)
+   Inventory_Shipment - 52: ATTACHMENT TYPES EVERYWHERE (prompt 40 A1)
 
    Every file attached to a document now has a TYPE (masterdata.AttachmentTypes: Category / SubType), a document date
    and a note, as the containers' attachments always had. An attachment type says what it is USED FOR: the document
@@ -24,9 +24,10 @@
      DocumentKind = 'CONTAINER' (containers, their movements and charges) or the document type code of the document
      (PO, PINV, PRET, SO, SINV, SRET, RCPT, INV_IN, INV_OUT) - masterdata.fn_AttachmentDocumentKinds lists them.
      First run only (the usages table empty): every type keeps the list it was on - AppliesTo 'Logistics' ->
-     CONTAINER, AppliesTo 'Receipt' -> RCPT (the container pages and the receipt page offer what they offered); the
-     type "Other" (the existing Other / Other, else General / Other) is used for every kind; and a few common types
-     are added where missing (see section 2). AppliesTo stays (additive only) but no procedure reads it any more.
+     CONTAINER, AppliesTo 'Receipt' -> RCPT, AppliesTo 'Payment' -> PAY (script 55) - the pages offer what they
+     offered; the type "Other" (the existing Other / Other, else General / Other) is used for every kind; and a few
+     common types are added where missing (see section 2). AppliesTo stays (additive only): no list is read from it
+     any more, but a name is unique within its AppliesTo (script 46).
 
    Files
      Purchase, sales and stock document files gain AttachmentTypeId, DocumentDate and Note (NVARCHAR(500)); receipt
@@ -110,7 +111,7 @@ GO
 IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages)
 BEGIN
     INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
-    SELECT Id, CASE WHEN AppliesTo = N'Receipt' THEN N'RCPT' ELSE N'CONTAINER' END FROM masterdata.AttachmentTypes;
+    SELECT Id, CASE AppliesTo WHEN N'Receipt' THEN N'RCPT' WHEN N'Payment' THEN N'PAY' ELSE N'CONTAINER' END FROM masterdata.AttachmentTypes;
 
     IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE SubType = N'Other' AND Category IN (N'Other', N'General'))
         INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, AppliesTo) VALUES (N'General', N'Other', 999, N'Logistics');
@@ -227,7 +228,7 @@ GO
 
 /* ================================================================== 5. Purchase documents (PO, PINV, PRET) */
 
--- Re-created (48) from the body of script 21: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 21: + the type (required, used for the document's kind), date and note.
 CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,
@@ -292,7 +293,7 @@ GO
 
 /* ================================================================== 6. Sales documents (SO, SINV, SRET) */
 
--- Re-created (48) from the body of script 17: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 17: + the type (required, used for the document's kind), date and note.
 CREATE OR ALTER PROCEDURE sales.usp_SalesDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,
@@ -356,7 +357,7 @@ GO
 
 /* ================================================================== 7. Inventory In / Out (INV_IN, INV_OUT) */
 
--- Re-created (48) from the body of script 15: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 15: + the type (required, used for the document's kind), date and note.
 CREATE OR ALTER PROCEDURE inventory.usp_StockDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,
@@ -420,7 +421,7 @@ GO
 
 /* ================================================================== 8. Customer receipts (RCPT) */
 
--- Re-created (48) from the body of script 36: the type required and used for receipts (it was optional and checked
+-- Re-created (52) from the body of script 36: the type required and used for receipts (it was optional and checked
 -- on AppliesTo), + @DocumentDate; the note takes 500 characters.
 CREATE OR ALTER PROCEDURE sales.usp_ReceiptFile_Add
     @ReceiptId        INT,
@@ -494,7 +495,7 @@ GO
 
 /* ================================================================== 9. Containers (CONTAINER) */
 
--- Re-created (48) from the body of script 27: the type required and used for containers (it was optional); the note
+-- Re-created (52) from the body of script 27: the type required and used for containers (it was optional); the note
 -- takes 500 characters.
 CREATE OR ALTER PROCEDURE logistics.usp_ContainerAttachment_Add
     @ContainerIds     logistics.tvp_IdList READONLY,
@@ -524,7 +525,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
     IF @FileName IS NULL THROW 70000, 'The file name is required.', 1;
     IF @SizeBytes IS NULL OR @SizeBytes <= 0 OR @Content IS NULL THROW 70000, 'The file is empty.', 1;
-    -- (48) the type is required, active and used for containers
+    -- (52) the type is required, active and used for containers
     EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'CONTAINER', 70017;
     IF EXISTS (SELECT 1 FROM @Ids x WHERE NOT EXISTS (SELECT 1 FROM logistics.Containers c WHERE c.Id = x.Id))
         THROW 70006, 'A selected container no longer exists.', 1;
@@ -649,7 +650,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: the list of a document kind (@DocumentKind); @AppliesTo, which the
+-- Re-created (52) from the body of script 36: the list of a document kind (@DocumentKind); @AppliesTo, which the
 -- pages written before still pass, answers as before (Logistics = containers, Receipt = receipts).
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Lookup
     @ActiveOnly   BIT          = 1,
@@ -670,7 +671,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: + UsedFor (the kinds, comma separated) and the @DocumentKind filter.
+-- Re-created (52) from the body of script 36: + UsedFor (the kinds, comma separated) and the @DocumentKind filter.
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Search
     @Search        NVARCHAR(100) = NULL,
     @Category      NVARCHAR(30)  = NULL,
@@ -679,7 +680,7 @@ CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Search
     @SortDirection NVARCHAR(4)   = N'ASC',
     @PageNumber    INT           = 1,
     @PageSize      INT           = 10,
-    @DocumentKind  NVARCHAR(20)  = NULL            -- (48) the types used for this kind
+    @DocumentKind  NVARCHAR(20)  = NULL            -- (52) the types used for this kind
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -717,7 +718,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: + UsedFor.
+-- Re-created (52) from the body of script 36: + UsedFor.
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Get
     @Id INT
 AS
@@ -733,7 +734,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: + @UsedFor - the kinds, comma separated (CONTAINER,PO,PINV...), at
+-- Re-created (52) from the body of script 36: + @UsedFor - the kinds, comma separated (CONTAINER,PO,PINV...), at
 -- least one; NULL = unchanged on an update, and on an insert the kind of @AppliesTo (Receipt = RCPT, else CONTAINER).
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Save
     @Id         INT          = NULL,
@@ -816,7 +817,7 @@ BEGIN
 END
 GO
 
--- Re-created (48) from the body of script 36: refused while ANY file uses the type (every attachment table).
+-- Re-created (52) from the body of script 36: refused while ANY file uses the type (every attachment table).
 CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Delete
     @Id INT, @UserId INT = NULL
 AS
@@ -877,7 +878,7 @@ SELECT a.Id, a.Category, a.SubType, a.IsActive,
 FROM masterdata.AttachmentTypes a
 ORDER BY a.SortOrder, a.Category, a.SubType;
 
-PRINT 'Script 48 applied: attachment types used for every document kind; every file has a type, a date and a note.';
+PRINT 'Script 52 applied: attachment types used for every document kind; every file has a type, a date and a note.';
 GO
 
 SET NOEXEC OFF;

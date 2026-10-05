@@ -11,7 +11,7 @@ namespace Inventory_Shipment.API.Controllers.MasterData;
 
 /// <summary>
 /// The category / sub type of a file (Shipping / Bill of Lading, Purchase / Proforma Invoice...) and the document
-/// kinds it is used for (script 48). One "manage" permission for the list page and the writes; what an upload
+/// kinds it is used for (script 52). One "manage" permission for the list page and the writes; what an upload
 /// dialog reads - the types of a document kind, the lookup, the kinds - is open to any signed-in user.
 /// </summary>
 [ApiController]

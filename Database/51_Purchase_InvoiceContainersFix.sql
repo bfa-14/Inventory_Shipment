@@ -1,5 +1,5 @@
 /* =====================================================================================
-   Inventory_Shipment - 47: CONTAINERS FROM A PURCHASE INVOICE - the rules in one place (prompt 44 A1)
+   Inventory_Shipment - 51: CONTAINERS FROM A PURCHASE INVOICE - the rules in one place (prompt 44 A1)
 
    Bilal could not create containers from a purchase invoice. Prompt 41 (script 43) built the path - containers created
    on the invoice's order and linked to the invoice in one transaction - but its rules were spread over the API, the
@@ -202,7 +202,7 @@ GO
 
 /* ================================================================== 4. Container_Save: the check first, for an invoice */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
 -- Re-created (43) from the body of script 27: + @ForInvoiceId (default NULL = as before); invoices shipped in containers are not "invoiced directly".
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
@@ -266,7 +266,7 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
-    -- (47) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
     IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
@@ -485,7 +485,7 @@ GO
 
 /* ================================================================== 5. PlanFromOrder: the check first, for an invoice */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
 -- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before) plans only what that invoice has outside containers.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
@@ -497,7 +497,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- (47) a proposal for an invoice: the invoice's rules 1-7 first
+    -- (51) a proposal for an invoice: the invoice's rules 1-7 first
     IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
@@ -719,7 +719,7 @@ GO
 
 /* ================================================================== 6. CreateBatch: the check first, for an invoice */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers).
 -- Re-created (43) from the body of script 28: + @ForInvoiceId (default NULL = as before), passed to usp_Container_Save.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
@@ -749,7 +749,7 @@ BEGIN
 
     IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
 
-    -- (47) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    -- (51) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
     IF @ForInvoiceId IS NOT NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
@@ -925,7 +925,7 @@ GO
 
 /* ================================================================== 7. LinkContainers: the check first */
 
--- Re-created (47) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers);
+-- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers);
 -- a draft is no longer switched to "shipped in containers" here: rule 4 has it turned on first.
 -- A draft, or a posted invoice shipped in containers (receipt mode 2), takes container lines of its own order. Its
 -- lines of that order line outside containers are SPLIT: the linked part becomes a line of its own (same item, unit,
@@ -955,7 +955,7 @@ BEGIN
         WHERE d.Id = @InvoiceId;
 
         IF @Status IS NULL THROW 65006, 'Document not found.', 1;
-        -- (47) the invoice's rules 1-6 first: the same sentences as the state of the page
+        -- (51) the invoice's rules 1-6 first: the same sentences as the state of the page
         EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @InvoiceId, @Action = N'Link';
         IF @TypeCode <> N'PINV' OR @OrderId IS NULL
             THROW 65028, 'Only a purchase invoice created from a purchase order can be linked to containers.', 1;
@@ -1193,7 +1193,7 @@ CROSS APPLY purchase.fn_PurchaseInvoice_ContainerState(d.Id) s
 WHERE dt.Code = N'PINV' AND d.Status IN (1, 2)
 ORDER BY d.Id;
 
-PRINT 'Script 47 applied: one place for the rules of a purchase invoice taking containers (state, check; 65030, 65031).';
+PRINT 'Script 51 applied: one place for the rules of a purchase invoice taking containers (state, check; 65030, 65031).';
 GO
 
 SET NOEXEC OFF;

@@ -1,5 +1,5 @@
 /* =====================================================================================
-   Inventory_Shipment - 46: MOVEMENTS AND THEIR CONTAINERS - the place rule, the container picker, numbers matched
+   Inventory_Shipment - 50: MOVEMENTS AND THEIR CONTAINERS - the place rule, the container picker, numbers matched
                             from a list (prompt 43)
 
    The place rule
@@ -239,7 +239,7 @@ BEGIN
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
     END
 
-    -- the place rule (script 46): every container of the movement, added or kept, is where its previous movement ends
+    -- the place rule (script 50): every container of the movement, added or kept, is where its previous movement ends
     SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is at ' + p.PlaceName + N' (end of ' + p.PreviousMovementNo
                           + N'); this movement starts from ' + f.PortName
                           + N'. Change the From, or record the movement that brings it here first.'
@@ -391,7 +391,7 @@ BEGIN
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
 
-        -- the place rule (script 46): the previous movement of every container is completed and ends at the From
+        -- the place rule (script 50): the previous movement of every container is completed and ends at the From
         DECLARE @Err INT;
         SELECT TOP (1) @Err = CASE WHEN p.PreviousStatus <> 3 THEN 70016 ELSE 70015 END,
                @Msg = CASE WHEN p.PreviousStatus <> 3
@@ -633,7 +633,7 @@ CROSS APPLY logistics.fn_ContainerPlaceForMovement(m.Id) p
 WHERE m.Status IN (1, 2) AND p.ContainerId = mc.ContainerId AND p.PlaceId <> m.FromPlaceId
 ORDER BY m.MovementNo, c.ContainerRef;
 
-PRINT 'Script 46 applied: the place rule of movements (70015, 70016), container candidates and numbers matched for a movement.';
+PRINT 'Script 50 applied: the place rule of movements (70015, 70016), container candidates and numbers matched for a movement.';
 GO
 
 SET NOEXEC OFF;

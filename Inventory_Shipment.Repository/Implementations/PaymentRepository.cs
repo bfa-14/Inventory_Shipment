@@ -1,24 +1,24 @@
 using System.Data;
 using Dapper;
 using Inventory_Shipment.Model.DTOs.Documents;
-using Inventory_Shipment.Model.DTOs.Receipts;
+using Inventory_Shipment.Model.DTOs.Purchase;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Interfaces;
 using Microsoft.Data.SqlClient;
 
 namespace Inventory_Shipment.Repository.Implementations;
 
-public sealed class ReceiptRepository : IReceiptRepository
+public sealed class PaymentRepository : IPaymentRepository
 {
-    private const string LineTypeName = "sales.tvp_ReceiptLine";
-    private const string AllocationTypeName = "sales.tvp_ReceiptAllocation";
+    private const string LineTypeName = "purchase.tvp_PaymentLine";
+    private const string AllocationTypeName = "purchase.tvp_PaymentAllocation";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the date.</summary>
-    private static readonly string[] SortColumns = ["ReceiptNumber", "ReceiptDate", "ClientName", "Status", "AmountBase", "CreatedAtUtc"];
+    private static readonly string[] SortColumns = ["PaymentNumber", "PaymentDate", "PayeeName", "Status", "AmountBase", "CreatedAtUtc"];
 
     private readonly ISqlConnectionFactory _connectionFactory;
 
-    public ReceiptRepository(ISqlConnectionFactory connectionFactory)
+    public PaymentRepository(ISqlConnectionFactory connectionFactory)
     {
         _connectionFactory = connectionFactory;
     }
@@ -26,18 +26,18 @@ public sealed class ReceiptRepository : IReceiptRepository
     /* ── reading ──────────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
-    /// THE ROW, NOT THE DTO. Status is a TINYINT in the database and a word in the DTO, and Dapper
-    /// will not turn one into the other: it would leave the property at its default and say nothing.
-    /// A private row with the code, mapped by hand, is how a Posted receipt stays Posted.
+    /// THE ROW, NOT THE DTO. Status is a TINYINT in the database and a word in the DTO, and Dapper will
+    /// not turn one into the other: it would leave the default and say nothing. A private row with the
+    /// code, mapped by hand, is how a Posted payment stays Posted.
     /// </summary>
     private sealed class ListRow
     {
         public int Id { get; init; }
-        public string? ReceiptNumber { get; init; }
-        public DateTime ReceiptDate { get; init; }
-        public int ClientId { get; init; }
-        public string ClientCode { get; init; } = string.Empty;
-        public string ClientName { get; init; } = string.Empty;
+        public string? PaymentNumber { get; init; }
+        public DateTime PaymentDate { get; init; }
+        public int PayeeId { get; init; }
+        public string PayeeCode { get; init; } = string.Empty;
+        public string PayeeName { get; init; } = string.Empty;
         public int BranchId { get; init; }
         public string BranchName { get; init; } = string.Empty;
         public byte PaymentType { get; init; }
@@ -47,11 +47,12 @@ public sealed class ReceiptRepository : IReceiptRepository
         public decimal Amount { get; init; }
         public decimal ExchangeRate { get; init; }
         public decimal AmountBase { get; init; }
+        public string? Reference { get; init; }
         public byte Status { get; init; }
-        public int? SourceSalesDocumentId { get; init; }
-        public string? SourceInvoiceNumber { get; init; }
-        public decimal AllocatedBase { get; init; }
-        public decimal UnappliedBase { get; init; }
+        public string? Methods { get; init; }
+        public decimal AllocatedAmount { get; init; }
+        public decimal UnappliedAmount { get; init; }
+        public int DocumentCount { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public string? PostedByName { get; init; }
         public DateTime? ReversedAtUtc { get; init; }
@@ -61,14 +62,14 @@ public sealed class ReceiptRepository : IReceiptRepository
         public byte[] RowVersion { get; init; } = [];
         public int TotalCount { get; init; }
 
-        public ReceiptListDto ToDto() => new()
+        public PaymentListDto ToDto() => new()
         {
             Id = Id,
-            ReceiptNumber = ReceiptNumber,
-            ReceiptDate = ReceiptDate,
-            ClientId = ClientId,
-            ClientCode = ClientCode,
-            ClientName = ClientName,
+            PaymentNumber = PaymentNumber,
+            PaymentDate = PaymentDate,
+            PayeeId = PayeeId,
+            PayeeCode = PayeeCode,
+            PayeeName = PayeeName,
             BranchId = BranchId,
             BranchName = BranchName,
             PaymentType = PaymentType,
@@ -78,11 +79,12 @@ public sealed class ReceiptRepository : IReceiptRepository
             Amount = Amount,
             ExchangeRate = ExchangeRate,
             AmountBase = AmountBase,
-            Status = ReceiptStatus.ToName(Status),
-            SourceSalesDocumentId = SourceSalesDocumentId,
-            SourceInvoiceNumber = SourceInvoiceNumber,
-            AllocatedBase = AllocatedBase,
-            UnappliedBase = UnappliedBase,
+            Reference = Reference,
+            Status = SupplierPaymentStatus.ToName(Status),
+            Methods = Methods,
+            AllocatedAmount = AllocatedAmount,
+            UnappliedAmount = UnappliedAmount,
+            DocumentCount = DocumentCount,
             PostedAtUtc = PostedAtUtc,
             PostedByName = PostedByName,
             ReversedAtUtc = ReversedAtUtc,
@@ -93,20 +95,20 @@ public sealed class ReceiptRepository : IReceiptRepository
         };
     }
 
-    public async Task<(IReadOnlyList<ReceiptListDto> Items, int TotalCount)> SearchAsync(
-        ReceiptQuery query, CancellationToken cancellationToken = default)
+    public async Task<(IReadOnlyList<PaymentListDto> Items, int TotalCount)> SearchAsync(
+        PaymentQuery query, CancellationToken cancellationToken = default)
     {
         var parameters = new
         {
             Search = string.IsNullOrWhiteSpace(query.Search) ? null : query.Search.Trim(),
-            query.ClientId,
+            query.PayeeId,
             query.BranchId,
-            Status = ReceiptStatus.ToCode(query.Status),
+            Status = SupplierPaymentStatus.ToCode(query.Status),
             query.PaymentType,
             query.CurrencyId,
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
-            SortColumn = SortColumns.FirstOrDefault(c => string.Equals(c, query.SortBy, StringComparison.OrdinalIgnoreCase)) ?? "ReceiptDate",
+            SortColumn = SortColumns.FirstOrDefault(c => string.Equals(c, query.SortBy, StringComparison.OrdinalIgnoreCase)) ?? "PaymentDate",
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
             query.PageSize,
@@ -114,7 +116,7 @@ public sealed class ReceiptRepository : IReceiptRepository
 
         await using var connection = _connectionFactory.Create();
         var rows = (await connection.QueryAsync<ListRow>(new CommandDefinition(
-            "sales.usp_Receipt_Search", parameters,
+            "purchase.usp_Payment_Search", parameters,
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
 
         return (rows.Select(r => r.ToDto()).ToList(), rows.Count > 0 ? rows[0].TotalCount : 0);
@@ -123,12 +125,12 @@ public sealed class ReceiptRepository : IReceiptRepository
     private sealed class HeaderRow
     {
         public int Id { get; init; }
-        public string? ReceiptNumber { get; init; }
-        public DateTime ReceiptDate { get; init; }
-        public int ClientId { get; init; }
-        public string ClientCode { get; init; } = string.Empty;
-        public string ClientName { get; init; } = string.Empty;
-        public string? ClientAddress { get; init; }
+        public string? PaymentNumber { get; init; }
+        public DateTime PaymentDate { get; init; }
+        public int PayeeId { get; init; }
+        public string PayeeCode { get; init; } = string.Empty;
+        public string PayeeName { get; init; } = string.Empty;
+        public string? PayeeAddress { get; init; }
         public int BranchId { get; init; }
         public string BranchCode { get; init; } = string.Empty;
         public string BranchName { get; init; } = string.Empty;
@@ -143,13 +145,13 @@ public sealed class ReceiptRepository : IReceiptRepository
         public decimal ExchangeRate { get; init; }
         public decimal AmountBase { get; init; }
         public string? BaseCurrencyCode { get; init; }
+        public string? Reference { get; init; }
         public string? Notes { get; init; }
         public byte Status { get; init; }
-        public int? SourceSalesDocumentId { get; init; }
-        public string? SourceInvoiceNumber { get; init; }
-        public decimal LinesBase { get; init; }
-        public decimal AllocatedBase { get; init; }
-        public decimal UnappliedBase { get; init; }
+        public decimal LinesTotal { get; init; }
+        public decimal AllocatedTotal { get; init; }
+        public decimal UnappliedAmount { get; init; }
+        public string? AllocationKind { get; init; }
         public DateTime? PostedAtUtc { get; init; }
         public int? PostedBy { get; init; }
         public string? PostedByName { get; init; }
@@ -166,7 +168,7 @@ public sealed class ReceiptRepository : IReceiptRepository
         public byte[] RowVersion { get; init; } = [];
     }
 
-    /// <summary>The line's number is a column called LineNumber and a property called LineNo, as on the invoices.</summary>
+    /// <summary>The line's number is a column called LineNumber and a property called LineNo, as on receipts.</summary>
     private sealed class LineRow
     {
         public int Id { get; init; }
@@ -174,42 +176,60 @@ public sealed class ReceiptRepository : IReceiptRepository
         public int PaymentMethodId { get; init; }
         public string MethodCode { get; init; } = string.Empty;
         public string MethodName { get; init; } = string.Empty;
+        public bool IsCheque { get; init; }
         public int CurrencyId { get; init; }
         public string CurrencyCode { get; init; } = string.Empty;
         public int DecimalPlaces { get; init; }
         public decimal Amount { get; init; }
-        public decimal ExchangeRate { get; init; }
+        public decimal RateToPayment { get; init; }
+        public decimal AmountPaymentCurrency { get; init; }
         public decimal AmountBase { get; init; }
         public int CashBankAccountId { get; init; }
         public string AccountCode { get; init; } = string.Empty;
         public string AccountName { get; init; } = string.Empty;
         public string? Reference { get; init; }
+        public string? ChequeNo { get; init; }
+        public DateTime? ChequeDate { get; init; }
+        public DateTime? ChequeDueDate { get; init; }
+        public byte? ClearanceStatus { get; init; }
+        public string? ClearanceStatusName { get; init; }
+        public DateTime? ClearanceUpdatedAtUtc { get; init; }
+        public string? ClearanceUpdatedByName { get; init; }
 
-        public ReceiptLineDto ToDto() => new()
+        public PaymentLineDto ToDto() => new()
         {
             Id = Id,
             LineNo = LineNumber,
             PaymentMethodId = PaymentMethodId,
             MethodCode = MethodCode,
             MethodName = MethodName,
+            IsCheque = IsCheque,
             CurrencyId = CurrencyId,
             CurrencyCode = CurrencyCode,
             DecimalPlaces = DecimalPlaces,
             Amount = Amount,
-            ExchangeRate = ExchangeRate,
+            RateToPayment = RateToPayment,
+            AmountPaymentCurrency = AmountPaymentCurrency,
             AmountBase = AmountBase,
             CashBankAccountId = CashBankAccountId,
             AccountCode = AccountCode,
             AccountName = AccountName,
             Reference = Reference,
+            ChequeNo = ChequeNo,
+            ChequeDate = ChequeDate,
+            ChequeDueDate = ChequeDueDate,
+            ClearanceStatus = ClearanceStatus,
+            ClearanceStatusName = ClearanceStatusName,
+            ClearanceUpdatedAtUtc = ClearanceUpdatedAtUtc,
+            ClearanceUpdatedByName = ClearanceUpdatedByName,
         };
     }
 
-    public async Task<ReceiptDto?> GetAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<PaymentDto?> GetAsync(int id, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
-            "sales.usp_Receipt_Get", new { Id = id },
+            "purchase.usp_Payment_Get", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
         var header = await multi.ReadSingleOrDefaultAsync<HeaderRow>();
@@ -219,19 +239,19 @@ public sealed class ReceiptRepository : IReceiptRepository
         }
 
         var lines = (await multi.ReadAsync<LineRow>()).AsList();
-        var allocations = (await multi.ReadAsync<ReceiptAllocationDto>()).AsList();
-        var files = (await multi.ReadAsync<ReceiptFileDto>()).AsList();
-        var audit = (await multi.ReadAsync<ReceiptAuditDto>()).AsList();
+        var allocations = (await multi.ReadAsync<PaymentAllocationDto>()).AsList();
+        var files = (await multi.ReadAsync<PaymentFileDto>()).AsList();
+        var audit = (await multi.ReadAsync<PaymentAuditDto>()).AsList();
 
-        return new ReceiptDto
+        return new PaymentDto
         {
             Id = header.Id,
-            ReceiptNumber = header.ReceiptNumber,
-            ReceiptDate = header.ReceiptDate,
-            ClientId = header.ClientId,
-            ClientCode = header.ClientCode,
-            ClientName = header.ClientName,
-            ClientAddress = header.ClientAddress,
+            PaymentNumber = header.PaymentNumber,
+            PaymentDate = header.PaymentDate,
+            PayeeId = header.PayeeId,
+            PayeeCode = header.PayeeCode,
+            PayeeName = header.PayeeName,
+            PayeeAddress = header.PayeeAddress,
             BranchId = header.BranchId,
             BranchCode = header.BranchCode,
             BranchName = header.BranchName,
@@ -246,13 +266,13 @@ public sealed class ReceiptRepository : IReceiptRepository
             ExchangeRate = header.ExchangeRate,
             AmountBase = header.AmountBase,
             BaseCurrencyCode = header.BaseCurrencyCode,
+            Reference = header.Reference,
             Notes = header.Notes,
-            Status = ReceiptStatus.ToName(header.Status),
-            SourceSalesDocumentId = header.SourceSalesDocumentId,
-            SourceInvoiceNumber = header.SourceInvoiceNumber,
-            LinesBase = header.LinesBase,
-            AllocatedBase = header.AllocatedBase,
-            UnappliedBase = header.UnappliedBase,
+            Status = SupplierPaymentStatus.ToName(header.Status),
+            LinesTotal = header.LinesTotal,
+            AllocatedTotal = header.AllocatedTotal,
+            UnappliedAmount = header.UnappliedAmount,
+            AllocationKind = header.AllocationKind,
             PostedAtUtc = header.PostedAtUtc,
             PostedBy = header.PostedBy,
             PostedByName = header.PostedByName,
@@ -274,36 +294,25 @@ public sealed class ReceiptRepository : IReceiptRepository
         };
     }
 
-    public async Task<IReadOnlyList<OpenInvoiceDto>> OpenInvoicesAsync(int clientId, CancellationToken cancellationToken = default)
-    {
-        await using var connection = _connectionFactory.Create();
-        var rows = await connection.QueryAsync<OpenInvoiceDto>(new CommandDefinition(
-            "sales.usp_Receipt_OpenInvoices", new { ClientId = clientId },
-            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-        return rows.AsList();
-    }
-
-    public async Task<CustomerStatementDto> StatementAsync(int clientId, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<OpenPayableDocumentDto>> OpenDocumentsAsync(
+        int payeeId, string documentKind, int? paymentCurrencyId, decimal? paymentRate, DateOnly? asOfDate,
+        CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
         {
-            using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
-                "sales.usp_Customer_Statement",
-                new { ClientId = clientId, DateFrom = from?.ToDateTime(TimeOnly.MinValue), DateTo = to?.ToDateTime(TimeOnly.MinValue) },
+            var rows = await connection.QueryAsync<OpenPayableDocumentDto>(new CommandDefinition(
+                "purchase.usp_Payment_OpenDocuments",
+                new
+                {
+                    PayeeId = payeeId,
+                    DocumentKind = documentKind,
+                    PaymentCurrencyId = paymentCurrencyId,
+                    PaymentRate = paymentRate,
+                    AsOfDate = asOfDate?.ToDateTime(TimeOnly.MinValue),
+                },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-
-            var head = await grid.ReadSingleAsync<StatementHeadRow>();
-            var entries = (await grid.ReadAsync<CustomerStatementEntryDto>()).AsList();
-            return new CustomerStatementDto
-            {
-                ClientId = head.ClientId,
-                ClientCode = head.ClientCode,
-                ClientName = head.ClientName,
-                BaseCurrencyCode = head.BaseCurrencyCode,
-                OpeningBalance = head.OpeningBalance,
-                Entries = entries,
-            };
+            return rows.AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -311,110 +320,121 @@ public sealed class ReceiptRepository : IReceiptRepository
         }
     }
 
-    private sealed class StatementHeadRow
-    {
-        public int ClientId { get; init; }
-        public string ClientCode { get; init; } = string.Empty;
-        public string ClientName { get; init; } = string.Empty;
-        public string? BaseCurrencyCode { get; init; }
-        public decimal OpeningBalance { get; init; }
-    }
-
-    public async Task<ReceiptRateDto?> ResolveRateAsync(int currencyId, DateOnly? asOfDate, CancellationToken cancellationToken = default)
+    public async Task<PaymentRateDto?> RateToPaymentAsync(
+        int fromCurrencyId, int paymentCurrencyId, decimal? paymentRate, DateOnly? asOfDate, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        return await connection.QuerySingleOrDefaultAsync<ReceiptRateDto>(new CommandDefinition(
-            "sales.usp_Receipt_ResolveRate",
-            new { CurrencyId = currencyId, AsOfDate = asOfDate?.ToDateTime(TimeOnly.MinValue) },
+        return await connection.QuerySingleOrDefaultAsync<PaymentRateDto>(new CommandDefinition(
+            "purchase.usp_Payment_RateToPayment",
+            new
+            {
+                FromCurrencyId = fromCurrencyId,
+                PaymentCurrencyId = paymentCurrencyId,
+                PaymentRate = paymentRate,
+                AsOfDate = asOfDate?.ToDateTime(TimeOnly.MinValue),
+            },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
     }
 
     /* ── writing ──────────────────────────────────────────────────────────────────────────────── */
 
-    public async Task<int> SaveAsync(SaveReceiptRequest request, int? id, int userId, CancellationToken cancellationToken = default)
+    public async Task<int> SaveAsync(SavePaymentRequest request, int? id, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
-        parameters.Add("@ReceiptDate", request.ReceiptDate.ToDateTime(TimeOnly.MinValue), DbType.Date);
-        parameters.Add("@ClientId", request.ClientId, DbType.Int32);
+        parameters.Add("@PaymentDate", request.PaymentDate.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@PayeeId", request.PayeeId, DbType.Int32);
         parameters.Add("@BranchId", request.BranchId, DbType.Int32);
         parameters.Add("@PaymentType", request.PaymentType, DbType.Byte);
         parameters.Add("@CurrencyId", request.CurrencyId, DbType.Int32);
         parameters.Add("@Amount", request.Amount, DbType.Decimal, precision: 18, scale: 2);
         parameters.Add("@ExchangeRate", request.ExchangeRate, DbType.Decimal, precision: 18, scale: 6);
-        parameters.Add("@Notes", request.Notes, DbType.String, size: 1000);
+        parameters.Add("@Reference", request.Reference, DbType.String, size: 100);
+        parameters.Add("@Notes", request.Notes, DbType.String, size: 500);
         parameters.Add("@Lines", ToLineTable(request.Lines).AsTableValuedParameter(LineTypeName));
         parameters.Add("@Allocations", ToAllocationTable(request.Allocations).AsTableValuedParameter(AllocationTypeName));
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
-        await ExecuteAsync("sales.usp_Receipt_Save", parameters, cancellationToken);
+        await ExecuteAsync("purchase.usp_Payment_Save", parameters, cancellationToken);
         return parameters.Get<int>("@NewId");
     }
 
     public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("sales.usp_Receipt_Post", new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+        => ExecuteAsync("purchase.usp_Payment_Post", new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
     public Task ReverseAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("sales.usp_Receipt_Reverse", new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+        => ExecuteAsync("purchase.usp_Payment_Reverse", new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("sales.usp_Receipt_Delete", new { Id = id, UserId = userId }, cancellationToken);
+        => ExecuteAsync("purchase.usp_Payment_Delete", new { Id = id, UserId = userId }, cancellationToken);
 
     public Task AllocateAsync(
-        int id, IReadOnlyList<SaveReceiptAllocationRequest> allocations, byte[]? rowVersion, int userId,
+        int id, IReadOnlyList<SavePaymentAllocationRequest> allocations, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
-        parameters.Add("@ReceiptId", id, DbType.Int32);
+        parameters.Add("@PaymentId", id, DbType.Int32);
         parameters.Add("@Allocations", ToAllocationTable(allocations).AsTableValuedParameter(AllocationTypeName));
         parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
-        return ExecuteAsync("sales.usp_Receipt_Allocate", parameters, cancellationToken);
+        return ExecuteAsync("purchase.usp_Payment_Allocate", parameters, cancellationToken);
     }
 
     public Task DeallocateAsync(int allocationId, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("sales.usp_Receipt_Deallocate", new { AllocationId = allocationId, UserId = userId }, cancellationToken);
+        => ExecuteAsync("purchase.usp_Payment_Deallocate", new { AllocationId = allocationId, UserId = userId }, cancellationToken);
+
+    public Task SetChequeStatusAsync(int lineId, byte clearanceStatus, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("purchase.usp_Payment_SetChequeStatus",
+            new { LineId = lineId, ClearanceStatus = clearanceStatus, UserId = userId }, cancellationToken);
 
     /* ── files ────────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<int> AddFileAsync(
-        int receiptId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
+        int paymentId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
         CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
-        parameters.Add("@ReceiptId", receiptId, DbType.Int32);
+        parameters.Add("@PaymentId", paymentId, DbType.Int32);
         parameters.Add("@AttachmentTypeId", fields.AttachmentTypeId, DbType.Int32);
         parameters.Add("@Note", fields.Note, DbType.String, size: 500);
-        parameters.Add("@DocumentDate", fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("@FileName", fileName, DbType.String, size: 255);
         parameters.Add("@ContentType", contentType, DbType.String, size: 100);
         parameters.Add("@SizeBytes", content.Length, DbType.Int32);
         parameters.Add("@Content", content, DbType.Binary, size: -1);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+        parameters.Add("@DocumentDate", fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
 
-        await ExecuteAsync("sales.usp_ReceiptFile_Add", parameters, cancellationToken);
+        await ExecuteAsync("purchase.usp_PaymentFile_Add", parameters, cancellationToken);
         return parameters.Get<int>("@NewId");
     }
 
     public async Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
-        int receiptId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default)
+        int paymentId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         var rows = await connection.QueryAsync<DocumentFileDto>(new CommandDefinition(
-            "sales.usp_ReceiptFile_List", new { ReceiptId = receiptId, AttachmentTypeId = attachmentTypeId, FileId = fileId },
+            "purchase.usp_PaymentFile_List", new { PaymentId = paymentId, AttachmentTypeId = attachmentTypeId, FileId = fileId },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
         return rows.AsList();
     }
 
+    public async Task<PaymentFileContent?> GetFileAsync(int paymentId, int fileId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<PaymentFileContent>(new CommandDefinition(
+            "purchase.usp_PaymentFile_Get", new { PaymentId = paymentId, FileId = fileId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+    }
+
     public async Task<DocumentFileDto?> UpdateFileAsync(
-        int receiptId, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
+        int paymentId, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
-        parameters.Add("@ReceiptId", receiptId, DbType.Int32);
+        parameters.Add("@PaymentId", paymentId, DbType.Int32);
         parameters.Add("@FileId", fileId, DbType.Int32);
         parameters.Add("@AttachmentTypeId", edit.Fields.AttachmentTypeId, DbType.Int32);
         parameters.Add("@DocumentDate", edit.Fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
@@ -429,7 +449,7 @@ public sealed class ReceiptRepository : IReceiptRepository
         try
         {
             return await connection.QuerySingleOrDefaultAsync<DocumentFileDto>(new CommandDefinition(
-                "sales.usp_ReceiptFile_Update", parameters,
+                "purchase.usp_PaymentFile_Update", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
@@ -438,16 +458,8 @@ public sealed class ReceiptRepository : IReceiptRepository
         }
     }
 
-    public async Task<ReceiptFileContent?> GetFileAsync(int receiptId, int fileId, CancellationToken cancellationToken = default)
-    {
-        await using var connection = _connectionFactory.Create();
-        return await connection.QuerySingleOrDefaultAsync<ReceiptFileContent>(new CommandDefinition(
-            "sales.usp_ReceiptFile_Get", new { ReceiptId = receiptId, FileId = fileId },
-            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-    }
-
-    public Task DeleteFileAsync(int receiptId, int fileId, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("sales.usp_ReceiptFile_Delete", new { ReceiptId = receiptId, FileId = fileId, UserId = userId }, cancellationToken);
+    public Task DeleteFileAsync(int paymentId, int fileId, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("purchase.usp_PaymentFile_Delete", new { PaymentId = paymentId, FileId = fileId, UserId = userId }, cancellationToken);
 
     /* ── plumbing ─────────────────────────────────────────────────────────────────────────────── */
 
@@ -466,23 +478,25 @@ public sealed class ReceiptRepository : IReceiptRepository
     }
 
     /// <summary>
-    /// The lines as a <see cref="DataTable"/> shaped like sales.tvp_ReceiptLine.
+    /// The lines as a <see cref="DataTable"/> shaped like purchase.tvp_PaymentLine.
     ///
-    /// COLUMN ORDER IS THE TYPE'S ORDER AND IS LOAD-BEARING: a table-valued parameter is sent
-    /// positionally, so two columns swapped here would put a currency id where an amount belongs and
-    /// the server would accept it. Types are declared, not inferred, because a column that is null on
-    /// every row (the rate, usually) infers as string and the server refuses the batch.
+    /// COLUMN ORDER IS THE TYPE'S ORDER AND IS LOAD-BEARING: a table-valued parameter is sent positionally.
+    /// Types are declared, not inferred, because a column that is null on every row infers as string and
+    /// the server refuses the batch.
     /// </summary>
-    private static DataTable ToLineTable(IReadOnlyList<SaveReceiptLineRequest> lines)
+    private static DataTable ToLineTable(IReadOnlyList<SavePaymentLineRequest> lines)
     {
         var table = new DataTable();
         table.Columns.Add("LineNumber", typeof(int));
         table.Columns.Add("PaymentMethodId", typeof(int));
         table.Columns.Add("CurrencyId", typeof(int));
         table.Columns.Add("Amount", typeof(decimal));
-        table.Columns.Add("ExchangeRate", typeof(decimal));
+        table.Columns.Add("RateToPayment", typeof(decimal));
         table.Columns.Add("CashBankAccountId", typeof(int));
         table.Columns.Add("Reference", typeof(string));
+        table.Columns.Add("ChequeNo", typeof(string));
+        table.Columns.Add("ChequeDate", typeof(DateTime));
+        table.Columns.Add("ChequeDueDate", typeof(DateTime));
 
         // Numbered from the position in the list, not from what the client sent - one authority.
         var lineNumber = 1;
@@ -493,24 +507,33 @@ public sealed class ReceiptRepository : IReceiptRepository
                 line.PaymentMethodId,
                 line.CurrencyId,
                 line.Amount,
-                (object?)line.ExchangeRate ?? DBNull.Value,
+                (object?)line.RateToPayment ?? DBNull.Value,
                 line.CashBankAccountId,
-                (object?)line.Reference ?? DBNull.Value);
+                (object?)line.Reference ?? DBNull.Value,
+                (object?)line.ChequeNo ?? DBNull.Value,
+                (object?)line.ChequeDate?.ToDateTime(TimeOnly.MinValue) ?? DBNull.Value,
+                (object?)line.ChequeDueDate?.ToDateTime(TimeOnly.MinValue) ?? DBNull.Value);
         }
 
         return table;
     }
 
-    /// <summary>The allocations as a <see cref="DataTable"/> shaped like sales.tvp_ReceiptAllocation (invoice, amount in ITS currency).</summary>
-    private static DataTable ToAllocationTable(IReadOnlyList<SaveReceiptAllocationRequest> allocations)
+    /// <summary>The allocations shaped like purchase.tvp_PaymentAllocation (kind, document, amount in ITS currency, rate).</summary>
+    private static DataTable ToAllocationTable(IReadOnlyList<SavePaymentAllocationRequest> allocations)
     {
         var table = new DataTable();
-        table.Columns.Add("SalesDocumentId", typeof(int));
+        table.Columns.Add("DocumentKind", typeof(string));
+        table.Columns.Add("DocumentId", typeof(int));
         table.Columns.Add("Amount", typeof(decimal));
+        table.Columns.Add("RateToPayment", typeof(decimal));
 
         foreach (var allocation in allocations)
         {
-            table.Rows.Add(allocation.SalesDocumentId, allocation.Amount);
+            table.Rows.Add(
+                allocation.DocumentKind.Trim().ToUpperInvariant(),
+                allocation.DocumentId,
+                allocation.Amount,
+                (object?)allocation.RateToPayment ?? DBNull.Value);
         }
 
         return table;

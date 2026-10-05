@@ -370,10 +370,10 @@ public sealed class StockDocumentService : IStockDocumentService
     }
 
     public async Task<Result<DocumentFileDto>> UpdateFileAsync(
-        int id, int fileId, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        int id, int fileId, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
     {
-        // CREATE, as for the upload: the type of a file is part of the evidence.
+        // CREATE, as for the upload: the name, type and content of a file are part of the evidence.
         var found = await ReadAsync(id, permissions, DocumentAction.Create, cancellationToken);
         if (found.IsFailure)
         {
@@ -387,7 +387,7 @@ public sealed class StockDocumentService : IStockDocumentService
 
         try
         {
-            var file = await _documents.UpdateFileAsync(fileId, fields, userId, cancellationToken);
+            var file = await _documents.UpdateFileAsync(fileId, edit, userId, cancellationToken);
             return file is null
                 ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, "File not found.", "NOT_FOUND")
                 : Result<DocumentFileDto>.Success(file);

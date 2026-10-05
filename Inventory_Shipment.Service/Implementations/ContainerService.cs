@@ -344,7 +344,7 @@ public sealed class ContainerService : IContainerService
     }
 
     public async Task<Result<ContainerAttachmentDto>> UpdateAttachmentAsync(
-        int id, DocumentFileFields fields, int userId, IReadOnlySet<string> permissions,
+        int id, bool allShared, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Containers.AttachmentsManage))
@@ -354,10 +354,16 @@ public sealed class ContainerService : IContainerService
 
         try
         {
-            var attachment = await _containers.UpdateAttachmentAsync(id, fields, userId, cancellationToken);
-            return attachment is null
-                ? Result<ContainerAttachmentDto>.Failure(ErrorType.NotFound, "Attachment not found.", "NOT_FOUND")
-                : Result<ContainerAttachmentDto>.Success(attachment);
+            var attachment = await _containers.UpdateAttachmentAsync(id, allShared, edit, userId, cancellationToken);
+            if (attachment is null)
+            {
+                return Result<ContainerAttachmentDto>.Failure(ErrorType.NotFound, "Attachment not found.", "NOT_FOUND");
+            }
+
+            _logger.LogInformation("Attachment {AttachmentId} updated{Shared}{Replaced} by user {UserId}",
+                id, allShared ? " on every container" : string.Empty,
+                edit.Content is null ? string.Empty : " with new content", userId);
+            return Result<ContainerAttachmentDto>.Success(attachment);
         }
         catch (BusinessRuleException ex)
         {
@@ -375,7 +381,7 @@ public sealed class ContainerService : IContainerService
             return Forbidden<AutoPlanDto>(Permissions.Containers.Create);
         }
 
-        // The typed pieces per container (request.Capacities) are ignored since script 50: the Container units only.
+        // The typed pieces per container (request.Capacities) are ignored since script 54: the Container units only.
         try
         {
             return Result<AutoPlanDto>.Success(await _containers.PlanFromOrderAsync(request, cancellationToken));
@@ -391,7 +397,7 @@ public sealed class ContainerService : IContainerService
         }
     }
 
-    /// <summary>The end of the procedure's 69000 for an item without a Container unit (script 50).</summary>
+    /// <summary>The end of the procedure's 69000 for an item without a Container unit (script 54).</summary>
     private const string MissingContainerUnit = "set its Container unit in Item Definition first.";
 
     /// <summary>
