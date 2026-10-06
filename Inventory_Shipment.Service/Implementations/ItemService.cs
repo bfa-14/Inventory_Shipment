@@ -560,7 +560,11 @@ public sealed class ItemService : IItemService
         Barcode = Normalize(request.Barcode),
         IsSalesUnit = request.IsSalesUnit,
         IsPurchaseUnit = request.IsPurchaseUnit,
-        IsBaseUnit = request.IsBaseUnit
+        IsBaseUnit = request.IsBaseUnit,
+        LengthCm = request.LengthCm,
+        WidthCm = request.WidthCm,
+        HeightCm = request.HeightCm,
+        WeightKg = request.WeightKg
     };
 
     private static string? Normalize(string? value)

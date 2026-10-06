@@ -26,6 +26,20 @@ public sealed class SaveItemUnitRequest
     public bool IsPurchaseUnit { get; init; }
     public bool IsBaseUnit { get; init; }
 
+    /// <summary>The unit's outside size in centimetres; null = not recorded.</summary>
+    [Range(0.01, 99999999.99)]
+    public decimal? LengthCm { get; init; }
+
+    [Range(0.01, 99999999.99)]
+    public decimal? WidthCm { get; init; }
+
+    [Range(0.01, 99999999.99)]
+    public decimal? HeightCm { get; init; }
+
+    /// <summary>The unit's weight in kilograms; null = not recorded.</summary>
+    [Range(0.001, 999999999.999)]
+    public decimal? WeightKg { get; init; }
+
     /// <summary>Base64 ROWVERSION read with the unit (update only). Null skips the concurrency check.</summary>
     public string? RowVersion { get; init; }
 }

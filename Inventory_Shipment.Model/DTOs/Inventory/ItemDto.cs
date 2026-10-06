@@ -156,6 +156,12 @@ public sealed class ItemUnitDto
     public bool IsPurchaseUnit { get; init; }
     public bool IsBaseUnit { get; init; }
 
+    /// <summary>The unit's outside size in centimetres and its weight in kilograms; null = not recorded.</summary>
+    public decimal? LengthCm { get; init; }
+    public decimal? WidthCm { get; init; }
+    public decimal? HeightCm { get; init; }
+    public decimal? WeightKg { get; init; }
+
     /// <summary>The row's ROWVERSION as Base64. Send it back on update to detect concurrent edits.</summary>
     public string RowVersion { get; init; } = string.Empty;
 }

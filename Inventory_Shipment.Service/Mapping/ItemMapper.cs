@@ -97,6 +97,10 @@ public static class ItemMapper
         IsSalesUnit = unit.IsSalesUnit,
         IsPurchaseUnit = unit.IsPurchaseUnit,
         IsBaseUnit = unit.IsBaseUnit,
+        LengthCm = unit.LengthCm,
+        WidthCm = unit.WidthCm,
+        HeightCm = unit.HeightCm,
+        WeightKg = unit.WeightKg,
         RowVersion = Convert.ToBase64String(unit.RowVersion)
     };
 

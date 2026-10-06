@@ -119,6 +119,12 @@ public class ItemUnit
     public bool IsPurchaseUnit { get; set; }
     public bool IsBaseUnit { get; set; }
 
+    /// <summary>The unit's outside size in centimetres and its weight in kilograms; null = not recorded.</summary>
+    public decimal? LengthCm { get; set; }
+    public decimal? WidthCm { get; set; }
+    public decimal? HeightCm { get; set; }
+    public decimal? WeightKg { get; set; }
+
     /// <summary>SQL Server ROWVERSION (8 bytes) used for optimistic concurrency.</summary>
     public byte[] RowVersion { get; set; } = [];
 }

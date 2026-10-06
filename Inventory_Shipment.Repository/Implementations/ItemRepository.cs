@@ -497,6 +497,10 @@ public sealed class ItemRepository : IItemRepository
         parameters.Add("@IsSalesUnit", unit.IsSalesUnit, DbType.Boolean);
         parameters.Add("@IsPurchaseUnit", unit.IsPurchaseUnit, DbType.Boolean);
         parameters.Add("@IsBaseUnit", unit.IsBaseUnit, DbType.Boolean);
+        parameters.Add("@LengthCm", unit.LengthCm, DbType.Decimal, precision: 10, scale: 2);
+        parameters.Add("@WidthCm", unit.WidthCm, DbType.Decimal, precision: 10, scale: 2);
+        parameters.Add("@HeightCm", unit.HeightCm, DbType.Decimal, precision: 10, scale: 2);
+        parameters.Add("@WeightKg", unit.WeightKg, DbType.Decimal, precision: 12, scale: 3);
         return parameters;
     }
 
