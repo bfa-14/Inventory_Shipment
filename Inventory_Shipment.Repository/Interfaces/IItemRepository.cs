@@ -23,6 +23,9 @@ public interface IItemRepository
     /// <summary>inventory.usp_Item_StockBalance - the item's on hand per warehouse that has held it.</summary>
     Task<IReadOnlyList<ItemStockBalanceRowDto>> GetStockBalanceAsync(int itemId, CancellationToken cancellationToken = default);
 
+    /// <summary>inventory.usp_Item_PurchaseOrders - every purchase order with the item on it, newest first.</summary>
+    Task<IReadOnlyList<ItemPurchaseOrderDto>> GetPurchaseOrdersAsync(int itemId, CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_Item_StockStatement - the balance brought forward and the movements in the range.</summary>
     Task<(int OpeningBase, IReadOnlyList<ItemStockMovementDto> Movements)> GetStockStatementAsync(
         int itemId, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default);

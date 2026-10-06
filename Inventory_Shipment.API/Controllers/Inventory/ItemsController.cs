@@ -63,6 +63,20 @@ public sealed class ItemsController : ControllerBase
     }
 
     /// <summary>
+    /// The purchase orders that have the item on them - the Purchase Orders quick link. Behind the purchase
+    /// orders view permission rather than the items one: it shows suppliers, prices and quantities on order.
+    /// </summary>
+    [HttpGet("{id:int}/purchase-orders")]
+    [HasPermission(Permissions.Purchase.OrdersView)]
+    [ProducesResponseType<ItemPurchaseOrdersDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ItemPurchaseOrdersDto>> GetPurchaseOrders(int id, CancellationToken cancellationToken)
+    {
+        var result = await _itemService.GetPurchaseOrdersAsync(id, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// The item's stock statement - the Stock Movement quick link: the balance brought forward, every movement
     /// (oldest first) with the running balance, across every warehouse, optionally for a date range (yyyy-MM-dd).
     /// </summary>

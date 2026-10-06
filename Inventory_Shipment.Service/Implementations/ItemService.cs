@@ -1,5 +1,6 @@
 using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Inventory;
+using Inventory_Shipment.Model.DTOs.Purchase;
 using Inventory_Shipment.Model.Entities;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
@@ -61,6 +62,29 @@ public sealed class ItemService : IItemService
 
     public async Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default)
         => await ReadBackAsync(id, cancellationToken);
+
+    public async Task<Result<ItemPurchaseOrdersDto>> GetPurchaseOrdersAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var loaded = await _items.GetAsync(id, cancellationToken);
+        if (loaded is null)
+        {
+            return Result<ItemPurchaseOrdersDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        var orders = await _items.GetPurchaseOrdersAsync(id, cancellationToken);
+        var live = orders.Where(o => o.StatusCode != PurchaseDocumentStatus.CancelledCode).ToList();
+        return Result<ItemPurchaseOrdersDto>.Success(new ItemPurchaseOrdersDto
+        {
+            ItemId = id,
+            ItemCode = loaded.Value.Item.ItemCode,
+            ItemName = loaded.Value.Item.ItemName,
+            OpenOrders = orders.Count(o => o.OutstandingBase > 0),
+            OutstandingBase = orders.Sum(o => o.OutstandingBase),
+            OrderedBase = live.Sum(o => o.OrderedBase),
+            ReceivedBase = live.Sum(o => o.ReceivedBase),
+            Orders = orders,
+        });
+    }
 
     public async Task<Result<ItemStockStatementDto>> GetStockStatementAsync(
         int id, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)

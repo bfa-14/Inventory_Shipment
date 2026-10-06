@@ -1,3 +1,5 @@
+using Inventory_Shipment.Model.DTOs.Purchase;
+
 namespace Inventory_Shipment.Model.DTOs.Inventory;
 
 /// <summary>
@@ -85,4 +87,52 @@ public sealed class ItemStockStatementDto
     public int TotalOut { get; init; }
     public int ClosingBase { get; init; }
     public IReadOnlyList<ItemStockMovementDto> Movements { get; init; } = [];
+}
+
+/// <summary>One purchase order with the item on it, and what it asks for of that item.</summary>
+public sealed class ItemPurchaseOrderDto
+{
+    public int DocumentId { get; init; }
+    public string? DocumentNumber { get; init; }
+    public DateTime DocumentDate { get; init; }
+    public DateTime? ExpectedDate { get; init; }
+    public byte StatusCode { get; init; }
+
+    /// <summary>Draft | PendingApproval | Posted | Closed | Cancelled.</summary>
+    public string Status => PurchaseDocumentStatus.From(StatusCode);
+
+    public string SupplierCode { get; init; } = string.Empty;
+    public string SupplierName { get; init; } = string.Empty;
+    public string BranchName { get; init; } = string.Empty;
+    public string CurrencyCode { get; init; } = string.Empty;
+    public byte DecimalPlaces { get; init; }
+
+    /// <summary>The order's lines of this item, added up, in base units.</summary>
+    public int OrderedBase { get; init; }
+    public int ReceivedBase { get; init; }
+
+    /// <summary>Still to come: ordered less received, on an open (Posted) order only.</summary>
+    public int OutstandingBase { get; init; }
+
+    /// <summary>What the order pays for this item, in the order's currency.</summary>
+    public decimal Amount { get; init; }
+}
+
+/// <summary>The item's purchase orders and what they add up to.</summary>
+public sealed class ItemPurchaseOrdersDto
+{
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+
+    /// <summary>Posted orders still waiting for some of the item.</summary>
+    public int OpenOrders { get; init; }
+
+    /// <summary>On order: what open orders have still to deliver, in base units.</summary>
+    public int OutstandingBase { get; init; }
+
+    /// <summary>Ordered and received across every order that was not cancelled.</summary>
+    public int OrderedBase { get; init; }
+    public int ReceivedBase { get; init; }
+    public IReadOnlyList<ItemPurchaseOrderDto> Orders { get; init; } = [];
 }
