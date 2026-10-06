@@ -136,3 +136,50 @@ public sealed class ItemPurchaseOrdersDto
     public int ReceivedBase { get; init; }
     public IReadOnlyList<ItemPurchaseOrderDto> Orders { get; init; } = [];
 }
+
+/// <summary>One container carrying the item, and how much of the item it holds.</summary>
+public sealed class ItemContainerDto
+{
+    public int ContainerId { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+
+    /// <summary>1 Draft, 2 Confirmed, 3 In Transit, 4 At Port, 5 Cleared, 6 Offloaded, 7 Closed, 8 Cancelled.</summary>
+    public byte StatusCode { get; init; }
+
+    public string? ContainerTypeName { get; init; }
+    public DateTime? OrderDate { get; init; }
+    public DateTime? DispatchDate { get; init; }
+    public DateTime? Eta { get; init; }
+    public DateTime? OffloadedDate { get; init; }
+    public string? BranchName { get; init; }
+    public string? WarehouseName { get; init; }
+    public int? PurchaseOrderId { get; init; }
+    public string? PurchaseOrderNumber { get; init; }
+
+    /// <summary>The container's lines of this item, added up, in base units.</summary>
+    public int LoadedBase { get; init; }
+    public int ReceivedBase { get; init; }
+
+    /// <summary>Loaded less received, on a container from Confirmed to Cleared only.</summary>
+    public int OnTheWayBase { get; init; }
+}
+
+/// <summary>The item's containers and what they add up to.</summary>
+public sealed class ItemContainersDto
+{
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+
+    /// <summary>Containers still bringing some of the item.</summary>
+    public int ContainersOnTheWay { get; init; }
+
+    /// <summary>What those containers are still bringing, in base units.</summary>
+    public int OnTheWayBase { get; init; }
+
+    /// <summary>Loaded and received across every container that was not cancelled.</summary>
+    public int LoadedBase { get; init; }
+    public int ReceivedBase { get; init; }
+    public IReadOnlyList<ItemContainerDto> Containers { get; init; } = [];
+}

@@ -348,6 +348,15 @@ public sealed class ItemRepository : IItemRepository
         return rows.AsList();
     }
 
+    public async Task<IReadOnlyList<ItemContainerDto>> GetContainersAsync(int itemId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<ItemContainerDto>(new CommandDefinition(
+            "inventory.usp_Item_Containers", new { ItemId = itemId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        return rows.AsList();
+    }
+
     public async Task<IReadOnlyList<ItemPurchaseOrderDto>> GetPurchaseOrdersAsync(int itemId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();

@@ -63,6 +63,30 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default)
         => await ReadBackAsync(id, cancellationToken);
 
+    public async Task<Result<ItemContainersDto>> GetContainersAsync(int id, CancellationToken cancellationToken = default)
+    {
+        var loaded = await _items.GetAsync(id, cancellationToken);
+        if (loaded is null)
+        {
+            return Result<ItemContainersDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        // 8 = Cancelled: what such a container was loaded with never left.
+        var containers = await _items.GetContainersAsync(id, cancellationToken);
+        var live = containers.Where(c => c.StatusCode != 8).ToList();
+        return Result<ItemContainersDto>.Success(new ItemContainersDto
+        {
+            ItemId = id,
+            ItemCode = loaded.Value.Item.ItemCode,
+            ItemName = loaded.Value.Item.ItemName,
+            ContainersOnTheWay = containers.Count(c => c.OnTheWayBase > 0),
+            OnTheWayBase = containers.Sum(c => c.OnTheWayBase),
+            LoadedBase = live.Sum(c => c.LoadedBase),
+            ReceivedBase = live.Sum(c => c.ReceivedBase),
+            Containers = containers,
+        });
+    }
+
     public async Task<Result<ItemPurchaseOrdersDto>> GetPurchaseOrdersAsync(int id, CancellationToken cancellationToken = default)
     {
         var loaded = await _items.GetAsync(id, cancellationToken);

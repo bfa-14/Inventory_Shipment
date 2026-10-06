@@ -63,6 +63,20 @@ public sealed class ItemsController : ControllerBase
     }
 
     /// <summary>
+    /// The containers that carry the item - the Containers quick link - with what each was loaded with,
+    /// received, and is still bringing. Behind the containers view permission rather than the items one.
+    /// </summary>
+    [HttpGet("{id:int}/containers")]
+    [HasPermission(Permissions.Containers.View)]
+    [ProducesResponseType<ItemContainersDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ItemContainersDto>> GetContainers(int id, CancellationToken cancellationToken)
+    {
+        var result = await _itemService.GetContainersAsync(id, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// The purchase orders that have the item on them - the Purchase Orders quick link. Behind the purchase
     /// orders view permission rather than the items one: it shows suppliers, prices and quantities on order.
     /// </summary>
