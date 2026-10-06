@@ -14,6 +14,10 @@ public interface IItemService
     /// <summary>The item's stock per warehouse, with totals. 404 when the item does not exist.</summary>
     Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default);
 
+    /// <summary>The item's stock statement across every warehouse, optionally for a date range. 404 for an unknown item.</summary>
+    Task<Result<ItemStockStatementDto>> GetStockStatementAsync(
+        int id, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default);
+
     Task<Result<ItemDetailsDto>> CreateAsync(SaveItemRequest request, int userId, CancellationToken cancellationToken = default);
 
     Task<Result<ItemDetailsDto>> UpdateAsync(int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default);

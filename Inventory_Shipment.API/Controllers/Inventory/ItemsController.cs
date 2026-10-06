@@ -62,6 +62,22 @@ public sealed class ItemsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// The item's stock statement - the Stock Movement quick link: the balance brought forward, every movement
+    /// (oldest first) with the running balance, across every warehouse, optionally for a date range (yyyy-MM-dd).
+    /// </summary>
+    [HttpGet("{id:int}/stock-movements")]
+    [HasPermission(Permissions.Inventory.ItemsView)]
+    [ProducesResponseType<ItemStockStatementDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ItemStockStatementDto>> GetStockMovements(
+        int id, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
+    {
+        var result = await _itemService.GetStockStatementAsync(id, from, to, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /// <summary>The item's on hand in every warehouse that has held it, with the totals - the Stock Balance quick link.</summary>
     [HttpGet("{id:int}/stock-balance")]
     [HasPermission(Permissions.Inventory.ItemsView)]

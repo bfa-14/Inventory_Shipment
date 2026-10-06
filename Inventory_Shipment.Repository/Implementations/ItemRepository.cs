@@ -348,6 +348,24 @@ public sealed class ItemRepository : IItemRepository
         return rows.AsList();
     }
 
+    public async Task<(int OpeningBase, IReadOnlyList<ItemStockMovementDto> Movements)> GetStockStatementAsync(
+        int itemId, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        await using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+            "inventory.usp_Item_StockStatement",
+            new
+            {
+                ItemId = itemId,
+                DateFrom = from?.ToDateTime(TimeOnly.MinValue),
+                DateTo = to?.ToDateTime(TimeOnly.MinValue),
+            },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        var opening = await grid.ReadSingleAsync<int>();
+        var movements = (await grid.ReadAsync<ItemStockMovementDto>()).AsList();
+        return (opening, movements);
+    }
+
     public async Task<ItemFile?> GetFileAsync(int fileId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();

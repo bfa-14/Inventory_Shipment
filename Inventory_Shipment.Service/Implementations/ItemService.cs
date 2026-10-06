@@ -62,6 +62,36 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default)
         => await ReadBackAsync(id, cancellationToken);
 
+    public async Task<Result<ItemStockStatementDto>> GetStockStatementAsync(
+        int id, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
+    {
+        if (from is not null && to is not null && to < from)
+        {
+            return Result<ItemStockStatementDto>.Failure(ErrorType.Validation, "The end date cannot be before the start date.", "VALIDATION");
+        }
+
+        var loaded = await _items.GetAsync(id, cancellationToken);
+        if (loaded is null)
+        {
+            return Result<ItemStockStatementDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        var (opening, movements) = await _items.GetStockStatementAsync(id, from, to, cancellationToken);
+        var totalIn = movements.Sum(m => m.QuantityIn);
+        var totalOut = movements.Sum(m => m.QuantityOut);
+        return Result<ItemStockStatementDto>.Success(new ItemStockStatementDto
+        {
+            ItemId = id,
+            ItemCode = loaded.Value.Item.ItemCode,
+            ItemName = loaded.Value.Item.ItemName,
+            OpeningBase = opening,
+            TotalIn = totalIn,
+            TotalOut = totalOut,
+            ClosingBase = opening + totalIn - totalOut,
+            Movements = movements,
+        });
+    }
+
     public async Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default)
     {
         var loaded = await _items.GetAsync(id, cancellationToken);
