@@ -1,0 +1,91 @@
+# Inventory & Shipment - the production stack for one Linux server. See README.md in this folder.
+#
+#   web  Caddy, built from the Inventory_Shipment_Frontend repository: serves the React app, forwards
+#        /api and /health to the API, and gets and renews the HTTPS certificate for DOMAIN.
+#        The only container reachable from outside (ports 80 and 443).
+#   api  Inventory_Shipment.API. Creates the database and applies Schema.sql on every start-up.
+#   db   SQL Server (Express edition unless MSSQL_PID says otherwise). Never published to the internet.
+#
+# Settings come from deploy/.env (setup.sh writes it; .env.example lists every one).
+
+name: inventory
+
+services:
+  db:
+    image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2025-latest}
+    restart: unless-stopped
+    environment:
+      ACCEPT_EULA: "Y"
+      MSSQL_PID: ${MSSQL_PID:-Express}
+      MSSQL_SA_PASSWORD: ${MSSQL_SA_PASSWORD:?set MSSQL_SA_PASSWORD in deploy/.env}
+      MSSQL_MEMORY_LIMIT_MB: ${MSSQL_MEMORY_LIMIT_MB:-2048}
+    volumes:
+      - sqldata:/var/opt/mssql
+      # backup.sh writes here and restore.sh reads from here: the deploy/backups folder on the server.
+      - ./backups:/var/opt/mssql/backups
+    healthcheck:
+      # The password goes through SQLCMDPASSWORD so it never appears on a command line.
+      test: ["CMD-SHELL", "SQLCMDPASSWORD=\"$$MSSQL_SA_PASSWORD\" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b -Q 'SELECT 1' -o /dev/null"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  api:
+    build:
+      context: ..
+    image: inventory-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      # Caddy is in front: take the client's address and https from its X-Forwarded-* headers, so the
+      # login rate limit and the login audit see the real client instead of the proxy. Safe because
+      # the API is reachable only through Caddy, which overwrites those headers on the way in.
+      ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
+      ConnectionStrings__DefaultConnection: "Server=db;Database=${DB_NAME:-Inventory_Shipment};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True"
+      Jwt__SecretKey: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in deploy/.env}
+      # Used only while the Users table is empty, to create the first administrator.
+      Seed__AdminPassword: ${ADMIN_PASSWORD:-}
+      # The address put in emailed links; Settings > Email can override it.
+      App__PublicBaseUrl: https://${DOMAIN}
+    volumes:
+      - dpkeys:/app/App_Data
+    healthcheck:
+      # The image has no curl: a plain HTTP request to /health over bash's /dev/tcp.
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/8080 && printf 'GET /health HTTP/1.0\\r\\nHost: localhost\\r\\n\\r\\n' >&3 && head -n 1 <&3 | grep -q ' 200 '"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      # The first start creates the database and applies the whole schema.
+      start_period: 5m
+
+  web:
+    build:
+      context: ${WEB_SOURCE_DIR:-../../Inventory_Shipment_Frontend}
+    image: inventory-web
+    restart: unless-stopped
+    depends_on:
+      - api
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+      # Plain HTTP for an SSH tunnel, on the server's loopback only: never reachable from the internet.
+      - "127.0.0.1:${TUNNEL_PORT:-8080}:8080"
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in deploy/.env}
+      API_UPSTREAM: api:8080
+    volumes:
+      # The HTTPS certificates. Losing them only means Caddy asks Let's Encrypt again.
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  sqldata:
+  dpkeys:
+  caddy_data:
+  caddy_config:

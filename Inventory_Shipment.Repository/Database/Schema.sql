@@ -11724,6 +11724,17 @@ BEGIN
 END
 GO
 
+-- Added here, before the procedure below reads it: CREATE OR ALTER PROCEDURE refuses a column that
+-- does not exist yet, which is the case on a brand-new database. (Section 5 fills it for old rows.)
+IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'FobCostBase') IS NULL
+BEGIN
+    ALTER TABLE purchase.PurchaseDocumentLines ADD
+        FobCostBase          DECIMAL(18,6) NULL,                                                       -- per base unit, base currency
+        AllocatedChargesBase DECIMAL(18,2) NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Charges DEFAULT (0);   -- landed charges of the line
+    PRINT 'PurchaseDocumentLines: added FobCostBase, AllocatedChargesBase';
+END
+GO
+
 -- Replays the ledger (documents without reversal) + inventory cost adjustments in date order -> exact moving average;
 -- LastCost / FobCost from the latest posted purchase invoice. @ItemId NULL = every item (maintenance).
 CREATE OR ALTER PROCEDURE inventory.usp_Item_RebuildCosts
@@ -11972,15 +11983,6 @@ END
 GO
 
 /* ================================================================== 5. Purchase charges on invoices / adjustments + allocations */
-
-IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'FobCostBase') IS NULL
-BEGIN
-    ALTER TABLE purchase.PurchaseDocumentLines ADD
-        FobCostBase          DECIMAL(18,6) NULL,                                                       -- per base unit, base currency
-        AllocatedChargesBase DECIMAL(18,2) NOT NULL CONSTRAINT DF_PurchaseDocumentLines_Charges DEFAULT (0);   -- landed charges of the line
-    PRINT 'PurchaseDocumentLines: added FobCostBase, AllocatedChargesBase';
-END
-GO
 
 IF COL_LENGTH(N'purchase.PurchaseDocuments', N'TotalChargesBase') IS NULL
 BEGIN

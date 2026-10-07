@@ -1,0 +1,15 @@
+# Only the four .NET projects go into the image (see Dockerfile).
+**/bin/
+**/obj/
+**/.vs/
+**/*.user
+.git/
+_to_delete/
+Database/
+DatabaseProject/
+docs/
+tools/
+deploy/
+**/App_Data/
+**/appsettings.*.Local.json
+**/secrets.json
