@@ -37,6 +37,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPriceListService, PriceListService>();
         services.TryAddScoped<IPartyService, PartyService>();
         services.TryAddScoped<IItemService, ItemService>();
+        services.TryAddScoped<IDashboardService, DashboardService>();
 
         // Singletons: both are stateless workbook readers/writers holding nothing per request, and a
         // new one per import would be an allocation for nothing.

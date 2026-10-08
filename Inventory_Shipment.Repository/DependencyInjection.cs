@@ -36,6 +36,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPriceListRepository, PriceListRepository>();
         services.TryAddScoped<IPartyRepository, PartyRepository>();
         services.TryAddScoped<IItemRepository, ItemRepository>();
+        services.TryAddScoped<IDashboardRepository, DashboardRepository>();
         services.TryAddScoped<IInvoiceImportRepository, InvoiceImportRepository>();
         services.TryAddScoped<IStockDocumentRepository, StockDocumentRepository>();
         services.TryAddScoped<ISalesDocumentRepository, SalesDocumentRepository>();
