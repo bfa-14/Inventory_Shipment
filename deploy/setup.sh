@@ -101,8 +101,15 @@ if [ "$mode" = "testing" ]; then
 
     say "Testing environment: $test_dir ($test_branch branch), https://$test_domain"
     mkdir -p "$test_dir"
-    [ -d "$test_dir/Inventory_Shipment/.git" ] || git clone --branch "$test_branch" "$api_repo" "$test_dir/Inventory_Shipment"
-    [ -d "$test_dir/Inventory_Shipment_Frontend/.git" ] || git clone --branch "$test_branch" "$web_repo" "$test_dir/Inventory_Shipment_Frontend"
+    # Cloned the first time; brought up to date when they are already there (a second run, after a refusal).
+    for pair in "Inventory_Shipment|$api_repo" "Inventory_Shipment_Frontend|$web_repo"; do
+        name=${pair%%|*}; url=${pair#*|}
+        if [ -d "$test_dir/$name/.git" ]; then
+            git -C "$test_dir/$name" pull --ff-only --quiet || die "$test_dir/$name cannot move forward to GitHub's $test_branch; see update.sh's advice."
+        else
+            git clone --branch "$test_branch" "$url" "$test_dir/$name"
+        fi
+    done
     test_deploy="$test_dir/Inventory_Shipment/deploy"
     grep -q PROXY_REPLICAS "$test_deploy/docker-compose.yml" 2>/dev/null \
         && grep -q environment.json "$test_dir/Inventory_Shipment_Frontend/Caddyfile" 2>/dev/null \
