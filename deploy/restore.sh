@@ -87,6 +87,10 @@ if [ -n "${RESTORE_THEN_SQL:-}" ]; then
         || die "The database was restored, but adjusting it failed (above). The API is stopped: run this again."
 fi
 
+# A RESTORE ABANDONS AN UNFINISHED RESET (reset-database.sh): its side database would otherwise be taken for work
+# still to finish, and would keep copy-production-to-testing.sh refusing.
+sql_exec -Q "IF DB_ID(N'${db}_reset_keep') IS NOT NULL DROP DATABASE [${db}_reset_keep];"
+
 say "Starting the API (it updates the restored database to the current schema)"
 docker compose start api
 wait_for_api

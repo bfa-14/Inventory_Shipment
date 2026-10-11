@@ -33,6 +33,7 @@ page shows an orange **TESTING** badge, and **emails are never sent to real peop
 | `copy-production-to-testing.sh` | Refreshes testing's database with a copy of production's |
 | `enable-github-deploy.sh` | One-time setup so a push to `main` or `production` deploys by itself (`../.github/workflows/deploy.yml`) |
 | `backup.sh` / `restore.sh` | Database backup (scheduled nightly) and restore |
+| `reset-database.sh` | Empties an environment's database, keeping only your admin account |
 | `../Dockerfile` | The API image |
 | `Dockerfile`, `Caddyfile` in **Inventory_Shipment_Frontend** | The web image |
 
@@ -322,6 +323,7 @@ Run these on the server, in the deploy folder of the environment concerned. Sign
 | Back up now | `sudo ./backup.sh` |
 | Restore a backup | `sudo ./restore.sh backups/Inventory_Shipment-20261005-023000.bak.gz` |
 | Refresh testing with production's data | `sudo ./copy-production-to-testing.sh` (testing folder) |
+| Empty an environment's database (keeps only your admin account) | `sudo ./reset-database.sh` ([details](#empty-a-database-start-again-from-zero)) |
 | See what is running | `sudo docker compose ps` |
 | Read the logs | `sudo docker compose logs -f api` (or `web`, `db`, and `proxy` in production), `Ctrl+C` to stop |
 | Restart the API | `sudo docker compose restart api` |
@@ -331,6 +333,37 @@ Stopping production also stops the proxy, so testing's address stops answering t
 
 While an API restarts (under a minute) its users see "The server is not reachable right now". The containers
 start again by themselves after a crash or a server reboot.
+
+## Empty a database (start again from zero)
+
+To go live without the test data, empty production, then copy it into testing (the `&&` runs the copy only if the
+reset finished):
+
+```bash
+cd /opt/inventory/Inventory_Shipment/deploy
+sudo ./reset-database.sh && sudo /opt/inventory-test/Inventory_Shipment/deploy/copy-production-to-testing.sh
+```
+
+`reset-database.sh` asks you to type the environment's address, takes a backup, and leaves the database exactly as a
+new installation creates it, **except that your admin account stays, with its current password**:
+
+- **Deleted:** every document (orders, invoices, goods receipts, returns, sales, receipts), stock and costs,
+  containers and movements, items, suppliers and customers, other users, settings (email, approval), the email log,
+  attached files. Document numbers start again at 1. **Everyone is signed out**, you too: sign in again.
+- **Created again, as on a new installation** (they would come back at every start if deleted: change, deactivate
+  or delete them in the app instead):
+  - the document types, the permissions and the default settings;
+  - the roles Admin, Manager, User and Owner (nobody holds them but your account, which is Admin);
+  - the starter rows: branch BR-001 Head Office and its warehouse, currencies, ports, item families, unit,
+    container, movement and charge types, attachment types, stock reasons, payment methods, the TVS brand,
+    supplier SUP-0001 TVS Motor Company, customer CLI-0001 Walk-in Customer, the demo item TVS-AP160 and price list
+    PL-001 Retail USD with its price.
+- Another administrator account to keep: `sudo KEEP_USER=<user name> ./reset-database.sh`.
+- Stopped halfway (a lost connection)? Run it again: it carries on. The copy into testing refuses to run until it
+  has finished.
+- **The backup** it takes is kept in `deploy/backups/before-reset/` (the nightly clean-up does not touch it). To
+  undo the reset: `sudo ./restore.sh backups/before-reset/<the file it printed>`; restoring it after going live
+  replaces everything entered since. Copy it off the server ([Backups](#backups)) before you ever delete it.
 
 ## Move your existing data from your PC
 
