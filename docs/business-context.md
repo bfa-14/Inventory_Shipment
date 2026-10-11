@@ -655,6 +655,11 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Weight / Volume: needs the item's weight / volume, else "…: item … has no weight (kg)".
   - Manual: the amounts must add up exactly.
   - Rounded to cents; the leftover cents go to the largest remainders.
+- **Import from Excel:** Logistics › Containers › "Import charges from Excel…" (template with the charge types and
+  currencies, `Import_Container_Charges_Template.xlsx`). One row = one charge on one container (found by container
+  number or ref), divided over its items by the row's allocation method (Manual refused). Every row is checked first
+  (Valid / Warning / Error, with an error report to download); rows of one provider invoice become one charge group;
+  "Post the charges" (with the post permission) posts them, else they stay drafts. **[Implemented]**
 - **Copy to other containers:** drafts of the same group, or posted at once with the permission. A container that
   already has a charge of the group is refused. Manual allocation is copied with the charge type's method.
 - **Late charge after the offload** (or cancelled after it): a cost adjustment (in stock → average cost; sold →

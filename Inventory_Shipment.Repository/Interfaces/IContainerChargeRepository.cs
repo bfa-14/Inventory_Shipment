@@ -38,4 +38,11 @@ public interface IContainerChargeRepository
     /// <summary>One draft per container in the original's group, optionally posted at once; the created charges.</summary>
     Task<IReadOnlyList<CopiedContainerChargeDto>> CopyToContainersAsync(
         int chargeId, CopyContainerChargeRequest request, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// The Excel import's look-up (read only): the containers whose number or ref has one of the keys
+    /// (logistics.fn_ContainerNumberKey), whatever their status, and their draft or posted charges.
+    /// </summary>
+    Task<(IReadOnlyList<ContainerChargeImportContainer> Containers, IReadOnlyList<ContainerChargeImportExistingCharge> Charges)>
+        FindImportContainersAsync(IReadOnlyCollection<string> numberKeys, CancellationToken cancellationToken = default);
 }
