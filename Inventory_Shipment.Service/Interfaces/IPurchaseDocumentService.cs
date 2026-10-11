@@ -59,8 +59,9 @@ public interface IPurchaseDocumentService
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// "Create invoice" on an order: one draft per item of what remains (a supplier invoice holds one item), the
-    /// references copied to each. Needs purchase.invoices.create, and seeing the order.
+    /// "Create invoice" on an order: one draft per item of what remains (a supplier invoice holds one item), or one
+    /// draft of every item (request.OnePerItem false; null = the setting Purchase.OneItemPerInvoice), the references
+    /// copied to each. Needs purchase.invoices.create, and seeing the order.
     /// </summary>
     Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,
@@ -68,13 +69,17 @@ public interface IPurchaseDocumentService
 
     /// <summary>
     /// Draft purchase invoices from container lines of one order (no lines = everything loaded and not yet
-    /// invoiced), one per item. Needs purchase.invoices.create, and seeing the order.
+    /// invoiced), one per item, or one of every item (request.OnePerItem false; null = the setting). Needs
+    /// purchase.invoices.create, and seeing the order.
     /// </summary>
     Task<Result<CreatedPurchaseInvoicesDto>> CreateFromContainersAsync(
         int purchaseOrderId, InvoiceFromContainersRequest request, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    /// <summary>A draft supplier invoice holding several items into one invoice per item. Needs purchase.invoices.create.</summary>
+    /// <summary>
+    /// A draft supplier invoice holding several items into one invoice per item, each of one item from then on. Needs
+    /// purchase.invoices.create.
+    /// </summary>
     Task<Result<SplitByItemResultDto>> SplitByItemAsync(
         int id, SplitByItemRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);

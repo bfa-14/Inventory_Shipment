@@ -65,7 +65,8 @@ public sealed class InvoiceContainerSummaryDto
 
 /// <summary>
 /// What a purchase invoice can do with containers now (purchase.usp_PurchaseInvoice_ContainerState, script 51). The
-/// rules: 1 a purchase invoice, draft or posted; 2 created from a purchase order; 3 one item (a draft); 4 shipped in
+/// rules: 1 a purchase invoice, draft or posted; 2 created from a purchase order; 3 one item (a draft whose mode is one
+/// item, script 63: an invoice that may hold several takes containers item by item); 4 shipped in
 /// containers; 5 its order approved, or closed; 6 pieces not in a container; 7 the order lines still allow pieces; 8 a
 /// new container of at most MaxAddQty pieces; 9 the caller's permissions. Reason is the first rule that fails, in the
 /// words the add and the link refuse with - the page shows it, it never has to guess.

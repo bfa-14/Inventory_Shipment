@@ -38,18 +38,29 @@ public interface IPurchaseDocumentRepository
 
     /// <summary>
     /// What remains on the source as drafts of the target kind: from an order ONE INVOICE PER ITEM (script 45, the
-    /// references copied to each), from an invoice one return. The first id, and the rows of the invoices (none for a return).
+    /// references copied to each) or, with <paramref name="onePerItem"/> false, one invoice of every item (script 63;
+    /// null = the setting); from an invoice one return. The first id, and the rows of the invoices (none for a return).
     /// </summary>
     Task<CreatedFromSource> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
-        int userId, CancellationToken cancellationToken = default);
+        bool? onePerItem, int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>purchase.usp_PurchaseDocument_CreateFromContainers — draft invoices from container lines of one order, one per item.</summary>
+    /// <summary>
+    /// purchase.usp_PurchaseDocument_CreateFromContainers — draft invoices from container lines of one order, one per
+    /// item, or one of every item when <paramref name="onePerItem"/> is false (null = the setting).
+    /// </summary>
     Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> CreateFromContainersAsync(
         int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate,
-        string? exporterReference, string? commercialInvoiceNo, int userId, CancellationToken cancellationToken = default);
+        string? exporterReference, string? commercialInvoiceNo, bool? onePerItem, int userId,
+        CancellationToken cancellationToken = default);
 
-    /// <summary>purchase.usp_PurchaseDocument_SplitByItem — a draft invoice of several items into one per item; the original first.</summary>
+    /// <summary>The setting Purchase.OneItemPerInvoice (script 63): true = one item per supplier invoice.</summary>
+    Task<bool> OneItemPerInvoiceAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// purchase.usp_PurchaseDocument_SplitByItem — a draft invoice of several items into one per item, each of one item
+    /// from then on; the original first.
+    /// </summary>
     Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> SplitByItemAsync(
         int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
