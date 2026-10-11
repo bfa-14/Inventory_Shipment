@@ -344,8 +344,8 @@ public sealed class ContainerService : IContainerService
     }
 
     public async Task<Result<ContainerAttachmentDto>> UpdateAttachmentAsync(
-        int id, bool allShared, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default)
+        int id, bool allShared, DocumentFileEdit edit, ContainerAttachmentMovementLink? movement, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Containers.AttachmentsManage))
         {
@@ -354,15 +354,18 @@ public sealed class ContainerService : IContainerService
 
         try
         {
-            var attachment = await _containers.UpdateAttachmentAsync(id, allShared, edit, userId, cancellationToken);
+            var attachment = await _containers.UpdateAttachmentAsync(id, allShared, edit, movement, userId, cancellationToken);
             if (attachment is null)
             {
                 return Result<ContainerAttachmentDto>.Failure(ErrorType.NotFound, "Attachment not found.", "NOT_FOUND");
             }
 
-            _logger.LogInformation("Attachment {AttachmentId} updated{Shared}{Replaced} by user {UserId}",
+            _logger.LogInformation("Attachment {AttachmentId} updated{Shared}{Replaced}{Moved} by user {UserId}",
                 id, allShared ? " on every container" : string.Empty,
-                edit.Content is null ? string.Empty : " with new content", userId);
+                edit.Content is null ? string.Empty : " with new content",
+                movement is null ? string.Empty
+                    : movement.MovementId is { } movementId ? $", moved to movement {movementId}" : ", moved to General",
+                userId);
             return Result<ContainerAttachmentDto>.Success(attachment);
         }
         catch (BusinessRuleException ex)

@@ -677,19 +677,39 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     - By value: A 487.18 (11.60/pc), B 512.82 (8.55/pc).
     - By quantity: A 411.76, B 588.24 (9.80/pc each).
 
-### 4.8 Attachments
-- **Containers:** **[Implemented]**
-  - Attachment type, document date, note.
+### 4.8 Attachments **[Implemented – scripts 52, 55, 67]**
+- **The same way on every page, like Containers** (prompt 40): purchase orders, invoices and returns, sales invoices
+  and returns, Inventory In / Out / BIVAC Out, customer receipts, supplier payments, containers (their movements and
+  charges too) and item definitions.
+  - The files are a **"Documents" list on the page**: on purchase, sales and stock documents a "Documents" card below
+    the lines (no more side drawer), with "Documents (n)" and "Add document…" in the action bar.
+  - **One "Add document" popup and one "Edit document" popup** everywhere: File, Attachment type, Document date,
+    Note. "Add document…", dropping a file or picking one all open the popup; nothing is uploaded without a type.
+  - The attachment type is **required**; the types offered are those "Used for" the kind (Master Data › Attachment
+    Types). Kinds: CONTAINER, ITEM, PO, PINV, PRET, SO, SINV, SRET, RCPT, PAY, INV_IN, INV_OUT, BIV_OUT, and GRN
+    (built with the goods receipts).
+  - "PDF, image or Office file, up to 20 MB" everywhere.
+  - Files from before types existed are typed **"Other › Other"**: an orange badge and a "Choose a type" button ask
+    for a real type.
+  - Attachments are **never required to post**. Each module keeps its own storage.
+  - Who may add, edit or delete:
+    - purchase, sales and stock documents: the family's create permission, in any status;
+    - receipts and payments: the same, but not once Reversed;
+    - containers, movements and charges: `containers.attachments.manage` (a movement needs containers; no new file on
+      a cancelled charge);
+    - items: `inventory.items.edit`.
+
+    Without the permission, files can only be downloaded.
+- **Containers:**
   - General, or linked to a movement and/or a charge.
   - One upload → several containers; the file is stored once.
-- **Every document** (PO, PINV, PRET, sales documents, receipts): **[Decided – prompt 40, updated 4 Oct]**
-  - The attachment type is **required**; the types are filtered per document ("Used for").
-  - Attachments are **never required to post**.
-  - Files from before get the type "Other" (category "General").
-  - Each module keeps its own storage.
-  - **One shared upload dialog** (File, Attachment type, Document date, Note) everywhere. The drop zone only opens the
-    dialog; no direct upload.
-  - "PDF, image or Office file, up to 20 MB" everywhere; the purchase documents say 10 MB today.
+  - The edit can file a document under another movement, or back under General (script 67); refused when one of its
+    containers is not on that movement (70000). A charge's file stays with its charge.
+- **Item definitions** (script 67, kind ITEM): Item Definition › Documents, with the types Data Sheet, Specification,
+  Certificate / Homologation, User Manual and Picture (category Item); error 56009 for a missing or wrong type. The old
+  item files became "Other". Added with `inventory.items.edit`, in view mode too. The item's **picture** stays apart:
+  JPEG, PNG or WebP, up to 5 MB, no type.
+- **Landed cost adjustments:** no documents of their own; the provider's invoice goes on the purchase invoice.
 
 ### 4.9 Inventory and sales (mostly Ali's)
 - Setting **"Allow selling out-of-stock items"** + the Out-of-Stock Sales page. **[Ali – details unknown]**
@@ -773,7 +793,7 @@ steps A1, A2… (API project) and B1, B2… (Web project), run in order, each ve
 | **37** | Batch 11 — One item per supplier invoice (script 44, error 65029): auto split, refusal, Split by item, Post selected, import | Done (A1, A2, B1 verified 2 Oct) |
 | **38** | Charges on a purchase invoice, draft or posted: one "+ Add charge" | Not started |
 | **39** | One purchase-order page from everywhere; disabled buttons with reasons | Not started |
-| **40** | Attachment types on every document (updated 4 Oct: one dialog, no direct upload, 20 MB) | Not started |
+| **40** | Attachment types on every document (updated 4 Oct: one dialog, no direct upload, 20 MB); then documents on every page like Containers (script 67): Documents cards, item documents, a container file re-linked to a movement | Done |
 | **41** | Containers from the purchase invoice (script 43): "Shipped in containers", Link / Unlink, Add container / Auto-plan from the PI, container counts | Done. It ran **before** 37, so 37 was adapted |
 | **42** | Approval follow-ups after 36: 65016 rule, withdraw reason, create-and-approve warnings, UTC "Z", test emails, Approve confirmation | Not started. "Prompt 42" ≠ "script 42" |
 | **43** | Movement: add containers with checkboxes, Excel / paste list, the place rule (Save / Start checks) | Done, partly superseded by 45. Bilal then saw 404 / 405 (stale API: restart) and a movement started with a never-moved container |
@@ -823,19 +843,19 @@ Prompts 42, 44, 45, 46 (and 38 or 40 if they need SQL) will take the next free n
    containers needed" (item TEST38-A has Container unit 1).
 3. **44 — the PI Containers card with reasons and all validations.** Bilal was confused on invoices 1227 and 1322.
    When VS Code asks which invoice, give it 1227 (fully linked) and 1322 (posted without the switch).
-4. **40 — attachment types everywhere.** Bilal asked again on 4 October: the invoice upload must look like the
-   container one.
-5. **42 — approval follow-ups:** UTC "Z" times, the 65016 rule, the withdraw reason, the Approve confirmation.
+4. **42 — approval follow-ups:** UTC "Z" times, the 65016 rule, the withdraw reason, the Approve confirmation.
    Sending is already switched on, so its test-email cleaning may find nothing left.
-6. **38 — "+ Add charge" on posted invoices.**
-7. **39 — one purchase-order page.** Optionally add the "Create Invoice" count fix (6.4).
+5. **38 — "+ Add charge" on posted invoices.**
+6. **39 — one purchase-order page.** Optionally add the "Create Invoice" count fix (6.4).
+- **40 — attachment types everywhere** is done (script 67, see 4.8).
 - **35**, only if it was never run: save a draft purchase return; no "request field" error means skip it.
 
 ### 6.2 Open requirements not yet in a prompt
 - Update the **Containers User Guide** (Word, 31 pages, v1.0, September 2026, delivered to Bilal outside the repos).
   It is outdated in chapters 5 (Max Units, Auto-plan's typed pieces), 7 (one item per invoice, invoice-first
   containers) and 8 (movement containers list, place rule).
-- Write `tools/check-repo.sh`: `tools/refresh-dbproject.sh` stops because it is missing.
+- `tools/check-repo.sh` now exists (refused names on Windows, capitals, cache files, the .sqlproj list), with a
+  pre-commit hook: `git config core.hooksPath .githooks` once per clone. **[Done]**
 - **Production:** the "Address of the application" for email links (a real URL), and possibly a company mailbox
   (Microsoft 365 / Google Workspace) instead of the Gmail account. Not discussed yet.
 

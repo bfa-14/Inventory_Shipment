@@ -179,6 +179,13 @@ public sealed class ContainerChargeAttachmentDto
     public int? AttachmentTypeId { get; init; }
     public string? Category { get; init; }
     public string? SubType { get; init; }
+
+    /// <summary>
+    /// No type, or typed "Other" (script 67 returns it too): the charge's documents ask to choose a real one, like
+    /// every other list of files. The same rule as <see cref="ContainerAttachmentDto.IsOther"/>.
+    /// </summary>
+    public bool IsOther => Documents.AttachmentRules.IsOther(AttachmentTypeId, Category, SubType);
+
     public int FileId { get; init; }
     public string FileName { get; init; } = string.Empty;
     public string ContentType { get; init; } = string.Empty;

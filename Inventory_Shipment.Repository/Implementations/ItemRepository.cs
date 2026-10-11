@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Entities;
 using Inventory_Shipment.Repository.Database;
@@ -331,7 +332,8 @@ public sealed class ItemRepository : IItemRepository
 
     // ----- files -----
 
-    public async Task<int> AddFileAsync(ItemFile file, int? userId, CancellationToken cancellationToken = default)
+    public async Task<int> AddFileAsync(
+        ItemFile file, DocumentFileFields? fields, int? userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@ItemId", file.ItemId, DbType.Int32);
@@ -342,6 +344,7 @@ public sealed class ItemRepository : IItemRepository
         parameters.Add("@Content", file.Content, DbType.Binary, size: -1);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+        AddFields(parameters, fields);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -420,8 +423,27 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
-    public async Task UpdateFileAsync(
-        int fileId, string fileName, string? contentType, byte[]? content, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
+        int itemId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var rows = await connection.QueryAsync<ItemFileRow>(new CommandDefinition(
+                "inventory.usp_ItemFile_List", new { ItemId = itemId, AttachmentTypeId = attachmentTypeId, FileId = fileId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            return rows.Select(r => r.ToDto(itemId)).ToList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<DocumentFileDto?> UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, DocumentFileFields? fields,
+        CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", fileId, DbType.Int32);
@@ -429,13 +451,17 @@ public sealed class ItemRepository : IItemRepository
         parameters.Add("@ContentType", contentType, DbType.String, size: 100);
         parameters.Add("@SizeBytes", content?.Length, DbType.Int32);
         parameters.Add("@Content", content, DbType.Binary, size: -1);
+        AddFields(parameters, fields);
 
         await using var connection = _connectionFactory.Create();
         try
         {
-            await connection.ExecuteAsync(new CommandDefinition(
+            // Script 67 answers the document's row (usp_ItemFile_List's shape); the item is the file's own.
+            var row = await connection.QuerySingleOrDefaultAsync<ItemFileRow>(new CommandDefinition(
                 "inventory.usp_ItemFile_Update", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            return row?.ToDto(row.DocumentId != 0 ? row.DocumentId : row.ItemId);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -456,6 +482,61 @@ public sealed class ItemRepository : IItemRepository
         {
             throw SqlErrors.Wrap(ex);
         }
+    }
+
+    /// <summary>
+    /// The type / date / note of a document (script 67). ONLY SENT FOR A DOCUMENT: the picture has none, and
+    /// leaving the parameters out keeps its upload the call it always was.
+    /// </summary>
+    private static void AddFields(DynamicParameters parameters, DocumentFileFields? fields)
+    {
+        if (fields is null)
+        {
+            return;
+        }
+
+        parameters.Add("@AttachmentTypeId", fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@DocumentDate", fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@Note", fields.Note, DbType.String, size: 500);
+    }
+
+    /// <summary>
+    /// One row of usp_ItemFile_List. The item is the "document" of the shared file shape, so DocumentId is the
+    /// item's id whether the procedure names the column DocumentId or ItemId.
+    /// </summary>
+    private sealed class ItemFileRow
+    {
+        public int Id { get; init; }
+        public int DocumentId { get; init; }
+        public int ItemId { get; init; }
+        public string FileName { get; init; } = string.Empty;
+        public string ContentType { get; init; } = string.Empty;
+        public int SizeBytes { get; init; }
+        public int? AttachmentTypeId { get; init; }
+        public string? Category { get; init; }
+        public string? SubType { get; init; }
+        public DateTime? DocumentDate { get; init; }
+        public string? Note { get; init; }
+        public DateTime CreatedAtUtc { get; init; }
+        public int? CreatedBy { get; init; }
+        public string? CreatedByName { get; init; }
+
+        public DocumentFileDto ToDto(int itemId) => new()
+        {
+            Id = Id,
+            DocumentId = itemId,
+            FileName = FileName,
+            ContentType = ContentType,
+            SizeBytes = SizeBytes,
+            AttachmentTypeId = AttachmentTypeId,
+            Category = Category,
+            SubType = SubType,
+            DocumentDate = DocumentDate,
+            Note = Note,
+            CreatedAtUtc = CreatedAtUtc,
+            CreatedBy = CreatedBy,
+            CreatedByName = CreatedByName,
+        };
     }
 
     public async Task SetPurchasingAsync(

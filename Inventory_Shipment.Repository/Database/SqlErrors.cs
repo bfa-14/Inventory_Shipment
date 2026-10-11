@@ -83,6 +83,9 @@ public static class SqlErrors
     public const int ItemDuplicateSku = 56007;
     public const int ItemMasterInactive = 56008;
 
+    /// <summary>(67) The attachment type of an item file is missing, inactive or not used for items (kind ITEM).</summary>
+    public const int ItemAttachmentType = 56009;
+
     // ----- 57xxx: master data - unit types -----
     public const int UnitTypeValidation = 57000;
     public const int UnitTypeDuplicateName = 57001;

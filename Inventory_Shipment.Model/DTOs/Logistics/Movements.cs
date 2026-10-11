@@ -736,6 +736,12 @@ public sealed class ContainerAttachmentUpload
     public DateOnly? DocumentDate { get; init; }
 }
 
+/// <summary>
+/// The movement an edited container file is moved to (PUT api/logistics/containers/attachments/{id}, script 67):
+/// <see cref="MovementId"/> null = General, tied to no movement. Absent from an edit, the link stays as it is.
+/// </summary>
+public sealed record ContainerAttachmentMovementLink(int? MovementId);
+
 public sealed class ContainerAttachmentFile
 {
     public int Id { get; init; }

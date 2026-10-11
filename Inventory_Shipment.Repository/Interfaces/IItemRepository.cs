@@ -1,3 +1,4 @@
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Entities;
 
@@ -5,7 +6,7 @@ namespace Inventory_Shipment.Repository.Interfaces;
 
 /// <summary>
 /// inventory.Items with its units and files, through stored procedures. Every method turns a
-/// business-rule THROW (56000-56008) into a <c>BusinessRuleException</c>.
+/// business-rule THROW (56000-56009) into a <c>BusinessRuleException</c>.
 /// </summary>
 public interface IItemRepository
 {
@@ -93,19 +94,31 @@ public interface IItemRepository
 
     /// <summary>
     /// inventory.usp_ItemFile_Add - stores the bytes and returns the new id. Adding an item image
-    /// replaces the one the item already has. Throws 56000 / 56006.
+    /// replaces the one the item already has. <paramref name="fields"/> are the type / date / note of a
+    /// document (script 67), null for the picture, which has none. Throws 56000 / 56006, and 56009 when the
+    /// type of a document is missing, inactive or not used for items.
     /// </summary>
-    Task<int> AddFileAsync(ItemFile file, int? userId, CancellationToken cancellationToken = default);
+    Task<int> AddFileAsync(
+        ItemFile file, DocumentFileFields? fields, int? userId, CancellationToken cancellationToken = default);
 
     /// <summary>inventory.usp_ItemFile_Get - metadata plus the bytes, for download. Null when it is gone.</summary>
     Task<ItemFile?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// inventory.usp_ItemFile_Update - renames the file and, when content is given, replaces its bytes.
-    /// Throws 56000 / 56006.
+    /// inventory.usp_ItemFile_List (script 67) - the item's documents with their type, date and note, newest
+    /// first; never the picture. attachmentTypeId = one type only, fileId = that file only.
     /// </summary>
-    Task UpdateFileAsync(
-        int fileId, string fileName, string? contentType, byte[]? content, CancellationToken cancellationToken = default);
+    Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
+        int itemId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// inventory.usp_ItemFile_Update - renames the file and, when content is given, replaces its bytes;
+    /// <paramref name="fields"/> sets the type / date / note of a document (script 67), and the document's row is
+    /// answered (null for the picture, which the list never shows). Throws 56000 / 56006 / 56009.
+    /// </summary>
+    Task<DocumentFileDto?> UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, DocumentFileFields? fields,
+        CancellationToken cancellationToken = default);
 
     /// <summary>inventory.usp_ItemFile_Delete - throws 56006.</summary>
     Task DeleteFileAsync(int fileId, CancellationToken cancellationToken = default);
