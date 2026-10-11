@@ -1,16 +1,52 @@
-# Inventory & Shipment - the production stack for one Linux server. See README.md in this folder.
+# Inventory & Shipment on one Linux server. See README.md in this folder.
 #
-#   web  Caddy, built from the Inventory_Shipment_Frontend repository: serves the React app, forwards
-#        /api and /health to the API, and gets and renews the HTTPS certificate for DOMAIN.
-#        The only container reachable from outside (ports 80 and 443).
-#   api  Inventory_Shipment.API. Creates the database and applies Schema.sql on every start-up.
-#   db   SQL Server (Express edition unless MSSQL_PID says otherwise). Never published to the internet.
+# The same file runs both environments, each from its own checkout with its own deploy/.env:
+#
+#   production  /opt/inventory       production branch   project "inventory"
+#   testing     /opt/inventory-test  main branch         project "inventory-test"
+#
+# Each environment has its own containers, database and volumes:
+#
+#   db     SQL Server (Express edition unless MSSQL_PID says otherwise). Never published at all.
+#   api    Inventory_Shipment.API, on the server's 127.0.0.1:API_PORT only. Applies Schema.sql at start-up.
+#   web    The React app (built from Inventory_Shipment_Frontend), plain HTTP on 127.0.0.1:TUNNEL_PORT only.
+#
+# and production also runs the one container the internet reaches:
+#
+#   proxy  Caddy on ports 80/443 (proxy/Caddyfile): HTTPS certificates for both addresses, DOMAIN to
+#          production and TEST_DOMAIN to testing (/api and /health to the API, the rest to the web app).
 #
 # Settings come from deploy/.env (setup.sh writes it; .env.example lists every one).
 
-name: inventory
+name: ${COMPOSE_PROJECT_NAME:-inventory}
 
 services:
+  proxy:
+    image: ${PROXY_IMAGE:-caddy:2-alpine}
+    restart: unless-stopped
+    # On the host network: Caddy sees the real client address and reaches both environments on 127.0.0.1.
+    network_mode: host
+    # Production runs it (1); testing sets PROXY_REPLICAS=0, the ports belong to production's.
+    deploy:
+      replicas: ${PROXY_REPLICAS:-1}
+    # After web: on a server set up before the proxy existed, web held ports 80/443 and must let them go first.
+    depends_on:
+      - web
+      - api
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
+      TEST_DOMAIN: ${TEST_DOMAIN:?set TEST_DOMAIN in deploy/.env}
+      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in deploy/.env}
+      PRODUCTION_WEB: 127.0.0.1:${TUNNEL_PORT:-8080}
+      PRODUCTION_API: 127.0.0.1:${API_PORT:-5080}
+      TESTING_WEB: 127.0.0.1:${TEST_TUNNEL_PORT:-8081}
+      TESTING_API: 127.0.0.1:${TEST_API_PORT:-5081}
+    volumes:
+      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The HTTPS certificates. Losing them only means Caddy asks Let's Encrypt again.
+      - caddy_data:/data
+      - caddy_config:/config
+
   db:
     image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2025-latest}
     restart: unless-stopped
@@ -34,16 +70,20 @@ services:
   api:
     build:
       context: ..
-    image: inventory-api
+    # Per environment, so building testing never replaces the image production runs.
+    image: ${COMPOSE_PROJECT_NAME:-inventory}-api
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+    ports:
+      # For the proxy (and an SSH tunnel): the server's loopback only, never the internet.
+      - "127.0.0.1:${API_PORT:-5080}:8080"
     environment:
       ASPNETCORE_ENVIRONMENT: Production
-      # Caddy is in front: take the client's address and https from its X-Forwarded-* headers, so the
-      # login rate limit and the login audit see the real client instead of the proxy. Safe because
-      # the API is reachable only through Caddy, which overwrites those headers on the way in.
+      # The proxy is in front: take the client's address and https from its X-Forwarded-* headers, so the
+      # login rate limit and the login audit see the real client instead of the proxy. Safe because the
+      # API listens on 127.0.0.1 only and the proxy overwrites those headers on the way in.
       ASPNETCORE_FORWARDEDHEADERS_ENABLED: "true"
       ConnectionStrings__DefaultConnection: "Server=db;Database=${DB_NAME:-Inventory_Shipment};User Id=sa;Password=${MSSQL_SA_PASSWORD};Encrypt=True;TrustServerCertificate=True"
       Jwt__SecretKey: ${JWT_SECRET_KEY:?set JWT_SECRET_KEY in deploy/.env}
@@ -51,6 +91,10 @@ services:
       Seed__AdminPassword: ${ADMIN_PASSWORD:-}
       # The address put in emailed links; Settings > Email can override it.
       App__PublicBaseUrl: https://${DOMAIN}
+      # "testing" holds every email (or sends them all to TEST_EMAIL_REDIRECT_TO): its data is a copy of
+      # production's, with real people's addresses in it.
+      App__Environment: ${ENVIRONMENT:-production}
+      App__TestEmailRedirectTo: ${TEST_EMAIL_REDIRECT_TO:-}
     volumes:
       - dpkeys:/app/App_Data
     healthcheck:
@@ -65,24 +109,18 @@ services:
   web:
     build:
       context: ${WEB_SOURCE_DIR:-../../Inventory_Shipment_Frontend}
-    image: inventory-web
+    image: ${COMPOSE_PROJECT_NAME:-inventory}-web
     restart: unless-stopped
     depends_on:
       - api
     ports:
-      - "80:80"
-      - "443:443"
-      - "443:443/udp"
-      # Plain HTTP for an SSH tunnel, on the server's loopback only: never reachable from the internet.
+      # For the proxy and an SSH tunnel: the server's loopback only, never the internet.
       - "127.0.0.1:${TUNNEL_PORT:-8080}:8080"
     environment:
-      DOMAIN: ${DOMAIN:?set DOMAIN in deploy/.env}
-      ACME_EMAIL: ${ACME_EMAIL:?set ACME_EMAIL in deploy/.env}
       API_UPSTREAM: api:8080
-    volumes:
-      # The HTTPS certificates. Losing them only means Caddy asks Let's Encrypt again.
-      - caddy_data:/data
-      - caddy_config:/config
+      # Served as /environment.json: the sign-in page's Production / Testing switch and the TESTING marker.
+      APP_ENVIRONMENT: ${ENVIRONMENT:-production}
+      APP_SWITCH_URL: ${SWITCH_URL:-}
 
 volumes:
   sqldata:

@@ -26,6 +26,39 @@ env_get() {
 db_name()  { env_get DB_NAME Inventory_Shipment; }
 web_dir()  { env_get WEB_SOURCE_DIR ../../Inventory_Shipment_Frontend; }
 
+# production or testing: which of the two environments this checkout runs (README: "Two environments").
+environment() { env_get ENVIRONMENT production; }
+
+# env_set NAME VALUE - writes one value into deploy/.env, replacing the line if there is one.
+env_set() {
+    local tmp
+    tmp=$(mktemp)
+    if [ -f .env ]; then
+        grep -v -E "^$1=" .env > "$tmp" || true
+    fi
+    printf '%s=%s\n' "$1" "$2" >> "$tmp"
+    install -m 600 "$tmp" .env
+    rm -f "$tmp"
+}
+
+# ensure_env_defaults - gives a .env written before the testing environment existed what the current
+# docker-compose.yml needs, so an update of such a server keeps working: it is production, and the
+# testing address is test.<its domain> (the proxy serves both).
+ensure_env_defaults() {
+    [ -f .env ] || return 0
+    local domain
+    if [ -z "$(env_get ENVIRONMENT)" ]; then
+        env_set ENVIRONMENT production
+        say "deploy/.env: ENVIRONMENT=production added"
+    fi
+    if [ "$(environment)" = "production" ] && [ -z "$(env_get TEST_DOMAIN)" ]; then
+        domain=$(env_get DOMAIN)
+        [ -n "$domain" ] || die "DOMAIN is empty in deploy/.env."
+        env_set TEST_DOMAIN "test.$domain"
+        say "deploy/.env: TEST_DOMAIN=test.$domain added (the address of the testing environment)"
+    fi
+}
+
 # sql_exec ARGS... - sqlcmd as sa inside the db container. The password stays inside the container
 # (SQLCMDPASSWORD from its own environment), so it is never on a command line.
 sql_exec() {

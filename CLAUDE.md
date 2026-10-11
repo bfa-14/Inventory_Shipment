@@ -59,12 +59,19 @@ Conventions worth keeping:
 - Front end: `npm run lint`, `npm run typecheck`, `npm run build`.
 - Database changes: apply `Schema.sql` to an **empty** database as well as to an existing one.
 
-## Production
+## Environments and branches
 
-- Live at **https://188-245-17-182.sslip.io**: Docker on one Ubuntu server (SQL Server 2025 Express, the API, Caddy
-  serving the web app with HTTPS), checked out in `/opt/inventory`. Details in `deploy/README.md`.
-- Deploy = push to the branch the server follows, then GitHub **Actions > Deploy to server**, or on the server
-  `sudo /opt/inventory/Inventory_Shipment/deploy/update.sh`. The API applies Schema.sql as it starts.
+- One Ubuntu server runs two environments with Docker, each with its own web app, API and SQL Server database
+  (`deploy/README.md`):
+  - **production**: `https://188-245-17-182.sslip.io`, the `production` branch, `/opt/inventory`
+  - **testing**: `https://test.188-245-17-182.sslip.io`, the `main` branch, `/opt/inventory-test`
+- A proxy (Caddy, `deploy/proxy/Caddyfile`) serves both addresses with HTTPS. The sign-in page's "Test
+  environment" switch moves between them; testing shows a TESTING badge and never emails real people.
+- New work goes to `main` (deploys testing); a tested version is merged into `production` (deploys production),
+  in both repositories. Never commit straight to `production`.
+- Deploy: a push to `main` / `production` (GitHub Actions "Deploy to server", once set up), or on the server
+  `sudo ./update.sh` in that environment's `deploy/` folder. Each API applies Schema.sql as it starts.
+- The server pulls from GitHub; the team's GitLab must be kept in step (push mirror, `deploy/README.md`).
 - Never commit `deploy/.env`, and never ask for or repeat passwords, keys or server credentials.
 
 ## Working with the user

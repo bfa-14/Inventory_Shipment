@@ -1,0 +1,37 @@
+# The proxy: the only container the internet reaches (ports 80 and 443, see docker-compose.yml).
+#
+# Gets and renews the HTTPS certificates of both addresses from Let's Encrypt (plain http:// is redirected
+# to https://) and sends each address to its environment: /api and /health straight to that environment's
+# API, everything else to its web app. Both listen on the server's 127.0.0.1 only.
+#
+# Straight to the API, not through the web container, so the API sees one proxy in front of it and takes
+# the client's real address from X-Forwarded-For (login rate limit, login audit). Caddy replaces any
+# X-Forwarded-For a client sends: nobody can pretend to come from elsewhere.
+{
+	email {$ACME_EMAIL}
+}
+
+(environment) {
+	encode zstd gzip
+
+	@api path /api /api/* /health
+	handle @api {
+		reverse_proxy {args[0]}
+	}
+
+	handle {
+		reverse_proxy {args[1]}
+	}
+
+	header -Server
+}
+
+# Production: the production branch.
+{$DOMAIN} {
+	import environment {$PRODUCTION_API} {$PRODUCTION_WEB}
+}
+
+# Testing: the main branch. Until the testing environment is set up (setup.sh testing) this answers 502.
+{$TEST_DOMAIN} {
+	import environment {$TESTING_API} {$TESTING_WEB}
+}
