@@ -27,7 +27,10 @@ public static class MovementStages
     /// <summary>Completed = cleared (customs release date).</summary>
     public const string Customs = "Customs";
 
-    /// <summary>Started = cleared (on its way to the warehouse).</summary>
+    /// <summary>
+    /// Started = cleared (on its way to the warehouse). Completed (script 65) = a draft goods receipt for each of its
+    /// containers, made after the completion is committed; the stock changes only when the warehouse posts it.
+    /// </summary>
     public const string Delivery = "Delivery";
 
     public static readonly string[] All = [Origin, Sea, Transit, Port, Border, Customs, Delivery];
@@ -228,6 +231,89 @@ public sealed class MovementContainerDto
     public decimal? DraftChargesBase { get; init; }
     public int AttachmentCount { get; init; }
     public byte[] ContainerRowVersion { get; init; } = [];
+
+    /* (65) GOODS RECEIPTS: what the Complete dialog of a Delivery says will happen to each container ("draft goods
+       receipt into LUB-WH", "draft, warehouse to choose", "no receipt: it already has GRN-BR-002-000004"), and what the
+       Cancel dialog of a completed Delivery says it will delete (rule 22). */
+
+    /// <summary>The container's open goods receipt - a draft or the posted one - or null when it has none.</summary>
+    public int? GoodsReceiptId { get; init; }
+
+    /// <summary>Null on a draft: the number is assigned on posting.</summary>
+    public string? GoodsReceiptNumber { get; init; }
+
+    /// <summary>1 Draft, 2 Posted (a cancelled receipt is not open: null).</summary>
+    public byte? GoodsReceiptStatus { get; init; }
+
+    public string? GoodsReceiptStatusName => GoodsReceiptStatus is { } status ? Purchase.GoodsReceiptStatus.Name(status) : null;
+
+    /// <summary>The container's "Warehouse (offloading destination)", the one its Delivery draft proposes.</summary>
+    public string? WarehouseCode { get; init; }
+
+    /// <summary>
+    /// The container's warehouse is active and belongs to the container's branch: the draft made by the Delivery takes
+    /// it. False (or no warehouse) = the draft is created without one ("warehouse to choose").
+    /// </summary>
+    public bool WarehouseInBranch { get; init; }
+
+    /// <summary>
+    /// The open receipt is a draft made automatically by THIS movement's completion: cancelling the movement deletes it.
+    /// </summary>
+    public bool AutoDraftOfThisMovement { get; init; }
+
+    /// <summary>When that draft was last edited, and by whom (null = never edited): the Cancel dialog names those.</summary>
+    public DateTime? GoodsReceiptUpdatedAtUtc { get; init; }
+
+    public string? GoodsReceiptUpdatedByName { get; init; }
+}
+
+/// <summary>Why a container of a completed Delivery got no draft goods receipt (purchase.usp_GoodsReceipt_CreateForMovement).</summary>
+public static class MovementReceiptSkipReasons
+{
+    /// <summary>Already received: by a posted goods receipt, or offloaded before goods receipts.</summary>
+    public const string Received = "Received";
+
+    /// <summary>It already has a draft goods receipt.</summary>
+    public const string HasDraft = "HasDraft";
+
+    /// <summary>A draft container: confirm it, then "Receive goods..." on it.</summary>
+    public const string NotConfirmed = "NotConfirmed";
+
+    public const string Cancelled = "Cancelled";
+    public const string NoLines = "NoLines";
+
+    /// <summary>The database refused that container: <see cref="MovementReceiptResultDto.Message"/> is its message.</summary>
+    public const string Error = "Error";
+}
+
+/// <summary>
+/// One container of a completed Delivery-stage movement and what happened to its goods receipt: a DRAFT created
+/// (<see cref="Created"/>), or not, with the reason (<see cref="SkipReason"/>, see <see cref="MovementReceiptSkipReasons"/>)
+/// and a sentence (<see cref="Message"/>): "Draft goods receipt created into LUB-WH.", "Draft goods receipt created: choose
+/// the warehouse.", "Already received with goods receipt GRN-BR-002-000004.", ...
+/// </summary>
+public sealed class MovementReceiptResultDto
+{
+    public int ContainerId { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+
+    /// <summary>The draft just created, or the open receipt that made the container skip (null when none).</summary>
+    public int? GoodsReceiptId { get; init; }
+
+    public string? GoodsReceiptNumber { get; init; }
+
+    /// <summary>1 Draft, 2 Posted, of <see cref="GoodsReceiptId"/>.</summary>
+    public byte? GoodsReceiptStatus { get; init; }
+
+    /// <summary>The warehouse of the draft created; null = to choose on the draft (or nothing created).</summary>
+    public string? WarehouseCode { get; init; }
+
+    public bool Created { get; init; }
+
+    /// <summary>Null when created; else Received, HasDraft, NotConfirmed, Cancelled, NoLines or Error.</summary>
+    public string? SkipReason { get; init; }
+
+    public string? Message { get; init; }
 }
 
 /// <summary>A charge linked to the movement (set 3).</summary>
@@ -328,6 +414,26 @@ public sealed record MovementDto : MovementStatusFlags
     public IReadOnlyList<MovementContainerDto> Containers { get; init; } = [];
     public IReadOnlyList<MovementChargeDto> Charges { get; init; } = [];
     public IReadOnlyList<MovementAttachmentDto> Attachments { get; init; } = [];
+
+    /* (65) THE ANSWER TO COMPLETING A DELIVERY-STAGE MOVEMENT. The draft goods receipts are created after the completion
+       is committed, so completing never fails because of them: null on every other answer (a read, a save, a start, a
+       cancel, the completion of another stage). */
+
+    /// <summary>One row per container of the movement: its draft created, or not and why. Null except after a Complete of a Delivery.</summary>
+    public IReadOnlyList<MovementReceiptResultDto>? GoodsReceipts { get; init; }
+
+    /// <summary>
+    /// "Draft goods receipts created: KTG-2026-0031, KTG-2026-0032 (warehouse to choose). Not created: KTG-2026-0033 already
+    /// has GRN-BR-002-000004." Null except after a Complete of a Delivery.
+    /// </summary>
+    public string? GoodsReceiptsMessage { get; init; }
+
+    /// <summary>
+    /// What went wrong after the completion, which stays completed: the drafts could not be created at all, or not for
+    /// some containers ("The movement is completed, but its draft goods receipts were not created: ... Use Receive goods...
+    /// on each container."). Empty when nothing did.
+    /// </summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
 public sealed class SaveMovementRequest
@@ -647,6 +753,22 @@ public sealed class TrackingContainerDto
     public string? PortOfDestinationName { get; init; }
     public string? FinalDestinationName { get; init; }
     public string? WarehouseName { get; init; }
+
+    /* (65) Goods receipts: the days at the port stop at the Delivery while the goods wait for their receipt. */
+
+    /// <summary>The end of its latest completed Delivery-stage movement.</summary>
+    public DateTime? DeliveredDate { get; init; }
+
+    /// <summary>'GRN' a posted goods receipt, 'Offload' the offload of before goods receipts, null not received.</summary>
+    public string? ReceivedBy { get; init; }
+
+    /// <summary>Its open goods receipt (a draft or the posted one).</summary>
+    public int? GoodsReceiptId { get; init; }
+
+    public string? GoodsReceiptNumber { get; init; }
+
+    /// <summary>1 Draft, 2 Posted.</summary>
+    public byte? GoodsReceiptStatus { get; init; }
 }
 
 /// <summary>One leg of a container's route (set 2): cancelled movements are left out.</summary>

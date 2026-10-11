@@ -9,13 +9,34 @@ public sealed class SqlConnectionFactory : ISqlConnectionFactory
 
     public SqlConnectionFactory(IOptions<DatabaseOptions> options)
     {
-        _connectionString = options.Value.ConnectionString;
-        if (string.IsNullOrWhiteSpace(_connectionString))
+        var connectionString = options.Value.ConnectionString;
+        if (string.IsNullOrWhiteSpace(connectionString))
         {
             throw new InvalidOperationException(
                 "Connection string 'DefaultConnection' is missing. Add it to appsettings.json under ConnectionStrings.");
         }
+
+        _connectionString = WithCommandTimeout(connectionString, options.Value.CommandTimeoutSeconds);
     }
 
     public SqlConnection Create() => new(_connectionString);
+
+    /// <summary>
+    /// The default timeout of every command made on these connections, IN ONE PLACE rather than on each call: the
+    /// "Command Timeout" keyword is the default SqlClient gives a command, and Dapper keeps it for every call made
+    /// without its own commandTimeout. A connection string that sets it keeps its value (the local "Command
+    /// Timeout=0" waits forever); one that does not - the server's - gets <see cref="DatabaseOptions.CommandTimeoutSeconds"/>,
+    /// which waits longer than the matching lock (see there).
+    /// </summary>
+    internal static string WithCommandTimeout(string connectionString, int seconds)
+    {
+        var builder = new SqlConnectionStringBuilder(connectionString);
+        if (seconds <= 0 || builder.ShouldSerialize("Command Timeout"))
+        {
+            return connectionString;
+        }
+
+        builder.CommandTimeout = seconds;
+        return builder.ConnectionString;
+    }
 }

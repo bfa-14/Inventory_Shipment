@@ -7,9 +7,9 @@ namespace Inventory_Shipment.Repository.Database;
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
 /// Each module owns a block: 50xxx security, 56xxx inventory, 51xxx-55xxx + 57xxx-60xxx master data,
-/// 61xxx sales imports, 62xxx inventory documents, 64xxx sales documents, 65xxx-68xxx purchase
-/// and shortage plans, 69xxx logistics (containers) and 70xxx logistics (movements, container charges,
-/// attachments, movement types).
+/// 61xxx sales imports, 62xxx inventory documents, 63xxx goods receipts (scripts 64 and 65: the only way
+/// goods enter stock), 64xxx sales documents, 65xxx-68xxx purchase and shortage plans, 69xxx logistics
+/// (containers) and 70xxx logistics (movements, container charges, attachments, movement types).
 /// </summary>
 public static class SqlErrors
 {
@@ -138,6 +138,42 @@ public static class SqlErrors
 
     /// <summary>(52) The attachment type of a stock document file is missing, inactive or not used for its kind.</summary>
     public const int StockDocumentAttachmentType = 62011;
+
+    // ----- 63xxx: purchase - goods receipts (scripts 64 and 65) -----
+    // HTTP: 400 for what the request got wrong (63000, 63009, 63011, 63012), 404 for 63006, 409 for the state of
+    // the world (the others).
+
+    /// <summary>A line, the warehouse, the date, a reason or the source of a receipt is not acceptable; the message says which.</summary>
+    public const int GoodsReceiptValidation = 63000;
+
+    public const int GoodsReceiptConcurrency = 63004;
+
+    /// <summary>Only a draft goods receipt can be changed or deleted.</summary>
+    public const int GoodsReceiptNotDraft = 63005;
+
+    /// <summary>The goods receipt (or its order, invoice, container or file) does not exist.</summary>
+    public const int GoodsReceiptNotFound = 63006;
+
+    /// <summary>Cancelling would take an item below zero: the stock the receipt brought was used.</summary>
+    public const int GoodsReceiptInsufficientStock = 63007;
+
+    /// <summary>The cost of the received goods was adjusted afterwards (invoice, landed cost, late container charge): no cancel.</summary>
+    public const int GoodsReceiptCostAdjusted = 63008;
+
+    /// <summary>Nothing is left to receive on the order or invoice, or the receipt has no lines.</summary>
+    public const int GoodsReceiptNothingToReceive = 63009;
+
+    /// <summary>The receipt or its source is not in the state the action needs: posted, moving, closed, cancelled, returned.</summary>
+    public const int GoodsReceiptInvalidStatus = 63010;
+
+    /// <summary>More than remains to receive outside containers, or goods of an open order received "without an order".</summary>
+    public const int GoodsReceiptMoreThanRemains = 63011;
+
+    /// <summary>The attachment type of a goods receipt file is missing, inactive or not used for goods receipts (kind GRN).</summary>
+    public const int GoodsReceiptAttachmentType = 63012;
+
+    /// <summary>The container already has a goods receipt, draft or posted: open it instead.</summary>
+    public const int GoodsReceiptContainerHasReceipt = 63013;
 
     // ----- 64xxx: sales - invoices (the Sales document family) -----
     public const int SalesDocumentValidation = 64000;
@@ -324,6 +360,12 @@ public static class SqlErrors
 
     /// <summary>A charge was posted after the offload (a cost adjustment exists): the offload cannot be reversed.</summary>
     public const int ContainerCostAdjusted = 69018;
+
+    /// <summary>
+    /// (65) The container has a goods receipt, draft or posted: its lines and branch cannot change, and it cannot be
+    /// cancelled or deleted until the draft is deleted or the receipt cancelled.
+    /// </summary>
+    public const int ContainerHasGoodsReceipt = 69019;
 
     // ----- 70xxx: logistics - movements, container charges, attachments, movement types -----
     public const int LogisticsValidation = 70000;

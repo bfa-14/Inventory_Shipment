@@ -65,6 +65,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public int? SourceDocumentId { get; init; }
         public string? SourceDocumentNumber { get; init; }
         public decimal? ReceivedPercent { get; init; }
+        public decimal? InvoicedPercent { get; init; }
+        public bool UsesGoodsReceipts { get; init; }
+        public int? QuantityBase { get; init; }
+        public int? ReceivedBase { get; init; }
         public int? ItemId { get; init; }
         public string? ItemCode { get; init; }
         public string? ItemName { get; init; }
@@ -119,6 +123,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             SourceDocumentId = SourceDocumentId,
             SourceDocumentNumber = SourceDocumentNumber,
             ReceivedPercent = ReceivedPercent,
+            InvoicedPercent = InvoicedPercent,
+            UsesGoodsReceipts = UsesGoodsReceipts,
+            QuantityBase = QuantityBase,
+            ReceivedBase = ReceivedBase,
             PaidAmount = PaidAmount,
             ReturnedAmount = ReturnedAmount,
             OutstandingAmount = OutstandingAmount,
@@ -156,6 +164,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
             query.PageSize,
+            // (65) "To receive" (orders) and "Not fully received" (supplier invoices)
+            query.ToReceive,
+            query.NotFullyReceived,
         };
 
         await using var connection = _connectionFactory.Create();
@@ -253,6 +264,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public DateTime? UpdatedAtUtc { get; init; }
         public string? UpdatedByName { get; init; }
         public byte[] RowVersion { get; init; } = [];
+        public bool UsesGoodsReceipts { get; init; }
+        public bool CanReceive { get; init; }
+        public string? ReceiveBlockedReason { get; init; }
+        public DateTime? GoodsReceiptsSinceUtc { get; init; }
     }
 
     /// <summary>A line as the procedure returns it. LineNumber here, LineNo on the DTO — LINENO is reserved in T-SQL.</summary>
@@ -304,6 +319,16 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal? ItemLastCost { get; init; }
         public decimal? ItemAverageCost { get; init; }
         public decimal? ItemFobCost { get; init; }
+        public int? GoodsReceivedBase { get; init; }
+        public int? GoodsShortBase { get; init; }
+        public int? InContainersBase { get; init; }
+        public int? InDraftReceiptsBase { get; init; }
+        public int? ToReceiveBase { get; init; }
+        public int? MaxOutsideBase { get; init; }
+        public int? OutstandingBase { get; init; }
+        public int? InvoicedOutsideBase { get; init; }
+        public int? ReceivedOutsideBase { get; init; }
+        public int? InDraftReceiptsOutsideBase { get; init; }
 
         public PurchaseDocumentLineDto ToDto() => new()
         {
@@ -353,6 +378,16 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             ItemLastCost = ItemLastCost,
             ItemAverageCost = ItemAverageCost,
             ItemFobCost = ItemFobCost,
+            GoodsReceivedBase = GoodsReceivedBase,
+            GoodsShortBase = GoodsShortBase,
+            InContainersBase = InContainersBase,
+            InDraftReceiptsBase = InDraftReceiptsBase,
+            ToReceiveBase = ToReceiveBase,
+            MaxOutsideBase = MaxOutsideBase,
+            OutstandingBase = OutstandingBase,
+            InvoicedOutsideBase = InvoicedOutsideBase,
+            ReceivedOutsideBase = ReceivedOutsideBase,
+            InDraftReceiptsOutsideBase = InDraftReceiptsOutsideBase,
         };
     }
 
@@ -386,9 +421,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     {
         await using var connection = _connectionFactory.Create();
 
-        // Seven of the result sets in one round trip, so the header, the lines, the chain, the charges
-        // and the containers are from the same moment — a charge allocated between two reads would
-        // otherwise not add up. (The eighth, the approval requests, is not read here.)
+        // The result sets in one round trip, so the header, the lines, the chain, the charges, the containers
+        // and the goods receipts are from the same moment — a charge allocated between two reads would
+        // otherwise not add up. (The eighth, the approval requests, is skipped: it has its own endpoint.)
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
             "purchase.usp_PurchaseDocument_Get", new { Id = id },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
@@ -405,6 +440,25 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         var linked = (await multi.ReadAsync<LinkedRow>()).AsList();
         var charges = (await multi.ReadAsync<PurchaseChargeRow>()).AsList();
         var containers = (await multi.ReadAsync<PurchaseInvoiceContainerDto>()).AsList();
+
+        // (65) Sets 9 and 10, after the approval requests (8), read only to be skipped. Script 65 put them LAST so
+        // the readers of sets 1-8 keep their order; a database without them answers with empty lists.
+        IReadOnlyList<PurchaseDocumentGoodsReceiptDto> goodsReceipts = [];
+        IReadOnlyList<PurchaseDocumentCostAdjustmentDto> costAdjustments = [];
+        if (!multi.IsConsumed)
+        {
+            await multi.ReadAsync();
+        }
+
+        if (!multi.IsConsumed)
+        {
+            goodsReceipts = (await multi.ReadAsync<PurchaseDocumentGoodsReceiptDto>()).AsList();
+        }
+
+        if (!multi.IsConsumed)
+        {
+            costAdjustments = (await multi.ReadAsync<PurchaseDocumentCostAdjustmentDto>()).AsList();
+        }
 
         return new PurchaseDocumentDto
         {
@@ -484,6 +538,12 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             UpdatedAtUtc = header.UpdatedAtUtc,
             UpdatedByName = header.UpdatedByName,
             RowVersion = header.RowVersion,
+            UsesGoodsReceipts = header.UsesGoodsReceipts,
+            CanReceive = header.CanReceive,
+            ReceiveBlockedReason = header.ReceiveBlockedReason,
+            GoodsReceiptsSinceUtc = header.GoodsReceiptsSinceUtc,
+            GoodsReceipts = goodsReceipts,
+            CostAdjustments = costAdjustments,
             Lines = lines.Select(l => l.ToDto()).ToList(),
             Files = files,
             Audit = audit,
@@ -595,9 +655,91 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         }
     }
 
-    public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("purchase.usp_PurchaseDocument_Post",
-            new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+    /// <summary>The row usp_PurchaseDocument_Post answers with (script 65), before the OUTPUT parameters.</summary>
+    private sealed class PostRow
+    {
+        public string? DocumentNumber { get; init; }
+        public decimal CostAdjustedBase { get; init; }
+        public decimal CostAdjustedInventoryBase { get; init; }
+        public decimal CostAdjustedCogsBase { get; init; }
+        public int CostAdjustedLines { get; init; }
+    }
+
+    /// <summary>
+    /// THE OUTPUT PARAMETERS ARRIVE AFTER EVERY RESULT SET: the procedure answers with its own row (number and cost
+    /// adjustment), and with "Receive the goods now" the goods receipt's posting adds one more; the receipt's outcome is
+    /// in @GoodsReceiptId / @GoodsReceiptNumber / @ReceiveWarning, which Dapper fills only once the last set is read.
+    /// The deadlock retry covers the invoice's own transaction only: a failure of the receipt's second transaction is
+    /// caught by the procedure and comes back as the warning, never as an exception.
+    /// </summary>
+    public async Task<PurchasePostOutcome> PostAsync(
+        int id, byte[]? rowVersion, int userId, bool receiveNow = false, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                var parameters = new DynamicParameters();
+                parameters.Add("@Id", id, DbType.Int32);
+                parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+                parameters.Add("@UserId", userId, DbType.Int32);
+                parameters.Add("@ReceiveNow", receiveNow, DbType.Boolean);
+                parameters.Add("@GoodsReceiptId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+                parameters.Add("@GoodsReceiptNumber", dbType: DbType.String, size: 30, direction: ParameterDirection.Output);
+                parameters.Add("@ReceiveWarning", dbType: DbType.String, size: 700, direction: ParameterDirection.Output);
+
+                await using var connection = _connectionFactory.Create();
+                PostRow? row = null;
+                await using (var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+                                 "purchase.usp_PurchaseDocument_Post", parameters,
+                                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)))
+                {
+                    if (!multi.IsConsumed)
+                    {
+                        row = await multi.ReadSingleOrDefaultAsync<PostRow>();
+                    }
+
+                    while (!multi.IsConsumed)
+                    {
+                        await multi.ReadAsync();
+                    }
+                }
+
+                return new PurchasePostOutcome
+                {
+                    DocumentNumber = row?.DocumentNumber,
+                    CostAdjustedBase = row?.CostAdjustedBase ?? 0,
+                    CostAdjustedInventoryBase = row?.CostAdjustedInventoryBase ?? 0,
+                    CostAdjustedCogsBase = row?.CostAdjustedCogsBase ?? 0,
+                    CostAdjustedLines = row?.CostAdjustedLines ?? 0,
+                    GoodsReceiptId = parameters.Get<int?>("@GoodsReceiptId"),
+                    GoodsReceiptNumber = parameters.Get<string?>("@GoodsReceiptNumber"),
+                    ReceiveWarning = parameters.Get<string?>("@ReceiveWarning"),
+                };
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>purchase.usp_PurchaseInvoice_ReceiptCostPreview (script 64): read-only, one row per line of a DRAFT invoice.</summary>
+    public async Task<IReadOnlyList<ReceiptCostPreviewLineDto>> ReceiptCostPreviewAsync(
+        int invoiceId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<ReceiptCostPreviewLineDto>(new CommandDefinition(
+                "purchase.usp_PurchaseInvoice_ReceiptCostPreview", new { InvoiceId = invoiceId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Cancel",

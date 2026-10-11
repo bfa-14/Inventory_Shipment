@@ -98,6 +98,8 @@ public sealed class ItemService : IItemService
             OutstandingBase = orders.Sum(o => o.OutstandingBase),
             OrderedBase = live.Sum(o => o.OrderedBase),
             ReceivedBase = live.Sum(o => o.ReceivedBase),
+            InvoicedBase = live.Sum(o => o.InvoicedBase),
+            ShortBase = live.Sum(o => o.ShortBase),
             Orders = orders,
         });
     }

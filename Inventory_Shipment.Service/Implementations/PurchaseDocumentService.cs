@@ -1,3 +1,4 @@
+using System.Globalization;
 using ClosedXML.Excel;
 using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Documents;
@@ -201,8 +202,20 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         return await ReadAsync(savedId, cancellationToken);
     }
 
-    public async Task<Result<PurchaseDocumentDto>> PostAsync(
+    public Task<Result<PurchaseDocumentDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => PostWithOptionsAsync(id, new PostPurchaseDocumentRequest { RowVersion = rowVersion }, userId, permissions, cancellationToken);
+
+    /// <summary>
+    /// SINCE SCRIPT 65 A SUPPLIER INVOICE MOVES NO STOCK WHEN IT IS POSTED: it becomes payable and brings the cost of the
+    /// goods already received to its price (the answer's postResult says by how much). "Receive the goods now" then
+    /// receives its lines not in a container with a goods receipt, in a transaction of its own: it needs the goods
+    /// receipt rights too, checked BEFORE anything is posted, and a receipt the database refuses leaves the invoice posted
+    /// with the reason as a warning - never a failed answer for an invoice that is posted.
+    /// </summary>
+    public async Task<Result<PurchaseDocumentDto>> PostWithOptionsAsync(
+        int id, PostPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
     {
         var allowed = await AllowAsync(id, s => s.Post, permissions, cancellationToken);
         if (allowed.IsFailure)
@@ -210,17 +223,152 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
         }
 
-        var posted = await ChangeAsync(id, cancellationToken,
-            version => _documents.PostAsync(id, version, userId, cancellationToken), rowVersion, userId, "posted");
+        var typeCode = PurchaseDocumentTypes.Normalize(allowed.Value?.DocumentTypeCode);
+        var receiveNow = request.ReceiveNow && typeCode == PurchaseDocumentTypes.Invoice;
+        if (receiveNow)
+        {
+            foreach (var right in GoodsReceiptRights)
+            {
+                if (!permissions.Contains(right))
+                {
+                    return Forbidden<PurchaseDocumentDto>(right);
+                }
+            }
+        }
+
+        PurchasePostOutcome outcome;
+        try
+        {
+            outcome = await _documents.PostAsync(id, ToRowVersion(request.RowVersion), userId, receiveNow, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<PurchaseDocumentDto>(ex);
+        }
+
+        _logger.LogInformation("Purchase document {DocumentId} posted by user {UserId}{Receipt}", id, userId,
+            outcome.GoodsReceiptNumber is { } receipt ? $"; goods received with {receipt}"
+            : outcome.ReceiveWarning is not null ? "; the goods receipt was refused" : string.Empty);
+
+        // Re-read: posting assigns the number, may close the order and adjust received goods. The document is the
+        // server's answer, with what the posting did beside it.
+        var posted = await ReadAsync(id, cancellationToken);
+        if (posted.Value is { } document)
+        {
+            document.PostResult = PostResult(document, outcome, receiveNow);
+        }
 
         // A PURCHASE ORDER POSTED HERE DID NOT NEED APPROVAL (the procedure refuses one that does): it goes
         // to the supplier, with the copies, exactly as an approved one would.
-        if (posted.IsSuccess && string.Equals(allowed.Value?.DocumentTypeCode, PurchaseDocumentTypes.Order, StringComparison.OrdinalIgnoreCase))
+        if (posted.IsSuccess && typeCode == PurchaseDocumentTypes.Order)
         {
             await _approvalMailer.DecidedAsync(id, userId, cancellationToken);
         }
 
         return posted;
+    }
+
+    /// <summary>The goods receipt rights "Receive the goods now" needs on top of the invoice's post: it creates and posts one.</summary>
+    private static readonly string[] GoodsReceiptRights =
+        [Permissions.Purchase.GoodsReceiptsCreate, Permissions.Purchase.GoodsReceiptsPost];
+
+    /// <summary>"Posted: PINV-BR-002-000011. Cost of received goods adjusted by +60.00 USD (stock 40.00, cost of sales 20.00). Goods received: GRN-..."</summary>
+    private static PurchasePostResultDto PostResult(PurchaseDocumentDto document, PurchasePostOutcome outcome, bool receiveNow)
+    {
+        var number = outcome.DocumentNumber ?? document.DocumentNumber;
+        var currency = document.BaseCurrencyCode ?? string.Empty;
+        var message = new List<string> { number is null ? "Posted." : $"Posted: {number}." };
+        if (outcome.CostAdjustedLines > 0 || outcome.CostAdjustedBase != 0)
+        {
+            message.Add($"Cost of received goods adjusted by {Signed(outcome.CostAdjustedBase)} {currency}".TrimEnd()
+                        + $" (stock {Money(outcome.CostAdjustedInventoryBase)}, cost of sales {Money(outcome.CostAdjustedCogsBase)}).");
+        }
+
+        if (outcome.GoodsReceiptNumber is { } receipt)
+        {
+            message.Add($"Goods received: {receipt}.");
+        }
+
+        return new PurchasePostResultDto
+        {
+            DocumentNumber = number,
+            Message = string.Join(' ', message),
+            CostAdjustedBase = outcome.CostAdjustedBase,
+            CostAdjustedInventoryBase = outcome.CostAdjustedInventoryBase,
+            CostAdjustedCogsBase = outcome.CostAdjustedCogsBase,
+            CostAdjustedLines = outcome.CostAdjustedLines,
+            BaseCurrencyCode = document.BaseCurrencyCode,
+            ReceiveRequested = receiveNow,
+            GoodsReceiptId = outcome.GoodsReceiptId,
+            GoodsReceiptNumber = outcome.GoodsReceiptNumber,
+            ReceiveWarning = outcome.ReceiveWarning,
+            Warnings = outcome.ReceiveWarning is { } warning ? [warning] : [],
+        };
+    }
+
+    private static string Money(decimal value) => value.ToString("#,##0.00", CultureInfo.InvariantCulture);
+
+    private static string Signed(decimal value) => value.ToString("+#,##0.00;-#,##0.00;0.00", CultureInfo.InvariantCulture);
+
+    public async Task<Result<ReceiptCostPreviewDto>> ReceiptCostPreviewAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        // The document for its kind, status and base currency; anything but a supplier invoice is not found here.
+        var document = await _documents.GetAsync(id, cancellationToken);
+        if (document is null || PurchaseDocumentTypes.Normalize(document.DocumentTypeCode) != PurchaseDocumentTypes.Invoice)
+        {
+            return Result<ReceiptCostPreviewDto>.Failure(ErrorType.NotFound, "Purchase invoice not found.", "NOT_FOUND");
+        }
+
+        if (!permissions.Contains(Invoices.Post))
+        {
+            return Forbidden<ReceiptCostPreviewDto>(Invoices.Post);
+        }
+
+        IReadOnlyList<ReceiptCostPreviewLineDto> lines;
+        try
+        {
+            lines = await _documents.ReceiptCostPreviewAsync(id, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<ReceiptCostPreviewDto>(ex);
+        }
+
+        var pieces = lines.Sum(l => l.ReceivedNotInvoicedBase);
+        var difference = lines.Sum(l => l.DifferenceBase);
+        var inventory = lines.Sum(l => l.EstimatedInventoryBase);
+        var cogs = lines.Sum(l => l.EstimatedCogsBase);
+        var currency = document.BaseCurrencyCode ?? string.Empty;
+
+        string message;
+        if (document.Status != PurchaseDocumentStatus.Draft)
+        {
+            message = $"Only a draft invoice is previewed: this one is {document.Status.ToLowerInvariant()}.";
+        }
+        else if (pieces > 0)
+        {
+            message = $"{pieces} pcs already received will have their cost adjusted by {Signed(difference)} {currency}".TrimEnd()
+                      + $" (estimate: stock {Money(inventory)}, cost of sales {Money(cogs)}).";
+        }
+        else
+        {
+            message = "No goods received yet: their cost will be this invoice's when they arrive.";
+        }
+
+        return Result<ReceiptCostPreviewDto>.Success(new ReceiptCostPreviewDto
+        {
+            InvoiceId = id,
+            DocumentNumber = document.DocumentNumber,
+            Status = document.Status,
+            BaseCurrencyCode = document.BaseCurrencyCode,
+            ReceivedNotInvoicedBase = pieces,
+            DifferenceBase = difference,
+            EstimatedInventoryBase = inventory,
+            EstimatedCogsBase = cogs,
+            Message = message,
+            Lines = lines,
+        });
     }
 
     public async Task<Result<PurchaseDocumentDto>> CancelAsync(
@@ -865,13 +1013,21 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         if (document.DocumentTypeCode == PurchaseDocumentTypes.Invoice)
         {
+            // THE PAGE'S LABEL AND WORDS (PurchaseHeaderCard): since goods receipts (script 65) no invoice posting adds
+            // stock, so "On posting" would be wrong for every draft and every invoice posted after the switch. Only an
+            // invoice posted before it keeps the old meaning - when its stock entered.
+            var legacyReceipt = document.Status != PurchaseDocumentStatus.Draft && !document.UsesGoodsReceipts;
+            var shipped = document.ReceiptMode == PurchaseReceiptModes.OnContainerOffload;
+
             // Inserted after the supplier's own reference: the three numbers the supplier's paperwork quotes.
             var at = header.FindIndex(h => h.Label == "Supplier Reference") + 1;
             header.InsertRange(at,
             [
                 ("Exporter Ref.", document.ExporterReference ?? string.Empty),
                 ("Commercial Invoice No.", document.CommercialInvoiceNo ?? string.Empty),
-                ("Receipt Mode", document.ReceiptMode == PurchaseReceiptModes.OnContainerOffload ? "On container offload" : "On posting"),
+                ("Shipped in containers", legacyReceipt
+                    ? (shipped ? "Yes - stock in at the container offload" : "No - stock in on posting")
+                    : (shipped ? "Yes - received with its containers" : "No - received with Receive goods…")),
             ]);
         }
 
@@ -928,7 +1084,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             sheet.Cell(row, 9).Value = line.LineTotal;
             sheet.Cell(row, 10).Value = document.DocumentTypeCode switch
             {
-                PurchaseDocumentTypes.Order => line.ReceivedQuantityBase,
+                // (65) received = goods receipts; ReceivedQuantityBase of an order line is what is INVOICED
+                PurchaseDocumentTypes.Order => (decimal)(line.GoodsReceivedBase ?? 0),
                 PurchaseDocumentTypes.Invoice => line.ReturnedQuantityBase,
                 _ => line.UnitCostBase ?? 0m,
             };
@@ -1066,8 +1223,19 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         // Script 52: the attachment type of a file.
         SqlErrors.PurchaseAttachmentType => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
+
+        // Script 65: posting, cancelling and closing take the goods receipts' matching lock and true up their cost, and
+        // posting may receive the goods at once - their 63xxx refusals are classified as the goods receipts' (63010, the
+        // lock not obtained, is a 409). No recursion: that service hands back only the 65xxx block.
+        >= SqlErrors.GoodsReceiptValidation and <= SqlErrors.GoodsReceiptValidation + 999 => FromGoodsReceipts(exception),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
+
+    private static RuleFailure FromGoodsReceipts(BusinessRuleException exception)
+    {
+        var failure = GoodsReceiptService.Describe(exception);
+        return new RuleFailure(failure.Type, failure.Message, failure.Code);
+    }
 
     private static byte[]? ToRowVersion(string? value)
     {

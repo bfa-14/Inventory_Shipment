@@ -63,6 +63,7 @@ public sealed class ContainerRepository : IContainerRepository
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
             query.PageSize,
+            query.DeliveredNotReceived,
         };
 
         await using var connection = _connectionFactory.Create();

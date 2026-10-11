@@ -310,6 +310,149 @@ sudo ./update.sh production
   place of the web container's HTTPS. The data, and the certificate, are kept. It must end with
   "Updated production"; then add testing: [Add the testing environment](#add-the-testing-environment-once).
 
+## Goods receipts go-live (once)
+
+From database scripts 64 and 65 on, **goods enter the stock only through a goods receipt** (Purchase > Goods
+Receipts). A supplier invoice posted after that moves no stock: it makes the amount payable and corrects the cost of
+goods already received. Each API applies the scripts as it starts, and its first start writes the **switch date**
+(`purchase.GoodsReceiptSwitch`, one row per database). Documents posted before it keep their stock and cost; such an
+invoice says "Posted before goods receipts".
+
+**The switch is one-way.** Once a goods receipt, or an invoice posted the new way, exists, the older code would
+receive the same goods twice. The only way back is `sudo ./restore.sh` with the backup `update.sh` took just before it
+pulled, and everything entered after that backup is lost.
+
+1. **Rehearse on testing first.** On the server, in testing's folder:
+
+   ```bash
+   cd /opt/inventory-test/Inventory_Shipment/deploy
+   sudo ./copy-production-to-testing.sh
+   ```
+
+   - Run [the check](#what-the-switch-will-do-read-only) there and keep what it prints.
+   - Merge the goods receipts work into `main`, in both repositories, **Web first, then API**: the deploy that the API
+     push starts then finds the new web.
+   - When testing has updated: `sudo docker compose logs api | grep "Database schema verified"`.
+   - In the app, find what the check announced: Logistics > Containers, Status "Delivered, not received";
+     Purchase > Purchase Invoices, "Not fully received"; Purchase > Purchase Orders, "To receive".
+   - On the copy, take one local purchase (order, Receive goods…, post, then the invoice) and one container (complete
+     its Delivery movement, post the draft goods receipt) to the end. Try an invoice cancel, a return and a short
+     shipment too.
+2. **Production**, at a quiet moment, once the rehearsal's lists are reviewed. In production's folder:
+   - Check that last night's backup is there: `sudo ls -lt backups | head -3`. `update.sh` takes one more before it
+     pulls.
+   - Run the check and keep what it prints. It changes nothing.
+   - Merge `main` into `production`, **Web first, then API** ([Branches and deploying](#branches-and-deploying)).
+   - Afterwards: "Database schema verified" in the API log, and an old supplier invoice says "Posted before goods
+     receipts".
+   - Tell the warehouse, logistics and accounting. Containers are received with **Receive goods…** (a draft is made
+     when their Delivery movement is completed). Local purchases are received with **Receive goods…** on the order or
+     the invoice, or with "Receive the goods now" when the invoice is posted.
+3. **Every other database** switches at its API's next start after a pull (a developer PC, for example): save your
+   work first.
+
+### What the switch will do (read-only)
+
+Run it **before** the update. It reads only tables that exist before goods receipts, and changes nothing. The SA
+password stays inside the database container: never type it, never put it in the command. Paste the whole block, in
+the environment's deploy folder. If `.env` sets `DB_NAME`, put that name in place of `Inventory_Shipment`.
+
+```bash
+sudo docker compose exec -T db bash -c 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -I -b -S localhost -U sa -d Inventory_Shipment -W -s "|"' <<'SQL'
+SET NOCOUNT ON;
+-- Order lines of approved orders (open or closed), counted the way the switch counts them: received = the stock of
+-- local invoices + containers offloaded; short = what those offloads recorded short.
+SELECT d.DocumentNumber, OrderStatus = CASE d.Status WHEN 2 THEN N'Open' ELSE N'Closed' END, d.CloseReason,
+       pol.LineNumber, i.ItemCode, OrderedPcs = pol.QuantityBase, InvoicedPcs = pol.ReceivedQuantityBase,
+       ReceivedPcs = ISNULL(inv.Qty, 0) + ISNULL(olo.Qty, 0), ShortPcs = ISNULL(olo.Short, 0),
+       InContainersPcs = ISNULL(way.Qty, 0),
+       StillToReceivePcs = CASE WHEN d.Status = 4 THEN pol.ReceivedQuantityBase ELSE pol.QuantityBase END
+                           - ISNULL(inv.Qty, 0) - ISNULL(olo.Qty, 0) - ISNULL(olo.Short, 0)
+INTO #Lines
+FROM purchase.PurchaseDocumentLines pol
+INNER JOIN purchase.PurchaseDocuments d ON d.Id = pol.DocumentId AND d.Status IN (2, 4)
+INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+INNER JOIN inventory.Items i            ON i.Id = pol.ItemId
+OUTER APPLY (SELECT Qty = SUM(m.QuantityBase)
+             FROM inventory.StockMovements m
+             INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = m.DocumentLineId AND il.DocumentId = m.DocumentId
+             WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'PINV' AND m.IsReversal = 0
+               AND il.SourceLineId = pol.Id
+               AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r
+                               WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                                 AND r.DocumentId = m.DocumentId AND r.IsReversal = 1)) inv
+OUTER APPLY (SELECT Qty   = SUM(ISNULL(cl.ReceivedQuantityBase, 0)),
+                    Short = SUM(CASE WHEN cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase)
+                                     THEN cl.QuantityBase - cl.ReceivedQuantityBase ELSE 0 END)
+             FROM logistics.ContainerLines cl
+             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId AND c.Status IN (6, 7)
+             WHERE cl.PoLineId = pol.Id) olo
+OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase)
+             FROM logistics.ContainerLines cl
+             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId AND c.Status BETWEEN 1 AND 5
+             WHERE cl.PoLineId = pol.Id) way;
+
+-- Containers confirmed to cleared whose latest Delivery-stage movement is completed.
+SELECT c.ContainerRef, c.ContainerNo, c.Status, ld.MovementNo, ld.EndDate, DeliveredTo = ld.PortName
+INTO #Delivered
+FROM logistics.Containers c
+CROSS APPLY (SELECT TOP (1) m.MovementNo, m.EndDate, p.PortName
+             FROM logistics.MovementContainers mc
+             INNER JOIN logistics.Movements m       ON m.Id = mc.MovementId AND m.Status = 3
+             INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId AND mt.Stage = N'Delivery'
+             INNER JOIN masterdata.Ports p          ON p.Id = m.ToPlaceId
+             WHERE mc.ContainerId = c.Id
+             ORDER BY m.EndDate DESC, m.Id DESC) ld
+WHERE c.Status BETWEEN 2 AND 5;
+
+-- Lines of posted "Shipped in containers" invoices in no container and not received.
+SELECT d.DocumentNumber, l.LineNumber, i.ItemCode, InvoicedPcs = l.QuantityBase, ReceivedPcs = l.ReceivedQuantityBase
+INTO #Unlinked
+FROM purchase.PurchaseDocumentLines l
+INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId AND d.Status IN (2, 4) AND d.ReceiptMode = 2
+INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+WHERE l.ContainerLineId IS NULL AND l.ReceivedQuantityBase < l.QuantityBase;
+
+PRINT '1. What the switch finds';
+SELECT Situation, Number FROM (VALUES
+    (1, N'Containers on the way (Confirmed to Cleared): received with goods receipts',
+        (SELECT COUNT(*) FROM logistics.Containers WHERE Status BETWEEN 2 AND 5)),
+    (2, N'- of which the Delivery is already completed: no automatic draft (list 2)', (SELECT COUNT(*) FROM #Delivered)),
+    (3, N'Draft supplier invoices: they move no stock when they are posted',
+        (SELECT COUNT(*) FROM purchase.PurchaseDocuments d
+         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV' WHERE d.Status = 1)),
+    (4, N'Posted "Shipped in containers" invoice lines in no container, not received (list 3)',
+        (SELECT COUNT(*) FROM #Unlinked)),
+    (5, N'Order lines with goods still to receive (list 4)', (SELECT COUNT(*) FROM #Lines WHERE StillToReceivePcs > 0))
+) s (Sort, Situation, Number)
+ORDER BY Sort;
+PRINT '2. Delivered, not received: Receive goods... on each container after the switch';
+SELECT * FROM #Delivered ORDER BY EndDate, ContainerRef;
+PRINT '3. Matched to their container''s goods when it is received, else Receive goods... on the invoice';
+SELECT * FROM #Unlinked ORDER BY DocumentNumber, LineNumber;
+PRINT '4. Order lines still to receive after the switch';
+SELECT * FROM #Lines WHERE StillToReceivePcs > 0 ORDER BY DocumentNumber, LineNumber;
+GO
+SQL
+```
+
+What it prints:
+
+1. **The counts** of each situation below, plus the draft supplier invoices (they follow the new rule when they are
+   posted).
+2. **Containers delivered but not received.** A Delivery completed before the switch made no draft goods receipt: use
+   Receive goods… on each of them.
+3. **Lines of posted "Shipped in containers" invoices in no container.** They are matched to their container's goods
+   when it is received; goods that came without a container are received with Receive goods… on the invoice.
+4. **Order lines still to receive.** Received is what the switch counts (the stock of old local invoices and of
+   offloaded containers), Short is what old offloads recorded short, and Still to receive is what the app then shows
+   as still to come (Shortages, the item's "On order", Receive goods…). A closed order counts what was invoiced, not
+   ordered: an order closed "Fully received" with goods still in containers stays closed, and its goods can still be
+   received.
+
+After the update, use the app's lists instead: this check does not count goods receipts.
+
 ## Everyday tasks
 
 Run these on the server, in the deploy folder of the environment concerned. Signed in as root, leave out `sudo`.

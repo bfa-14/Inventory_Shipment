@@ -56,7 +56,13 @@ public static class ShippingMethods
 /// <summary>Where a container line's FOB per unit comes from, in order of authority.</summary>
 public static class FobSources
 {
-    /// <summary>Frozen by the offload.</summary>
+    /// <summary>
+    /// (65) The goods are received: the container line's own value - frozen by an offload of before goods receipts, set
+    /// by the goods receipt and moved by the invoices posted since (logistics.usp_Container_Get no longer says Offload).
+    /// </summary>
+    public const string Received = "Received";
+
+    /// <summary>Frozen by the offload. Not returned since script 65 (<see cref="Received"/>); kept for old clients.</summary>
     public const string Offload = "Offload";
 
     /// <summary>The invoice lines on the container line (posted or draft).</summary>
@@ -66,33 +72,85 @@ public static class FobSources
     public const string Order = "Order";
 }
 
+/// <summary>Who received a container's goods (logistics.fn_Container_ReceivedBy, script 64).</summary>
+public static class ContainerReceivedBy
+{
+    /// <summary>A posted goods receipt.</summary>
+    public const string GoodsReceipt = "GRN";
+
+    /// <summary>The offload of before goods receipts (status Offloaded or Closed without a posted goods receipt).</summary>
+    public const string Offload = "Offload";
+}
+
 /// <summary>
 /// What a container's STATUS allows. Whether the caller may is a permission, checked separately;
 /// both must hold before a button is offered. Shared by the list row and the details.
+///
+/// SINCE SCRIPT 65 THE GOODS ENTER WITH A GOODS RECEIPT, not with the offload: "Receive goods..." creates its draft
+/// (<see cref="CanReceive"/>), posting it makes the container Offloaded (the status keeps that name), and only a
+/// container offloaded before goods receipts can still have its offload reversed.
 /// </summary>
 public abstract record ContainerStatusFlags
 {
     public byte Status { get; init; }
     public string StatusName => ContainerStatus.Name(Status);
 
-    /// <summary>Everything before the goods arrive: the loading plan and the header can still change.</summary>
+    /* (65) Goods receipts: the same columns on the list row and the details. */
+
+    /// <summary>'GRN' a posted goods receipt, 'Offload' the offload of before goods receipts, null not received (see <see cref="ContainerReceivedBy"/>).</summary>
+    public string? ReceivedBy { get; init; }
+
+    /// <summary>The container's open goods receipt: a draft or the posted one (one at most); null when none.</summary>
+    public int? GoodsReceiptId { get; init; }
+
+    /// <summary>Null on a draft: "Assigned on posting".</summary>
+    public string? GoodsReceiptNumber { get; init; }
+
+    /// <summary>1 Draft, 2 Posted.</summary>
+    public byte? GoodsReceiptStatus { get; init; }
+
+    public string? GoodsReceiptStatusName => GoodsReceiptStatus is { } status ? Purchase.GoodsReceiptStatus.Name(status) : null;
+
+    /// <summary>The end date of its latest completed Delivery-stage movement: the goods reached the warehouse.</summary>
+    public DateTime? DeliveredDate { get; init; }
+
+    /// <summary>
+    /// "Receive goods...": Confirmed to Cleared with no open goods receipt (decision 6: no Delivery needed). From the
+    /// procedure, which tests the receipt the same way the creation does.
+    /// </summary>
+    public bool CanReceive { get; init; }
+
+    /// <summary>Everything before the goods arrive: the header can still change (with a goods receipt too, rule 21).</summary>
     public bool CanEdit => Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared;
+
+    /// <summary>The load lines and the branch: not once a goods receipt exists, draft or posted (69019).</summary>
+    public bool CanEditLines => CanEdit && GoodsReceiptId is null;
 
     public bool CanConfirm => Status == ContainerStatus.Draft;
 
-    /// <summary>The offload needs every line covered by POSTED invoices; the procedure says so too (69016).</summary>
-    public bool CanOffload => Status is >= ContainerStatus.Confirmed and <= ContainerStatus.Cleared && FullyInvoiced;
+    /// <summary>
+    /// ALWAYS FALSE since script 65: the goods are received with a goods receipt (<see cref="CanReceive"/>), and the
+    /// offload procedure refuses (69010). Kept for the clients that still read it.
+    /// </summary>
+    public bool CanOffload => false;
 
-    public bool CanCancelOffload => Status == ContainerStatus.Offloaded;
+    /// <summary>Only a container offloaded before goods receipts; one received by a goods receipt cancels that receipt instead.</summary>
+    public bool CanCancelOffload => Status == ContainerStatus.Offloaded && ReceivedBy == ContainerReceivedBy.Offload;
+
     public bool CanClose => Status == ContainerStatus.Offloaded;
 
     /// <summary>A closed container opens again as offloaded — a late charge arrived.</summary>
     public bool CanReopen => Status == ContainerStatus.Closed;
 
-    public bool CanCancel => Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared;
-    public bool CanDelete => Status == ContainerStatus.Draft;
+    /// <summary>Not while it has a goods receipt, draft or posted (69019): delete the draft or cancel the receipt first.</summary>
+    public bool CanCancel => Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared && GoodsReceiptId is null;
 
-    /// <summary>Protected, so it stays out of the JSON: each shape says it with its own column.</summary>
+    public bool CanDelete => Status == ContainerStatus.Draft && GoodsReceiptId is null;
+
+    /// <summary>
+    /// Protected, so it stays out of the JSON: each shape says it with its own column. No flag reads it since the
+    /// offload is retired (script 65); the columns stay, the page shows them.
+    /// </summary>
     protected abstract bool FullyInvoiced { get; }
 }
 
@@ -271,16 +329,16 @@ public sealed class ContainerLineDto
     /// <summary>"PINV-…-000024, PINV-…-000025".</summary>
     public string? InvoiceNumbers { get; init; }
 
-    /// <summary>Null until the offload; then what actually entered stock (may be short).</summary>
+    /// <summary>Null until the goods are received (goods receipt posted, or offload of before); then what actually entered stock (may be short).</summary>
     public int? ReceivedQuantityBase { get; init; }
 
     public string? VarianceReason { get; init; }
     public string? Notes { get; init; }
 
-    /// <summary>After the offload the frozen value, else the invoices, else the order price (see <see cref="FobSource"/>).</summary>
+    /// <summary>Once received the container line's value, else the invoices, else the order price (see <see cref="FobSource"/>).</summary>
     public decimal? UnitFobBase { get; init; }
 
-    /// <summary>Order, Invoice or Offload.</summary>
+    /// <summary>Order, Invoice or Received (script 65; Offload before it).</summary>
     public string FobSource { get; init; } = FobSources.Order;
 
     public decimal? FobCostBase { get; init; }
@@ -291,7 +349,7 @@ public sealed class ContainerLineDto
     public decimal DraftChargesBase { get; init; }
     public decimal? ChargesPerUnitBase { get; init; }
 
-    /// <summary>FOB + charges per unit: final once offloaded (<see cref="IsLandedFinal"/>), an estimate before.</summary>
+    /// <summary>FOB + charges per unit: set once received (<see cref="IsLandedFinal"/>), an estimate before; posted invoices and late charges still move it.</summary>
     public decimal? LandedCostBase { get; init; }
 
     public bool IsLandedFinal { get; init; }
@@ -599,9 +657,40 @@ public sealed record ContainerDto : ContainerStatusFlags
     public DateTime? BorderCrossingDate { get; init; }
     public DateTime? CustomsReleaseDate { get; init; }
     public int? DaysAtPort { get; init; }
+    /// <summary>The date the goods were received: by the goods receipt (its date received), or by the offload of before.</summary>
     public DateTime? OffloadedDate { get; init; }
+
     public DateTime? OffloadedAtUtc { get; init; }
+
+    /// <summary>Who posted the goods receipt (or did the offload of before): "Received ... by {user}".</summary>
     public string? OffloadedByName { get; init; }
+
+    /* (65) Goods receipts, beyond the columns shared with the list row (ContainerStatusFlags). */
+
+    /// <summary>The open goods receipt's date received (a draft's proposed date).</summary>
+    public DateTime? GoodsReceiptDate { get; init; }
+
+    /// <summary>The open goods receipt was created by a Delivery's completion (not by "Receive goods...").</summary>
+    public bool? GoodsReceiptIsAuto { get; init; }
+
+    /// <summary>
+    /// The open goods receipt's "Receive into". A draft keeps its own: changing the container's warehouse does not change
+    /// it (the page says so).
+    /// </summary>
+    public int? GoodsReceiptWarehouseId { get; init; }
+
+    public string? GoodsReceiptWarehouseCode { get; init; }
+
+    /// <summary>When the open goods receipt was created: "Goods receipt draft created on {date}".</summary>
+    public DateTime? GoodsReceiptCreatedAtUtc { get; init; }
+
+    /// <summary>The latest completed Delivery-stage movement (its end date is <see cref="ContainerStatusFlags.DeliveredDate"/>).</summary>
+    public int? DeliveryMovementId { get; init; }
+
+    public string? DeliveryMovementNo { get; init; }
+
+    /// <summary>Where that Delivery ended (its To): the goods cannot be received before it reached there.</summary>
+    public string? DeliveryPlaceName { get; init; }
 
     public string? StatusNote { get; init; }
     public string? CurrentLocation { get; init; }
@@ -619,7 +708,10 @@ public sealed record ContainerDto : ContainerStatusFlags
     public int InvoicedPostedBase { get; init; }
     public int InvoicedDraftBase { get; init; }
 
-    /// <summary>Every line covered by POSTED invoices — what the offload needs.</summary>
+    /// <summary>
+    /// Every line covered by POSTED invoices. No longer needed to receive the goods (script 65: they may arrive first);
+    /// Close needs every RECEIVED piece invoiced (69016).
+    /// </summary>
     public bool IsFullyInvoiced { get; init; }
 
     public decimal ChargesPostedBase { get; init; }
@@ -653,9 +745,14 @@ public sealed record ContainerDto : ContainerStatusFlags
     /// <summary>Charges are added until the container is offloaded, and after (a late charge = cost adjustment); not once closed.</summary>
     public bool CanAddCharge => Status is >= ContainerStatus.Draft and <= ContainerStatus.Offloaded;
 
-    /// <summary>Still travelling and something loaded is not yet in an invoice (posted or draft).</summary>
+    /// <summary>
+    /// Something loaded is not yet in an invoice (posted or draft), and the container still travels or was received by a
+    /// goods receipt (script 65, rule 19: goods may arrive before their invoice). Not once cancelled, nor when it was
+    /// offloaded before goods receipts.
+    /// </summary>
     public bool CanInvoice
-        => Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared
+        => (Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared
+            || (Status is ContainerStatus.Offloaded or ContainerStatus.Closed && ReceivedBy == ContainerReceivedBy.GoodsReceipt))
            && Lines.Any(l => l.AvailableToInvoiceBase > 0);
 
     /// <summary>The distinct suppliers of the loaded order lines, in line order.</summary>
@@ -713,15 +810,31 @@ public sealed class AvailablePoLineDto
     public int OrderedQuantity { get; init; }
     public int OrderedBase { get; init; }
 
-    /// <summary>In invoices made straight from the order (local receipts), draft or posted.</summary>
+    /// <summary>
+    /// (65) What the order line committed OUTSIDE CONTAINERS: the larger of invoiced, and received + on draft goods
+    /// receipts, outside containers (purchase.fn_PoLine_CommittedOutside). The name is kept for the callers; the page
+    /// calls it "Outside containers". Ordered − this − loaded elsewhere = <see cref="MaxHereBase"/>.
+    /// </summary>
     public int InvoicedDirectBase { get; init; }
+
+    /// <summary>
+    /// (65) The parts of <see cref="InvoicedDirectBase"/>: pieces on invoices of the order line (draft, posted or closed)
+    /// not shipped in containers and not on a container line.
+    /// </summary>
+    public int InvoicedOutsideBase { get; init; }
+
+    /// <summary>(65) Pieces received outside containers: posted goods receipts, plus invoices received when posted before them.</summary>
+    public int ReceivedOutsideBase { get; init; }
+
+    /// <summary>(65) Pieces on draft goods receipts outside containers.</summary>
+    public int InDraftReceiptsOutsideBase { get; init; }
 
     public int LoadedElsewhereBase { get; init; }
 
     /// <summary>What the container being edited already holds (0 for a new one).</summary>
     public int LoadedHereBase { get; init; }
 
-    /// <summary>The ceiling for this container: ordered − invoiced directly − loaded elsewhere.</summary>
+    /// <summary>The ceiling for this container: ordered − committed outside containers − loaded elsewhere.</summary>
     public int MaxHereBase { get; init; }
 
     /// <summary>MaxHereBase − LoadedHereBase: what is still free to add.</summary>
@@ -997,6 +1110,13 @@ public sealed class ContainerQuery
     public DateOnly? DateFrom { get; init; }
 
     public DateOnly? DateTo { get; init; }
+
+    /// <summary>
+    /// (65) "Delivered, not received": Confirmed to Cleared, no posted goods receipt, and a completed Delivery-stage
+    /// movement or a draft goods receipt - the goods are at the warehouse and not in stock yet.
+    /// </summary>
+    public bool DeliveredNotReceived { get; init; }
+
     public string SortBy { get; init; } = "OrderDate";
     public string SortDir { get; init; } = "desc";
     public int Page { get; init; } = 1;

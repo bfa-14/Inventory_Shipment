@@ -394,7 +394,9 @@ public sealed class ItemRepository : IItemRepository
         int itemId, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        await using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+        int opening;
+        List<ItemStockMovementDto> movements;
+        await using (var grid = await connection.QueryMultipleAsync(new CommandDefinition(
             "inventory.usp_Item_StockStatement",
             new
             {
@@ -402,10 +404,70 @@ public sealed class ItemRepository : IItemRepository
                 DateFrom = from?.ToDateTime(TimeOnly.MinValue),
                 DateTo = to?.ToDateTime(TimeOnly.MinValue),
             },
-            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-        var opening = await grid.ReadSingleAsync<int>();
-        var movements = (await grid.ReadAsync<ItemStockMovementDto>()).AsList();
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)))
+        {
+            opening = await grid.ReadSingleAsync<int>();
+            movements = (await grid.ReadAsync<ItemStockMovementDto>()).AsList();
+        }
+
+        await SetReceiptSourcesAsync(connection, movements, cancellationToken);
         return (opening, movements);
+    }
+
+    /// <summary>The ids behind a goods receipt row's SourceReference.</summary>
+    private sealed class ReceiptSourceRow
+    {
+        public long Id { get; init; }
+        public int? ContainerId { get; init; }
+        public int? PurchaseOrderId { get; init; }
+        public int? InvoiceId { get; init; }
+    }
+
+    /// <summary>
+    /// (65) A GOODS RECEIPT ROW NAMES WHAT BROUGHT ITS GOODS ("GRN-BR-002-000001 · KTG-2026-0031") and the page links
+    /// that name too: the ids behind SourceReference, by the procedure's own rule - the container, else the order (the
+    /// line's, else the receipt's), else the invoice. Read here so the statement procedure keeps its columns.
+    /// </summary>
+    private static async Task SetReceiptSourcesAsync(
+        SqlConnection connection, List<ItemStockMovementDto> movements, CancellationToken cancellationToken)
+    {
+        var rows = movements.Where(m => m.DocumentTypeCode == "GRN" && m.SourceReference is not null).ToList();
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        const string sql = """
+            SELECT m.Id, gr.ContainerId,
+                   PurchaseOrderId = CASE WHEN gr.ContainerId IS NULL THEN COALESCE(grl.PurchaseOrderId, gr.PurchaseOrderId) END,
+                   InvoiceId = CASE WHEN gr.ContainerId IS NULL AND COALESCE(grl.PurchaseOrderId, gr.PurchaseOrderId) IS NULL
+                                    THEN gr.PurchaseInvoiceId END
+            FROM inventory.StockMovements m
+            INNER JOIN purchase.GoodsReceipts gr     ON gr.Id = m.DocumentId
+            LEFT  JOIN purchase.GoodsReceiptLines grl ON grl.Id = m.DocumentLineId AND grl.GoodsReceiptId = gr.Id
+            WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'GRN' AND m.Id IN @Ids;
+            """;
+
+        // In chunks: an IN list is one parameter per id, and SQL Server takes at most 2,100 per command.
+        var sources = new Dictionary<long, ReceiptSourceRow>();
+        foreach (var chunk in rows.Select(r => r.Id).Chunk(1000))
+        {
+            foreach (var source in await connection.QueryAsync<ReceiptSourceRow>(
+                         new CommandDefinition(sql, new { Ids = chunk }, cancellationToken: cancellationToken)))
+            {
+                sources[source.Id] = source;
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            if (sources.TryGetValue(row.Id, out var source))
+            {
+                row.SourceContainerId = source.ContainerId;
+                row.SourcePurchaseOrderId = source.PurchaseOrderId;
+                row.SourceInvoiceId = source.InvoiceId;
+            }
+        }
     }
 
     public async Task<ItemFile?> GetFileAsync(int fileId, CancellationToken cancellationToken = default)
