@@ -48,6 +48,19 @@ latest=$(find "$production/deploy/backups" -maxdepth 1 -name '*.bak.gz' -printf 
 say "Pointing testing's email links at https://$(env_get DOMAIN)"
 sql_exec -d "$(db_name)" -Q "IF COL_LENGTH(N'messaging.EmailSettings', N'PublicBaseUrl') IS NOT NULL
     UPDATE messaging.EmailSettings SET PublicBaseUrl = N'https://$(env_get DOMAIN)' WHERE PublicBaseUrl IS NOT NULL;"
+
+# The copied emails were written in production: their approval links open production, with tokens that
+# work there. Point them at testing, and close the ones still waiting to be sent (Failed, with the
+# reason in the Email log), so a tester never acts on production from a testing email.
+production_domain=$(cd "$production/deploy" && env_get DOMAIN)
+say "Closing the emails copied from production"
+sql_exec -d "$(db_name)" -Q "IF OBJECT_ID(N'messaging.EmailOutbox', N'U') IS NOT NULL
+BEGIN
+    UPDATE messaging.EmailOutbox SET BodyHtml = REPLACE(BodyHtml, N'https://$production_domain', N'https://$(env_get DOMAIN)')
+    WHERE BodyHtml LIKE N'%https://$production_domain%';
+    UPDATE messaging.EmailOutbox SET Status = 3, LastError = N'Copied from production: never sent from testing.'
+    WHERE Status = 1;
+END"
 docker compose restart api
 wait_for_api
 
