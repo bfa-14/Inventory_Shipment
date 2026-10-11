@@ -51,29 +51,47 @@ public sealed class InvoiceImportWorkbooks
     {
         var typeList = string.Join(", ", types.OrderBy(t => t.Family).ThenBy(t => t.Code).Select(t => $"{t.Code} ({t.Name})"));
 
+        // FROM THE TYPES, NOT WRITTEN OUT, so a type added in Document Types is named without a code change.
+        var stockOutNames = NamesOf(types.Where(t => t.Family == "Inventory" && t.StockDirection < 0), "Inventory Out");
+        var bivacOnlyNames = NamesOf(types.Where(t => t.BivacItemsOnly), string.Empty);
+
         return
         [
             ("Document Type", "Optional",
                 $"The code or name of the document type the row is for. Blank means {type.Name} ({type.Code}), the page this template was downloaded from. "
                 + $"A row for another type is rejected — one file makes one kind of document. Types: {typeList}."),
             ("Item Code / Barcode", "Required",
-                "The item's code, or the barcode of one of its units. A barcode also settles which unit the row means."),
+                "The item's code, or the barcode of one of its units. A barcode also settles which unit the row means."
+                + (bivacOnlyNames.Length == 0 ? string.Empty
+                    : $" On {bivacOnlyNames} the item must have \"BIVAC Item\" ticked in Inventory › Item Definition; any other item is an error.")),
             ("Unit", "Optional",
                 "The unit type name (PC, Box) or the unit's SKU. Blank uses the family's unit: the sales unit on a sales document, the purchase unit on a purchase document, the base unit on an inventory document."),
             ("Warehouse", "Optional",
-                "The warehouse code or name. On Inventory In / Out it must belong to the document's branch; a sales or purchase line may take a warehouse of any branch. "
+                "The warehouse code or name. On an inventory document (Inventory In, Inventory Out, BIVAC Out) it must belong to the document's branch; a sales or purchase line may take a warehouse of any branch. "
                 + "EVERY ROW KEEPS ITS OWN, so one file may name several: they become ONE document whose lines keep their own warehouse, "
                 + $"or one document per warehouse when the import's switch for it is turned on ({SplitByWarehouseSwitch}). Blank uses the document's."),
             ("Quantity", "Required",
                 "A whole number of units, greater than zero."),
             ("Unit Price / Cost", "Optional",
                 "On a sales document: the selling price. Blank uses the price list (the branch price first, then the All Branches price); a price typed here is only accepted from a user holding the price-override permission. "
-                + "On Inventory In and purchase documents: the unit cost. Ignored on Inventory Out, which takes the moving average cost."),
+                + $"On Inventory In and purchase documents: the unit cost. Ignored on {stockOutNames}, which take the moving average cost."),
             ("Discount %", "Optional",
                 "Sales and purchase documents only. Blank is 0; it must be between 0 and the maximum the system allows. Both 5 and 5% are read as five percent."),
             ("Notes", "Optional",
                 "Free text kept on the line. Rows are only merged together when their notes match as well."),
         ];
+    }
+
+    /// <summary>"Inventory Out", "Inventory Out and BIVAC Out", "A, B and C" — or the fallback when there is none.</summary>
+    private static string NamesOf(IEnumerable<DocumentTypeDto> types, string fallback)
+    {
+        var names = types.OrderBy(t => t.Id).Select(t => t.Name).ToList();
+        return names.Count switch
+        {
+            0 => fallback,
+            1 => names[0],
+            _ => $"{string.Join(", ", names.Take(names.Count - 1))} and {names[^1]}",
+        };
     }
 
     /// <summary>
@@ -233,7 +251,8 @@ public sealed class InvoiceImportWorkbooks
                 + (t.DefaultPricing == "PriceList" ? " — Unit Price / Cost is the selling price"
                     : t.DefaultPricing == "Cost" && t.StockDirection >= 0 ? " — Unit Price / Cost is the unit cost"
                     : t.DefaultPricing == "Cost" ? " — the moving average cost is applied; the price column is ignored"
-                    : " — no pricing");
+                    : " — no pricing")
+                + (t.BivacItemsOnly ? "; BIVAC items only" : string.Empty);
         }
 
         sheet.Column(1).Width = 22;

@@ -59,7 +59,7 @@ public sealed class StockDocumentService : IStockDocumentService
         if (!StockDocumentTypes.IsKnown(query.DocumentTypeCode))
         {
             return Result<PagedResult<StockDocumentListDto>>.Failure(
-                ErrorType.Validation, "documentTypeCode must be INV_IN or INV_OUT.", "VALIDATION");
+                ErrorType.Validation, StockDocumentTypes.UnknownCodeMessage, "VALIDATION");
         }
 
         if (!Allows(permissions, query.DocumentTypeCode!, DocumentAction.View))
@@ -90,7 +90,7 @@ public sealed class StockDocumentService : IStockDocumentService
     {
         if (!StockDocumentTypes.IsKnown(request.DocumentTypeCode))
         {
-            return Failure("documentTypeCode must be INV_IN or INV_OUT.", ErrorType.Validation, "VALIDATION");
+            return Failure(StockDocumentTypes.UnknownCodeMessage, ErrorType.Validation, "VALIDATION");
         }
 
         if (!Allows(permissions, request.DocumentTypeCode, DocumentAction.Create))
@@ -210,7 +210,7 @@ public sealed class StockDocumentService : IStockDocumentService
     {
         if (!StockDocumentTypes.IsKnown(request.DocumentTypeCode))
         {
-            return Result<ImportCreateResult>.Failure(ErrorType.Validation, "documentTypeCode must be INV_IN or INV_OUT.", "VALIDATION");
+            return Result<ImportCreateResult>.Failure(ErrorType.Validation, StockDocumentTypes.UnknownCodeMessage, "VALIDATION");
         }
 
         if (!Allows(permissions, request.DocumentTypeCode, DocumentAction.Create)
@@ -642,31 +642,43 @@ public sealed class StockDocumentService : IStockDocumentService
     /// <summary>
     /// Which permission code answers "may this caller do this to this kind of document".
     ///
-    /// A DOCUMENT'S TYPE PICKS THE FAMILY, the action picks the verb. Anything that is not one of the
-    /// two inventory types is refused rather than defaulted: this service is the two of them, and a
-    /// Purchase document reaching it would be a routing mistake, not a permission question.
+    /// A DOCUMENT'S TYPE PICKS THE SET, the action picks the verb. Anything that is not one of the
+    /// inventory types is refused rather than defaulted: this service is those types, and a Purchase
+    /// document reaching it would be a routing mistake, not a permission question.
     /// </summary>
     private static bool Allows(IReadOnlySet<string> permissions, string documentTypeCode, DocumentAction action)
     {
-        var isIn = string.Equals(documentTypeCode, StockDocumentTypes.In, StringComparison.OrdinalIgnoreCase);
-        var isOut = string.Equals(documentTypeCode, StockDocumentTypes.Out, StringComparison.OrdinalIgnoreCase);
-
-        if (!isIn && !isOut)
+        if (VerbsOf(documentTypeCode) is not { } verbs)
         {
             return false;
         }
 
         var code = action switch
         {
-            DocumentAction.Create => isIn ? Permissions.Inventory.StockInCreate : Permissions.Inventory.StockOutCreate,
-            DocumentAction.Post => isIn ? Permissions.Inventory.StockInPost : Permissions.Inventory.StockOutPost,
-            DocumentAction.Cancel => isIn ? Permissions.Inventory.StockInCancel : Permissions.Inventory.StockOutCancel,
-            DocumentAction.Delete => isIn ? Permissions.Inventory.StockInDelete : Permissions.Inventory.StockOutDelete,
-            _ => isIn ? Permissions.Inventory.StockInView : Permissions.Inventory.StockOutView,
+            DocumentAction.Create => verbs.Create,
+            DocumentAction.Post => verbs.Post,
+            DocumentAction.Cancel => verbs.Cancel,
+            DocumentAction.Delete => verbs.Delete,
+            _ => verbs.View,
         };
 
         return permissions.Contains(code);
     }
+
+    /// <summary>The five permission codes of one inventory type; null for any other code.</summary>
+    private static DocumentVerbs? VerbsOf(string? documentTypeCode) => documentTypeCode?.ToUpperInvariant() switch
+    {
+        StockDocumentTypes.In => new DocumentVerbs(
+            Permissions.Inventory.StockInView, Permissions.Inventory.StockInCreate, Permissions.Inventory.StockInPost,
+            Permissions.Inventory.StockInCancel, Permissions.Inventory.StockInDelete),
+        StockDocumentTypes.Out => new DocumentVerbs(
+            Permissions.Inventory.StockOutView, Permissions.Inventory.StockOutCreate, Permissions.Inventory.StockOutPost,
+            Permissions.Inventory.StockOutCancel, Permissions.Inventory.StockOutDelete),
+        StockDocumentTypes.BivacOut => new DocumentVerbs(
+            Permissions.Inventory.BivacOutView, Permissions.Inventory.BivacOutCreate, Permissions.Inventory.BivacOutPost,
+            Permissions.Inventory.BivacOutCancel, Permissions.Inventory.BivacOutDelete),
+        _ => null,
+    };
 
     private static Result<StockDocumentDto> Failure(string message, ErrorType type, string code)
         => Result<StockDocumentDto>.Failure(type, message, code);
@@ -712,4 +724,6 @@ public sealed class StockDocumentService : IStockDocumentService
     }
 
     private readonly record struct RuleFailure(ErrorType Type, string Message, string Code);
+
+    private sealed record DocumentVerbs(string View, string Create, string Post, string Cancel, string Delete);
 }

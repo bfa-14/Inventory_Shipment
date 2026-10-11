@@ -158,4 +158,7 @@ public sealed class ItemLookup
     public string ItemName { get; set; } = string.Empty;
     public string? BaseUnitSku { get; set; }
     public bool IsActive { get; set; }
+
+    /// <summary>"BIVAC Item" (script 66 returns it; false on a database without it).</summary>
+    public bool IsBivac { get; set; }
 }

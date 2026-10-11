@@ -167,6 +167,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Forwarder / transporter / shipping line / carrier** | Parties (Master Data › Parties) used on containers and movements. |
 | **Transshipment** | Moving a container to another vessel at an intermediate port. |
 | **FERI** | Electronic cargo tracking note required for DRC imports (a container field). |
+| **BIVAC Out** | Inventory › BIVAC Out (script 66, document type `BIV_OUT`, numbers like `BIV-BR-002-000001`): units of **BIVAC items** (items with "BIVAC Item" ticked in Item Definition) taken out of stock at average cost, like an Inventory Out, with its own list and permissions. The user chooses the item (model) and a quantity; other items are refused. No link to a shipment: the BIVAC certificate or container number goes in Reference No. Not the BIVAC fee, which is the charge type `BIV` "BIVAC / Inspection". |
 | **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`): what is missing per item and warehouse compared with what is on the way (orders, containers in transit, invoices pending). The exact formula is **(unsure, check the code)**. |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
@@ -188,7 +189,7 @@ per user in Settings › Purchase approval (see 4.3).
 
 ### 3.1 Menu map (as seen on Bilal's screen)
 - **Dashboard**
-- **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, Stock Valuation, Shortages
+- **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, BIVAC Out, Stock Valuation, Shortages
 - **Purchase:** Purchase Orders, Approvals (with a red count), Purchase Invoices, Purchase Returns, Landed Cost
   Adjustments, Charge Types
 - **Logistics:** Containers, Movements, Container Charges, Tracking
@@ -222,6 +223,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   which suggests each document type says where its default price comes from and whether it can be changed
   **(check the code)**.
 - **Inventory In / Inventory Out:** manual stock documents; a document type can require a reason (`RequiresReason`).
+- **BIVAC Out:** an Inventory Out of BIVAC items only, with its own list, numbers and permissions (see 4.9).
 - **Stock Valuation:** stock × average cost per item and warehouse; the export calls it "Total Cost".
 - **Shortages:** see the glossary.
 - **Stock ledger:** `inventory.StockMovements` (DocumentFamily, DocumentTypeCode, DocumentNumber; container offloads
@@ -312,8 +314,8 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 
 ### 3.7 Configuration
 - **Document Types** (`inventory.DocumentTypes`): Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost,
-  RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength. This drives numbering
-  (4.1).
+  RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength, BivacItemsOnly
+  (script 66, read-only on the page). This drives numbering (4.1).
 - **Settings › General** (Ali's global settings, for example "Allow selling out-of-stock items").
 - **Settings › Email:**
   - sender, mail server and app password (encrypted), the "Address of the application" used in links, and a test
@@ -333,6 +335,8 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     Delete Containers).
   - Purchase: `purchase.orders.approve` (now "(not used)"), `purchase.orders.post`, `purchase.approval.manage`.
   - Settings and email: `settings.email.manage`, `messaging.emails.view` (920).
+  - BIVAC Out: `inventory.bivacout.view / create / post / cancel / delete` (810–850, script 66), administrator only
+    by default; other roles through Role Permissions.
 
 ### 3.9 End-to-end flows
 
@@ -700,6 +704,25 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Price lists:** per document type `DefaultPricing` / `PriceEditable`. **(unsure, check the code)**
 - **Stock check on sales** (refused unless out-of-stock selling is allowed). **(unsure)**
 - **Inventory Out** may require a reason (`RequiresReason`). **(unsure)**
+- **BIVAC Out** (Inventory › BIVAC Out, document type `BIV_OUT`): **[Implemented – script 66]**
+  - The units really leave stock at the average cost, like an Inventory Out: refused when the stock is short
+    (62007); cancelling needs a reason and reverses the movements.
+  - Its own list, numbers (`BIV-BR-002-000001`, given at the first save) and permissions
+    (`inventory.bivacout.*`). No reason is required.
+  - **Every line must be a BIVAC item** (an item with "BIVAC Item" ticked). The rule belongs to the document type
+    (`BivacItemsOnly`, shown read-only in Configuration › Document Types):
+    - the line Item dropdown and the quick search offer only BIVAC items, with the hint "Only BIVAC items. Tick
+      "BIVAC Item" in Inventory › Item Definition to add one.";
+    - Save and Post refuse any other item (62000): "Line 2: BAT-12V is not a BIVAC item. A BIVAC Out holds BIVAC
+      items only.";
+    - the Excel import marks such a row as an Error: "BAT-12V is not a BIVAC item."
+  - No link to a shipment: the BIVAC certificate or the container number goes in Reference No., and the certificate
+    can be attached (attachment types start with the same "Used for" as Inventory Out; an administrator can add a
+    "BIVAC certificate" type).
+  - Unchanged: Inventory In / Out, their numbers and reasons; the average cost method; the `BIV` charge type (the
+    BIVAC fee on containers); what the "BIVAC Item" flag means.
+- **Item dropdowns on documents** list every matching item; they used to stop at the first 20.
+  **[Implemented – script 66]**
 
 ### 4.10 Dates and times
 - Timestamps are stored in `*Utc` columns; dates without time (document date, order date, ETA) have no time zone.

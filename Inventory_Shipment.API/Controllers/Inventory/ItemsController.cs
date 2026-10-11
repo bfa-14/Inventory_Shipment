@@ -39,15 +39,22 @@ public sealed class ItemsController : ControllerBase
     /// <summary>
     /// Items for a dropdown, each with the SKU of its base unit. Any signed-in user may read it:
     /// the pages that pick an item are not the pages that maintain items.
+    ///
+    /// bivacOnly=true keeps only the items with "BIVAC Item" ticked (the lines of a BIVAC Out), plus
+    /// includeId. search narrows by code or name and top caps the rows; both omitted, the procedure's
+    /// own defaults apply.
     /// </summary>
     [HttpGet("lookup")]
     [Authorize]
     [ProducesResponseType<IReadOnlyList<ItemLookupDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ItemLookupDto>>> Lookup(
         [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null,
-        [FromQuery] bool salesOnly = false, CancellationToken cancellationToken = default)
+        [FromQuery] bool salesOnly = false, [FromQuery] bool bivacOnly = false,
+        [FromQuery] string? search = null, [FromQuery] int? top = null,
+        CancellationToken cancellationToken = default)
     {
-        var result = await _itemService.LookupAsync(activeOnly, includeId, salesOnly, cancellationToken);
+        var result = await _itemService.LookupAsync(
+            activeOnly, includeId, salesOnly, bivacOnly, search, top, cancellationToken);
         return result.ToActionResult(this);
     }
 

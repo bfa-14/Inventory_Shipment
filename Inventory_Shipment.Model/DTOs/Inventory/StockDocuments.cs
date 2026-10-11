@@ -27,23 +27,35 @@ public static class StockDocumentStatus
     };
 }
 
-/// <summary>The two inventory document kinds this controller serves. Purchase and Sales come later.</summary>
+/// <summary>
+/// The inventory document kinds this controller serves: Inventory In, Inventory Out and BIVAC Out.
+///
+/// BIVAC OUT IS AN OUT OF ITS OWN (script 66): the same engine as Inventory Out - stock leaves at the
+/// average cost - with its own list, numbers and permissions, and lines that may only hold BIVAC items.
+/// That rule is the TYPE's (<see cref="DocumentTypeDto.BivacItemsOnly"/>), checked by the procedures,
+/// so nothing here branches on the code beyond choosing the permissions.
+/// </summary>
 public static class StockDocumentTypes
 {
     public const string In = "INV_IN";
     public const string Out = "INV_OUT";
+    public const string BivacOut = "BIV_OUT";
+
+    /// <summary>The refusal of any other code, naming the ones that are accepted.</summary>
+    public const string UnknownCodeMessage = "documentTypeCode must be INV_IN, INV_OUT or BIV_OUT.";
 
     public static bool IsKnown(string? code)
         => string.Equals(code, In, StringComparison.OrdinalIgnoreCase)
-        || string.Equals(code, Out, StringComparison.OrdinalIgnoreCase);
+        || string.Equals(code, Out, StringComparison.OrdinalIgnoreCase)
+        || string.Equals(code, BivacOut, StringComparison.OrdinalIgnoreCase);
 }
 
 /// <summary>
 /// One row of inventory.DocumentTypes — the CONFIGURATION of a document kind, not a document.
 ///
 /// It is what tells a screen whether a draft already has a number (<see cref="NumberOnPost"/> false)
-/// or shows "DRAFT" until it is posted, and whether the Reason field is required. Eight rows cover
-/// every family; only the two Inventory ones are usable today.
+/// or shows "DRAFT" until it is posted, and whether the Reason field is required. One row per kind
+/// of document, in every family; the Inventory ones (In, Out, BIVAC Out) are the stock documents.
 /// </summary>
 public sealed class DocumentTypeDto
 {
@@ -77,6 +89,13 @@ public sealed class DocumentTypeDto
 
     /// <summary>True: the year is part of the number and the sequence restarts every year ("SHR-2026-000001").</summary>
     public bool YearInNumber { get; init; }
+
+    /// <summary>
+    /// True: every line must be an item with "BIVAC Item" ticked (BIV_OUT). Set by the database script
+    /// that creates the type, read-only on the screen: the procedures refuse any other item with 62000,
+    /// and the page offers only BIVAC items. False on every other type.
+    /// </summary>
+    public bool BivacItemsOnly { get; init; }
 
     public bool IsActive { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
@@ -353,7 +372,7 @@ public sealed class CancelStockDocumentRequest
 
 public sealed class StockDocumentQuery
 {
-    /// <summary>INV_IN or INV_OUT. Required by the controller: the two are different screens with different permissions.</summary>
+    /// <summary>INV_IN, INV_OUT or BIV_OUT. Required by the controller: each is its own screen with its own permissions.</summary>
     public string? DocumentTypeCode { get; init; }
 
     public string? Search { get; init; }

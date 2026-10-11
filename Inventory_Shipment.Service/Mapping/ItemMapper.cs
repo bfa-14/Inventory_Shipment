@@ -121,6 +121,7 @@ public static class ItemMapper
         ItemCode = item.ItemCode,
         ItemName = item.ItemName,
         BaseUnitSku = item.BaseUnitSku,
-        IsActive = item.IsActive
+        IsActive = item.IsActive,
+        IsBivac = item.IsBivac
     };
 }

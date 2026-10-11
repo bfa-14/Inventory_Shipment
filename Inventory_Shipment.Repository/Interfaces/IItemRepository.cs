@@ -65,9 +65,13 @@ public interface IItemRepository
     /// <paramref name="includeId"/> keeps one extra item in the list even when it is inactive.
     /// <paramref name="salesOnly"/> keeps only the items with a unit that may be sold, and reports
     /// that unit rather than the base one — for the sales invoice, which cannot sell the others.
+    /// <paramref name="bivacOnly"/> keeps only the items with "BIVAC Item" ticked (script 66), for the
+    /// lines of a BIVAC Out. <paramref name="search"/> (code or name) and <paramref name="top"/> are
+    /// passed only when given, so the procedure's own defaults apply otherwise.
     /// </summary>
     Task<IReadOnlyList<ItemLookup>> LookupAsync(
-        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default);
+        bool activeOnly, int? includeId, bool salesOnly = false, bool bivacOnly = false,
+        string? search = null, int? top = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// inventory.usp_ItemUnit_Create - returns the new id. Throws 56000 / 56002 / 56005 / 56006 /

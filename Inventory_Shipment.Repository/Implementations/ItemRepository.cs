@@ -230,15 +230,36 @@ public sealed class ItemRepository : IItemRepository
     }
 
     public async Task<IReadOnlyList<ItemLookup>> LookupAsync(
-        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default)
+        bool activeOnly, int? includeId, bool salesOnly = false, bool bivacOnly = false,
+        string? search = null, int? top = null, CancellationToken cancellationToken = default)
     {
+        var parameters = new DynamicParameters(new { ActiveOnly = activeOnly, IncludeId = includeId, SalesOnly = salesOnly });
+
+        /* ONLY WHAT THE CALLER ASKED FOR. @BivacOnly exists from script 66 on: sent only when true, every
+           other picker keeps working on a database that does not have it yet. @Search and @Top are left
+           to the procedure's defaults unless given, so the limit a dropdown gets is decided in one place. */
+        if (bivacOnly)
+        {
+            parameters.Add("@BivacOnly", true, DbType.Boolean);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            parameters.Add("@Search", search.Trim(), DbType.String, size: 200);
+        }
+
+        if (top is { } limit)
+        {
+            parameters.Add("@Top", limit, DbType.Int32);
+        }
+
         await using var connection = _connectionFactory.Create();
         try
         {
-            var rows = await connection.QueryAsync<ItemLookup>(new CommandDefinition(
-                "inventory.usp_Item_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId, SalesOnly = salesOnly },
+            var found = await connection.QueryAsync<ItemLookup>(new CommandDefinition(
+                "inventory.usp_Item_Lookup", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-            return rows.AsList();
+            return found.AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {

@@ -156,6 +156,14 @@ public static class Permissions
         public const string StockOutCancel = "inventory.stockout.cancel";
         public const string StockOutDelete = "inventory.stockout.delete";
 
+        /* BIVAC Out (script 66): an Inventory Out of BIVAC items only, with its own five verbs so the
+           people who take units out for the BIVAC inspection need not be the ones who issue stock. */
+        public const string BivacOutView = "inventory.bivacout.view";
+        public const string BivacOutCreate = "inventory.bivacout.create";
+        public const string BivacOutPost = "inventory.bivacout.post";
+        public const string BivacOutCancel = "inventory.bivacout.cancel";
+        public const string BivacOutDelete = "inventory.bivacout.delete";
+
         /* Shortage plans: saved planning documents. A draft is a working sheet; posting freezes it
            into a historical snapshot. Creating the purchase order from a posted plan is NOT one of
            these — it is creating a purchase order, and needs purchase.orders.create. */
@@ -384,6 +392,17 @@ public static class Permissions
             "Cancel posted Inventory Out documents (reversal).", 790),
         new(Inventory.StockOutDelete, "Delete Inventory Out", InventoryModule,
             "Delete draft Inventory Out documents.", 800),
+
+        new(Inventory.BivacOutView, "View BIVAC Out", InventoryModule,
+            "See BIVAC Out documents.", 810),
+        new(Inventory.BivacOutCreate, "Create BIVAC Out", InventoryModule,
+            "Create and edit draft BIVAC Out documents.", 820),
+        new(Inventory.BivacOutPost, "Post BIVAC Out", InventoryModule,
+            "Post BIVAC Out documents (removes stock).", 830),
+        new(Inventory.BivacOutCancel, "Cancel BIVAC Out", InventoryModule,
+            "Cancel posted BIVAC Out documents (reversal).", 840),
+        new(Inventory.BivacOutDelete, "Delete BIVAC Out", InventoryModule,
+            "Delete draft BIVAC Out documents.", 850),
 
         new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
             "Change numbering and behaviour of document types.", 900),
