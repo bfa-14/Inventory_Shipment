@@ -232,7 +232,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 - **PO** → approval → posted (= approved). It then auto-closes (status 4) when fully invoiced.
 - **PINV:**
   - created from a PO with "Create Invoice", or from containers with "Create Invoice from Containers…";
-  - **one item per invoice**: several items give several drafts at once;
+  - **one item per invoice**: several items give several drafts at once (optional since script 63, see 4.2);
   - each line may take at most what remains on its source line.
 - **PRET** from a posted PINV.
 
@@ -245,7 +245,8 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 **Approval:** see 3.9 A and 4.3. Purchase › Approvals lists "Waiting for my approval".
 
 **Excel:**
-- **Import:** Ali's import of invoice lines (`ImportInvoiceItemsWizard.tsx`). It now creates one invoice per item.
+- **Import:** Ali's import of invoice lines (`ImportInvoiceItemsWizard.tsx`). It now creates one invoice per item,
+  or one invoice of every item when the open invoice is of several items, or the setting is off (script 63).
 - **Export:** "Export to Excel" on documents; the supplier email attaches `PO-{number}.xlsx`.
 
 ### 3.5 Logistics (containers): built by scripts 24 (first version, "batch 6"), 27, 28, 43, the prompt 43 script, and later prompts 44–46
@@ -417,10 +418,14 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     never two different items. Purchase orders and returns are not concerned; posted invoices are unchanged.
   - Create Invoice, Create Invoice from Containers and the Excel import create **one draft per item**. The exporter's
     reference and commercial invoice no. typed once are copied to every invoice.
-  - Saving or posting a PINV with two items is refused (65029): "A supplier invoice holds one item. This one has
-    {n}: … Create one invoice per item, or use Split by item."
+  - Saving or posting a one-item PINV with two items is refused (65029): "A supplier invoice holds one item. This one
+    has {n}: … Create one invoice per item, or use Split by item."
   - Older drafts: **Split by item**. Several drafts of an order: **Post selected**.
-  - The invoice list shows the item.
+  - The invoice list shows the item (or "3 items" for an invoice of several items).
+  - **Optional:** the setting "One item per supplier invoice" (Configuration › Settings › General,
+    `Purchase.OneItemPerInvoice`, on by default) decides; each PINV keeps the mode it was created with (`OneItemOnly`:
+    one item, with the 65029 refusal, or several items; invoices made before follow the setting), and the Create Invoice
+    dialogs have a switch "One invoice per item" (off = one invoice with every item). **[Implemented – script 63]**
 - **Imported invoices** (from containers / shipped in containers): **[Implemented]**
   - The **Exporter's Ref.** is required to post (65018).
   - They have **no charges of their own** (65020) and **no LCA** (67012). Their charges belong to the containers and
@@ -650,6 +655,11 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Weight / Volume: needs the item's weight / volume, else "…: item … has no weight (kg)".
   - Manual: the amounts must add up exactly.
   - Rounded to cents; the leftover cents go to the largest remainders.
+- **Import from Excel:** Logistics › Containers › "Import charges from Excel…" (template with the charge types and
+  currencies, `Import_Container_Charges_Template.xlsx`). One row = one charge on one container (found by container
+  number or ref), divided over its items by the row's allocation method (Manual refused). Every row is checked first
+  (Valid / Warning / Error, with an error report to download); rows of one provider invoice become one charge group;
+  "Post the charges" (with the post permission) posts them, else they stay drafts. **[Implemented]**
 - **Copy to other containers:** drafts of the same group, or posted at once with the permission. A container that
   already has a charge of the group is refused. Manual allocation is copied with the charge type's method.
 - **Late charge after the offload** (or cancelled after it): a cost adjustment (in stock → average cost; sold →
@@ -684,6 +694,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Customer receipts** with payment methods and cash / bank accounts. **[Ali – details unknown]**
 - **Warehouses** can stand under another warehouse. **[Ali]**
 - **Document import:** one document whatever the warehouse; no Expiry Date in the import template. **[Ali]**
+  - On Sales Invoice and Inventory In, a file naming several warehouses can instead become **one document per
+    warehouse**: the import's switch "One invoice per warehouse" (Sales Invoice page) / "One document per
+    warehouse" (Inventory In page), off by default; same header on each, each posted on its own. **[Implemented]**
 - **Price lists:** per document type `DefaultPricing` / `PriceEditable`. **(unsure, check the code)**
 - **Stock check on sales** (refused unless out-of-stock selling is allowed). **(unsure)**
 - **Inventory Out** may require a reason (`RequiresReason`). **(unsure)**

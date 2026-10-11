@@ -28,11 +28,14 @@ public sealed class StockDocumentService : IStockDocumentService
     }
 
     private readonly IStockDocumentRepository _documents;
+    private readonly IWarehouseRepository _warehouses;
     private readonly ILogger<StockDocumentService> _logger;
 
-    public StockDocumentService(IStockDocumentRepository documents, ILogger<StockDocumentService> logger)
+    public StockDocumentService(
+        IStockDocumentRepository documents, IWarehouseRepository warehouses, ILogger<StockDocumentService> logger)
     {
         _documents = documents;
+        _warehouses = warehouses;
         _logger = logger;
     }
 
@@ -187,15 +190,19 @@ public sealed class StockDocumentService : IStockDocumentService
         });
 
     /// <summary>
-    /// The imported file's lines, saved as ONE document whatever warehouses they name.
+    /// The imported file's lines, saved as ONE document whatever warehouses they name, or as one
+    /// document per warehouse when the user asked for it (<see cref="ImportCreateStockDocumentsRequest.SplitByWarehouse"/>).
     ///
-    /// THE WAREHOUSE IS A LINE'S, so a file naming several no longer becomes several documents — it
-    /// becomes one document whose rows each keep the warehouse the file gave them. The header's
-    /// warehouse is left for the database to take from the first line.
+    /// THE WAREHOUSE IS A LINE'S. By default a file naming several becomes one document whose rows each
+    /// keep the warehouse the file gave them, and the header's warehouse is left for the database to
+    /// take from the first line. Split, every warehouse gets its own document, with that warehouse on
+    /// the header and the lines numbered from 1 — each made exactly as the single document would be,
+    /// with the same header values, and posted on its own.
     ///
-    /// A REFUSED POSTING LEAVES THE DRAFT IN PLACE and is reported in Failed: the lines cost somebody
-    /// a file and are worth keeping. The result still carries a list because the shape is shared with
-    /// the other families and with the page that reads it; it now holds at most one document.
+    /// A REFUSAL IS ONE DOCUMENT'S, NEVER THE FILE'S. A refused posting leaves that draft in place and
+    /// is reported in Failed (the lines cost somebody a file and are worth keeping); a document that
+    /// cannot be created at all is reported in Failed too — with its warehouse when split, and then the
+    /// others still go in, even after an unexpected error (<see cref="ImportCreateParts.UnexpectedFailureAsync"/>).
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
@@ -222,62 +229,86 @@ public sealed class StockDocumentService : IStockDocumentService
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
 
-        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
+        foreach (var lines in ImportCreateParts.Of(request.Lines, request.SplitByWarehouse))
+        {
+            var warehouseCount = lines.Select(line => line.WarehouseId).Distinct().Count();
+            // SPLIT, THE PART IS ONE WAREHOUSE'S and its header names it. Otherwise null: the header warehouse
+            // is only a label, and the database takes the first line's.
+            int? partWarehouseId = request.SplitByWarehouse ? lines[0].WarehouseId : null;
 
-        var draft = new SaveStockDocumentRequest
-        {
-            DocumentTypeCode = request.DocumentTypeCode,
-            DocumentDate = request.DocumentDate,
-            BranchId = request.BranchId,
-            // Left for the database, which takes the first line's: the header warehouse is only a label.
-            WarehouseId = null,
-            ReasonId = request.ReasonId,
-            ReferenceNo = request.ReferenceNo,
-            Notes = request.Notes,
-            Lines = request.Lines.Select((line, index) => new SaveStockDocumentLineRequest
+            var draft = new SaveStockDocumentRequest
             {
-                LineNo = index + 1,
-                ItemId = line.ItemId,
-                ItemUnitId = line.ItemUnitId,
-                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
-                WarehouseId = line.WarehouseId,
-                ExpiryDate = line.ExpiryDate,
-                Quantity = line.Quantity,
-                // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
-                UnitCost = isIn ? line.UnitPrice ?? 0 : null,
-                Notes = line.Notes,
-            }).ToList(),
-        };
-
-        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-        if (saved.IsFailure || saved.Value is null)
-        {
-            failed.Add(new ImportCreateFailure
-            {
-                Code = saved.Code ?? "ERROR",
-                Message = saved.Error ?? "The document could not be created.",
-            });
-        }
-        else
-        {
-            var document = saved.Value;
-            if (request.PostImmediately)
-            {
-                var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
-                if (result.IsSuccess && result.Value is not null)
+                DocumentTypeCode = request.DocumentTypeCode,
+                DocumentDate = request.DocumentDate,
+                BranchId = request.BranchId,
+                WarehouseId = partWarehouseId,
+                ReasonId = request.ReasonId,
+                ReferenceNo = request.ReferenceNo,
+                Notes = request.Notes,
+                Lines = lines.Select((line, index) => new SaveStockDocumentLineRequest
                 {
-                    document = result.Value;
-                    posted++;
-                }
-                else
+                    LineNo = index + 1,
+                    ItemId = line.ItemId,
+                    ItemUnitId = line.ItemUnitId,
+                    // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                    WarehouseId = line.WarehouseId,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = line.Quantity,
+                    // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
+                    UnitCost = isIn ? line.UnitPrice ?? 0 : null,
+                    Notes = line.Notes,
+                }).ToList(),
+            };
+
+            StockDocumentDto? document = null;
+            try
+            {
+                var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+                if (saved.IsFailure || saved.Value is null)
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = document.WarehouseId,
-                        WarehouseName = document.WarehouseName,
-                        Code = result.Code ?? "ERROR",
-                        Message = result.Error ?? "The document could not be posted.",
+                        WarehouseId = partWarehouseId,
+                        WarehouseName = partWarehouseId is int warehouseId
+                            ? await ImportCreateParts.WarehouseNameAsync(_warehouses, warehouseId, _logger, cancellationToken)
+                            : null,
+                        Code = saved.Code ?? "ERROR",
+                        Message = saved.Error ?? "The document could not be created.",
                     });
+                    continue;
+                }
+
+                document = saved.Value;
+                if (request.PostImmediately)
+                {
+                    var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
+                    if (result.IsSuccess && result.Value is not null)
+                    {
+                        document = result.Value;
+                        posted++;
+                    }
+                    else
+                    {
+                        failed.Add(new ImportCreateFailure
+                        {
+                            WarehouseId = document.WarehouseId,
+                            WarehouseName = document.WarehouseName,
+                            Code = result.Code ?? "ERROR",
+                            Message = result.Error ?? "The document could not be posted.",
+                        });
+                    }
+                }
+            }
+            catch (Exception ex) when (request.SplitByWarehouse && ex is not OperationCanceledException)
+            {
+                // SPLIT ONLY: the documents of the warehouses before this one are committed, perhaps posted, and
+                // must stay in the result. Unsplit there is nothing before it, and the error goes up as it always
+                // has. A draft saved before the error is still listed, for the page to open.
+                failed.Add(await ImportCreateParts.UnexpectedFailureAsync(
+                    ex, "document", _warehouses, lines[0].WarehouseId, document?.Id, _logger, cancellationToken));
+                if (document is null)
+                {
+                    continue;
                 }
             }
 
@@ -294,8 +325,8 @@ public sealed class StockDocumentService : IStockDocumentService
         }
 
         _logger.LogInformation(
-            "Import created {Created} {TypeCode} document(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, request.DocumentTypeCode, warehouseCount, userId, posted, failed.Count);
+            "Import created {Created} {TypeCode} document(s) from {Lines} line(s) for user {UserId} (one per warehouse: {Split}): {Posted} posted, {Failed} refused",
+            documents.Count, request.DocumentTypeCode, request.Lines.Count, userId, request.SplitByWarehouse, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {

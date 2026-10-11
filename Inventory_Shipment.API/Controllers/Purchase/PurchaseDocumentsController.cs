@@ -166,8 +166,10 @@ public sealed class PurchaseDocumentsController : ControllerBase
 
     /// <summary>
     /// Draft purchase invoices holding what remains to receive on the order: ONE PER ITEM (a supplier invoice
-    /// holds one item). Body { documentDate?, exporterReference?, commercialInvoiceNo? } — the references are
-    /// copied to every invoice. Answers { firstId, id (= firstId), invoices, message }.
+    /// holds one item), or ONE holding every item. Body { documentDate?, exporterReference?, commercialInvoiceNo?,
+    /// onePerItem? } — the references are copied to every invoice; onePerItem true = one invoice per item, false = one
+    /// invoice of every item, null = the setting Purchase.OneItemPerInvoice (script 63). Answers { firstId, id
+    /// (= firstId), invoices, message }.
     /// </summary>
     [HttpPost("{id:int}/create-invoice")]
     [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]
@@ -194,9 +196,10 @@ public sealed class PurchaseDocumentsController : ControllerBase
         => CreateFromSource(id, PurchaseDocumentTypes.Return, request, cancellationToken);
 
     /// <summary>
-    /// Draft purchase invoices from container lines of the order, ONE PER ITEM: body { documentDate?, lines?:
-    /// [{ containerLineId, quantityBase }], exporterReference?, commercialInvoiceNo? } — no lines = everything
-    /// loaded and not yet invoiced. Answers { firstId, id (= firstId), invoices, message } (purchase.invoices.create).
+    /// Draft purchase invoices from container lines of the order, ONE PER ITEM or one of every item: body
+    /// { documentDate?, lines?: [{ containerLineId, quantityBase }], exporterReference?, commercialInvoiceNo?,
+    /// onePerItem? } — no lines = everything loaded and not yet invoiced; onePerItem as for create-invoice (null = the
+    /// setting). Answers { firstId, id (= firstId), invoices, message } (purchase.invoices.create).
     /// </summary>
     [HttpPost("{id:int}/invoice-from-containers")]
     [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]
@@ -215,8 +218,9 @@ public sealed class PurchaseDocumentsController : ControllerBase
     }
 
     /// <summary>
-    /// A draft purchase invoice holding several items (made before one item per invoice) into one invoice per
-    /// item: body { rowVersion }. Answers { invoices }, the original first (purchase.invoices.create).
+    /// A draft purchase invoice holding several items (made before one item per invoice, or one that may hold several)
+    /// into one invoice per item, each of one item from then on: body { rowVersion }. Answers { invoices }, the
+    /// original first (purchase.invoices.create).
     /// </summary>
     [HttpPost("{id:int}/split-by-item")]
     [ProducesResponseType<SplitByItemResultDto>(StatusCodes.Status200OK)]

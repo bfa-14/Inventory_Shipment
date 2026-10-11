@@ -236,8 +236,11 @@ public sealed class SalesInvoicesController : ControllerBase
         => Ok(await _invoices.BulkDeleteAsync(request.Ids, User.GetUserId(), cancellationToken));
 
     /// <summary>
-    /// An imported file becoming ONE invoice holding every line, each in the warehouse it names,
-    /// posted at once when asked (which also needs the post permission, checked in the service).
+    /// An imported file becoming ONE invoice holding every line, each in the warehouse it names — or,
+    /// with splitByWarehouse, one invoice per warehouse — posted at once when asked (which also needs the
+    /// post permission, checked in the service). Each invoice is created and posted on its own; the
+    /// refusals are listed in Failed, with their warehouse when split by warehouse (a single invoice that
+    /// could not be created has none).
     /// </summary>
     [HttpPost("import-create")]
     [HasPermission(Permissions.Sales.InvoicesCreate)]

@@ -207,9 +207,12 @@ public static class SqlErrors
     /// <summary>The attachment type is missing, inactive or not used for the document's kind (PO, PINV, PRET).</summary>
     public const int PurchaseAttachmentType = 65032;
 
-    // ----- 65029: one item per supplier invoice (script 45) -----
+    // ----- 65029: one item per supplier invoice (script 45; optional since script 63) -----
 
-    /// <summary>A supplier invoice holds one item: saving or posting one with lines of several items is refused.</summary>
+    /// <summary>
+    /// A supplier invoice of one item (its mode, or the setting Purchase.OneItemPerInvoice for one made before script 63)
+    /// holds one item: saving or posting it with lines of several items is refused.
+    /// </summary>
     public const int PurchaseInvoiceOneItem = 65029;
 
     // ----- 65013-65017, 65022-65024: purchase order approval (scripts 26 and 42) -----

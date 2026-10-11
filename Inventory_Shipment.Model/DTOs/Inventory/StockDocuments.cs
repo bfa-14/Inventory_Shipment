@@ -414,8 +414,9 @@ public sealed class UpdateDocumentTypeRequest
 }
 
 /// <summary>
-/// An imported file becoming ONE stock document: the header it takes, and the lines — each keeping
-/// the warehouse the file named on it, so the document may span several.
+/// An imported file becoming stock documents: the header they take, and the lines — each keeping the
+/// warehouse the file named on it. By default ONE document, which may span several warehouses; with
+/// <see cref="SplitByWarehouse"/>, one document per warehouse, all with this same header.
 /// </summary>
 public sealed class ImportCreateStockDocumentsRequest
 {
@@ -440,4 +441,12 @@ public sealed class ImportCreateStockDocumentsRequest
 
     /// <summary>True posts each created document at once; a refused posting leaves that one as a draft.</summary>
     public bool PostImmediately { get; init; }
+
+    /// <summary>
+    /// The user's choice, made at each import: false (the default) makes ONE document whose lines
+    /// keep their own warehouses; true makes one document per warehouse of the file, in the order of
+    /// each warehouse's first line, with that warehouse as its header warehouse. A file naming one
+    /// warehouse gives the same single document either way.
+    /// </summary>
+    public bool SplitByWarehouse { get; init; }
 }

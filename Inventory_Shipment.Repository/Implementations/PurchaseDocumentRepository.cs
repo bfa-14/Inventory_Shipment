@@ -69,6 +69,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? ItemCode { get; init; }
         public string? ItemName { get; init; }
         public int? ItemCount { get; init; }
+        public bool? OneItemOnly { get; init; }
         public decimal? PaidAmount { get; init; }
         public decimal? ReturnedAmount { get; init; }
         public decimal? OutstandingAmount { get; init; }
@@ -126,6 +127,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             ItemCode = ItemCode,
             ItemName = ItemName,
             ItemCount = ItemCount,
+            OneItemOnly = OneItemOnly,
             PostedAtUtc = PostedAtUtc,
             PostedByName = PostedByName,
             CancelledAtUtc = CancelledAtUtc,
@@ -232,6 +234,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal? ReturnedAmount { get; init; }
         public decimal? OutstandingAmount { get; init; }
         public string? PaymentStatus { get; init; }
+        public bool OneItemOnly { get; init; }
         public int? SourceDocumentId { get; init; }
         public string? SourceDocumentNumber { get; init; }
         public string? SourceDocumentTypeCode { get; init; }
@@ -439,6 +442,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             ExporterReference = header.ExporterReference,
             CommercialInvoiceNo = header.CommercialInvoiceNo,
             ReceiptMode = header.ReceiptMode,
+            OneItemOnly = header.OneItemOnly,
             Notes = header.Notes,
             Status = PurchaseDocumentStatus.From(header.Status),
             IsContainerBound = header.IsContainerBound,
@@ -508,6 +512,18 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             sql, new { Id = id }, cancellationToken: cancellationToken));
     }
 
+    /// <summary>
+    /// The setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/> as the procedures read it
+    /// (configuration.fn_SettingBool: an unknown key reads as false).
+    /// </summary>
+    public async Task<bool> OneItemPerInvoiceAsync(CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.ExecuteScalarAsync<bool>(new CommandDefinition(
+            "SELECT configuration.fn_SettingBool(@SettingKey)", new { SettingKey = PurchaseSettingKeys.OneItemPerInvoice },
+            cancellationToken: cancellationToken));
+    }
+
     public async Task<PurchaseRateResolutionDto?> ResolveRateAsync(
         int currencyId, byte rateType, DateOnly? asOfDate, CancellationToken cancellationToken = default)
     {
@@ -558,6 +574,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         parameters.Add("@CommercialInvoiceNo", string.IsNullOrWhiteSpace(request.CommercialInvoiceNo) ? null : request.CommercialInvoiceNo.Trim(), DbType.String, size: 50);
         parameters.Add("@LineContainers", ToLineContainerTable(request.Lines).AsTableValuedParameter(LineContainerTypeName));
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+        // (63) The mode of a NEW supplier invoice: one item or several, null = the setting. The procedure ignores it on an update.
+        parameters.Add("@OneItemOnly", request.OneItemOnly, DbType.Boolean);
 
         try
         {
@@ -632,10 +650,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         return ExecuteAsync("purchase.usp_PurchaseDocument_MarkShipped", parameters, cancellationToken);
     }
 
-    /// <summary>From an order: one invoice per item, and their rows; from an invoice: one return, no rows.</summary>
+    /// <summary>From an order: one invoice per item (or one of every item), and their rows; from an invoice: one return, no rows.</summary>
     public async Task<CreatedFromSource> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
-        int userId, CancellationToken cancellationToken = default)
+        bool? onePerItem, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@SourceId", sourceId, DbType.Int32);
@@ -644,6 +662,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@ExporterReference", exporterReference, DbType.String, size: 50);
         parameters.Add("@CommercialInvoiceNo", commercialInvoiceNo, DbType.String, size: 50);
+        parameters.Add("@OnePerItem", onePerItem, DbType.Boolean);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
         var invoices = await QueryCreatedAsync("purchase.usp_PurchaseDocument_CreateFromSource", parameters, cancellationToken);
@@ -653,7 +672,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     /// <summary>An EMPTY selection is the procedure's "everything loaded and not yet invoiced"; the table is sent either way.</summary>
     public Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> CreateFromContainersAsync(
         int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate,
-        string? exporterReference, string? commercialInvoiceNo, int userId, CancellationToken cancellationToken = default)
+        string? exporterReference, string? commercialInvoiceNo, bool? onePerItem, int userId,
+        CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@PurchaseOrderId", purchaseOrderId, DbType.Int32);
@@ -662,6 +682,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@ExporterReference", exporterReference, DbType.String, size: 50);
         parameters.Add("@CommercialInvoiceNo", commercialInvoiceNo, DbType.String, size: 50);
+        parameters.Add("@OnePerItem", onePerItem, DbType.Boolean);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
         return QueryCreatedAsync("purchase.usp_PurchaseDocument_CreateFromContainers", parameters, cancellationToken);
@@ -680,7 +701,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
     /// <summary>
     /// The rows of the invoices a procedure created (Id, ItemId, ItemCode, ItemName, LineCount, QuantityBase,
-    /// TotalAmount, RowVersion), in its order. A procedure that returns none (a return) gives an empty list.
+    /// TotalAmount, RowVersion, ItemCount), in its order. A procedure that returns none (a return) gives an empty list.
     /// </summary>
     private async Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> QueryCreatedAsync(
         string procedure, DynamicParameters parameters, CancellationToken cancellationToken)

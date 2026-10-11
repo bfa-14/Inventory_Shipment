@@ -120,8 +120,20 @@ public sealed class PurchaseDocumentListDto
     public string? ItemCode { get; init; }
     public string? ItemName { get; init; }
 
-    /// <summary>Supplier invoices only: how many items it holds — more than 1 for a draft made before one item per invoice.</summary>
+    /// <summary>
+    /// Supplier invoices only: how many items it holds. More than 1 for an invoice that may hold several (script 63:
+    /// <see cref="PurchaseSettingKeys.OneItemPerInvoice"/> off, or chosen when it was created) or a draft made before
+    /// one item per invoice: the list then says "3 items" instead of the item.
+    /// </summary>
     public int? ItemCount { get; init; }
+
+    /// <summary>
+    /// Supplier invoices only: its mode (script 63), its own or, for an invoice created before, the setting
+    /// <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>. True = it holds one item: a draft that holds several (saved
+    /// before that rule) is refused by Post (65029) until it is split, and the list flags it. False = it may hold several
+    /// items. Null for orders and returns.
+    /// </summary>
+    public bool? OneItemOnly { get; init; }
 
     /* (47) Supplier payments - posted purchase invoices only; null on orders, returns, drafts and cancelled ones. */
 
@@ -310,6 +322,17 @@ public static class PurchaseReceiptModes
     public const byte OnContainerOffload = 2;
 }
 
+/// <summary>The global settings (configuration.SettingDefinitions) the Purchase module reads.</summary>
+public static class PurchaseSettingKeys
+{
+    /// <summary>
+    /// Bool, default true (script 63): a new supplier invoice holds one item, and creating invoices from an order, its
+    /// containers or an Excel file makes one invoice per item. Off: one invoice may hold several items. The creations
+    /// can still choose for themselves (OnePerItem), and every invoice keeps the mode it was created with.
+    /// </summary>
+    public const string OneItemPerInvoice = "Purchase.OneItemPerInvoice";
+}
+
 public sealed class PurchaseDocumentDto
 {
     public int Id { get; init; }
@@ -362,6 +385,14 @@ public sealed class PurchaseDocumentDto
 
     /// <summary>An invoice whose goods enter the stock at the offload of its containers (receipt mode 2).</summary>
     public bool ShippedInContainers => DocumentTypeCode == PurchaseDocumentTypes.Invoice && ReceiptMode == PurchaseReceiptModes.OnContainerOffload;
+
+    /// <summary>
+    /// Supplier invoices: true = it holds ONE item (saving or posting a second one is refused, 65029; the page limits
+    /// its item picker and offers Split by item), false = it may hold several items. Its own mode, chosen when it was
+    /// created and kept (script 63), or the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/> for an invoice
+    /// created before. False on orders and returns, which are not concerned.
+    /// </summary>
+    public bool OneItemOnly { get; init; }
 
     public string? Notes { get; init; }
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
@@ -610,6 +641,13 @@ public sealed class SavePurchaseDocumentRequest
 
     public int? SourceDocumentId { get; init; }
 
+    /// <summary>
+    /// A NEW supplier invoice: true = it holds one item (65029 refuses a second), false = it may hold several; null =
+    /// the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>. Ignored on an update (an invoice keeps the mode
+    /// it was created with) and on orders and returns.
+    /// </summary>
+    public bool? OneItemOnly { get; init; }
+
     public IReadOnlyList<SavePurchaseDocumentLineRequest> Lines { get; init; } = [];
 
     public string? RowVersion { get; init; }
@@ -665,8 +703,8 @@ public sealed class ContainerLineQuantityRequest
 }
 
 /// <summary>
-/// Draft purchase invoices from container lines of one order — ONE PER ITEM (script 45). NO LINES =
-/// everything loaded and not yet invoiced.
+/// Draft purchase invoices from container lines of one order — ONE PER ITEM (script 45), or one invoice holding
+/// every item (<see cref="OnePerItem"/> false, script 63). NO LINES = everything loaded and not yet invoiced.
 /// </summary>
 public sealed class InvoiceFromContainersRequest
 {
@@ -682,6 +720,12 @@ public sealed class InvoiceFromContainersRequest
     /// <summary>Copied to every invoice created.</summary>
     [StringLength(50)]
     public string? CommercialInvoiceNo { get; init; }
+
+    /// <summary>
+    /// True = one invoice per item, each holding one item; false = ONE invoice holding every selected line, which may
+    /// hold several items; null = the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>.
+    /// </summary>
+    public bool? OnePerItem { get; init; }
 }
 
 /// <summary>Make the next document of the chain (order → invoice, invoice → return) from a posted one.</summary>
@@ -697,23 +741,38 @@ public sealed class CreateFromSourceRequest
     /// <summary>Order → invoices: copied to every invoice created. Ignored for a return.</summary>
     [StringLength(50)]
     public string? CommercialInvoiceNo { get; init; }
+
+    /// <summary>
+    /// Order → invoices: true = one invoice per item, each holding one item; false = ONE invoice holding everything
+    /// that remains, which may hold several items; null = the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>.
+    /// Ignored for a return.
+    /// </summary>
+    public bool? OnePerItem { get; init; }
 }
 
-/// <summary>One supplier invoice a create or a split made: a supplier invoice holds ONE item (script 45).</summary>
+/// <summary>
+/// One supplier invoice a create or a split made: one per item (script 45), or one holding every item when the
+/// creation asked for it (script 63). The item is the one of its first line.
+/// </summary>
 public sealed class CreatedPurchaseInvoiceDto
 {
     public int Id { get; init; }
     public int? ItemId { get; init; }
     public string? ItemCode { get; init; }
     public string? ItemName { get; init; }
+
+    /// <summary>How many items it holds: 1, or more for one invoice holding every item (script 63).</summary>
+    public int ItemCount { get; init; }
+
     public int LineCount { get; init; }
     public int QuantityBase { get; init; }
     public decimal TotalAmount { get; init; }
 }
 
 /// <summary>
-/// The answer to "create invoice" from an order or from its containers: one draft per item of the selection.
-/// <see cref="Id"/> is <see cref="FirstId"/> under the name the pages read before invoices were split by item.
+/// The answer to "create invoice" from an order or from its containers: one draft per item of the selection, or one
+/// draft holding every item (script 63). <see cref="Id"/> is <see cref="FirstId"/> under the name the pages read before
+/// invoices were split by item.
 /// </summary>
 public sealed class CreatedPurchaseInvoicesDto
 {
@@ -724,18 +783,26 @@ public sealed class CreatedPurchaseInvoicesDto
 
     public IReadOnlyList<CreatedPurchaseInvoiceDto> Invoices { get; init; } = [];
 
-    /// <summary>"3 invoices created, one per item" or "Invoice created".</summary>
+    /// <summary>"3 invoices created, one per item", "Invoice created with 3 items" or "Invoice created".</summary>
     public string Message { get; init; } = string.Empty;
 
     public static CreatedPurchaseInvoicesDto From(IReadOnlyList<CreatedPurchaseInvoiceDto> invoices) => new()
     {
         FirstId = invoices.Count > 0 ? invoices[0].Id : 0,
         Invoices = invoices,
-        Message = invoices.Count == 1 ? "Invoice created" : $"{invoices.Count} invoices created, one per item",
+        Message = invoices.Count switch
+        {
+            1 when invoices[0].ItemCount > 1 => $"Invoice created with {invoices[0].ItemCount} items",
+            1 => "Invoice created",
+            _ => $"{invoices.Count} invoices created, one per item",
+        },
     };
 }
 
-/// <summary>Split a draft supplier invoice holding several items (made before script 45) into one invoice per item.</summary>
+/// <summary>
+/// Split a draft supplier invoice holding several items into one invoice per item: one made before script 45, or one
+/// that may hold several (script 63). Every invoice it leaves holds one item from then on.
+/// </summary>
 public sealed class SplitByItemRequest
 {
     public string? RowVersion { get; init; }
@@ -805,4 +872,10 @@ public sealed class ImportCreatePurchaseDocumentsRequest
     public IReadOnlyList<ImportCreateLine> Lines { get; init; } = [];
 
     public bool PostImmediately { get; init; }
+
+    /// <summary>
+    /// Supplier invoices: true = one invoice per item of the file, each holding one item; false = one invoice holding
+    /// every item; null = the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>. Ignored for orders and returns.
+    /// </summary>
+    public bool? OnePerItem { get; init; }
 }

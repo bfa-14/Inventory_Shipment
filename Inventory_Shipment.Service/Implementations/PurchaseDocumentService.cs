@@ -358,7 +358,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
     /// <summary>
     /// "Create invoice" on an order: ONE DRAFT PER ITEM of what remains (script 45 — a supplier invoice holds one
-    /// item), the exporter's reference and the commercial invoice number copied to each.
+    /// item), or one draft of every item when the request says so (OnePerItem false, script 63; null = the setting),
+    /// the exporter's reference and the commercial invoice number copied to each.
     /// </summary>
     public async Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,
@@ -398,9 +399,10 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         CreatedFromSource created;
         try
         {
+            // One invoice per item or one of every item is a choice of PO -> PINV only: a return is one document.
             created = await _documents.CreateFromSourceAsync(
                 sourceId, target!, request.DocumentDate, Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo),
-                userId, cancellationToken);
+                target == PurchaseDocumentTypes.Invoice ? request.OnePerItem : null, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -417,7 +419,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// <summary>
     /// AN INVOICE FROM CONTAINERS IS AN INVOICE: the right is purchase.invoices.create, and seeing the
     /// order is checked too because the drafts copy its prices. ONE DRAFT PER ITEM of the selection
-    /// (script 45); the answer lists them — the page opens the one, or lists the several.
+    /// (script 45), or one draft of every item (OnePerItem false, script 63; null = the setting); the
+    /// answer lists them — the page opens the one, or lists the several.
     /// </summary>
     public async Task<Result<CreatedPurchaseInvoicesDto>> CreateFromContainersAsync(
         int purchaseOrderId, InvoiceFromContainersRequest request, int userId,
@@ -446,7 +449,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         {
             invoices = await _documents.CreateFromContainersAsync(
                 purchaseOrderId, request.Lines, request.DocumentDate,
-                Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo), userId, cancellationToken);
+                Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo), request.OnePerItem, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -460,9 +463,9 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     }
 
     /// <summary>
-    /// A draft supplier invoice holding several items (saved before script 45) becomes one invoice per item: the
-    /// item of its first line stays, the others move to new drafts with the same header. Editing an invoice is
-    /// purchase.invoices.create.
+    /// A draft supplier invoice holding several items (saved before script 45, or one that may hold several, script
+    /// 63) becomes one invoice per item: the item of its first line stays, the others move to new drafts with the same
+    /// header, and every one of them holds one item from then on. Editing an invoice is purchase.invoices.create.
     /// </summary>
     public async Task<Result<SplitByItemResultDto>> SplitByItemAsync(
         int id, SplitByItemRequest request, int userId, IReadOnlySet<string> permissions,
@@ -556,9 +559,11 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// is a line's, so a file naming several becomes one document whose rows each keep their own. A
     /// refused posting leaves the document as a draft: the lines are worth more than a clean failure.
     ///
-    /// EXCEPT A SUPPLIER INVOICE, WHICH HOLDS ONE ITEM (script 45): a file of several items becomes one invoice
-    /// per item, in the order of each item's first row, all with the same header values. Each is saved (and
-    /// posted) on its own: one refused invoice does not stop the others, and the result lists every one.
+    /// EXCEPT A SUPPLIER INVOICE OF ONE ITEM (script 45): a file of several items becomes one invoice per item,
+    /// in the order of each item's first row, all with the same header values. Each is saved (and posted) on its
+    /// own: one refused invoice does not stop the others, and the result lists every one. Since script 63 that is
+    /// the request's choice (OnePerItem), or the setting Purchase.OneItemPerInvoice when it makes none; off, the
+    /// file becomes ONE invoice that may hold several items.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreatePurchaseDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
@@ -585,7 +590,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
 
-        var onePerItem = set == Invoices;
+        var onePerItem = set == Invoices
+                         && (request.OnePerItem ?? await _documents.OneItemPerInvoiceAsync(cancellationToken));
         IReadOnlyList<IReadOnlyList<ImportCreateLine>> parts = onePerItem
             ? request.Lines.GroupBy(line => line.ItemId).Select(group => (IReadOnlyList<ImportCreateLine>)group.ToList()).ToList()
             : [request.Lines];
@@ -608,6 +614,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 ExchangeRate = request.ExchangeRate,
                 SupplierReference = request.SupplierReference,
                 Notes = request.Notes,
+                // A supplier invoice keeps the way it was made: one per item holds one item, the whole file several.
+                OneItemOnly = set == Invoices ? onePerItem : null,
                 Lines = lines.Select((line, index) => new SavePurchaseDocumentLineRequest
                 {
                     LineNo = index + 1,
