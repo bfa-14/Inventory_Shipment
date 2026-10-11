@@ -1,24 +1,32 @@
 #!/usr/bin/env bash
-# Deploys the latest code of both repositories.
+# Deploys the latest code of both repositories, in the environment of this checkout.
 #
-#   sudo ./update.sh            the branch the server is on (normally main)
-#   sudo ./update.sh main       switch both repositories to that branch first, then deploy it
+#   sudo ./update.sh                the branch this checkout is on: production in /opt/inventory,
+#                                   main in /opt/inventory-test (the testing environment)
+#   sudo ./update.sh production     switch both repositories to that branch first, then deploy it
 #
 # Backs up the database first, pulls this repository and the frontend, rebuilds the images and
 # restarts what changed. The API applies Schema.sql as it starts, so database changes need no step
 # of their own. Users see a short "server not reachable" message while the API restarts.
 #
-# The "Deploy to server" button on GitHub runs this same script (see "Deploy new versions" in README.md).
+# The GitHub "Deploy to server" workflow runs this same script (README.md, "Deploying automatically from
+# GitHub"). Two updates (or restores) of the same environment never run at once: the second waits.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
 
 require_root
 [ -f .env ] || die "No deploy/.env - run setup.sh first."
+ensure_env_defaults
 
 web=$(web_dir)
+env_name=$(environment)
 
 if [ "${UPDATE_STAGE:-}" != "build" ]; then
+    # Held until this script ends, across the exec below (the backend and the frontend repositories can
+    # both start a deployment of the same environment at the same moment).
+    take_env_lock
+
     branch=${1:-}
     if [ -n "$branch" ]; then
         # Everything is checked before either repository moves, so a wrong name changes nothing.
@@ -27,9 +35,22 @@ if [ "${UPDATE_STAGE:-}" != "build" ]; then
             git -C "$repo" fetch --quiet origin "$branch" 2>/dev/null \
                 || die "$(basename "$(git -C "$repo" rev-parse --show-toplevel)") has no branch '$branch' on GitHub."
         done
-        git -C .. cat-file -e "origin/$branch:deploy/update.sh" 2>/dev/null \
-            && git -C "$web" cat-file -e "origin/$branch:Dockerfile" 2>/dev/null \
-            || die "'$branch' does not have the deployment files (deploy/, Dockerfile) in both repositories yet - merge them into it first."
+        git -C .. cat-file -e "origin/$branch:deploy/proxy/Caddyfile" 2>/dev/null \
+            && git -C "$web" show "origin/$branch:Caddyfile" 2>/dev/null | grep -q environment.json \
+            || die "'$branch' does not have the two-environment deployment files in both repositories yet - merge main into it first. Nothing was changed."
+    else
+        # BOTH CHECKOUTS FOLLOW ONE BRANCH, and production follows production: a deployment never mixes
+        # the frontend of one branch with the API of another, or sends untested main to production.
+        api_branch=$(git -C .. rev-parse --abbrev-ref HEAD)
+        web_branch=$(git -C "$web" rev-parse --abbrev-ref HEAD)
+        [ "$api_branch" = "$web_branch" ] \
+            || die "The API checkout is on $api_branch but the frontend's is on $web_branch: both must follow one branch. Run: sudo ./update.sh $([ "$env_name" = production ] && echo production || echo "$api_branch")"
+        if [ "$env_name" = "production" ] && [ "$api_branch" != "production" ]; then
+            if git -C .. ls-remote --exit-code --heads origin production >/dev/null 2>&1; then
+                die "Production runs the $api_branch branch but must follow the production branch. Run: sudo ./update.sh production"
+            fi
+            warn "Production runs the $api_branch branch: there is no production branch on GitHub yet."
+        fi
     fi
 
     if [ -n "$(docker compose ps -q --status running db)" ]; then
@@ -54,15 +75,43 @@ if [ "${UPDATE_STAGE:-}" != "build" ]; then
     UPDATE_STAGE=build exec ./update.sh
 fi
 
+# Checked again here: an update.sh from before the two environments may have pulled and exec'd into this one.
+require_proxy_web "$web"
+
 say "Building"
 docker compose build --pull
 
+if [ "$env_name" = "production" ]; then
+    open_web_ports
+fi
+
 say "Restarting what changed"
 docker compose up -d
+
+# The proxy keeps the configuration it started with: a pulled change to proxy/Caddyfile is checked, then
+# loaded without dropping connections. Caddy skips an unchanged one, and a refused file leaves the running
+# configuration in place.
+if [ "$env_name" = "production" ] && [ -n "$(docker compose ps -q --status running proxy)" ]; then
+    docker compose exec -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1 \
+        || { docker compose exec -T proxy caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile >&2 || true
+             die "proxy/Caddyfile is not valid (above): the proxy keeps its previous configuration. Fix the file and run this again."; }
+    loaded=""
+    for _ in $(seq 1 10); do
+        # A proxy that has only just started may not listen for its configuration yet.
+        if docker compose exec -T proxy caddy reload --config /etc/caddy/Caddyfile --adapter caddyfile >/dev/null 2>&1; then
+            loaded=1
+            break
+        fi
+        sleep 3
+    done
+    [ -n "$loaded" ] || die "The proxy did not take its configuration (docker compose logs proxy)."
+fi
+
 wait_for_api
+wait_for_web
 
 docker image prune -f >/dev/null
-say "Updated: https://$(env_get DOMAIN)"
+say "Updated $env_name: https://$(env_get DOMAIN)"
 for repo in .. "$web"; do
     echo "    $(basename "$(git -C "$repo" rev-parse --show-toplevel)"): $(git -C "$repo" log -1 --format='%h %s (%cr)')"
 done

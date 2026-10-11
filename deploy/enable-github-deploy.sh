@@ -1,28 +1,66 @@
 #!/usr/bin/env bash
-# One-time setup for the "Deploy to server" button on GitHub (.github/workflows/deploy.yml).
+# One-time setup for deploying from GitHub (.github/workflows/deploy.yml in both repositories): a push to
+# main deploys the testing environment, a push to production deploys production.
 #
-#   sudo ./enable-github-deploy.sh
+#   sudo ./enable-github-deploy.sh        in the PRODUCTION checkout's deploy folder
 #
-# Creates an SSH key that can do exactly one thing on this server, run update.sh, and prints the values
-# to save as secrets in the GitHub repository. Also lets this user run update.sh with sudo without a
-# password, which the key needs. Running it again replaces the key; the old one stops working.
+# Installs /usr/local/sbin/inventory-deploy (production | testing: runs that environment's update.sh), creates
+# an SSH key that can do exactly one thing on this server, run that command, and prints the values to save
+# as secrets in BOTH GitHub repositories. Also lets this user run the command with sudo without a password,
+# which the key needs. Running it again replaces the key (the old one stops working) and the command (after
+# setting up the testing environment, for example).
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
 
 require_root
 
+ensure_env_defaults
+[ "$(environment)" = "production" ] \
+    || die "Run it in the PRODUCTION checkout's deploy folder (/opt/inventory/Inventory_Shipment/deploy)."
+
 user=${SUDO_USER:-root}
 group=$(id -gn "$user")
 home=$(getent passwd "$user" | cut -d: -f6)
-script="$(pwd)/update.sh"
 marker="inventory-shipment-github-deploy"
+command_path=/usr/local/sbin/inventory-deploy
+production_deploy=$(pwd)
+testing_deploy="$(env_get TEST_DIR /opt/inventory-test)/Inventory_Shipment/deploy"
 
 # Whoever can change these files could run anything as root through the key: they must be root's alone.
-for path in .. . ./update.sh ./lib.sh ./backup.sh; do
-    [ "$(stat -c %u "$path")" = "0" ] && [ -z "$(find "$path" -maxdepth 0 -perm /022)" ] \
-        || die "$(realpath "$path") must be owned by root and writable only by root (clone the repository with sudo)."
-done
+check_root_only() {
+    local dir=$1 path
+    for path in "$dir/.." "$dir" "$dir/update.sh" "$dir/lib.sh" "$dir/backup.sh"; do
+        [ "$(stat -c %u "$path")" = "0" ] && [ -z "$(find "$path" -maxdepth 0 -perm /022)" ] \
+            || die "$(realpath "$path") must be owned by root and writable only by root (clone the repository with sudo)."
+    done
+}
+check_root_only "$production_deploy"
+[ -d "$testing_deploy" ] && check_root_only "$testing_deploy"
+
+# The one command the key can run. Root's, outside both checkouts: a pull cannot change what it allows.
+#
+# THE DEPLOYMENT DOES NOT HANG ON THE SSH CONNECTION. Its output goes through tee into a log on the server;
+# tee ignores a closed connection (a cancelled or timed-out GitHub job) and keeps writing the log, so the
+# update always runs to its end instead of dying at its next line of output, half done.
+tmp_command=$(mktemp)
+cat > "$tmp_command" <<COMMAND
+#!/bin/bash
+# Written by $(realpath "$0"): deploys one environment of Inventory & Shipment.
+# The GitHub deploy key can run this command and nothing else. Log: /var/log/inventory-deploy-<environment>.log
+set -o pipefail
+case "\$1" in
+    production) deploy=$production_deploy ;;
+    testing)
+        deploy=$testing_deploy
+        [ -x "\$deploy/update.sh" ] || { echo "The testing environment is not set up on this server (setup.sh testing)." >&2; exit 1; } ;;
+    *) echo "Usage: inventory-deploy production|testing" >&2; exit 2 ;;
+esac
+echo "=== \$(date -u '+%Y-%m-%d %H:%M:%S UTC') deploying \$1" >> "/var/log/inventory-deploy-\$1.log"
+"\$deploy/update.sh" 2>&1 | tee --output-error=warn-nopipe -a "/var/log/inventory-deploy-\$1.log"
+COMMAND
+install -m 755 -o root -g root "$tmp_command" "$command_path"
+rm -f "$tmp_command"
 
 [ -r /etc/ssh/ssh_host_ed25519_key.pub ] || die "No /etc/ssh/ssh_host_ed25519_key.pub: is the SSH server installed?"
 port=$(sshd -T 2>/dev/null | awk '$1 == "port" { print $2; exit }' || true)
@@ -34,9 +72,10 @@ tmp=$(mktemp -d)
 trap 'rm -rf "$tmp"' EXIT
 ssh-keygen -q -t ed25519 -N "" -C "$marker" -f "$tmp/key"
 
-# The key's line in authorized_keys: whatever command the client asks for, update.sh runs ("command="),
-# and "restrict" takes away port forwarding, a terminal and everything else.
-if [ "$user" = "root" ]; then command=$script; else command="sudo -n $script"; fi
+# The key's line in authorized_keys: whatever the client asks for, inventory-deploy runs ("command="), with
+# what the client sent as its one argument (production or testing; anything else is refused), and
+# "restrict" takes away port forwarding, a terminal and everything else.
+if [ "$user" = "root" ]; then command="$command_path \\\"\$SSH_ORIGINAL_COMMAND\\\""; else command="sudo -n $command_path \\\"\$SSH_ORIGINAL_COMMAND\\\""; fi
 install -d -m 700 -o "$user" -g "$group" "$home/.ssh"
 touch "$home/.ssh/authorized_keys"
 grep -v " $marker\$" "$home/.ssh/authorized_keys" > "$tmp/authorized_keys" || true
@@ -44,17 +83,18 @@ printf 'command="%s",restrict %s\n' "$command" "$(cat "$tmp/key.pub")" >> "$tmp/
 install -m 600 -o "$user" -g "$group" "$tmp/authorized_keys" "$home/.ssh/authorized_keys"
 
 if [ "$user" != "root" ]; then
-    printf '# Written by %s: lets the GitHub deploy key run update.sh.\n%s ALL=(root) NOPASSWD: %s\n' \
-        "$(realpath "$0")" "$user" "$script" > "$tmp/sudoers"
+    printf '# Written by %s: lets the GitHub deploy key run inventory-deploy.\n%s ALL=(root) NOPASSWD: %s\n' \
+        "$(realpath "$0")" "$user" "$command_path" > "$tmp/sudoers"
     visudo -cqf "$tmp/sudoers" || die "The sudo rule did not validate."
     install -m 440 -o root -g root "$tmp/sudoers" /etc/sudoers.d/inventory-shipment-deploy
 fi
 
 cat <<EOF
 
-$(say "Done. Now save these as secrets on GitHub:")
+$(say "Done. Now save these as secrets on GitHub, in BOTH repositories:")
 
-  github.com/bfa-14/Inventory_Shipment > Settings > Secrets and variables > Actions > New repository secret
+  github.com/bfa-14/Inventory_Shipment          > Settings > Secrets and variables > Actions > New repository secret
+  github.com/bfa-14/Inventory_Shipment_Frontend > Settings > Secrets and variables > Actions > New repository secret
 
   Name                 Value
   -------------------  ----------------------------------------------------------
@@ -70,6 +110,10 @@ cat <<EOF
 $(cat "$tmp/key")
 -----------------------------------------------------------------------------------------------
 
-This key is shown only now and is not kept on the server. Never paste it anywhere but that secret.
-Then: Actions tab > "Deploy to server" > Run workflow.
+This key is shown only now and is not kept on the server. Never paste it anywhere but those secrets.
+
+From then on a push to main deploys testing and a push to production deploys production, from either
+repository. By hand: Actions tab > "Deploy to server" > Run workflow, or from your PC:
+    ssh -t $user@$host sudo $command_path testing
+Each deployment is also logged on the server: /var/log/inventory-deploy-production.log / -testing.log
 EOF

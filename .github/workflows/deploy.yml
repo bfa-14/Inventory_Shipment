@@ -1,18 +1,32 @@
 name: Deploy to server
 
-# Deploys the latest code to the server: runs deploy/update.sh there over SSH, which backs up the
-# database, pulls both repositories (API and frontend), rebuilds and restarts.
+# Deploys to the server over SSH, in the environment that matches the branch:
 #
-# Start it from the Actions tab: "Deploy to server" > "Run workflow".
-# One-time setup: deploy/enable-github-deploy.sh on the server, then the secrets it prints
-# (see "Deploy new versions" in deploy/README.md).
+#   push to main         -> testing      (https://test.<domain>, the main branch)
+#   push to production   -> production   (https://<domain>, the production branch)
+#
+# or by hand: Actions > "Deploy to server" > Run workflow, choosing the environment.
+#
+# The server runs that environment's deploy/update.sh: backup, pull of BOTH repositories (API and
+# frontend), rebuild, restart. The same workflow is in both repositories, so a push to either deploys.
+# One-time setup: deploy/enable-github-deploy.sh on the server, then the secrets it prints, in both
+# repositories (Inventory_Shipment's deploy/README.md, "Deploying automatically from GitHub"). Until then,
+# pushes skip the deployment. The server also logs each deployment: /var/log/inventory-deploy-<environment>.log.
 
 on:
+  push:
+    branches: [main, production]
   workflow_dispatch:
+    inputs:
+      environment:
+        description: Environment to deploy
+        type: choice
+        options: [testing, production]
+        default: testing
 
-# One deployment at a time: a second click waits for the first to finish.
+# One deployment per environment at a time from this repository (the server also queues them).
 concurrency:
-  group: deploy-server
+  group: deploy-${{ inputs.environment || (github.ref_name == 'production' && 'production') || 'testing' }}
   cancel-in-progress: false
 
 permissions: {}
@@ -20,10 +34,12 @@ permissions: {}
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
     steps:
       - name: Run update.sh on the server
         env:
+          TARGET: ${{ inputs.environment || (github.ref_name == 'production' && 'production') || 'testing' }}
+          EVENT: ${{ github.event_name }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
@@ -32,7 +48,12 @@ jobs:
         run: |
           for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS DEPLOY_SSH_KEY; do
             if [ -z "${!name}" ]; then
-              echo "::error::The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (deploy/README.md, \"Deploy new versions\")."
+              message="The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (Inventory_Shipment repository, deploy/README.md, \"Deploying automatically from GitHub\")."
+              if [ "$EVENT" = "push" ]; then
+                echo "::notice::Not deployed to $TARGET. $message"
+                exit 0
+              fi
+              echo "::error::$message"
               exit 1
             fi
           done
@@ -43,8 +64,10 @@ jobs:
           chmod 600 "$dir/key"
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" | tr -d '\r' > "$dir/known_hosts"
 
-          # The key can only run update.sh on the server (a forced command), so no command is sent.
+          echo "Deploying $TARGET"
+          # The key can only run inventory-deploy on the server (a forced command): the one word sent is
+          # the environment.
           ssh -T -i "$dir/key" -p "${DEPLOY_PORT:-22}" \
               -o IdentitiesOnly=yes -o UserKnownHostsFile="$dir/known_hosts" -o StrictHostKeyChecking=yes \
               -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=30 \
-              "$DEPLOY_USER@$DEPLOY_HOST"
+              "$DEPLOY_USER@$DEPLOY_HOST" "$TARGET"

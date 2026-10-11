@@ -20,6 +20,10 @@ file="$db-$stamp.bak"
 [ -n "$(docker compose ps -q --status running db)" ] || die "The db container is not running (docker compose up -d)."
 ensure_backup_dir
 
+# An interrupted backup leaves no half-written .bak behind (gzip replaces a finished one by its .gz).
+trap 'rm -f "backups/$file"' EXIT
+trap 'exit 1' INT TERM HUP
+
 say "Backing up $db to backups/$file.gz"
 # No WITH COMPRESSION: the Express edition refuses it. gzip does the same job afterwards.
 sql_exec -Q "BACKUP DATABASE [$db] TO DISK = N'/var/opt/mssql/backups/$file' WITH CHECKSUM, INIT"
