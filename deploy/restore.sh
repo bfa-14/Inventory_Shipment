@@ -7,11 +7,15 @@
 # Takes a .bak or .bak.gz made by backup.sh or by SQL Server on Windows (same or older version).
 # Stops the API, restores over the current database, and starts the API again, which brings the
 # restored database up to the current schema. Asks before overwriting unless --yes is given.
+#
+# RESTORE_THEN_SQL (for copy-production-to-testing.sh): T-SQL run on the restored database before the API
+# starts on it, so the API never sees the backup as it was.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
 
 require_root
+take_env_lock
 
 source_file=""
 assume_yes=0
@@ -44,6 +48,8 @@ esac
 chown "$MSSQL_UID:0" "backups/$name"
 chmod 640 "backups/$name"
 inside="/var/opt/mssql/backups/$name"
+trap 'rm -f "backups/$name"' EXIT
+trap 'exit 1' INT TERM HUP
 
 # A backup remembers where its files lived (C:\Program Files\...\DATA on Windows): every file has to
 # be moved to the container's data folder, under names of this database.
@@ -74,6 +80,12 @@ if ! sql_exec -Q "RESTORE DATABASE [$db] FROM DISK = N'$inside' WITH REPLACE, ST
     die "The restore failed (see above). The API was started again on the database as it was."
 fi
 rm -f "backups/$name"
+
+if [ -n "${RESTORE_THEN_SQL:-}" ]; then
+    say "Adjusting the restored database"
+    sql_exec -d "$db" -Q "$RESTORE_THEN_SQL" \
+        || die "The database was restored, but adjusting it failed (above). The API is stopped: run this again."
+fi
 
 say "Starting the API (it updates the restored database to the current schema)"
 docker compose start api

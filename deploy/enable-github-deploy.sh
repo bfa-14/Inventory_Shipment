@@ -39,18 +39,25 @@ check_root_only "$production_deploy"
 [ -d "$testing_deploy" ] && check_root_only "$testing_deploy"
 
 # The one command the key can run. Root's, outside both checkouts: a pull cannot change what it allows.
+#
+# THE DEPLOYMENT DOES NOT HANG ON THE SSH CONNECTION. Its output goes through tee into a log on the server;
+# tee ignores a closed connection (a cancelled or timed-out GitHub job) and keeps writing the log, so the
+# update always runs to its end instead of dying at its next line of output, half done.
 tmp_command=$(mktemp)
 cat > "$tmp_command" <<COMMAND
-#!/bin/sh
+#!/bin/bash
 # Written by $(realpath "$0"): deploys one environment of Inventory & Shipment.
-# The GitHub deploy key can run this command and nothing else.
+# The GitHub deploy key can run this command and nothing else. Log: /var/log/inventory-deploy-<environment>.log
+set -o pipefail
 case "\$1" in
-    production) exec $production_deploy/update.sh ;;
+    production) deploy=$production_deploy ;;
     testing)
-        [ -x $testing_deploy/update.sh ] || { echo "The testing environment is not set up on this server (setup.sh testing)." >&2; exit 1; }
-        exec $testing_deploy/update.sh ;;
+        deploy=$testing_deploy
+        [ -x "\$deploy/update.sh" ] || { echo "The testing environment is not set up on this server (setup.sh testing)." >&2; exit 1; } ;;
     *) echo "Usage: inventory-deploy production|testing" >&2; exit 2 ;;
 esac
+echo "=== \$(date -u '+%Y-%m-%d %H:%M:%S UTC') deploying \$1" >> "/var/log/inventory-deploy-\$1.log"
+"\$deploy/update.sh" 2>&1 | tee --output-error=warn-nopipe -a "/var/log/inventory-deploy-\$1.log"
 COMMAND
 install -m 755 -o root -g root "$tmp_command" "$command_path"
 rm -f "$tmp_command"
@@ -108,4 +115,5 @@ This key is shown only now and is not kept on the server. Never paste it anywher
 From then on a push to main deploys testing and a push to production deploys production, from either
 repository. By hand: Actions tab > "Deploy to server" > Run workflow, or from your PC:
     ssh -t $user@$host sudo $command_path testing
+Each deployment is also logged on the server: /var/log/inventory-deploy-production.log / -testing.log
 EOF

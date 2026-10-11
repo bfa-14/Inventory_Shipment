@@ -32,6 +32,14 @@
 }
 
 # Testing: the main branch. Until the testing environment is set up (setup.sh testing) this answers 502.
+#
+# TEST_ALLOWED_IPS (deploy/.env) can keep it to the company's addresses: testing holds a copy of production's
+# data. Open to all by default. The proxy runs on the host network, so it sees each client's real address.
 {$TEST_DOMAIN} {
+	@outside not remote_ip {$TEST_ALLOWED_IPS}
+	handle @outside {
+		respond "The testing environment is open to the company's network only." 403
+	}
+
 	import environment {$TESTING_API} {$TESTING_WEB}
 }

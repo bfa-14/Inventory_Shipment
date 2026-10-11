@@ -10,7 +10,8 @@ name: Deploy to server
 # The server runs that environment's deploy/update.sh: backup, pull of BOTH repositories (API and
 # frontend), rebuild, restart. The same workflow is in both repositories, so a push to either deploys.
 # One-time setup: deploy/enable-github-deploy.sh on the server, then the secrets it prints, in both
-# repositories (see "Deploy new versions" in deploy/README.md). Until then, pushes skip the deployment.
+# repositories (Inventory_Shipment's deploy/README.md, "Deploying automatically from GitHub"). Until then,
+# pushes skip the deployment. The server also logs each deployment: /var/log/inventory-deploy-<environment>.log.
 
 on:
   push:
@@ -47,7 +48,7 @@ jobs:
         run: |
           for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS DEPLOY_SSH_KEY; do
             if [ -z "${!name}" ]; then
-              message="The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (deploy/README.md, \"Deploy new versions\")."
+              message="The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (Inventory_Shipment repository, deploy/README.md, \"Deploying automatically from GitHub\")."
               if [ "$EVENT" = "push" ]; then
                 echo "::notice::Not deployed to $TARGET. $message"
                 exit 0

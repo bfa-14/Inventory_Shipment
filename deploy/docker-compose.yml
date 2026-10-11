@@ -41,8 +41,12 @@ services:
       PRODUCTION_API: 127.0.0.1:${API_PORT:-5080}
       TESTING_WEB: 127.0.0.1:${TEST_TUNNEL_PORT:-8081}
       TESTING_API: 127.0.0.1:${TEST_API_PORT:-5081}
+      # Who may open the testing address (proxy/Caddyfile): addresses or ranges separated by spaces.
+      TEST_ALLOWED_IPS: ${TEST_ALLOWED_IPS:-0.0.0.0/0 ::/0}
     volumes:
-      - ./proxy/Caddyfile:/etc/caddy/Caddyfile:ro
+      # The folder, not the file: a git pull replaces the file, and a mount of the file would keep showing
+      # the old one. update.sh then loads it with "caddy reload".
+      - ./proxy:/etc/caddy:ro
       # The HTTPS certificates. Losing them only means Caddy asks Let's Encrypt again.
       - caddy_data:/data
       - caddy_config:/config
@@ -50,6 +54,8 @@ services:
   db:
     image: ${MSSQL_IMAGE:-mcr.microsoft.com/mssql/server:2025-latest}
     restart: unless-stopped
+    # Testing sets 500: when memory runs out, the kernel stops testing's processes before production's.
+    oom_score_adj: ${OOM_SCORE_ADJ:-0}
     environment:
       ACCEPT_EULA: "Y"
       MSSQL_PID: ${MSSQL_PID:-Express}
@@ -73,6 +79,7 @@ services:
     # Per environment, so building testing never replaces the image production runs.
     image: ${COMPOSE_PROJECT_NAME:-inventory}-api
     restart: unless-stopped
+    oom_score_adj: ${OOM_SCORE_ADJ:-0}
     depends_on:
       db:
         condition: service_healthy
@@ -92,8 +99,9 @@ services:
       # The address put in emailed links; Settings > Email can override it.
       App__PublicBaseUrl: https://${DOMAIN}
       # "testing" holds every email (or sends them all to TEST_EMAIL_REDIRECT_TO): its data is a copy of
-      # production's, with real people's addresses in it.
-      App__Environment: ${ENVIRONMENT:-production}
+      # production's, with real people's addresses in it. Required, never defaulted: a testing .env that
+      # lost the line must stop here rather than run as production.
+      App__Environment: ${ENVIRONMENT:?set ENVIRONMENT (production or testing) in deploy/.env}
       App__TestEmailRedirectTo: ${TEST_EMAIL_REDIRECT_TO:-}
     volumes:
       - dpkeys:/app/App_Data
@@ -111,6 +119,7 @@ services:
       context: ${WEB_SOURCE_DIR:-../../Inventory_Shipment_Frontend}
     image: ${COMPOSE_PROJECT_NAME:-inventory}-web
     restart: unless-stopped
+    oom_score_adj: ${OOM_SCORE_ADJ:-0}
     depends_on:
       - api
     ports:
@@ -119,7 +128,7 @@ services:
     environment:
       API_UPSTREAM: api:8080
       # Served as /environment.json: the sign-in page's Production / Testing switch and the TESTING marker.
-      APP_ENVIRONMENT: ${ENVIRONMENT:-production}
+      APP_ENVIRONMENT: ${ENVIRONMENT:?set ENVIRONMENT (production or testing) in deploy/.env}
       APP_SWITCH_URL: ${SWITCH_URL:-}
 
 volumes:

@@ -9,8 +9,9 @@
 # the copy up to the main branch's schema as it starts: a rehearsal of the next production update.
 #
 # Production is only read. Its users and passwords come along, so testers sign in to testing with their
-# production accounts. Emails are still never sent to real people from testing (App__Environment=testing);
-# the SMTP password does not come along either (it is encrypted with production's keys).
+# production accounts (their sign-ins are not: everyone signs in again). Emails are still never sent to real
+# people from testing (App__Environment=testing); the SMTP password does not come along either (it is
+# encrypted with production's keys).
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
@@ -18,6 +19,9 @@ cd "$(dirname "$0")"
 require_root
 [ "$(environment)" = "testing" ] \
     || die "This replaces the TESTING database: run it in the testing checkout (/opt/inventory-test/Inventory_Shipment/deploy)."
+# Testing's lock: no deployment of testing starts while its database is being replaced (restore.sh below
+# runs under the same lock).
+take_env_lock
 
 assume_yes=0
 for arg in "$@"; do
@@ -41,27 +45,29 @@ say "Backing up production"
 latest=$(find "$production/deploy/backups" -maxdepth 1 -name '*.bak.gz' -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
 [ -n "$latest" ] || die "No production backup found in $production/deploy/backups."
 
-./restore.sh --yes "$latest"
-
-# The copy carries production's "Address of the application" (Settings > Email): the links in testing's
-# emails must open testing.
-say "Pointing testing's email links at https://$(env_get DOMAIN)"
-sql_exec -d "$(db_name)" -Q "IF COL_LENGTH(N'messaging.EmailSettings', N'PublicBaseUrl') IS NOT NULL
-    UPDATE messaging.EmailSettings SET PublicBaseUrl = N'https://$(env_get DOMAIN)' WHERE PublicBaseUrl IS NOT NULL;"
-
-# The copied emails were written in production: their approval links open production, with tokens that
-# work there. Point them at testing, and close the ones still waiting to be sent (Failed, with the
-# reason in the Email log), so a tester never acts on production from a testing email.
 production_domain=$(cd "$production/deploy" && env_get DOMAIN)
-say "Closing the emails copied from production"
-sql_exec -d "$(db_name)" -Q "IF OBJECT_ID(N'messaging.EmailOutbox', N'U') IS NOT NULL
+testing_domain=$(env_get DOMAIN)
+
+# Run on the copy before testing's API starts on it, so testing never runs with production's settings:
+#  - the "Address of the application" (Settings > Email): the links in testing's emails must open testing;
+#  - the emails copied from production: their approval links open production, with tokens that work there.
+#    They are pointed at testing, and those still waiting to be sent are closed (Failed, with the reason in
+#    the Email log), so a tester never acts on production from a testing email;
+#  - production's sign-ins (refresh tokens): only someone who knows a current password signs in to testing.
+RESTORE_THEN_SQL="SET NOCOUNT ON;
+IF COL_LENGTH(N'messaging.EmailSettings', N'PublicBaseUrl') IS NOT NULL
+    UPDATE messaging.EmailSettings SET PublicBaseUrl = N'https://$testing_domain' WHERE PublicBaseUrl IS NOT NULL;
+IF OBJECT_ID(N'messaging.EmailOutbox', N'U') IS NOT NULL
 BEGIN
-    UPDATE messaging.EmailOutbox SET BodyHtml = REPLACE(BodyHtml, N'https://$production_domain', N'https://$(env_get DOMAIN)')
+    UPDATE messaging.EmailOutbox SET BodyHtml = REPLACE(BodyHtml, N'https://$production_domain', N'https://$testing_domain')
     WHERE BodyHtml LIKE N'%https://$production_domain%';
     UPDATE messaging.EmailOutbox SET Status = 3, LastError = N'Copied from production: never sent from testing.'
     WHERE Status = 1;
-END"
-docker compose restart api
-wait_for_api
+END
+IF OBJECT_ID(N'security.RefreshTokens', N'U') IS NOT NULL
+    DELETE FROM security.RefreshTokens;" \
+    ./restore.sh --yes "$latest"
 
 say "Testing now holds a copy of production from $(basename "$latest" .bak.gz | sed 's/.*-\([0-9]\{8\}\)-\([0-9]\{6\}\)$/\1 \2 UTC/')."
+echo "Its users are production's as they are now. A user disabled, or a password changed, in production later"
+echo "still works in testing until the next copy: disable or change it in testing too."

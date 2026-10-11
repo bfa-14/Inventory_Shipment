@@ -44,18 +44,68 @@ env_set() {
 # ensure_env_defaults - gives a .env written before the testing environment existed what the current
 # docker-compose.yml needs, so an update of such a server keeps working: it is production, and the
 # testing address is test.<its domain> (the proxy serves both).
+#
+# ONLY AN OLD PRODUCTION .env MAY BE TAKEN FOR PRODUCTION. Testing's .env is written by setup.sh testing
+# with ENVIRONMENT=testing; if that line is ever lost (a hand edit), defaulting to production would let
+# testing email the real people in its copy of production's data. Testing's .env is recognisable by what
+# only it holds, so it stops here instead.
 ensure_env_defaults() {
     [ -f .env ] || return 0
     local domain
     if [ -z "$(env_get ENVIRONMENT)" ]; then
+        if [ -n "$(env_get PRODUCTION_DIR)" ] || [ "$(env_get PROXY_REPLICAS 1)" = "0" ] \
+            || [ "$(env_get COMPOSE_PROJECT_NAME inventory)" != "inventory" ] \
+            || grep -qE '^[[:space:]]*(export[[:space:]]+)?ENVIRONMENT[[:space:]]*[=:]' .env; then
+            die "deploy/.env has no usable ENVIRONMENT= line, and it is not production's: write ENVIRONMENT=testing (or production) at the start of a line in $(pwd)/.env, then run this again."
+        fi
         env_set ENVIRONMENT production
         say "deploy/.env: ENVIRONMENT=production added"
     fi
+    case "$(environment)" in
+        production | testing) ;;
+        *) die "ENVIRONMENT in $(pwd)/.env is '$(environment)': it must be production or testing." ;;
+    esac
     if [ "$(environment)" = "production" ] && [ -z "$(env_get TEST_DOMAIN)" ]; then
         domain=$(env_get DOMAIN)
         [ -n "$domain" ] || die "DOMAIN is empty in deploy/.env."
         env_set TEST_DOMAIN "test.$domain"
         say "deploy/.env: TEST_DOMAIN=test.$domain added (the address of the testing environment)"
+    fi
+}
+
+# take_env_lock - one update, restore or copy of an environment at a time (a push can start a deployment
+# while someone restores by hand). Waits for the other one up to 30 minutes. The lock is held until the
+# script ends, across exec and by the scripts it runs; INVENTORY_LOCK_HELD tells those not to take it again
+# (they would wait for themselves).
+take_env_lock() {
+    local env
+    env=$(environment)
+    [ "${INVENTORY_LOCK_HELD:-}" = "$env" ] && return 0
+    exec 9>"/run/lock/inventory-update-$env.lock"
+    if ! flock -n 9; then
+        say "Another update, restore or copy of $env is running: waiting for it to finish..."
+        flock -w 1800 9 || die "The other update, restore or copy of $env has not finished after 30 minutes."
+    fi
+    export INVENTORY_LOCK_HELD=$env
+}
+
+# require_proxy_web DIR - the frontend checkout must be the version made for the proxy (its web container
+# serves plain HTTP and /environment.json). An older one needs DOMAIN in the web container and would
+# restart over and over behind the proxy, every page then answering 502.
+require_proxy_web() {
+    grep -q environment.json "$1/Caddyfile" 2>/dev/null \
+        || die "The frontend in $(realpath "$1") ($(git -C "$1" rev-parse --abbrev-ref HEAD 2>/dev/null)) is older than the two-environment deployment (its Caddyfile has no environment.json): merge main into that branch of Inventory_Shipment_Frontend, then run this again. Nothing was rebuilt or restarted."
+}
+
+# open_web_ports - lets ports 80 and 443 through ufw for the proxy. The proxy runs on the host network, so ufw
+# applies to it (the web container's published ports of the old layout went around ufw). Only touched when ufw
+# is already on: turning it on here could lock out an SSH session on another port.
+open_web_ports() {
+    if command -v ufw >/dev/null && [[ "$(ufw status 2>/dev/null)" == *"Status: active"* ]]; then
+        say "Opening ports 80 and 443 in ufw"
+        ufw allow 80/tcp >/dev/null
+        ufw allow 443/tcp >/dev/null
+        ufw allow 443/udp >/dev/null
     fi
 }
 
@@ -99,4 +149,28 @@ wait_for_api() {
     done
     docker compose logs --tail 80 api >&2
     die "The API was still not healthy after 10 minutes. Its log is above."
+}
+
+# wait_for_web - after wait_for_api: the web app answers on 127.0.0.1:TUNNEL_PORT and, in production, the
+# proxy is running. Without it a web or proxy that cannot start (a bad Caddyfile) would still end in "Updated".
+wait_for_web() {
+    local port id restarts previous=""
+    port=$(env_get TUNNEL_PORT 8080)
+    say "Checking the web app$([ "$(environment)" = production ] && echo ' and the proxy')..."
+    for _ in $(seq 1 24); do
+        if curl -fsS -m 5 -o /dev/null "http://127.0.0.1:$port/environment.json" 2>/dev/null; then
+            [ "$(environment)" = "production" ] || return 0
+            # Running, and not restarting between two looks five seconds apart.
+            id=$(docker compose ps -q --status running proxy)
+            if [ -n "$id" ]; then
+                restarts=$(docker inspect -f '{{.RestartCount}}' "$id")
+                [ "$restarts" = "$previous" ] && return 0
+                previous=$restarts
+            fi
+        fi
+        sleep 5
+    done
+    docker compose logs --tail 50 web >&2
+    [ "$(environment)" = "production" ] && docker compose logs --tail 50 proxy >&2
+    die "The web app (127.0.0.1:$port) or the proxy did not come up. The log is above."
 }

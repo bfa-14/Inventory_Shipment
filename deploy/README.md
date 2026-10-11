@@ -41,7 +41,8 @@ page shows an orange **TESTING** badge, and **emails are never sent to real peop
 - **A server** (VPS) with **Ubuntu 24.04** (22.04 and Debian 12 work too) on **x86_64/amd64**. ARM servers
   will not work: SQL Server has no ARM version.
 - **At least 2 GB of memory, 4 GB recommended**, 2 CPUs and 30 GB of disk. With less than 4 GB, `setup.sh`
-  adds a swap file. With the testing environment (a second SQL Server), **6 GB or more**.
+  adds a swap file. With the testing environment (a second SQL Server), **6 GB or more**: `setup.sh testing`
+  stops below that unless you accept the risk (`sudo ALLOW_LOW_MEMORY=yes ./setup.sh testing`).
 - **SSH access** as root or as a user allowed to use `sudo`: the server's IP address, user name and password (or SSH key).
 - **Ports 80 and 443 open.** Some providers (AWS, Azure, Oracle Cloud, Hetzner Cloud firewalls, ...) block them
   until you allow them in their control panel.
@@ -59,15 +60,20 @@ page shows an orange **TESTING** badge, and **emails are never sent to real peop
    ssh root@<server-ip>
    ```
 
+   Signed in as another user? Run `sudo -i` first: the commands below run as root.
+
 2. **Download the application and run the setup:**
 
    ```bash
    apt-get update && apt-get install -y git
    mkdir -p /opt/inventory && cd /opt/inventory
-   git clone https://github.com/bfa-14/Inventory_Shipment.git
+   git clone --branch production https://github.com/bfa-14/Inventory_Shipment.git
    cd Inventory_Shipment/deploy
    ./setup.sh
    ```
+
+   `--branch production`: production runs the tested `production` branch, never `main` (setup.sh refuses
+   another branch once `production` exists, and downloads the frontend on the same branch).
 
    It asks for the domain and an email address (Let's Encrypt writes there only if a certificate cannot be
    renewed), then installs Docker, downloads the frontend next to this repository, builds everything and starts
@@ -112,7 +118,11 @@ without risk.
 
 ### Add the testing environment (once)
 
-On the server, in the **production** folder:
+**On a server installed before the two environments** (it served the site from its web container), upgrade
+production first, in the production folder: `sudo ./update.sh production`. It must end with
+"Updated production" (see [Upgrade a server installed before the two environments](#upgrade-a-server-installed-before-the-two-environments)).
+
+Then, on the server, in the **production** folder:
 
 ```bash
 cd /opt/inventory/Inventory_Shipment/deploy
@@ -125,7 +135,8 @@ It does everything in one go:
 2. Writes testing's `.env`, with its own secrets and its own database.
 3. Builds and starts testing.
 4. Turns on the switch on production's sign-in page.
-5. Offers to copy production's database into testing.
+5. Offers to copy production's database into testing. Run again later, it keeps testing's data unless you
+   answer `yes` (and then type `YES`).
 
 Testing's address is `TEST_DOMAIN` in production's `.env`, by default `test.<domain>`. With sslip.io that
 already works. With your own domain, first add a DNS A record for `test.<your domain>` pointing at the server.
@@ -140,9 +151,17 @@ cd /opt/inventory-test/Inventory_Shipment/deploy
 sudo ./copy-production-to-testing.sh
 ```
 
-- **Users and passwords** come along: sign in to testing with your production account.
+- **Users and passwords** come along: sign in to testing with your production account. Everyone signs in
+  again (production's sign-ins are not copied).
+- **A user disabled, or a password changed, in production afterwards still works in testing** until the next
+  copy. Disable or change it in testing too, or copy again.
 - **The schema:** testing's API brings the copy up to `main`'s schema as it starts. That is a rehearsal of the
   next production update: if it fails there, it would have failed in production.
+
+Testing holds production's data at a public address. To keep it to the company's network, list the allowed
+addresses in **production's** `.env` (`TEST_ALLOWED_IPS=203.0.113.10 198.51.100.0/24`, separated by spaces),
+then `sudo docker compose up -d` in production's folder. Everyone else gets a "403" page. Leave it empty while
+the office addresses change often: a wrong list locks everybody out of testing (not out of production).
 
 ### Emails in testing
 
@@ -150,7 +169,8 @@ Testing's data contains real suppliers' and approvers' addresses, so **testing n
 stay *Pending* in its Email log.
 
 To see them anyway:
-1. Set `TEST_EMAIL_REDIRECT_TO=you@yourmail.com` in `/opt/inventory-test/Inventory_Shipment/deploy/.env`.
+1. Set `TEST_EMAIL_REDIRECT_TO=you@yourmail.com` in `/opt/inventory-test/Inventory_Shipment/deploy/.env`
+   (`sudo nano .env` in that folder).
 2. Run `sudo docker compose up -d` in that folder.
 3. Type the SMTP password again in testing's *Configuration > Settings > Email*.
 
@@ -171,11 +191,15 @@ The everyday cycle:
 3. **Release**: merge `main` into `production`, in **both** repositories, and push. **Production** is updated
    with it (automatically, or `sudo ./update.sh` in `/opt/inventory/Inventory_Shipment/deploy`).
 
+   On GitLab: **Merge requests > New**, source `main`, target `production`, then **Merge**, in both projects.
+   Or on your PC, in **both** repositories (`Inventory_Shipment` and `Inventory_Shipment.Web`):
+
    ```bash
-   git checkout production && git pull && git merge main && git push && git checkout main
+   git fetch origin && (git checkout production 2>/dev/null || git checkout -b production --track origin/production) && git pull --ff-only origin production && git merge --no-edit origin/main && git push origin production && git checkout main
    ```
 
-   Or on GitHub: **Pull requests > New**, base `production`, compare `main`, then **Merge**.
+   It releases `origin/main`, exactly what testing runs, not your own `main` (which may hold work not pushed
+   or not tested yet).
 
 Each environment's `update.sh` takes a backup, pulls **both** repositories on its branch, rebuilds and restarts.
 Database changes need nothing extra: each API applies `Schema.sql` to its own database as it starts.
@@ -184,23 +208,42 @@ Database changes need nothing extra: each API applies `Schema.sql` to its own da
 
 ### The server reads GitHub; keep GitLab and GitHub in step
 
-The server pulls from GitHub (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`). If the team
-works on GitLab, every push must also reach GitHub, for both branches. Two ways:
+The server pulls from GitHub (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`). The team
+works on GitLab, so every push to `main` and `production` must also reach GitHub. Set up a **push mirror** on
+GitLab, once per project. From then on **GitLab is the only place where anything is pushed or merged**;
+GitHub is a read-only copy.
 
-- **Automatic (recommended): a push mirror on GitLab.** For each GitLab project:
-  1. Go to **Settings > Repository > Mirroring repositories**.
-  2. Enter the GitHub URL `https://github.com/bfa-14/<repo>.git`.
-  3. Choose **Mirror direction: Push** and **Authentication: Password**, with a GitHub fine-grained token
-     (*Contents: Read and write* on that repository) as the password.
+1. **Bring GitLab level with GitHub first** (work merged on GitHub, such as the deployment itself, must not
+   be lost). On your PC, in both repositories, with `origin` = GitLab and `github` = GitHub:
 
-  Anything pushed to GitLab, by anyone, then reaches GitHub within a minute and deploys.
-- **By hand:** push to both remotes every time, for example `git push origin main && git push github main`.
+   ```bash
+   git fetch origin && git fetch github
+   git push origin github/main:refs/heads/main github/production:refs/heads/production
+   ```
 
-Create the `production` branch on GitLab too, from the same commit as GitHub's:
+   Both are plain fast-forwards. If one is refused, GitLab has commits GitHub lacks: merge them first
+   (`git checkout main && git pull --no-rebase origin main && git merge github/main && git push origin main`),
+   then push again.
 
-```bash
-git fetch github && git push origin github/production:refs/heads/production
-```
+2. **A GitHub token** for the mirror, made by the `bfa-14` account: GitHub > Settings > Developer settings >
+   **Fine-grained tokens** > Generate. Resource owner `bfa-14`, repositories `Inventory_Shipment` and
+   `Inventory_Shipment_Frontend`, permissions **Contents: Read and write** and **Workflows: Read and write**
+   (without Workflows, GitHub refuses every push that touches `.github/workflows`). A classic token needs the
+   scopes `repo` and `workflow`. **Pick an expiry date and note it**: when the token expires, the mirror and so
+   every deployment stop.
+
+3. **The mirror**, in each GitLab project: **Settings > Repository > Mirroring repositories**:
+   - Git repository URL: `https://github.com/bfa-14/<repo>.git`
+   - Mirror direction: **Push**
+   - Authentication method: **Username and Password**, username `bfa-14`, password = the token
+   - **Keep divergent refs**: leave it off. GitHub is then always forced to match GitLab; anything committed or
+     merged on GitHub alone is overwritten. That is why nothing is merged on GitHub any more.
+
+4. **Check it** after a push: the same page shows "Last successful update" and any error. Anything pushed to
+   GitLab reaches GitHub within a minute, and deploys, as long as the mirror shows no error.
+
+Without a mirror, push to both remotes every time (`git push origin main && git push github main`, the same
+for `production`), and still merge only in one place.
 
 ### Deploying automatically from GitHub (one-time setup)
 
@@ -228,6 +271,10 @@ can also deploy by hand: **Actions > Deploy to server > Run workflow**, choosing
 Until the secrets are there, pushes skip the deployment (with a note in the Actions log). The key is shown only
 once: run the script again to make a new one (the old one stops working).
 
+Each deployment is also written to `/var/log/inventory-deploy-production.log` (or `-testing.log`) on the
+server. A deployment runs to its end even if its GitHub job is cancelled or times out: cancelling only stops
+showing its progress on GitHub.
+
 From your PC, the same command, by hand:
 
 ```
@@ -237,12 +284,30 @@ ssh -t <user>@<server-ip> sudo inventory-deploy testing      (or production)
 ### Which branch an environment runs
 
 Each environment deploys the branch its checkouts are on: `production` in `/opt/inventory`, `main` in
-`/opt/inventory-test`. `update.sh` warns when production is on another branch. To move an environment to
-another branch, once:
+`/opt/inventory-test`. `update.sh` refuses to deploy when the two checkouts (API and frontend) are on different
+branches, or when production is not on `production`. To move an environment to another branch, once (both
+checkouts move together):
 
 ```bash
 sudo ./update.sh production
 ```
+
+### Upgrade a server installed before the two environments
+
+Such a server runs production from `main`, with the HTTPS certificate in its web container. Once the
+`production` branch exists on GitHub in both repositories, on the server:
+
+```bash
+sudo ufw status
+cd /opt/inventory/Inventory_Shipment/deploy
+sudo ./update.sh production
+```
+
+- `ufw status`: if it says `Status: active`, `update.sh` opens ports 80 and 443 in it (the proxy needs them;
+  the old web container went around ufw).
+- `update.sh production` backs up the database, moves both checkouts to `production`, and starts the proxy in
+  place of the web container's HTTPS. The data, and the certificate, are kept. It must end with
+  "Updated production"; then add testing: [Add the testing environment](#add-the-testing-environment-once).
 
 ## Everyday tasks
 
@@ -274,14 +339,14 @@ start again by themselves after a crash or a server reboot.
 2. **Copy it to the server** from PowerShell on your PC:
 
    ```
-   scp C:\Temp\Inventory_Shipment.bak root@<server-ip>:/root/
+   scp C:\Temp\Inventory_Shipment.bak <user>@<server-ip>:
    ```
 
-3. **On the server:**
+3. **On the server** (as `<user>`; `~` is that user's home folder):
 
    ```bash
    cd /opt/inventory/Inventory_Shipment/deploy
-   ./restore.sh /root/Inventory_Shipment.bak
+   sudo ./restore.sh ~/Inventory_Shipment.bak
    ```
 
    It asks you to type `YES`, replaces the server's database with yours and restarts the API, which brings the
@@ -298,33 +363,45 @@ Any SQL Server version up to 2025 can be restored.
 
 ## Backups
 
-`backup.sh` runs **every night at 02:30** (server time) and before every `update.sh`. Backups go to
-`deploy/backups` and are kept for 14 days (`BACKUP_KEEP_DAYS` in `.env`):
+`backup.sh` runs **every night** (server time) and before every `update.sh`, in each environment, into its own
+`deploy/backups`. Kept for 14 days (`BACKUP_KEEP_DAYS` in `.env`):
+
+| Environment | When | Backups | Log |
+|-------------|------|---------|-----|
+| Production | 02:30 | `/opt/inventory/Inventory_Shipment/deploy/backups` | `/var/log/inventory-shipment-backup.log` |
+| Testing | 02:45 | `/opt/inventory-test/Inventory_Shipment/deploy/backups` | `/var/log/inventory-shipment-backup-testing.log` |
+
+Each backup is two files:
 
 - `Inventory_Shipment-<date>.bak.gz`: the database.
 - `keys-<date>.tar.gz`: the keys that decrypt the SMTP password. Without them you only retype that password.
 
-**Copy them off the server regularly.** A server that is lost takes its backups with it. From PowerShell on your PC:
+**Copy production's off the server regularly.** A server that is lost takes its backups with it. From
+PowerShell on your PC (only root can read the folder, so it is packed first):
 
 ```
-scp -r root@<server-ip>:/opt/inventory/Inventory_Shipment/deploy/backups C:\Backups\Inventory
+ssh <user>@<server-ip> 'sudo tar -C /opt/inventory/Inventory_Shipment/deploy -czf inventory-backups.tgz backups && sudo chown $USER inventory-backups.tgz'
+scp <user>@<server-ip>:inventory-backups.tgz C:\Backups\Inventory\
+ssh <user>@<server-ip> rm inventory-backups.tgz
 ```
-
-The nightly log is `/var/log/inventory-shipment-backup.log`.
 
 ## Settings
 
-The settings are in `deploy/.env` (only root can read it). `.env.example` describes each one. To change one,
-edit the file (`nano .env`) and run `docker compose up -d`.
+The settings are in `deploy/.env`, one per environment (only root can read it). `.env.example` describes each
+one. To change one, edit the file (`sudo nano .env`) and run `sudo docker compose up -d` in the same folder.
 
-- **`DOMAIN`**: point the new name's DNS at the server first. Caddy gets the certificate by itself.
-  Then update the site address in *Settings > Email* if one is saved there.
+- **Your own domain instead of sslip.io** (or any change of address): both environments know both addresses.
+  1. Add DNS A records for `<new>` and `test.<new>` pointing at the server.
+  2. Production's `.env`: `DOMAIN=<new>`, `TEST_DOMAIN=test.<new>`, `SWITCH_URL=https://test.<new>`.
+  3. Testing's `.env`: `DOMAIN=test.<new>`, `TEST_DOMAIN=test.<new>`, `SWITCH_URL=https://<new>`.
+  4. `sudo docker compose up -d` in testing's folder, then in production's. The proxy gets the certificates.
+  5. Update the site address in *Settings > Email* in both environments, if one is saved there.
 - **`MSSQL_SA_PASSWORD`** is set inside SQL Server on the first start. Changing it in `.env` afterwards only
   locks the API out. To change it, change it in SQL Server first (letters, digits, `-` and `_` only), then in
-  `.env`, then run `docker compose up -d`:
+  `.env`, then run `sudo docker compose up -d`:
 
   ```bash
-  docker compose exec db /opt/mssql-tools18/bin/sqlcmd -C -U sa -P '<current password>' \
+  sudo docker compose exec db /opt/mssql-tools18/bin/sqlcmd -C -U sa -P '<current password>' \
       -Q "ALTER LOGIN sa WITH PASSWORD = N'<new password>'"
   ```
 
@@ -347,35 +424,44 @@ edit the file (`nano .env`) and run `docker compose up -d`.
   security updates (`apt-get install -y unattended-upgrades`).
 - The GitHub deploy key can only start `inventory-deploy production|testing` (a forced command with `restrict`
   in `authorized_keys`); it cannot open a shell or reach anything else. `update.sh` runs the code it pulls, so
-  whoever can push to `main` or `production` decides what the server runs: keep that list short, and protect
-  the `production` branch on GitHub (**Settings > Branches > Add rule**: require a pull request).
+  whoever can push to `main` or `production` decides what the server runs: keep that list short.
+- **Protect `production` on GitLab**, where the team pushes: **Settings > Repository > Protected branches**,
+  `production`, *Allowed to merge*: Maintainers, *Allowed to push and merge*: No one. Releases then go through a
+  merge request. On GitHub add no "require a pull request" rule: it would refuse the mirror's pushes.
+- Testing holds a copy of production's data: see [Testing's data](#testings-data) to keep it to the company's
+  network. The GitHub repositories should be **private**.
+- When memory runs out, the kernel stops testing's processes before production's (`OOM_SCORE_ADJ=500` in
+  testing's `.env`).
 
 ## Troubleshooting
 
 ### The site does not open
 
-1. `docker compose ps` in production's deploy folder: `proxy`, `web`, `api` and `db` should be `Up`, `api` and
-   `db` `(healthy)`. For testing's address, also in testing's folder (no `proxy` there).
-2. `docker compose logs proxy` (production's folder): Caddy explains certificate problems here, for both
+1. `sudo docker compose ps` in production's deploy folder: `proxy`, `web`, `api` and `db` should be `Up`, `api`
+   and `db` `(healthy)`. For testing's address, also in testing's folder (no `proxy` there).
+2. `sudo docker compose logs proxy` (production's folder): Caddy explains certificate problems here, for both
    addresses. The usual causes:
    - The domain does not point at this server yet (`getent hosts <domain>` must show the server's IP).
      DNS changes can take up to an hour.
    - Ports 80/443 are blocked by the provider's firewall: from your PC, `curl -sI -m 10 http://<server-ip>`
      prints nothing. Only the provider (or whoever manages the server) can open them; meanwhile use
-     [the SSH tunnel](#open-the-app-through-ssh). Once they are open, `docker compose restart proxy`.
+     [the SSH tunnel](#open-the-app-through-ssh). Once they are open, `sudo docker compose restart proxy`.
+   - `sudo ufw status` says `Status: active` without `80/tcp` and `443/tcp` ALLOW: run
+     `sudo ufw allow 80/tcp && sudo ufw allow 443/tcp && sudo ufw allow 443/udp` (`update.sh` does it too).
+   - Testing's address answers "403": `TEST_ALLOWED_IPS` in production's `.env` does not list your address.
    - Only testing's address fails: with your own domain, `test.<domain>` needs its own DNS A record.
    - Too many failed attempts: Let's Encrypt pauses for an hour. Fix the cause, then wait.
 
 ### "The server is not reachable right now"
 
-The page loads but the API does not answer. `docker compose logs --tail 100 api` shows why. While it is
+The page loads but the API does not answer. `sudo docker compose logs --tail 100 api` shows why. While it is
 starting (first start, or after `update.sh`) this is normal for up to a few minutes.
 
 ### The API restarts over and over
 
-`docker compose logs api` names the setting at fault. Typical causes: a changed `MSSQL_SA_PASSWORD` (see
-[Settings](#settings)), or SQL Server stopped for lack of memory (`docker compose logs db`,
-`dmesg | grep -i oom`).
+`sudo docker compose logs api` names the setting at fault. Typical causes: a changed `MSSQL_SA_PASSWORD` (see
+[Settings](#settings)), or SQL Server stopped for lack of memory (`sudo docker compose logs db`,
+`sudo dmesg | grep -i oom`).
 
 ### Emails are not sent
 

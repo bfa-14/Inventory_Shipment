@@ -71,7 +71,8 @@ Conventions worth keeping:
   in both repositories. Never commit straight to `production`.
 - Deploy: a push to `main` / `production` (GitHub Actions "Deploy to server", once set up), or on the server
   `sudo ./update.sh` in that environment's `deploy/` folder. Each API applies Schema.sql as it starts.
-- The server pulls from GitHub; the team's GitLab must be kept in step (push mirror, `deploy/README.md`).
+- The server pulls from GitHub; the team's GitLab pushes to it through a push mirror (`deploy/README.md`). With
+  the mirror on, push and merge on GitLab only: the mirror overwrites anything done on GitHub alone.
 - Never commit `deploy/.env`, and never ask for or repeat passwords, keys or server credentials.
 
 ## Working with the user
