@@ -55,6 +55,7 @@ db_exists() { sql_value "SELECT COUNT(*) FROM sys.databases WHERE name = N'$1'";
 # deleted yet, or the old data was restored since: forget the side database (its saved account may be stale, e.g.
 # its password changed since) and start again. The database gone without a saved account: only the backup helps.
 resuming=0
+stale_side=0
 backup_file=""
 if [ "$(db_exists "$keep_db")" != "0" ]; then
     saved=$(sql_value "SELECT COUNT(*) FROM [$keep_db].sys.tables WHERE name = N'KeepUser'")
@@ -80,7 +81,7 @@ if [ "$(db_exists "$keep_db")" != "0" ]; then
         keep=$(sql_value "SELECT Username FROM [$keep_db].dbo.KeepUser")
         say "A previous reset of $env_name did not finish: carrying on with the account '$keep' it saved."
     elif [ "$(db_exists "$db")" != "0" ]; then
-        sql_exec -Q "DROP DATABASE [$keep_db];"
+        stale_side=1    # dropped once the reset is confirmed: a cancel changes nothing
         backup_file=""
     else
         die "A previous reset deleted the $env_name database without saving the account. Restore the backup it took (${backup_file:-the newest file in $(pwd)/backups/before-reset}: sudo ./restore.sh <that file>), then run this again."
@@ -122,6 +123,7 @@ read -t 300 -rp "Type the address $domain to continue: " answer </dev/tty || die
 # ----- Backup, save the account, delete ----------------------------------------------------------------------
 
 if [ "$resuming" -eq 0 ]; then
+    [ "$stale_side" -eq 0 ] || sql_exec -Q "DROP DATABASE [$keep_db];"
     ./backup.sh
     latest=$(find backups -maxdepth 1 -name "$db-*.bak.gz" -printf '%T@ %p\n' | sort -n | tail -n 1 | cut -d' ' -f2-)
     [ -n "$latest" ] || die "The backup was not found in deploy/backups: nothing was changed."

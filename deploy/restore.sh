@@ -92,6 +92,7 @@ fi
 sql_exec -Q "IF DB_ID(N'${db}_reset_keep') IS NOT NULL DROP DATABASE [${db}_reset_keep];"
 
 say "Starting the API (it updates the restored database to the current schema)"
-docker compose start api
+# "up" (not "start"): a changed setting, such as the signing key copy-production-to-testing.sh renews, is taken.
+docker compose up -d --no-build api
 wait_for_api
 say "Restored $source_file into $db."
