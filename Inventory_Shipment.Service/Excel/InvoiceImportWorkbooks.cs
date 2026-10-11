@@ -32,6 +32,16 @@ public sealed class InvoiceImportWorkbooks
     /// <summary>"Import_INV_IN_Template.xlsx" — the type in the name, so a downloaded file says what it is for.</summary>
     public static string TemplateFileNameFor(string documentTypeCode) => $"Import_{documentTypeCode}_Template.xlsx";
 
+    /// <summary>
+    /// The import's switch for one document per warehouse, as the instructions name it: on each page that
+    /// offers it, by the label that page shows (the Sales Invoice page calls its documents invoices). Both
+    /// are named on every template, so the text also tells the reader of any other type's template where
+    /// the switch is. Kept in one place because the instructions name the switch twice, and the words must
+    /// be the ones the pages show (ImportInvoiceItemsWizard in the web app).
+    /// </summary>
+    private const string SplitByWarehouseSwitch =
+        "\"One invoice per warehouse\" on the Sales Invoice page, \"One document per warehouse\" on the Inventory In page";
+
     /// <summary>The headings, in the order the template lays them out. The parser matches on the text, not the order.</summary>
     private static readonly string[] TemplateHeaders =
         ["Document Type", "Item Code / Barcode", "Unit", "Warehouse", "Quantity", "Unit Price / Cost", "Discount %", "Notes"];
@@ -51,7 +61,9 @@ public sealed class InvoiceImportWorkbooks
             ("Unit", "Optional",
                 "The unit type name (PC, Box) or the unit's SKU. Blank uses the family's unit: the sales unit on a sales document, the purchase unit on a purchase document, the base unit on an inventory document."),
             ("Warehouse", "Optional",
-                "The warehouse code or name; it must belong to the document's branch. EVERY ROW KEEPS ITS OWN, so one file may name several: they become ONE document whose lines sit in different warehouses. Blank uses the document's."),
+                "The warehouse code or name. On Inventory In / Out it must belong to the document's branch; a sales or purchase line may take a warehouse of any branch. "
+                + "EVERY ROW KEEPS ITS OWN, so one file may name several: they become ONE document whose lines keep their own warehouse, "
+                + $"or one document per warehouse when the import's switch for it is turned on ({SplitByWarehouseSwitch}). Blank uses the document's."),
             ("Quantity", "Required",
                 "A whole number of units, greater than zero."),
             ("Unit Price / Cost", "Optional",
@@ -196,7 +208,8 @@ public sealed class InvoiceImportWorkbooks
 
         rowNumber++;
         sheet.Cell(rowNumber, 1).Value = $"This template was downloaded for {type.Name} ({type.Code}). "
-            + "The file becomes ONE document, however many warehouses it names: every row keeps the warehouse in its Warehouse column, and a blank one uses the document's.";
+            + "A file naming several warehouses becomes ONE document whose lines keep their own warehouse (the one in their Warehouse column; a blank one uses the document's), "
+            + $"OR one document per warehouse when the import's switch for it is turned on ({SplitByWarehouseSwitch}).";
         sheet.Range(rowNumber, 1, rowNumber, 3).Merge().Style.Font.Italic = true;
 
         rowNumber++;

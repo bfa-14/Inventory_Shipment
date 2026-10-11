@@ -5,10 +5,11 @@ namespace Inventory_Shipment.Model.DTOs.Documents;
 /// <summary>
 /// One validated wizard row, as every family's import-create endpoint takes it.
 ///
-/// THE WAREHOUSE IS ON THE LINE and stays there: a file names a warehouse per row, and the rows
-/// become ONE document whose lines each keep their own. Price and discount are carried for the
-/// families that price (sales, purchase); a stock document reads <see cref="UnitPrice"/> as the unit
-/// cost and ignores the discount.
+/// THE WAREHOUSE IS ON THE LINE and stays there: a file names a warehouse per row, and by default the
+/// rows become ONE document whose lines each keep their own. Sales invoices and stock documents can
+/// instead be asked for one document per warehouse (SplitByWarehouse on their requests), which groups
+/// the lines by this id. Price and discount are carried for the families that price (sales,
+/// purchase); a stock document reads <see cref="UnitPrice"/> as the unit cost and ignores the discount.
 /// </summary>
 public sealed class ImportCreateLine
 {
@@ -40,18 +41,24 @@ public sealed class ImportCreateLine
     public int? ImportRowNumber { get; init; }
 }
 
-/// <summary>The document the import created — one, however many warehouses the file named.</summary>
+/// <summary>
+/// A document the import created: the only one, however many warehouses the file named, or one of
+/// several when the file was split by warehouse (or, for supplier invoices, by item).
+/// </summary>
 public sealed class ImportCreateDocument
 {
     public int Id { get; init; }
     public string? DocumentNumber { get; init; }
 
-    /// <summary>The document's own (header) warehouse — the first line's. The lines may name others.</summary>
+    /// <summary>
+    /// The document's own (header) warehouse: the first line's on a single document, whose lines may
+    /// name others; the group's own on a document split by warehouse.
+    /// </summary>
     public int WarehouseId { get; init; }
 
     public string WarehouseName { get; init; } = string.Empty;
 
-    /// <summary>How many distinct warehouses the lines name. More than 1 is a mixed document.</summary>
+    /// <summary>How many distinct warehouses the lines name. More than 1 is a mixed document; always 1 when split by warehouse.</summary>
     public int WarehouseCount { get; init; }
 
     public int LineCount { get; init; }
@@ -66,10 +73,13 @@ public sealed class ImportCreateDocument
     public string? ItemName { get; init; }
 }
 
-/// <summary>The document could not be created, or was created but refused posting.</summary>
+/// <summary>A document could not be created, or was created but refused posting.</summary>
 public sealed class ImportCreateFailure
 {
-    /// <summary>The document's header warehouse. Null when it was never created and has none.</summary>
+    /// <summary>
+    /// The document's header warehouse. On a file split by warehouse, the group's warehouse even when
+    /// its document was never created; otherwise null when the document was never created and has none.
+    /// </summary>
     public int? WarehouseId { get; init; }
 
     public string? WarehouseName { get; init; }
@@ -84,10 +94,12 @@ public sealed class ImportCreateFailure
 /// <see cref="Documents"/> with status Draft, and in <see cref="Failed"/> with the reason — so the
 /// page can open it and fix it rather than lose the lines.
 ///
-/// STILL LISTS, THOUGH THE IMPORT NOW MAKES ONE DOCUMENT. The shape is shared by the three families
-/// and by the page that reads it, and a create that fails outright returns no document and one
-/// failure — so the lists stay, holding at most one each. Supplier invoices are the exception: they
-/// hold one item (script 45), so a file of several items lists one invoice per item.
+/// LISTS, BECAUSE AN IMPORT MAY MAKE ONE DOCUMENT OR SEVERAL. By default a file becomes ONE document
+/// however many warehouses it names, and a create that fails outright returns no document and one
+/// failure. A sales invoice or stock document import asked to split by warehouse makes one document
+/// per warehouse, each created and posted on its own: every one is listed here, every refusal in
+/// <see cref="Failed"/> with its warehouse. Supplier invoices hold one item (script 45), so a file of
+/// several items lists one invoice per item. <see cref="Created"/> and <see cref="Posted"/> count them.
 /// </summary>
 public sealed class ImportCreateResult
 {

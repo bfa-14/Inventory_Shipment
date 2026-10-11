@@ -684,6 +684,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Customer receipts** with payment methods and cash / bank accounts. **[Ali – details unknown]**
 - **Warehouses** can stand under another warehouse. **[Ali]**
 - **Document import:** one document whatever the warehouse; no Expiry Date in the import template. **[Ali]**
+  - On Sales Invoice and Inventory In, a file naming several warehouses can instead become **one document per
+    warehouse**: the import's switch "One invoice per warehouse" (Sales Invoice page) / "One document per
+    warehouse" (Inventory In page), off by default; same header on each, each posted on its own. **[Implemented]**
 - **Price lists:** per document type `DefaultPricing` / `PriceEditable`. **(unsure, check the code)**
 - **Stock check on sales** (refused unless out-of-stock selling is allowed). **(unsure)**
 - **Inventory Out** may require a reason (`RequiresReason`). **(unsure)**

@@ -19,13 +19,16 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     private const string NotFoundMessage = "Invoice not found.";
 
     private readonly ISalesDocumentRepository _invoices;
+    private readonly IWarehouseRepository _warehouses;
     private readonly SalesOptions _options;
     private readonly ILogger<SalesInvoiceService> _logger;
 
     public SalesInvoiceService(
-        ISalesDocumentRepository invoices, IOptions<SalesOptions> options, ILogger<SalesInvoiceService> logger)
+        ISalesDocumentRepository invoices, IWarehouseRepository warehouses, IOptions<SalesOptions> options,
+        ILogger<SalesInvoiceService> logger)
     {
         _invoices = invoices;
+        _warehouses = warehouses;
         _options = options.Value;
         _logger = logger;
     }
@@ -446,12 +449,23 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         });
 
     /// <summary>
-    /// The imported file's lines, saved as ONE invoice whatever warehouses they name — the warehouse
-    /// is a line's, so a file naming several becomes one invoice whose rows each keep their own.
+    /// The imported file's lines, saved as ONE invoice whatever warehouses they name — the warehouse is
+    /// a line's, so a file naming several becomes one invoice whose rows each keep their own — or as one
+    /// invoice per warehouse when the user asked for it (<see cref="ImportCreateSalesInvoicesRequest.SplitByWarehouse"/>).
     ///
-    /// THE DRAFT REFERENCE GOES ON THAT INVOICE. The import logs written while no invoice existed are
-    /// attached to it by the save, which gives it its "Imported" audit row. A refused posting leaves
-    /// the invoice as a draft: the lines are worth more than a clean failure.
+    /// EVERY INVOICE IS AN ORDINARY IMPORTED INVOICE. Split, each warehouse's lines go through the same
+    /// save and post as the single invoice would, with the same header values (client, currency,
+    /// payment type, reference...) and that warehouse on the header: the price list and the
+    /// price-override permission apply to each, posting checks each one's stock, and a Cash invoice
+    /// posts its own receipt. A refusal is that invoice's alone — a refused posting leaves it as a draft,
+    /// a refused save leaves it out, both are listed in Failed with the warehouse — and the others still go
+    /// in, even after an unexpected error (<see cref="ImportCreateParts.UnexpectedFailureAsync"/>).
+    ///
+    /// THE DRAFT REFERENCE GOES ON EVERY SAVE. The import logs written while no invoice existed are
+    /// attached by the first save that succeeds, which gives that invoice its "Imported" audit row; a log
+    /// row belongs to one invoice (usp_InvoiceImport_AttachInvoice takes only rows not yet attached), so
+    /// the later saves find none. The wizard's log of THIS file is written after the call, against the
+    /// ids it returns — once per invoice gives each one its own "Imported" row.
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateSalesInvoicesRequest request, int userId, IReadOnlySet<string> permissions,
@@ -472,74 +486,99 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         var documents = new List<ImportCreateDocument>();
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
-        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
 
-        var draft = new SaveSalesInvoiceRequest
+        foreach (var lines in ImportCreateParts.Of(request.Lines, request.SplitByWarehouse))
         {
-            DocumentDate = request.DocumentDate,
-            DueDate = request.DueDate,
-            BranchId = request.BranchId,
-            // Left for the database, which takes the first line's: the header warehouse is only a label.
-            WarehouseId = null,
-            ClientId = request.ClientId,
-            SalesmanId = request.SalesmanId,
-            PriceListId = request.PriceListId,
-            CurrencyId = request.CurrencyId,
-            RateType = request.RateType,
-            ExchangeRate = request.ExchangeRate,
-            PriceListRate = request.PriceListRate,
-            ReferenceNo = request.ReferenceNo,
-            Notes = request.Notes,
-            DraftReference = request.DraftReference,
-            PaymentType = request.PaymentType,
-            ReceiptMethodId = request.ReceiptMethodId,
-            ReceiptAccountId = request.ReceiptAccountId,
-            PaymentReference = request.PaymentReference,
-            Lines = request.Lines.Select((line, index) => new SaveSalesInvoiceLineRequest
-            {
-                LineNo = index + 1,
-                ItemId = line.ItemId,
-                ItemUnitId = line.ItemUnitId,
-                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
-                WarehouseId = line.WarehouseId,
-                ExpiryDate = line.ExpiryDate,
-                Quantity = line.Quantity,
-                UnitPrice = line.UnitPrice,
-                DiscountPercent = line.DiscountPercent,
-                ImportRowNumber = line.ImportRowNumber,
-                Notes = line.Notes,
-            }).ToList(),
-        };
+            var warehouseCount = lines.Select(line => line.WarehouseId).Distinct().Count();
+            // SPLIT, THE PART IS ONE WAREHOUSE'S and its header names it. Otherwise null: the header warehouse
+            // is only a label, and the database takes the first line's.
+            int? partWarehouseId = request.SplitByWarehouse ? lines[0].WarehouseId : null;
 
-        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-        if (saved.IsFailure || saved.Value is null)
-        {
-            failed.Add(new ImportCreateFailure
+            var draft = new SaveSalesInvoiceRequest
             {
-                Code = saved.Code ?? "ERROR",
-                Message = saved.Error ?? "The invoice could not be created.",
-            });
-        }
-        else
-        {
-            var invoice = saved.Value;
-            if (request.PostImmediately)
-            {
-                var result = await PostAsync(invoice.Id, null, userId, permissions, cancellationToken);
-                if (result.IsSuccess && result.Value is not null)
+                DocumentDate = request.DocumentDate,
+                DueDate = request.DueDate,
+                BranchId = request.BranchId,
+                WarehouseId = partWarehouseId,
+                ClientId = request.ClientId,
+                SalesmanId = request.SalesmanId,
+                PriceListId = request.PriceListId,
+                CurrencyId = request.CurrencyId,
+                RateType = request.RateType,
+                ExchangeRate = request.ExchangeRate,
+                PriceListRate = request.PriceListRate,
+                ReferenceNo = request.ReferenceNo,
+                Notes = request.Notes,
+                DraftReference = request.DraftReference,
+                PaymentType = request.PaymentType,
+                ReceiptMethodId = request.ReceiptMethodId,
+                ReceiptAccountId = request.ReceiptAccountId,
+                PaymentReference = request.PaymentReference,
+                Lines = lines.Select((line, index) => new SaveSalesInvoiceLineRequest
                 {
-                    invoice = result.Value;
-                    posted++;
-                }
-                else
+                    LineNo = index + 1,
+                    ItemId = line.ItemId,
+                    ItemUnitId = line.ItemUnitId,
+                    // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                    WarehouseId = line.WarehouseId,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = line.Quantity,
+                    UnitPrice = line.UnitPrice,
+                    DiscountPercent = line.DiscountPercent,
+                    ImportRowNumber = line.ImportRowNumber,
+                    Notes = line.Notes,
+                }).ToList(),
+            };
+
+            SalesInvoiceDto? invoice = null;
+            try
+            {
+                var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+                if (saved.IsFailure || saved.Value is null)
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = invoice.WarehouseId,
-                        WarehouseName = invoice.WarehouseName,
-                        Code = result.Code ?? "ERROR",
-                        Message = result.Error ?? "The invoice could not be posted.",
+                        WarehouseId = partWarehouseId,
+                        WarehouseName = partWarehouseId is int warehouseId
+                            ? await ImportCreateParts.WarehouseNameAsync(_warehouses, warehouseId, _logger, cancellationToken)
+                            : null,
+                        Code = saved.Code ?? "ERROR",
+                        Message = saved.Error ?? "The invoice could not be created.",
                     });
+                    continue;
+                }
+
+                invoice = saved.Value;
+                if (request.PostImmediately)
+                {
+                    var result = await PostAsync(invoice.Id, null, userId, permissions, cancellationToken);
+                    if (result.IsSuccess && result.Value is not null)
+                    {
+                        invoice = result.Value;
+                        posted++;
+                    }
+                    else
+                    {
+                        failed.Add(new ImportCreateFailure
+                        {
+                            WarehouseId = invoice.WarehouseId,
+                            WarehouseName = invoice.WarehouseName,
+                            Code = result.Code ?? "ERROR",
+                            Message = result.Error ?? "The invoice could not be posted.",
+                        });
+                    }
+                }
+            }
+            catch (Exception ex) when (request.SplitByWarehouse && ex is not OperationCanceledException)
+            {
+                // SPLIT ONLY: the invoices of the warehouses before this one are committed, perhaps posted with
+                // their receipts, and must stay in the result. Unsplit there is nothing before it, and the error
+                // goes up as it always has. A draft saved before the error is still listed, for the page to open.
+                failed.Add(await ImportCreateParts.UnexpectedFailureAsync(
+                    ex, "invoice", _warehouses, lines[0].WarehouseId, invoice?.Id, _logger, cancellationToken));
+                if (invoice is null)
+                {
+                    continue;
                 }
             }
 
@@ -556,8 +595,8 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
 
         _logger.LogInformation(
-            "Import created {Created} sales invoice(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, warehouseCount, userId, posted, failed.Count);
+            "Import created {Created} sales invoice(s) from {Lines} line(s) for user {UserId} (one per warehouse: {Split}): {Posted} posted, {Failed} refused",
+            documents.Count, request.Lines.Count, userId, request.SplitByWarehouse, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {
