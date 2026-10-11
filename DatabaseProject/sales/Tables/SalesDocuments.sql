@@ -38,6 +38,7 @@ CREATE TABLE [sales].[SalesDocuments] (
     [ReceiptMethodId]      INT             NULL,
     [ReceiptAccountId]     INT             NULL,
     [PaymentReference]     NVARCHAR (100)  NULL,
+    [PriceListRate]        DECIMAL (18, 6) NULL,
     CONSTRAINT [PK_SalesDocuments] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_SalesDocuments_DueDate] CHECK ([DueDate] IS NULL OR [DueDate]>=[DocumentDate]),
     CONSTRAINT [CK_SalesDocuments_PaymentType] CHECK ([PaymentType] IS NULL OR ([PaymentType]=(2) OR [PaymentType]=(1))),
@@ -63,6 +64,12 @@ CREATE TABLE [sales].[SalesDocuments] (
 
 GO
 
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeStatus]
+    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [Status] ASC);
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Salesman]
     ON [sales].[SalesDocuments]([SalesmanId] ASC) WHERE ([SalesmanId] IS NOT NULL);
 
@@ -71,12 +78,6 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeDate]
     ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeStatus]
-    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [Status] ASC);
 
 
 GO

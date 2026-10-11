@@ -1,5 +1,3 @@
-/* ================================================================== 6. Cash / bank account procedures */
-
 CREATE   PROCEDURE masterdata.usp_CashBankAccount_Search
     @Search        NVARCHAR(100) = NULL,
     @AccountType   NVARCHAR(10)  = NULL,
@@ -23,7 +21,8 @@ BEGIN
 
     SELECT a.Id, a.AccountCode, a.AccountName, a.AccountType, a.CurrencyId, c.CurrencyCode,
            a.BranchId, BranchName = b.BranchName, a.Description, a.IsActive,
-           UsedCount = (SELECT COUNT(*) FROM sales.ReceiptLines x WHERE x.CashBankAccountId = a.Id),
+           UsedCount = (SELECT COUNT(*) FROM sales.ReceiptLines x WHERE x.CashBankAccountId = a.Id)
+                     + (SELECT COUNT(*) FROM purchase.PaymentLines y WHERE y.CashBankAccountId = a.Id),
            a.CreatedAtUtc, a.CreatedBy, a.UpdatedAtUtc, a.UpdatedBy, a.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM masterdata.CashBankAccounts a

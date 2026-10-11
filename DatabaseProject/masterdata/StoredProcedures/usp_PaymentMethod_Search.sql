@@ -1,5 +1,3 @@
-/* ================================================================== 5. Payment method procedures */
-
 CREATE   PROCEDURE masterdata.usp_PaymentMethod_Search
     @Search        NVARCHAR(100) = NULL,
     @IsActive      BIT           = NULL,
@@ -19,7 +17,8 @@ BEGIN
     SET @SortDirection = UPPER(@SortDirection);
 
     SELECT m.Id, m.MethodCode, m.MethodName, m.Description, m.IsActive,
-           UsedCount = (SELECT COUNT(*) FROM sales.ReceiptLines x WHERE x.PaymentMethodId = m.Id),
+           UsedCount = (SELECT COUNT(*) FROM sales.ReceiptLines x WHERE x.PaymentMethodId = m.Id)
+                     + (SELECT COUNT(*) FROM purchase.PaymentLines y WHERE y.PaymentMethodId = m.Id),
            m.CreatedAtUtc, m.CreatedBy, m.UpdatedAtUtc, m.UpdatedBy, m.RowVersion,
            COUNT(*) OVER () AS TotalCount
     FROM masterdata.PaymentMethods m

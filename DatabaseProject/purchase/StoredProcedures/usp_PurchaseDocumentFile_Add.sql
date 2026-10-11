@@ -1,6 +1,6 @@
 /* ================================================================== 5. Purchase documents (PO, PINV, PRET) */
 
--- Re-created (48) from the body of script 21: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 21: + the type (required, used for the document's kind), date and note.
 CREATE   PROCEDURE purchase.usp_PurchaseDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,

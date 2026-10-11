@@ -1,3 +1,4 @@
+
 CREATE   PROCEDURE masterdata.usp_Warehouse_Update
     @Id                   INT,
     @WarehouseCode        NVARCHAR(20),
@@ -56,6 +57,13 @@ BEGIN
         -- The move that would swallow the mover: the chosen parent stands under this warehouse.
         IF EXISTS (SELECT 1 FROM masterdata.fn_Warehouse_Subtree(@Id) WHERE Id = @ParentId)
             THROW 52008, 'This would create a circular hierarchy: the selected parent stands under this warehouse.', 1;
+        -- Only a NEW parent is checked: a warehouse already standing under a used one keeps its place.
+        IF @ParentId <> ISNULL((SELECT ParentId FROM masterdata.Warehouses WHERE Id = @Id), 0)
+           AND masterdata.fn_Warehouse_IsUsed(@ParentId) = 1
+        BEGIN
+            DECLARE @UsedMsg NVARCHAR(400) = N'Warehouse ' + (SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @ParentId) + N' is already used in transactions, so it cannot become a parent: stock is kept only in the warehouses at the bottom of the tree. Choose another parent warehouse.';
+            THROW 52000, @UsedMsg, 1;
+        END
     END
 
     IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @Id AND RowVersion = @RowVersion)

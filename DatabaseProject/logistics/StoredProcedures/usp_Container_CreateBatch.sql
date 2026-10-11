@@ -1,6 +1,6 @@
 /* ================================================================== 5. Create from a plan */
 
--- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only; an item without
+-- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only; an item without
 -- one stops the batch (69000); the containers get no MaxUnits; the answer gives their fill.
 CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
@@ -18,7 +18,7 @@ CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @Eta                 DATE           = NULL,
     @FreeDays            INT            = NULL,
     @Plan                logistics.tvp_ContainerPlanLine READONLY,
-    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (50) ignored: the items' Container units only
+    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (54) ignored: the items' Container units only
     @AllowOverCapacity   BIT            = 0,
     @Confirm             BIT            = 0,                      -- 1 = the new containers are confirmed at once
     @UserId              INT            = NULL,
@@ -30,7 +30,7 @@ BEGIN
 
     IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
 
-    -- (47) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    -- (51) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
     IF @ForInvoiceId IS NOT NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
@@ -62,7 +62,7 @@ BEGIN
         THROW 69000, @Msg, 1;
     END
 
-    -- (50) every planned item has a Container unit, as the proposal requires
+    -- (54) every planned item has a Container unit, as the proposal requires
     SELECT TOP (1) @Msg = N'Line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
     FROM @Plan p
     INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId

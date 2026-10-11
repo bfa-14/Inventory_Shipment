@@ -1,19 +1,19 @@
 /* ================================================================== 4. Auto-plan: pieces per container from the item */
 
--- Re-created (50) from the body of script 47: pieces per container = the item's Container unit only
+-- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only
 -- (logistics.fn_ItemPcsPerContainer); @Capacities and the container type's MaxUnits are no longer read; an item without
 -- a Container unit stops the plan (69000).
 CREATE   PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
     @ContainerTypeId INT,
     @MixRemainders   BIT = 1,       -- 0 = the rest of every order line gets its own container
-    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (50) ignored: the items' Container units only
+    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (54) ignored: the items' Container units only
     @ForInvoiceId    INT = NULL      -- (43) only what this invoice of the order has outside containers
 AS
 BEGIN
     SET NOCOUNT ON;
 
-    -- (47) a proposal for an invoice: the invoice's rules 1-7 first
+    -- (51) a proposal for an invoice: the invoice's rules 1-7 first
     IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
 
     IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
@@ -33,7 +33,7 @@ BEGIN
         OrderedBase   INT          NOT NULL,
         AvailableBase INT          NOT NULL,
         Cap           INT          NULL,
-        CapSource     NVARCHAR(20) NOT NULL,     -- (50) Item Definition | None
+        CapSource     NVARCHAR(20) NOT NULL,     -- (54) Item Definition | None
         OilIncluded   BIT          NOT NULL,
         Remaining     INT          NOT NULL
     );
@@ -177,7 +177,7 @@ BEGIN
     IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
         THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
 
-    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 50).
+    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 54).
     SELECT x.Seq, x.ItemCount, x.Units,
            FillPct  = CAST(ROUND(100 * x.Fill, 1) AS DECIMAL(9,1)),
            ItemSummary = CASE WHEN x.ItemCount = 1 THEN x.FirstItem ELSE N'Mixed - ' + CAST(x.ItemCount AS NVARCHAR(10)) + N' items' END

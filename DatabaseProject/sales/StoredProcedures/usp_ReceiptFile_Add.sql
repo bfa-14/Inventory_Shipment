@@ -1,6 +1,6 @@
 /* ================================================================== 8. Customer receipts (RCPT) */
 
--- Re-created (48) from the body of script 36: the type required and used for receipts (it was optional and checked
+-- Re-created (52) from the body of script 36: the type required and used for receipts (it was optional and checked
 -- on AppliesTo), + @DocumentDate; the note takes 500 characters.
 CREATE   PROCEDURE sales.usp_ReceiptFile_Add
     @ReceiptId        INT,

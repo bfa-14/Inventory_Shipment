@@ -1,6 +1,6 @@
 /* ================================================================== 8. Order lines to load */
 
--- Re-created (50) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
+-- Re-created (54) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
 CREATE   PROCEDURE logistics.usp_Container_AvailablePoLines
     @PurchaseOrderId INT           = NULL,
     @SupplierId      INT           = NULL,
