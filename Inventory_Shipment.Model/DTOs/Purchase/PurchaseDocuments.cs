@@ -32,7 +32,8 @@ public static class PurchaseDocumentTypes
 
 /// <summary>
 /// Purchase documents have one status more than the others: a posted purchase order is OPEN, and it
-/// becomes CLOSED when every line has been received or when somebody closes it by hand.
+/// becomes CLOSED when every line is invoiced and received (or settled short, script 65) or when somebody
+/// closes it by hand.
 /// </summary>
 public static class PurchaseDocumentStatus
 {
@@ -98,7 +99,7 @@ public sealed class PurchaseDocumentListDto
 
     public string? CommercialInvoiceNo { get; init; }
 
-    /// <summary>1 = on posting, 2 = on container offload.</summary>
+    /// <summary>1 = not shipped in containers, 2 = "Shipped in containers" (see <see cref="PurchaseReceiptModes"/>).</summary>
     public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
 
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
@@ -111,8 +112,29 @@ public sealed class PurchaseDocumentListDto
     public int? SourceDocumentId { get; init; }
     public string? SourceDocumentNumber { get; init; }
 
-    /// <summary>Orders only: how much of the ordered quantity has been invoiced, 0–100.</summary>
+    /// <summary>
+    /// Orders only: how much of the ordered quantity has been RECEIVED by goods receipts (and the receipts made before
+    /// them), 0–100. Since script 65; before, this column was the invoiced percent, now <see cref="InvoicedPercent"/>.
+    /// </summary>
     public decimal? ReceivedPercent { get; init; }
+
+    /// <summary>Orders only: how much of the ordered quantity posted supplier invoices cover, 0–100.</summary>
+    public decimal? InvoicedPercent { get; init; }
+
+    /// <summary>
+    /// (65) Supplier invoices: posted after goods receipts started - their goods enter stock with goods receipts, the
+    /// posting moved no stock. False on drafts (set when posted), on invoices posted before, on orders and returns.
+    /// </summary>
+    public bool UsesGoodsReceipts { get; init; }
+
+    /// <summary>(65) The "Received" progress: pieces ordered (orders) or invoiced (supplier invoices); null on returns.</summary>
+    public int? QuantityBase { get; init; }
+
+    /// <summary>
+    /// (65) Pieces received of <see cref="QuantityBase"/>: by goods receipts; an invoice posted with its stock before goods
+    /// receipts received everything when it was posted. Null on returns.
+    /// </summary>
+    public int? ReceivedBase { get; init; }
 
     /// <summary>Supplier invoices only: the item it holds (the one of its first line). Null for orders and returns.</summary>
     public int? ItemId { get; init; }
@@ -120,8 +142,20 @@ public sealed class PurchaseDocumentListDto
     public string? ItemCode { get; init; }
     public string? ItemName { get; init; }
 
-    /// <summary>Supplier invoices only: how many items it holds — more than 1 for a draft made before one item per invoice.</summary>
+    /// <summary>
+    /// Supplier invoices only: how many items it holds. More than 1 for an invoice that may hold several (script 63:
+    /// <see cref="PurchaseSettingKeys.OneItemPerInvoice"/> off, or chosen when it was created) or a draft made before
+    /// one item per invoice: the list then says "3 items" instead of the item.
+    /// </summary>
     public int? ItemCount { get; init; }
+
+    /// <summary>
+    /// Supplier invoices only: its mode (script 63), its own or, for an invoice created before, the setting
+    /// <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>. True = it holds one item: a draft that holds several (saved
+    /// before that rule) is refused by Post (65029) until it is split, and the list flags it. False = it may hold several
+    /// items. Null for orders and returns.
+    /// </summary>
+    public bool? OneItemOnly { get; init; }
 
     /* (47) Supplier payments - posted purchase invoices only; null on orders, returns, drafts and cancelled ones. */
 
@@ -185,7 +219,10 @@ public sealed class PurchaseDocumentLineDto
     public decimal ReceivedQuantityBase { get; init; }
     public decimal ReturnedQuantityBase { get; init; }
 
-    /// <summary>Orders: still to receive; invoices: still returnable; returns: null.</summary>
+    /// <summary>
+    /// Orders: still to INVOICE; invoices: still returnable - since script 65, for an invoice that uses goods receipts or
+    /// is shipped in containers, received - returned (only received goods go back); returns: null.
+    /// </summary>
     public decimal? RemainingBase { get; init; }
 
     /// <summary>Orders: what the supplier has shipped so far (base units), recorded with "Mark as shipped".</summary>
@@ -203,8 +240,50 @@ public sealed class PurchaseDocumentLineDto
     /// <summary>Orders: what is still free to load into a container (ordered − loaded − invoiced directly); null on invoices and returns.</summary>
     public int? AvailableForContainerBase { get; init; }
 
-    /// <summary>Orders: in invoices made straight from the order, without a container (draft or posted).</summary>
+    /// <summary>
+    /// Orders: what the line has committed outside containers - since script 65 the larger of invoiced outside
+    /// containers, and received outside containers + on draft goods receipts (purchase.fn_PoLine_CommittedOutside; its
+    /// parts are <see cref="InvoicedOutsideBase"/>, <see cref="ReceivedOutsideBase"/>, <see cref="InDraftReceiptsOutsideBase"/>).
+    /// </summary>
     public int? InvoicedDirectBase { get; init; }
+
+    /* (65) GOODS RECEIPTS. Order lines: Invoiced is ReceivedQuantityBase (the old name, its meaning unchanged), Received
+       and Short come from goods receipts (purchase.fn_PoLine_Progress). Invoice lines: ReceivedQuantityBase is the pieces
+       received (matched to the line) for an invoice that uses goods receipts or is shipped in containers. */
+
+    /// <summary>Orders: pieces received (goods receipts, and the receipts made before them).</summary>
+    public int? GoodsReceivedBase { get; init; }
+
+    /// <summary>Orders: pieces settled short - nothing more will come for them.</summary>
+    public int? GoodsShortBase { get; init; }
+
+    /// <summary>Orders: loaded in containers not received yet (draft to cleared).</summary>
+    public int? InContainersBase { get; init; }
+
+    /// <summary>Orders: on draft goods receipts outside containers. Invoices: on draft goods receipts made from the line.</summary>
+    public int? InDraftReceiptsBase { get; init; }
+
+    /// <summary>
+    /// What "Receive goods..." proposes. Orders: ordered - received - short - in containers - in draft receipts. Invoices:
+    /// invoiced - received - in draft receipts, 0 on a line in a container and on an invoice posted before goods receipts.
+    /// Null on returns.
+    /// </summary>
+    public int? ToReceiveBase { get; init; }
+
+    /// <summary>Orders: the posting cap of a receipt outside containers (ordered - received - in containers).</summary>
+    public int? MaxOutsideBase { get; init; }
+
+    /// <summary>Orders: still to come (rule 17), the number Shortages and the item's "On order" count.</summary>
+    public int? OutstandingBase { get; init; }
+
+    /// <summary>Orders: invoiced outside containers (draft, posted or closed invoices not shipped in containers).</summary>
+    public int? InvoicedOutsideBase { get; init; }
+
+    /// <summary>Orders: received outside containers (posted goods receipts, and invoices that received when posted).</summary>
+    public int? ReceivedOutsideBase { get; init; }
+
+    /// <summary>Orders: on draft goods receipts outside containers.</summary>
+    public int? InDraftReceiptsOutsideBase { get; init; }
 
     /* Invoices from containers: every line points to ONE container line. */
     public int? ContainerLineId { get; init; }
@@ -218,7 +297,7 @@ public sealed class PurchaseDocumentLineDto
     /// <summary>The posted container charges that fall on this invoice line (its share of the container line's).</summary>
     public decimal? ContainerChargesBase { get; init; }
 
-    /// <summary>FOB + container charges per unit; final once the container is offloaded.</summary>
+    /// <summary>FOB + container charges per unit; final once the goods are received.</summary>
     public decimal? EstimatedLandedCostBase { get; init; }
 
     public int? ImportRowNumber { get; init; }
@@ -300,14 +379,30 @@ public sealed class PurchaseInvoiceContainerDto
     public int? PurchaseOrderId { get; init; }
 }
 
-/// <summary>When a purchase invoice puts its goods into stock.</summary>
+/// <summary>
+/// "Shipped in containers" on a purchase invoice. SINCE SCRIPT 65 NO INVOICE MOVES STOCK WHEN IT IS POSTED, whatever its
+/// mode: the goods enter with goods receipts (an invoice posted after the switch has UsesGoodsReceipts). The mode says
+/// how: received with Receive goods... (1), or with the containers carrying them (2). Invoices posted before the switch
+/// keep the old meaning: 1 took its stock when posted, 2 at the container offload.
+/// </summary>
 public static class PurchaseReceiptModes
 {
-    /// <summary>Stock enters when the invoice is posted (local purchases).</summary>
+    /// <summary>Not shipped in containers: received with Receive goods... (before script 65: stock in when posted).</summary>
     public const byte OnPosting = 1;
 
-    /// <summary>Stock enters when the container carrying it is offloaded (imports). Forced once the invoice is loaded.</summary>
+    /// <summary>Shipped in containers: received with the containers' goods receipts. Forced once a line is in a container.</summary>
     public const byte OnContainerOffload = 2;
+}
+
+/// <summary>The global settings (configuration.SettingDefinitions) the Purchase module reads.</summary>
+public static class PurchaseSettingKeys
+{
+    /// <summary>
+    /// Bool, default true (script 63): a new supplier invoice holds one item, and creating invoices from an order, its
+    /// containers or an Excel file makes one invoice per item. Off: one invoice may hold several items. The creations
+    /// can still choose for themselves (OnePerItem), and every invoice keeps the mode it was created with.
+    /// </summary>
+    public const string OneItemPerInvoice = "Purchase.OneItemPerInvoice";
 }
 
 public sealed class PurchaseDocumentDto
@@ -355,13 +450,43 @@ public sealed class PurchaseDocumentDto
     public string? CommercialInvoiceNo { get; init; }
 
     /// <summary>
-    /// 1 = stock on posting, 2 = stock on container offload (see <see cref="PurchaseReceiptModes"/>). Chosen on an
+    /// 1 = not shipped in containers, 2 = shipped in containers (see <see cref="PurchaseReceiptModes"/>). Chosen on an
     /// invoice since script 43 (<see cref="ShippedInContainers"/>); a line linked to a container forces 2.
     /// </summary>
     public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
 
-    /// <summary>An invoice whose goods enter the stock at the offload of its containers (receipt mode 2).</summary>
+    /// <summary>An invoice whose goods travel in containers and are received with them (receipt mode 2).</summary>
     public bool ShippedInContainers => DocumentTypeCode == PurchaseDocumentTypes.Invoice && ReceiptMode == PurchaseReceiptModes.OnContainerOffload;
+
+    /* (65) GOODS RECEIPTS. */
+
+    /// <summary>
+    /// A supplier invoice posted after goods receipts started: its posting moved no stock, its goods enter with goods
+    /// receipts and their cost follows it. False on a draft (set when it is posted), on an invoice posted before (its
+    /// stock entered when it was posted, or at its container's offload), on orders and returns.
+    /// </summary>
+    public bool UsesGoodsReceipts { get; init; }
+
+    /// <summary>"Receive goods..." on this order or invoice is possible now (rules 14, 15). False on returns.</summary>
+    public bool CanReceive { get; init; }
+
+    /// <summary>
+    /// Why "Receive goods..." is disabled, in the words of the procedures ("Approve the order first: goods are received
+    /// against an approved order.", "Everything ordered is already received.", "Posted before goods receipts: its stock
+    /// entered when it was posted (or when its container was offloaded)."...); null when it is not.
+    /// </summary>
+    public string? ReceiveBlockedReason { get; init; }
+
+    /// <summary>When goods receipts started (the switch): "Posted before goods receipts ({date})". Null before the switch.</summary>
+    public DateTime? GoodsReceiptsSinceUtc { get; init; }
+
+    /// <summary>
+    /// Supplier invoices: true = it holds ONE item (saving or posting a second one is refused, 65029; the page limits
+    /// its item picker and offers Split by item), false = it may hold several items. Its own mode, chosen when it was
+    /// created and kept (script 63), or the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/> for an invoice
+    /// created before. False on orders and returns, which are not concerned.
+    /// </summary>
+    public bool OneItemOnly { get; init; }
 
     public string? Notes { get; init; }
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
@@ -459,9 +584,13 @@ public sealed class PurchaseDocumentDto
     public bool CanEditCharges
         => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Draft && !IsContainerBound;
 
-    /// <summary>A posted local invoice can receive charges that arrived late, through a landed cost adjustment (67012 on an import).</summary>
+    /// <summary>
+    /// A posted local invoice can receive charges that arrived late, through a landed cost adjustment (67012 on an import:
+    /// since script 65 also on a "Shipped in containers" invoice whose lines are not linked yet).
+    /// </summary>
     public bool CanAdjustLandedCost
-        => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Posted && !IsContainerBound;
+        => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Posted && !IsContainerBound
+           && !ShippedInContainers;
 
     /// <summary>Shipped quantities are recorded on an open order only — the procedure refuses anything else.</summary>
     public bool CanMarkShipped => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
@@ -492,6 +621,207 @@ public sealed class PurchaseDocumentDto
 
     /// <summary>The containers of the order or of the invoice, with what each holds, has invoiced and has received.</summary>
     public IReadOnlyList<PurchaseInvoiceContainerDto> Containers { get; init; } = [];
+
+    /// <summary>
+    /// (65) The goods receipts of the document: an order's (made from it, its invoices or its containers), an invoice's
+    /// (made from it, or whose pieces are matched to its lines). Oldest first.
+    /// </summary>
+    public IReadOnlyList<PurchaseDocumentGoodsReceiptDto> GoodsReceipts { get; init; } = [];
+
+    /// <summary>
+    /// (65) Supplier invoices: the cost adjustments of received goods this invoice caused - posted or cancelled - and its
+    /// landed cost adjustments: the card "Cost of received goods". Empty for orders and returns.
+    /// </summary>
+    public IReadOnlyList<PurchaseDocumentCostAdjustmentDto> CostAdjustments { get; init; } = [];
+
+    /// <summary>
+    /// What the posting did - only on the answer to POST .../{id}/post (null on every read): the message, the cost of
+    /// received goods adjusted, and the goods receipt of "Receive the goods now". Set after the document is read back.
+    /// </summary>
+    public PurchasePostResultDto? PostResult { get; set; }
+}
+
+/// <summary>A goods receipt of a purchase order or invoice (result set 9 of usp_PurchaseDocument_Get, script 65).</summary>
+public sealed class PurchaseDocumentGoodsReceiptDto
+{
+    public int Id { get; init; }
+
+    /// <summary>Null on a draft: "Assigned on posting".</summary>
+    public string? DocumentNumber { get; init; }
+
+    /// <summary>The date received.</summary>
+    public DateTime DocumentDate { get; init; }
+
+    /// <summary>1 Draft, 2 Posted, 3 Cancelled.</summary>
+    public byte Status { get; init; }
+
+    public string StatusName => GoodsReceiptStatus.Name(Status);
+
+    /// <summary>Container, Order, Invoice or Manual.</summary>
+    public string SourceKind { get; init; } = string.Empty;
+
+    /// <summary>Created by a Delivery's completion.</summary>
+    public bool IsAuto { get; init; }
+
+    public int? ContainerId { get; init; }
+    public string? ContainerRef { get; init; }
+    public int? WarehouseId { get; init; }
+    public string? WarehouseCode { get; init; }
+    public string? WarehouseName { get; init; }
+
+    /// <summary>Every piece the receipt holds.</summary>
+    public int ReceivedBase { get; init; }
+
+    /// <summary>Its pieces that concern THIS document: on the order's lines, or matched to (or received from) the invoice's.</summary>
+    public int HereBase { get; init; }
+
+    /// <summary>The value at receipt, fixed when it is posted (0 on a draft).</summary>
+    public decimal ValueAtReceiptBase { get; init; }
+
+    public DateTime? PostedAtUtc { get; init; }
+    public DateTime CreatedAtUtc { get; init; }
+}
+
+/// <summary>
+/// One cost adjustment of received goods (purchase.GoodsReceiptCostChanges, result set 10 of usp_PurchaseDocument_Get):
+/// a goods receipt line brought to its new cost when this invoice (or its landed cost adjustment) was posted or
+/// cancelled. Amount = to stock (changes the average cost) + to cost of sales (the part already sold).
+/// </summary>
+public sealed class PurchaseDocumentCostAdjustmentDto
+{
+    public int Id { get; init; }
+    public DateTime ChangedAtUtc { get; init; }
+
+    /// <summary>PINV, PINVCANCEL, LCA or LCACANCEL here (GRNPOST, GRNCANCEL, NEGSTOCK on the goods receipt).</summary>
+    public string CauseKind { get; init; } = string.Empty;
+
+    public int? CauseId { get; init; }
+    public string? CauseNumber { get; init; }
+    public int GoodsReceiptLineId { get; init; }
+    public int GoodsReceiptId { get; init; }
+    public string? GoodsReceiptNumber { get; init; }
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+
+    /// <summary>The pieces received on the line, and the share of them still in stock used for the split.</summary>
+    public int ReceivedBase { get; init; }
+
+    public decimal InStockBase { get; init; }
+    public decimal? FobBefore { get; init; }
+    public decimal? FobAfter { get; init; }
+    public decimal? UnitCostBefore { get; init; }
+    public decimal? UnitCostAfter { get; init; }
+    public decimal AmountBase { get; init; }
+    public decimal InventoryBase { get; init; }
+    public decimal CogsBase { get; init; }
+}
+
+/// <summary>
+/// What posting a purchase document did (script 65), beside the document itself: <see cref="Message"/> ("Posted:
+/// PINV-BR-002-000011. Cost of received goods adjusted by +60.00 USD (stock 40.00, cost of sales 20.00). Goods received:
+/// GRN-BR-002-000004."), the cost adjustment of goods already received, and the goods receipt of "Receive the goods
+/// now". A receipt that failed leaves the invoice posted: <see cref="ReceiveWarning"/> says why.
+/// </summary>
+public sealed class PurchasePostResultDto
+{
+    public string? DocumentNumber { get; init; }
+    public string Message { get; init; } = string.Empty;
+
+    /// <summary>The cost of received goods brought to this invoice's price: amount = to stock + to cost of sales. 0 when nothing moved.</summary>
+    public decimal CostAdjustedBase { get; init; }
+
+    public decimal CostAdjustedInventoryBase { get; init; }
+    public decimal CostAdjustedCogsBase { get; init; }
+
+    /// <summary>The goods receipt lines whose cost moved.</summary>
+    public int CostAdjustedLines { get; init; }
+
+    public string? BaseCurrencyCode { get; init; }
+
+    /// <summary>"Receive the goods now" was asked (a supplier invoice only).</summary>
+    public bool ReceiveRequested { get; init; }
+
+    /// <summary>The goods receipt created and posted with the invoice; null when not asked, or when it failed.</summary>
+    public int? GoodsReceiptId { get; init; }
+
+    public string? GoodsReceiptNumber { get; init; }
+
+    /// <summary>"Invoice posted; the goods receipt was not: {reason}. Use Receive goods…" - null when nothing failed.</summary>
+    public string? ReceiveWarning { get; init; }
+
+    /// <summary>The same warning(s) as a list, for the pages that show warnings that way. Empty when nothing failed.</summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+/// <summary>
+/// One line of a DRAFT supplier invoice, and what posting it would do to the cost of goods already received
+/// (purchase.usp_PurchaseInvoice_ReceiptCostPreview, script 64). AN ESTIMATE: the posting re-matches everything.
+/// </summary>
+public sealed class ReceiptCostPreviewLineDto
+{
+    public int InvoiceLineId { get; init; }
+    public int LineNumber { get; init; }
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public int InvoicedBase { get; init; }
+
+    /// <summary>The received pieces of its group not matched to an invoice yet, up to the line's pieces, first in first out.</summary>
+    public int ReceivedNotInvoicedBase { get; init; }
+
+    /// <summary>What those pieces cost now, per piece (landed); null when there are none.</summary>
+    public decimal? CurrentCostBase { get; init; }
+
+    /// <summary>What they would cost with this invoice, per piece; null when there are none.</summary>
+    public decimal? InvoiceCostBase { get; init; }
+
+    /// <summary>The cost adjustment: (invoice cost - current cost) x pieces.</summary>
+    public decimal DifferenceBase { get; init; }
+
+    /// <summary>The part of the difference that would go to the stock value, on today's company stock.</summary>
+    public decimal EstimatedInventoryBase { get; init; }
+
+    /// <summary>The part that would go to the cost of sales (pieces already sold).</summary>
+    public decimal EstimatedCogsBase { get; init; }
+
+    public int CompanyOnHandBase { get; init; }
+
+    /// <summary>The goods receipts those pieces came from: "GRN-BR-002-000001, GRN-BR-002-000003".</summary>
+    public string? Receipts { get; init; }
+
+    public bool IsEstimate { get; init; } = true;
+}
+
+/// <summary>
+/// The post confirmation's preview of a DRAFT supplier invoice (GET api/purchase/documents/{id}/receipt-cost-preview):
+/// the totals of its lines and the sentence the confirmation shows - "{n} pcs already received will have their cost
+/// adjusted by +60.00 USD (estimate: stock 40.00, cost of sales 20.00)." or "No goods received yet: their cost will be
+/// this invoice's when they arrive." A document that is not a draft has no lines.
+/// </summary>
+public sealed class ReceiptCostPreviewDto
+{
+    public int InvoiceId { get; init; }
+    public string? DocumentNumber { get; init; }
+
+    /// <summary>Draft, Posted, Cancelled or Closed: only a draft is previewed.</summary>
+    public string Status { get; init; } = PurchaseDocumentStatus.Draft;
+
+    public string? BaseCurrencyCode { get; init; }
+
+    /// <summary>Received pieces whose cost the posting would adjust.</summary>
+    public int ReceivedNotInvoicedBase { get; init; }
+
+    public decimal DifferenceBase { get; init; }
+    public decimal EstimatedInventoryBase { get; init; }
+    public decimal EstimatedCogsBase { get; init; }
+
+    /// <summary>Some goods of the invoice's lines are already received and not invoiced: the posting adjusts their cost.</summary>
+    public bool HasReceivedGoods => ReceivedNotInvoicedBase > 0;
+
+    public bool IsEstimate => true;
+    public string? Message { get; init; }
+    public IReadOnlyList<ReceiptCostPreviewLineDto> Lines { get; init; } = [];
 }
 
 /// <summary>The answer of masterdata.usp_ExchangeRate_Resolve: a currency and its rate on a day.</summary>
@@ -610,6 +940,13 @@ public sealed class SavePurchaseDocumentRequest
 
     public int? SourceDocumentId { get; init; }
 
+    /// <summary>
+    /// A NEW supplier invoice: true = it holds one item (65029 refuses a second), false = it may hold several; null =
+    /// the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>. Ignored on an update (an invoice keeps the mode
+    /// it was created with) and on orders and returns.
+    /// </summary>
+    public bool? OneItemOnly { get; init; }
+
     public IReadOnlyList<SavePurchaseDocumentLineRequest> Lines { get; init; } = [];
 
     public string? RowVersion { get; init; }
@@ -618,6 +955,14 @@ public sealed class SavePurchaseDocumentRequest
 public sealed class PostPurchaseDocumentRequest
 {
     public string? RowVersion { get; init; }
+
+    /// <summary>
+    /// (65, decision 7) "Receive the goods now", a supplier invoice only (ignored for orders and returns): once the invoice
+    /// is posted, its lines not in a container are received with one goods receipt, created and posted in a second
+    /// transaction. Needs purchase.goodsreceipts.create and .post besides the invoice's post (403 otherwise, nothing
+    /// posted). A receipt that fails leaves the invoice posted: the answer's postResult.receiveWarning says why.
+    /// </summary>
+    public bool ReceiveNow { get; init; }
 }
 
 public sealed class CancelPurchaseDocumentRequest
@@ -665,8 +1010,8 @@ public sealed class ContainerLineQuantityRequest
 }
 
 /// <summary>
-/// Draft purchase invoices from container lines of one order — ONE PER ITEM (script 45). NO LINES =
-/// everything loaded and not yet invoiced.
+/// Draft purchase invoices from container lines of one order — ONE PER ITEM (script 45), or one invoice holding
+/// every item (<see cref="OnePerItem"/> false, script 63). NO LINES = everything loaded and not yet invoiced.
 /// </summary>
 public sealed class InvoiceFromContainersRequest
 {
@@ -682,6 +1027,12 @@ public sealed class InvoiceFromContainersRequest
     /// <summary>Copied to every invoice created.</summary>
     [StringLength(50)]
     public string? CommercialInvoiceNo { get; init; }
+
+    /// <summary>
+    /// True = one invoice per item, each holding one item; false = ONE invoice holding every selected line, which may
+    /// hold several items; null = the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>.
+    /// </summary>
+    public bool? OnePerItem { get; init; }
 }
 
 /// <summary>Make the next document of the chain (order → invoice, invoice → return) from a posted one.</summary>
@@ -697,23 +1048,38 @@ public sealed class CreateFromSourceRequest
     /// <summary>Order → invoices: copied to every invoice created. Ignored for a return.</summary>
     [StringLength(50)]
     public string? CommercialInvoiceNo { get; init; }
+
+    /// <summary>
+    /// Order → invoices: true = one invoice per item, each holding one item; false = ONE invoice holding everything
+    /// that remains, which may hold several items; null = the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>.
+    /// Ignored for a return.
+    /// </summary>
+    public bool? OnePerItem { get; init; }
 }
 
-/// <summary>One supplier invoice a create or a split made: a supplier invoice holds ONE item (script 45).</summary>
+/// <summary>
+/// One supplier invoice a create or a split made: one per item (script 45), or one holding every item when the
+/// creation asked for it (script 63). The item is the one of its first line.
+/// </summary>
 public sealed class CreatedPurchaseInvoiceDto
 {
     public int Id { get; init; }
     public int? ItemId { get; init; }
     public string? ItemCode { get; init; }
     public string? ItemName { get; init; }
+
+    /// <summary>How many items it holds: 1, or more for one invoice holding every item (script 63).</summary>
+    public int ItemCount { get; init; }
+
     public int LineCount { get; init; }
     public int QuantityBase { get; init; }
     public decimal TotalAmount { get; init; }
 }
 
 /// <summary>
-/// The answer to "create invoice" from an order or from its containers: one draft per item of the selection.
-/// <see cref="Id"/> is <see cref="FirstId"/> under the name the pages read before invoices were split by item.
+/// The answer to "create invoice" from an order or from its containers: one draft per item of the selection, or one
+/// draft holding every item (script 63). <see cref="Id"/> is <see cref="FirstId"/> under the name the pages read before
+/// invoices were split by item.
 /// </summary>
 public sealed class CreatedPurchaseInvoicesDto
 {
@@ -724,18 +1090,26 @@ public sealed class CreatedPurchaseInvoicesDto
 
     public IReadOnlyList<CreatedPurchaseInvoiceDto> Invoices { get; init; } = [];
 
-    /// <summary>"3 invoices created, one per item" or "Invoice created".</summary>
+    /// <summary>"3 invoices created, one per item", "Invoice created with 3 items" or "Invoice created".</summary>
     public string Message { get; init; } = string.Empty;
 
     public static CreatedPurchaseInvoicesDto From(IReadOnlyList<CreatedPurchaseInvoiceDto> invoices) => new()
     {
         FirstId = invoices.Count > 0 ? invoices[0].Id : 0,
         Invoices = invoices,
-        Message = invoices.Count == 1 ? "Invoice created" : $"{invoices.Count} invoices created, one per item",
+        Message = invoices.Count switch
+        {
+            1 when invoices[0].ItemCount > 1 => $"Invoice created with {invoices[0].ItemCount} items",
+            1 => "Invoice created",
+            _ => $"{invoices.Count} invoices created, one per item",
+        },
     };
 }
 
-/// <summary>Split a draft supplier invoice holding several items (made before script 45) into one invoice per item.</summary>
+/// <summary>
+/// Split a draft supplier invoice holding several items into one invoice per item: one made before script 45, or one
+/// that may hold several (script 63). Every invoice it leaves holds one item from then on.
+/// </summary>
 public sealed class SplitByItemRequest
 {
     public string? RowVersion { get; init; }
@@ -765,6 +1139,13 @@ public sealed class PurchaseDocumentQuery
 
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }
+
+    /// <summary>(65) Orders: posted or closed with goods still to come ("To receive").</summary>
+    public bool? ToReceive { get; init; }
+
+    /// <summary>(65) Supplier invoices: posted or closed and not every piece received ("Not fully received").</summary>
+    public bool? NotFullyReceived { get; init; }
+
     public string SortBy { get; init; } = "DocumentDate";
     public string SortDir { get; init; } = "desc";
     public int Page { get; init; } = 1;
@@ -805,4 +1186,10 @@ public sealed class ImportCreatePurchaseDocumentsRequest
     public IReadOnlyList<ImportCreateLine> Lines { get; init; } = [];
 
     public bool PostImmediately { get; init; }
+
+    /// <summary>
+    /// Supplier invoices: true = one invoice per item of the file, each holding one item; false = one invoice holding
+    /// every item; null = the setting <see cref="PurchaseSettingKeys.OneItemPerInvoice"/>. Ignored for orders and returns.
+    /// </summary>
+    public bool? OnePerItem { get; init; }
 }

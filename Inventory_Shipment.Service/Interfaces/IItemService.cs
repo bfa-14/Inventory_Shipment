@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Entities;
 
@@ -33,11 +34,14 @@ public interface IItemService
     Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Items for a dropdown; <paramref name="includeId"/> keeps one inactive item visible, and
-    /// <paramref name="salesOnly"/> keeps only those with a unit that may be sold.
+    /// Items for a dropdown; <paramref name="includeId"/> keeps one inactive item visible,
+    /// <paramref name="salesOnly"/> keeps only those with a unit that may be sold, and
+    /// <paramref name="bivacOnly"/> only those with "BIVAC Item" ticked. <paramref name="search"/> and
+    /// <paramref name="top"/>, when given, narrow and cap the list; otherwise the procedure's defaults apply.
     /// </summary>
     Task<Result<IReadOnlyList<ItemLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default);
+        bool activeOnly, int? includeId, bool salesOnly = false, bool bivacOnly = false,
+        string? search = null, int? top = null, CancellationToken cancellationToken = default);
 
     /// <summary>Adds a unit and returns the item's refreshed unit list.</summary>
     Task<Result<IReadOnlyList<ItemUnitDto>>> AddUnitAsync(
@@ -50,21 +54,36 @@ public interface IItemService
     Task<Result> DeleteUnitAsync(int itemId, int unitId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Stores an uploaded file against the item. <paramref name="isItemImage"/> replaces the item's
-    /// current image; the service enforces the size cap and the content-type allow-list.
+    /// Stores the item's picture (a JPEG, PNG or WebP of up to 5 MB, no type), replacing the current one. The
+    /// picture is not a document: it is shown on the item and never listed with its documents.
     /// </summary>
-    Task<Result<ItemFileDto>> AddFileAsync(
-        int itemId, ItemFileUpload upload, bool isItemImage, int userId, CancellationToken cancellationToken = default);
+    Task<Result<ItemFileDto>> AddImageAsync(
+        int itemId, ItemFileUpload upload, int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>The file with its bytes, for download. Fails with NOT_FOUND when it belongs to another item.</summary>
+    /// <summary>
+    /// Attaches a document to the item (script 67, kind ITEM): the shared checks of every attachment (20 MB, the
+    /// shared extensions, a type) are the controller's; the procedure checks the type is active and used for items
+    /// (56009). Answers the new file's id.
+    /// </summary>
+    Task<Result<int>> AddDocumentFileAsync(
+        int itemId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The item's documents with their type, date and note, newest first (never the picture); attachmentTypeId = one type only.</summary>
+    Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int itemId, int? attachmentTypeId, CancellationToken cancellationToken = default);
+
+    /// <summary>The file with its bytes, for download (a document or the picture). Fails with NOT_FOUND when it belongs to another item.</summary>
     Task<Result<ItemFile>> GetFileAsync(int itemId, int fileId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// Renames one of the item's files and, when <paramref name="upload"/> is given, replaces its bytes
-    /// under the same checks as an upload. Without one the stored file is kept.
+    /// Edits one of the item's documents: its name, its type / date / note and, when the edit carries one, a new
+    /// version of the file in the same place in the list. The picture is not edited here (NOT_FOUND): a new picture
+    /// is uploaded instead. Answers the file's row.
     /// </summary>
-    Task<Result> UpdateFileAsync(
-        int itemId, int fileId, string? fileName, ItemFileUpload? upload, CancellationToken cancellationToken = default);
+    Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int itemId, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>Deletes one of the item's files: a document or the picture.</summary>
     Task<Result> DeleteFileAsync(int itemId, int fileId, CancellationToken cancellationToken = default);
 }

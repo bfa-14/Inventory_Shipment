@@ -1394,13 +1394,14 @@ LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
 ORDER BY ObjectType, o.ObjectName;                                    -- expected 11: 3 functions, 8 procedures
 
 -- Items on open orders (approved) or open containers (not offloaded, closed or cancelled) without a Container unit:
--- their containers have no known fill and an auto-plan refuses them.
+-- their containers have no known fill and an auto-plan refuses them. The lists are aggregated as NVARCHAR(MAX): over
+-- 4,000 characters (about 220 order numbers) a plain STRING_AGG stops with error 9829, and this runs at every start.
 SELECT i.ItemCode, i.ItemName,
-       OpenOrders     = (SELECT STRING_AGG(x.DocumentNumber, N', ') FROM (SELECT DISTINCT d.DocumentNumber
+       OpenOrders     = (SELECT STRING_AGG(CAST(x.DocumentNumber AS NVARCHAR(MAX)), N', ') FROM (SELECT DISTINCT d.DocumentNumber
                          FROM purchase.PurchaseDocumentLines l INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
                          INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
                          WHERE l.ItemId = i.Id AND dt.Code = N'PO' AND d.Status = 2) x),
-       OpenContainers = (SELECT STRING_AGG(x.ContainerRef, N', ') FROM (SELECT DISTINCT c.ContainerRef
+       OpenContainers = (SELECT STRING_AGG(CAST(x.ContainerRef AS NVARCHAR(MAX)), N', ') FROM (SELECT DISTINCT c.ContainerRef
                          FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                          WHERE cl.ItemId = i.Id AND c.Status < 6) x)
 FROM inventory.Items i
@@ -1423,7 +1424,7 @@ ORDER BY i.ItemCode;
 
 -- Open containers above 100 %.
 SELECT c.ContainerRef, c.Status, f.FillPct, Pieces = c.TotalAllocatedBase,
-       Items = (SELECT STRING_AGG(x.ItemCode, N', ') FROM (SELECT DISTINCT i.ItemCode FROM logistics.ContainerLines cl
+       Items = (SELECT STRING_AGG(CAST(x.ItemCode AS NVARCHAR(MAX)), N', ') FROM (SELECT DISTINCT i.ItemCode FROM logistics.ContainerLines cl
                 INNER JOIN inventory.Items i ON i.Id = cl.ItemId WHERE cl.ContainerId = c.Id) x)
 FROM logistics.Containers c
 CROSS APPLY logistics.fn_ContainerFill(c.Id) f

@@ -28,6 +28,22 @@ public interface IPurchaseDocumentService
         int id, string? rowVersion, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// Post with the request's options (script 65): "Receive the goods now" on a supplier invoice. The document comes back
+    /// with its <see cref="PurchaseDocumentDto.PostResult"/>: the message, the cost of received goods adjusted, the goods
+    /// receipt or the warning saying why it was not made.
+    /// </summary>
+    Task<Result<PurchaseDocumentDto>> PostWithOptionsAsync(
+        int id, PostPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// What posting a DRAFT supplier invoice would do to the cost of the goods already received (an estimate), for the
+    /// post confirmation. Needs purchase.invoices.post; 404 for anything but a supplier invoice.
+    /// </summary>
+    Task<Result<ReceiptCostPreviewDto>> ReceiptCostPreviewAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     Task<Result<PurchaseDocumentDto>> CancelAsync(
         int id, CancelPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
@@ -59,8 +75,9 @@ public interface IPurchaseDocumentService
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// "Create invoice" on an order: one draft per item of what remains (a supplier invoice holds one item), the
-    /// references copied to each. Needs purchase.invoices.create, and seeing the order.
+    /// "Create invoice" on an order: one draft per item of what remains (a supplier invoice holds one item), or one
+    /// draft of every item (request.OnePerItem false; null = the setting Purchase.OneItemPerInvoice), the references
+    /// copied to each. Needs purchase.invoices.create, and seeing the order.
     /// </summary>
     Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,
@@ -68,13 +85,17 @@ public interface IPurchaseDocumentService
 
     /// <summary>
     /// Draft purchase invoices from container lines of one order (no lines = everything loaded and not yet
-    /// invoiced), one per item. Needs purchase.invoices.create, and seeing the order.
+    /// invoiced), one per item, or one of every item (request.OnePerItem false; null = the setting). Needs
+    /// purchase.invoices.create, and seeing the order.
     /// </summary>
     Task<Result<CreatedPurchaseInvoicesDto>> CreateFromContainersAsync(
         int purchaseOrderId, InvoiceFromContainersRequest request, int userId,
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    /// <summary>A draft supplier invoice holding several items into one invoice per item. Needs purchase.invoices.create.</summary>
+    /// <summary>
+    /// A draft supplier invoice holding several items into one invoice per item, each of one item from then on. Needs
+    /// purchase.invoices.create.
+    /// </summary>
     Task<Result<SplitByItemResultDto>> SplitByItemAsync(
         int id, SplitByItemRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);

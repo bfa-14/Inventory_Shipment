@@ -22,6 +22,15 @@ public interface IMovementRepository
         int id, string action, DateOnly? date, string? reason, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// purchase.usp_GoodsReceipt_CreateForMovement (script 64): a draft goods receipt for each eligible container of a
+    /// COMPLETED Delivery-stage movement, each in its own transaction - one row per container, created or skipped with the
+    /// reason. Called after <see cref="SetStatusAsync"/> has committed the completion, never inside a transaction (63010).
+    /// 70006 / 70010 for a movement not found, not completed or not of the Delivery stage.
+    /// </summary>
+    Task<IReadOnlyList<MovementReceiptResultDto>> CreateGoodsReceiptsAsync(
+        int id, int userId, CancellationToken cancellationToken = default);
+
     /// <summary>Planned only (70005 otherwise).</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 

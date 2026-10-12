@@ -12,6 +12,7 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
     /// <summary>Matched by TYPE NAME on the server; a wrong one fails with a message that never mentions the type.</summary>
     private const string IdListTypeName = "logistics.tvp_IdList";
     private const string ManualTypeName = "logistics.tvp_ChargeManual";
+    private const string TextListTypeName = "logistics.tvp_TextList";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the charge date.</summary>
     private static readonly string[] SortColumns = ["ChargeDate", "ContainerRef", "ChargeName", "AmountBase", "Status", "CreatedAtUtc"];
@@ -212,6 +213,75 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
         {
             throw SqlErrors.Wrap(ex);
         }
+    }
+
+    /// <summary>
+    /// A READ, NOT A RULE: which containers the file names, and what is on them. Every rule of a charge stays
+    /// in usp_ContainerCharge_Create and _Post, which the import calls row by row; this only lets the preview
+    /// say "not found", "found twice", "closed" or "already has this charge" before anything is created. The
+    /// keys are compared with the function the movement import uses, so both imports read a number alike.
+    /// </summary>
+    public async Task<(IReadOnlyList<ContainerChargeImportContainer> Containers, IReadOnlyList<ContainerChargeImportExistingCharge> Charges)>
+        FindImportContainersAsync(IReadOnlyCollection<string> numberKeys, CancellationToken cancellationToken = default)
+    {
+        if (numberKeys.Count == 0)
+        {
+            return ([], []);
+        }
+
+        const string sql = """
+            SET NOCOUNT ON;
+
+            DECLARE @Hit TABLE (ContainerId INT NOT NULL PRIMARY KEY, NumberKey NVARCHAR(100) NOT NULL, RefKey NVARCHAR(100) NOT NULL);
+            INSERT INTO @Hit (ContainerId, NumberKey, RefKey)
+            SELECT c.Id, kn.NumberKey, kr.NumberKey
+            FROM logistics.Containers c
+            CROSS APPLY logistics.fn_ContainerNumberKey(c.ContainerNo) kn
+            CROSS APPLY logistics.fn_ContainerNumberKey(c.ContainerRef) kr
+            WHERE EXISTS (SELECT 1 FROM @Keys k WHERE k.Value = kn.NumberKey OR k.Value = kr.NumberKey);
+
+            SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, c.Status, h.NumberKey, h.RefKey,
+                   LineCount = (SELECT COUNT(*) FROM logistics.ContainerLines cl
+                                WHERE cl.ContainerId = c.Id AND ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) > 0),
+                   ItemWithoutWeight = (SELECT TOP (1) i.ItemCode
+                                        FROM logistics.ContainerLines cl INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                                        WHERE cl.ContainerId = c.Id AND i.WeightKg IS NULL AND ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) > 0
+                                        ORDER BY cl.LineNumber),
+                   ItemWithoutVolume = (SELECT TOP (1) i.ItemCode
+                                        FROM logistics.ContainerLines cl INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                                        WHERE cl.ContainerId = c.Id AND i.VolumeCbm IS NULL AND ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) > 0
+                                        ORDER BY cl.LineNumber)
+            FROM @Hit h
+            INNER JOIN logistics.Containers c ON c.Id = h.ContainerId
+            ORDER BY c.Id;
+
+            SELECT ch.Id, ch.ContainerId, ch.ChargeTypeId, ch.Reference, ch.Amount, ch.CurrencyId, ch.ChargeDate, ch.Status
+            FROM logistics.ContainerCharges ch
+            INNER JOIN @Hit h ON h.ContainerId = ch.ContainerId
+            WHERE ch.Status IN (1, 2)
+            ORDER BY ch.Id;
+            """;
+
+        // logistics.tvp_TextList (RowNo, Value): the type the movement import fills with its numbers.
+        var keys = new DataTable();
+        keys.Columns.Add("RowNo", typeof(int));
+        keys.Columns.Add("Value", typeof(string));
+        var rowNo = 0;
+        foreach (var key in numberKeys.Distinct(StringComparer.Ordinal))
+        {
+            keys.Rows.Add(++rowNo, key);
+        }
+
+        var parameters = new DynamicParameters();
+        parameters.Add("@Keys", keys.AsTableValuedParameter(TextListTypeName));
+
+        await using var connection = _connectionFactory.Create();
+        using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+            sql, parameters, cancellationToken: cancellationToken));
+
+        var containers = (await multi.ReadAsync<ContainerChargeImportContainer>()).AsList();
+        var charges = (await multi.ReadAsync<ContainerChargeImportExistingCharge>()).AsList();
+        return (containers, charges);
     }
 
     /// <summary>

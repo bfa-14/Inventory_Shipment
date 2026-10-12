@@ -79,6 +79,11 @@ public sealed class PurchaseDocumentsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// Posts the document. Since script 65 a supplier invoice moves no stock: the answer's postResult says what the posting
+    /// did to the cost of goods already received, and, with receiveNow (a supplier invoice; needs the goods receipt create
+    /// and post rights too), the goods receipt made at once - or the warning saying why it was not, the invoice posted.
+    /// </summary>
     [HttpPost("{id:int}/post")]
     [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
@@ -86,9 +91,24 @@ public sealed class PurchaseDocumentsController : ControllerBase
     public async Task<ActionResult<PurchaseDocumentDto>> Post(
         int id, [FromBody] PostPurchaseDocumentRequest? request, CancellationToken cancellationToken)
     {
-        var result = await _documents.PostAsync(
-            id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _documents.PostWithOptionsAsync(
+            id, request ?? new PostPurchaseDocumentRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
 
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The post confirmation of a DRAFT supplier invoice: what posting it would do to the cost of the goods already
+    /// received (an estimate on today's stock) - "60 pcs already received will have their cost adjusted by +60.00 USD
+    /// (estimate: stock 40.00, cost of sales 20.00)." Needs purchase.invoices.post.
+    /// </summary>
+    [HttpGet("{id:int}/receipt-cost-preview")]
+    [ProducesResponseType<ReceiptCostPreviewDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ReceiptCostPreviewDto>> ReceiptCostPreview(int id, CancellationToken cancellationToken)
+    {
+        var result = await _documents.ReceiptCostPreviewAsync(id, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -166,8 +186,10 @@ public sealed class PurchaseDocumentsController : ControllerBase
 
     /// <summary>
     /// Draft purchase invoices holding what remains to receive on the order: ONE PER ITEM (a supplier invoice
-    /// holds one item). Body { documentDate?, exporterReference?, commercialInvoiceNo? } — the references are
-    /// copied to every invoice. Answers { firstId, id (= firstId), invoices, message }.
+    /// holds one item), or ONE holding every item. Body { documentDate?, exporterReference?, commercialInvoiceNo?,
+    /// onePerItem? } — the references are copied to every invoice; onePerItem true = one invoice per item, false = one
+    /// invoice of every item, null = the setting Purchase.OneItemPerInvoice (script 63). Answers { firstId, id
+    /// (= firstId), invoices, message }.
     /// </summary>
     [HttpPost("{id:int}/create-invoice")]
     [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]
@@ -194,9 +216,10 @@ public sealed class PurchaseDocumentsController : ControllerBase
         => CreateFromSource(id, PurchaseDocumentTypes.Return, request, cancellationToken);
 
     /// <summary>
-    /// Draft purchase invoices from container lines of the order, ONE PER ITEM: body { documentDate?, lines?:
-    /// [{ containerLineId, quantityBase }], exporterReference?, commercialInvoiceNo? } — no lines = everything
-    /// loaded and not yet invoiced. Answers { firstId, id (= firstId), invoices, message } (purchase.invoices.create).
+    /// Draft purchase invoices from container lines of the order, ONE PER ITEM or one of every item: body
+    /// { documentDate?, lines?: [{ containerLineId, quantityBase }], exporterReference?, commercialInvoiceNo?,
+    /// onePerItem? } — no lines = everything loaded and not yet invoiced; onePerItem as for create-invoice (null = the
+    /// setting). Answers { firstId, id (= firstId), invoices, message } (purchase.invoices.create).
     /// </summary>
     [HttpPost("{id:int}/invoice-from-containers")]
     [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]
@@ -215,8 +238,9 @@ public sealed class PurchaseDocumentsController : ControllerBase
     }
 
     /// <summary>
-    /// A draft purchase invoice holding several items (made before one item per invoice) into one invoice per
-    /// item: body { rowVersion }. Answers { invoices }, the original first (purchase.invoices.create).
+    /// A draft purchase invoice holding several items (made before one item per invoice, or one that may hold several)
+    /// into one invoice per item, each of one item from then on: body { rowVersion }. Answers { invoices }, the
+    /// original first (purchase.invoices.create).
     /// </summary>
     [HttpPost("{id:int}/split-by-item")]
     [ProducesResponseType<SplitByItemResultDto>(StatusCodes.Status200OK)]

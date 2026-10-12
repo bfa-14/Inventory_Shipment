@@ -7,9 +7,9 @@ namespace Inventory_Shipment.Repository.Database;
 /// Error numbers raised with THROW by the stored procedures, and the translation from a
 /// <see cref="SqlException"/> into a <see cref="BusinessRuleException"/> the service layer understands.
 /// Each module owns a block: 50xxx security, 56xxx inventory, 51xxx-55xxx + 57xxx-60xxx master data,
-/// 61xxx sales imports, 62xxx inventory documents, 64xxx sales documents, 65xxx-68xxx purchase
-/// and shortage plans, 69xxx logistics (containers) and 70xxx logistics (movements, container charges,
-/// attachments, movement types).
+/// 61xxx sales imports, 62xxx inventory documents, 63xxx goods receipts (scripts 64 and 65: the only way
+/// goods enter stock), 64xxx sales documents, 65xxx-68xxx purchase and shortage plans, 69xxx logistics
+/// (containers) and 70xxx logistics (movements, container charges, attachments, movement types).
 /// </summary>
 public static class SqlErrors
 {
@@ -83,6 +83,9 @@ public static class SqlErrors
     public const int ItemDuplicateSku = 56007;
     public const int ItemMasterInactive = 56008;
 
+    /// <summary>(67) The attachment type of an item file is missing, inactive or not used for items (kind ITEM).</summary>
+    public const int ItemAttachmentType = 56009;
+
     // ----- 57xxx: master data - unit types -----
     public const int UnitTypeValidation = 57000;
     public const int UnitTypeDuplicateName = 57001;
@@ -135,6 +138,42 @@ public static class SqlErrors
 
     /// <summary>(52) The attachment type of a stock document file is missing, inactive or not used for its kind.</summary>
     public const int StockDocumentAttachmentType = 62011;
+
+    // ----- 63xxx: purchase - goods receipts (scripts 64 and 65) -----
+    // HTTP: 400 for what the request got wrong (63000, 63009, 63011, 63012), 404 for 63006, 409 for the state of
+    // the world (the others).
+
+    /// <summary>A line, the warehouse, the date, a reason or the source of a receipt is not acceptable; the message says which.</summary>
+    public const int GoodsReceiptValidation = 63000;
+
+    public const int GoodsReceiptConcurrency = 63004;
+
+    /// <summary>Only a draft goods receipt can be changed or deleted.</summary>
+    public const int GoodsReceiptNotDraft = 63005;
+
+    /// <summary>The goods receipt (or its order, invoice, container or file) does not exist.</summary>
+    public const int GoodsReceiptNotFound = 63006;
+
+    /// <summary>Cancelling would take an item below zero: the stock the receipt brought was used.</summary>
+    public const int GoodsReceiptInsufficientStock = 63007;
+
+    /// <summary>The cost of the received goods was adjusted afterwards (invoice, landed cost, late container charge): no cancel.</summary>
+    public const int GoodsReceiptCostAdjusted = 63008;
+
+    /// <summary>Nothing is left to receive on the order or invoice, or the receipt has no lines.</summary>
+    public const int GoodsReceiptNothingToReceive = 63009;
+
+    /// <summary>The receipt or its source is not in the state the action needs: posted, moving, closed, cancelled, returned.</summary>
+    public const int GoodsReceiptInvalidStatus = 63010;
+
+    /// <summary>More than remains to receive outside containers, or goods of an open order received "without an order".</summary>
+    public const int GoodsReceiptMoreThanRemains = 63011;
+
+    /// <summary>The attachment type of a goods receipt file is missing, inactive or not used for goods receipts (kind GRN).</summary>
+    public const int GoodsReceiptAttachmentType = 63012;
+
+    /// <summary>The container already has a goods receipt, draft or posted: open it instead.</summary>
+    public const int GoodsReceiptContainerHasReceipt = 63013;
 
     // ----- 64xxx: sales - invoices (the Sales document family) -----
     public const int SalesDocumentValidation = 64000;
@@ -207,9 +246,12 @@ public static class SqlErrors
     /// <summary>The attachment type is missing, inactive or not used for the document's kind (PO, PINV, PRET).</summary>
     public const int PurchaseAttachmentType = 65032;
 
-    // ----- 65029: one item per supplier invoice (script 45) -----
+    // ----- 65029: one item per supplier invoice (script 45; optional since script 63) -----
 
-    /// <summary>A supplier invoice holds one item: saving or posting one with lines of several items is refused.</summary>
+    /// <summary>
+    /// A supplier invoice of one item (its mode, or the setting Purchase.OneItemPerInvoice for one made before script 63)
+    /// holds one item: saving or posting it with lines of several items is refused.
+    /// </summary>
     public const int PurchaseInvoiceOneItem = 65029;
 
     // ----- 65013-65017, 65022-65024: purchase order approval (scripts 26 and 42) -----
@@ -319,6 +361,12 @@ public static class SqlErrors
     /// <summary>A charge was posted after the offload (a cost adjustment exists): the offload cannot be reversed.</summary>
     public const int ContainerCostAdjusted = 69018;
 
+    /// <summary>
+    /// (65) The container has a goods receipt, draft or posted: its lines and branch cannot change, and it cannot be
+    /// cancelled or deleted until the draft is deleted or the receipt cancelled.
+    /// </summary>
+    public const int ContainerHasGoodsReceipt = 69019;
+
     // ----- 70xxx: logistics - movements, container charges, attachments, movement types -----
     public const int LogisticsValidation = 70000;
     public const int LogisticsDuplicate = 70001;
@@ -423,10 +471,25 @@ public static class SqlErrors
     /// </summary>
     public static BusinessRuleException Wrap(SqlException exception)
         => exception.Number is >= FirstSecurityRule and <= LastSecurityRule
-            ? new SecurityRuleException(exception.Number, exception.Message, exception)
-            : new BusinessRuleException(exception.Number, exception.Message, exception);
+            ? new SecurityRuleException(exception.Number, RuleMessage(exception), exception)
+            : new BusinessRuleException(exception.Number, RuleMessage(exception), exception);
 
     /// <summary>Wraps a security-procedure SqlException (50001-50999).</summary>
     public static SecurityRuleException ToSecurityRuleException(SqlException exception)
-        => new(exception.Number, exception.Message, exception);
+        => new(exception.Number, RuleMessage(exception), exception);
+
+    /// <summary>
+    /// THE MESSAGE THE PROCEDURE THREW, AND NOTHING ELSE. <see cref="SqlException.Message"/> joins every message of the
+    /// batch, informational ones included, so a warning raised before the THROW - 8153 "Null value is eliminated by an
+    /// aggregate or other SET operation", for one - reached the user glued to the rule's text. Only the errors that
+    /// carry the THROW's number are kept (the exception's number is its first error's).
+    /// </summary>
+    private static string RuleMessage(SqlException exception)
+    {
+        var messages = exception.Errors.Cast<SqlError>()
+            .Where(error => error.Number == exception.Number)
+            .Select(error => error.Message)
+            .ToList();
+        return messages.Count > 0 ? string.Join(Environment.NewLine, messages) : exception.Message;
+    }
 }

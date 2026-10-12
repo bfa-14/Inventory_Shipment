@@ -37,6 +37,9 @@ internal static class LogisticsRuleFailures
             SqlErrors.ContainerNotFullyInvoiced => new(ErrorType.Conflict, exception.Message, "NOT_FULLY_INVOICED"),
             SqlErrors.ContainerLineInvoiced => new(ErrorType.Conflict, exception.Message, "LINE_INVOICED"),
             SqlErrors.ContainerCostAdjusted => new(ErrorType.Conflict, exception.Message, "COST_ADJUSTED"),
+            // Script 65 (rule 21): the container has a goods receipt, draft or posted - its lines, branch, cancel and delete
+            // wait until the draft is deleted or the receipt cancelled.
+            SqlErrors.ContainerHasGoodsReceipt => new(ErrorType.Conflict, exception.Message, "HAS_GOODS_RECEIPT"),
             SqlErrors.LogisticsValidation => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             SqlErrors.LogisticsDuplicate => new(ErrorType.Conflict, exception.Message, "DUPLICATE"),
             SqlErrors.LogisticsConcurrency => new(ErrorType.Conflict, exception.Message, "CONCURRENCY"),

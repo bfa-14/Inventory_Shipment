@@ -189,4 +189,7 @@ public sealed class ItemLookupDto
     public string ItemName { get; init; } = string.Empty;
     public string? BaseUnitSku { get; init; }
     public bool IsActive { get; init; }
+
+    /// <summary>"BIVAC Item" ticked in Item Definition: the items a BIVAC Out may hold.</summary>
+    public bool IsBivac { get; init; }
 }

@@ -11,12 +11,12 @@ using Microsoft.AspNetCore.Mvc;
 namespace Inventory_Shipment.API.Controllers.Inventory;
 
 /// <summary>
-/// Inventory In and Inventory Out documents — the first document family, and the shape Purchase and
-/// Sales will copy.
+/// Inventory In, Inventory Out and BIVAC Out documents — the first document family, and the shape
+/// Purchase and Sales will copy.
 ///
-/// ONE CONTROLLER, TWO DOCUMENT KINDS, AND THEREFORE NO [HasPermission] ON THE ACTIONS. Which
-/// permission applies depends on the document's TYPE (inventory.stockin.* against
-/// inventory.stockout.*), and for an existing document that is only known after reading it — which is
+/// ONE CONTROLLER, THREE DOCUMENT KINDS, AND THEREFORE NO [HasPermission] ON THE ACTIONS. Which
+/// permission applies depends on the document's TYPE (inventory.stockin.*, inventory.stockout.* or
+/// inventory.bivacout.*), and for an existing document that is only known after reading it — which is
 /// after the attribute would have run. So every action is [Authorize] and the service makes the
 /// check where the answer exists, returning Forbidden the same way the attribute would.
 ///
@@ -150,8 +150,11 @@ public sealed class StockDocumentsController : ControllerBase
         => Ok(await _documents.BulkDeleteAsync(request.Ids, User.GetUserId(), User.GetPermissions(), cancellationToken));
 
     /// <summary>
-    /// An imported file becoming ONE document holding every line, each in the warehouse it names,
-    /// posted at once when asked. A refused posting leaves the document as a draft, listed in Failed.
+    /// An imported file becoming ONE document holding every line, each in the warehouse it names — or,
+    /// with splitByWarehouse, one document per warehouse — posted at once when asked. A refused posting
+    /// leaves that document as a draft, listed in Failed; one that cannot be created is listed there too,
+    /// with its warehouse when split by warehouse (the others still go in), without one when the file
+    /// makes a single document.
     /// </summary>
     [HttpPost("import-create")]
     [ProducesResponseType<ImportCreateResult>(StatusCodes.Status200OK)]
@@ -179,7 +182,7 @@ public sealed class StockDocumentsController : ControllerBase
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
-    /// Multipart: file, attachmentTypeId (required: a type used for the document's kind - INV_IN or INV_OUT), and optionally documentDate
+    /// Multipart: file, attachmentTypeId (required: a type used for the document's kind - INV_IN, INV_OUT or BIV_OUT), and optionally documentDate
     /// (yyyy-MM-dd) and note. PDF, image or Office file, up to 20 MB.
     /// </summary>
     [HttpPost("{id:int}/files")]

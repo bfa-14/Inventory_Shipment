@@ -115,6 +115,27 @@ public sealed class MovementRepository : IMovementRepository
             new { Id = id, Action = action, Date = ToDate(date), Reason = reason, RowVersion = rowVersion, UserId = userId },
             cancellationToken);
 
+    /// <summary>
+    /// NO DEADLOCK RETRY HERE: the procedure gives each container its own transaction and catches its errors, so a
+    /// deadlock comes back as that container's 'Error' row - and running the whole list again would report the drafts the
+    /// first run made as "already has a draft" instead of "created".
+    /// </summary>
+    public async Task<IReadOnlyList<MovementReceiptResultDto>> CreateGoodsReceiptsAsync(
+        int id, int userId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<MovementReceiptResultDto>(new CommandDefinition(
+                "purchase.usp_GoodsReceipt_CreateForMovement", new { MovementId = id, UserId = userId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_Movement_Delete", new { Id = id, UserId = userId }, cancellationToken);
 

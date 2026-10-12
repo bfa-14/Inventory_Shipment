@@ -70,6 +70,21 @@ public sealed class ItemStockMovementDto
     /// <summary>The client of a sale or the supplier of a purchase; null for Inventory In / Out.</summary>
     public string? Counterparty { get; init; }
 
+    /// <summary>
+    /// (65) A goods receipt's row (DocumentTypeCode GRN): where its goods came from - the container ref, else the order
+    /// number, else the invoice number - shown "GRN-BR-002-000001 · KTG-2026-0031". Null on every other row.
+    /// </summary>
+    public string? SourceReference { get; init; }
+
+    /// <summary>
+    /// (65) What <see cref="SourceReference"/> names, so the page links it: the container, else the order, else the
+    /// invoice (one of the three). Set by the repository after the statement is read; null on every other row.
+    /// </summary>
+    public int? SourceContainerId { get; set; }
+
+    public int? SourcePurchaseOrderId { get; set; }
+    public int? SourceInvoiceId { get; set; }
+
     public string? CreatedByName { get; init; }
 }
 
@@ -109,9 +124,20 @@ public sealed class ItemPurchaseOrderDto
 
     /// <summary>The order's lines of this item, added up, in base units.</summary>
     public int OrderedBase { get; init; }
+
+    /// <summary>(65) RECEIVED: what goods receipts brought in (and the receipts made before them).</summary>
     public int ReceivedBase { get; init; }
 
-    /// <summary>Still to come: ordered less received, on an open (Posted) order only.</summary>
+    /// <summary>(65) Invoiced by posted supplier invoices (the order line's old "received").</summary>
+    public int InvoicedBase { get; init; }
+
+    /// <summary>(65) Settled short: recorded as never coming (a short container line, "Nothing more will come").</summary>
+    public int ShortBase { get; init; }
+
+    /// <summary>
+    /// Still to come, the number Shortages counts (rule 25): on an open order ordered - received - short, on a closed one
+    /// invoiced - received - short; 0 on a draft, waiting or cancelled order.
+    /// </summary>
     public int OutstandingBase { get; init; }
 
     /// <summary>What the order pays for this item, in the order's currency.</summary>
@@ -125,15 +151,18 @@ public sealed class ItemPurchaseOrdersDto
     public string ItemCode { get; init; } = string.Empty;
     public string ItemName { get; init; } = string.Empty;
 
-    /// <summary>Posted orders still waiting for some of the item.</summary>
+    /// <summary>Posted (or closed) orders still waiting for some of the item.</summary>
     public int OpenOrders { get; init; }
 
-    /// <summary>On order: what open orders have still to deliver, in base units.</summary>
+    /// <summary>On order: what the orders have still to deliver, in base units (rule 25).</summary>
     public int OutstandingBase { get; init; }
 
-    /// <summary>Ordered and received across every order that was not cancelled.</summary>
+    /// <summary>Ordered, received (goods receipts), invoiced and settled short across every order that was not cancelled.</summary>
     public int OrderedBase { get; init; }
+
     public int ReceivedBase { get; init; }
+    public int InvoicedBase { get; init; }
+    public int ShortBase { get; init; }
     public IReadOnlyList<ItemPurchaseOrderDto> Orders { get; init; } = [];
 }
 

@@ -1,4 +1,4 @@
-# Item costing — rules implemented in SQL (script 23) and what the UI will expose later
+# Item costing — rules implemented in SQL (scripts 23, 27, 64-65) and what the UI will expose later
 
 ## Rules (all costs per BASE unit, base currency USD)
 
@@ -7,18 +7,108 @@
 | FOB cost | line total after discount ÷ base qty ÷ rate | `purchase.PurchaseDocumentLines.FobCostBase` (set at posting) |
 | Purchase charges | configurable charge types (US-MD-008), entered on a draft invoice in any currency, converted at the document-date rate | `purchase.ChargeTypes`, `purchase.PurchaseCharges`, `usp_PurchaseDocument_SetCharges` |
 | Allocation | Value / Quantity / Weight (item `WeightKg`) / Volume (item `VolumeCbm`) / Manual; remainder of rounding on the largest line | `usp_PurchaseCharges_Allocate`, `purchase.PurchaseChargeAllocations` |
-| Landed cost | FOB + allocated charges ÷ base qty → ledger cost | `PurchaseDocumentLines.UnitCostBase` (= landed), `AllocatedChargesBase` |
-| Item costs | `FobCost` = latest FOB, `LastCost` = latest **landed** (purchases only), `AverageCost` = moving weighted average (updated only by postings that add stock), `InventoryValue = OnHand × AverageCost` | `inventory.Items`, `usp_Item_ApplyReceipts`, views `vw_InventoryValuation(ByWarehouse)` |
+| Landed cost | FOB + allocated charges ÷ base qty = the **invoice cost** of a line. Since goods receipts it is no longer a ledger cost by itself: received goods are valued at it, or corrected to it (see below) | `PurchaseDocumentLines.UnitCostBase` (= landed), `AllocatedChargesBase` |
+| Goods in | **only a posted goods receipt (GRN) puts goods in stock** (script 65). A supplier invoice posted since the switch moves no stock and no item cost: it makes the amount payable and sets the invoice cost | `purchase.usp_GoodsReceipt_Post`, ledger rows family `Purchase`, type `GRN` |
+| Item costs | `FobCost` / `LastCost` / last supplier = the latest posted goods receipt line, after its cost adjustments (a receipt "Without an order" counts only once matched to an invoice; older goods: the old local invoices and the containers offloaded before goods receipts), `AverageCost` = moving weighted average (updated only by postings that add stock, and by cost adjustments), `InventoryValue = OnHand × AverageCost` | `inventory.Items`, `usp_Item_ApplyReceipts`, `usp_Item_RebuildCosts`, views `vw_InventoryValuation(ByWarehouse)` |
 | Inventory In / Sales return | update the average, never Last / FOB cost | `usp_StockDocument_Post`, `usp_SalesDocument_Post` |
 | Sales invoice | per line frozen at posting: `UnitCostBase` (COGS = average), `FobCostAtSale`, `LastCostAtSale`, `NetSalesBase`, `CogsBase`, `GrossProfitBase`, `GrossProfitPct` (on net sales); header `TotalCostBase`, `TotalGrossProfitBase` | `sales.SalesDocumentLines` |
 | Sales return | created from a posted invoice with the invoice prices and the ORIGINAL COGS; consumes `ReturnedQuantityBase` of the invoice lines | `sales.usp_SalesDocument_CreateFromSource` |
-| Purchase return | removes stock at the invoice landed cost | `usp_PurchaseDocument_Post` (PRET) |
-| Landed cost adjustment | charges arriving after receipt (`LCA-KLW-000001`): allocated over the invoice lines; still-in-stock quantity → inventory value (average recalculated), already-sold quantity → COGS adjustment; invoice landed cost and item last cost updated | `purchase.LandedCostAdjustments(+Lines)`, `inventory.CostAdjustments`, `usp_LandedCostAdjustment_*` |
+| Purchase return | removes stock at the invoice line's **current** cost (local: its landed cost; container: its FOB + the container line's charges ÷ received), recomputed at posting. From an invoice that uses goods receipts (or an older "Shipped in containers" one): at most received − returned, from the warehouse the goods were received into. Older local invoices: invoiced − returned | `usp_PurchaseDocument_Post` (PRET) |
+| Landed cost adjustment | charges arriving after receipt (`LCA-KLW-000001`): allocated over the invoice lines. Old invoices (posted before the switch): still-in-stock quantity → inventory value (average recalculated), already-sold quantity → COGS adjustment; invoice landed cost and item last cost updated. Invoices that use goods receipts: the invoice cost rises, and the goods already received follow through a true-up (`LCA` / `LCACANCEL`, below); pieces not received yet enter at that cost when they arrive. Refused on imported and "Shipped in containers" invoices (67012) | `purchase.LandedCostAdjustments(+Lines)`, `inventory.CostAdjustments`, `usp_LandedCostAdjustment_*` |
+| Late container charge | a charge posted or cancelled after the container is received: still-in-stock quantity (in the receiving warehouse) → inventory value, the rest → COGS. Unchanged by goods receipts | `logistics.usp_ContainerCharge_ApplyCost`, SourceKind `CNTCHARGE` |
 | Cancellations | a cancelled receipt / return / LCA replays the ledger for its items | `inventory.usp_Item_RebuildCosts` |
-| Profit report | Net Sales − COGS, GP % on net sales, grouped by invoice / item / family / brand / client / salesman / branch / month; LCA COGS adjustments as a separate column | `sales.usp_SalesProfit_Report` |
+| Profit report | Net Sales − COGS, GP % on net sales, grouped by invoice / item / family / brand / client / salesman / branch / month; COGS adjustments (LCA, late charges, goods receipt cost changes) as a separate column, shown by item, family, brand, branch, month or all, not per invoice, client or salesman | `sales.usp_SalesProfit_Report` |
 
-Approximation (documented decision): the "still in stock" quantity of an invoice line for an LCA = min(received − returned,
-current on-hand of the item in that warehouse) — no FIFO layers are kept.
+Approximation (documented decision): the "still in stock" quantity of an invoice line for an LCA on an old invoice =
+min(received − returned, current on-hand of the item in that warehouse) — no FIFO layers are kept. Goods receipt
+true-ups use the company's stock instead (below).
+
+## Goods receipts (scripts 64-65): the cost of received goods follows the invoices
+
+### Cost at receipt
+
+Posting a goods receipt matches its pieces to the pieces of posted supplier invoices, then values each line.
+
+- **Matching** (`usp_GoodsReceipt_Rematch`), first in first out by posting time, in passes:
+  1. the invoice the receipt was made from;
+  2. the same container line;
+  3. the same order line (any container or none);
+  4. goods without an order: the same supplier and item.
+- **Matched pieces** take the **invoice cost**: the invoice line's FOB per piece, plus, outside containers, the
+  invoice's own charges per piece.
+- **Unmatched pieces** take the **order price**: order line total ÷ the order's exchange rate ÷ order line pieces
+  (`PoFobBase`, frozen at posting).
+- **Container lines** keep their charges on the container line: the posted container charges are re-spread over what
+  arrived and frozen, as the offload did. Landed = FOB + `ChargesBase` ÷ received. They are never copied to the
+  receipt line, so a late charge counts once.
+- **"Without an order" lines** take the typed cost (default: the item's last cost) until an invoice of the same
+  supplier and item, without an order, is matched to them.
+- The receipt line shows where its cost comes from: Order price, Invoice, Order + invoice (part matched), Typed.
+
+### The true-up (`usp_GoodsReceipt_TrueUpCost`)
+
+Anything that changes the matches of received pieces, or the cost of their invoices, brings every posted receipt line
+of the touched order lines (or supplier + item) to its new target cost. Each event is a **cause**:
+
+| Cause | When |
+|---|---|
+| `PINV` | a supplier invoice is posted: its pieces are matched to goods already received |
+| `PINVCANCEL` | a supplier invoice is cancelled: its received pieces go back to the order price (or to another invoice of the same order line). Goods without an order keep the cost they were received at |
+| `LCA` / `LCACANCEL` | a landed cost adjustment is posted / cancelled on an invoice that uses goods receipts |
+| `GRNPOST` | a goods receipt is posted and takes invoice pieces another receipt held (for example a receipt made from that invoice): the other receipt is trued up. This runs before the new receipt's stock goes in |
+| `GRNCANCEL` | a goods receipt is cancelled: the later receipts of the same order line may take over its invoice pieces |
+| `NEGSTOCK` | at posting only, see "Goods sold before their receipt" |
+
+- **Amount** per line: (new cost per piece − current cost per piece) × pieces received, rounded to the cent. On a
+  container line only the **FOB** moves; its charges move only with container charges (`CNTCHARGE`).
+- **Split between stock and cost of sales, per item for the whole event:**
+  - net received = received − returned (pro rata over the line's matches);
+  - in stock = min(Σ net received, the **company's** stock on hand of the item, all warehouses, never below 0);
+  - to stock = amount × in stock ÷ Σ net received (leftover cents on the largest line). It changes the average cost;
+  - to cost of sales (COGS) = amount − to stock. The company holds none of the item: everything goes to COGS.
+  - Company stock, not the receiving warehouse's (unlike the late container charge and the old LCA): the average is
+    company-wide, and transfers move goods out of the receiving warehouse.
+  - For `LCA` / `LCACANCEL` only, the share of the re-priced pieces already **returned** to the supplier goes to COGS:
+    they are no longer in stock.
+- **Exchange rate:** the order and the invoice each convert at their own rate. The difference is part of the cost
+  adjustment (owner's decision 4): there is no exchange gain or loss account.
+- **Records:**
+  - one `purchase.GoodsReceiptCostChanges` row per receipt line per event (cause, invoice / LCA / receipt number, pieces,
+    in-stock share, FOB and unit cost before → after, amount, to stock, to COGS);
+  - `inventory.CostAdjustments` rows, Kind `Inventory` and `COGS`, **SourceKind `GRNCOST`**, SourceId = the cost change,
+    SourceNumber = the GRN number. Compensating (negative) rows are written as they come;
+  - dated at the **later of now and the receipt's own ledger date**, so a replay never puts an adjustment before its
+    receipt;
+  - then `usp_Item_RebuildCosts` per item, as the late container charge does.
+- **What each record keeps:** the stock movement keeps the cost at receipt; the receipt line keeps its current cost
+  (FOB, charges, landed), which feeds the last cost and the returns; the replay adds the adjustments.
+
+### Goods sold before their receipt (`NEGSTOCK`)
+
+With out-of-stock selling on, goods can be sold between the Delivery and the warehouse's posting. Those pieces went
+out at the old average and the company stock went negative. When a receipt fills that negative stock, the moving
+average starts again at the receipt's cost, so (receipt cost − average before) × the pieces filled would be in neither
+the stock nor the cost of sales. Posting books it to **COGS** (cause `NEGSTOCK`, SourceKind `GRNCOST`), shared over the
+receipt's lines of the item by their pieces. Cancelling the receipt reverses it. Inventory In is unchanged.
+
+### Worked examples
+
+- **Local purchase** (order 100 pcs at 10.00): receive 60 (stock +60 at 10.00), sell 20, then post the invoice at
+  11.00. The invoice moves no stock. True-up `PINV`: 60 × 1.00 = 60.00; company stock 40 → stock 40.00, COGS 20.00.
+  Receiving the last 40 then takes 11.00 at once, with no adjustment.
+- **Container, late charge, then invoice** (the user-guide container): 84 pcs at the order price 950, charges 2,940
+  posted → received at 985. A late charge of 840 → `CNTCHARGE` 840, landed 995. Then the invoice at 960: `PINV`
+  (960 − 950) × 84 = 840 on the FOB only → landed 1,005. The late charge is counted once.
+- **Short shipment:** 84 loaded and invoiced, 82 received with a reason: the 82 match the first 82 invoiced pieces and
+  take the invoice cost; the 2 are settled short. Their FOB is not in the stock cost (a claim on the supplier).
+- **Negative stock:** company stock −10, a receipt of 30 at a cost 5.00 above the average → `NEGSTOCK` COGS 50.00.
+
+### Cancelling a receipt
+
+Refused once its cost was adjusted afterwards (63008): any `GRNCOST` change on its lines except the `NEGSTOCK` of its
+own posting, and for a container any `CNTCHARGE` on its charges (as 69018 refused the old Cancel Offload). Also refused
+when the stock it brought was used (63007) or a purchase return took its goods back (63010). Otherwise: reversal stock
+rows, matches rebuilt, the other receipts trued up (`GRNCANCEL`), item costs replayed.
 
 ## Future UI (prompts to write later)
 - Purchase Charge Types page (US-MD-008) — procs ready: `usp_ChargeType_Search/Lookup/Save/SetActive/Delete`, permission `purchase.chargetypes.manage`.

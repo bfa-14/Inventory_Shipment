@@ -1,0 +1,5 @@
+# Scripts run by bash / python on every PC: always LF, or Git for Windows (core.autocrlf=true) checks them out with
+# CRLF and they fail with "bash\r".
+*.sh        text eol=lf
+*.py        text eol=lf
+.githooks/* text eol=lf

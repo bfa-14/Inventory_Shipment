@@ -18,7 +18,21 @@ public interface IPurchaseDocumentRepository
         SavePurchaseDocumentRequest request, int? id, decimal maxDiscountPercent, int userId,
         CancellationToken cancellationToken = default);
 
-    Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// purchase.usp_PurchaseDocument_Post. Since script 65 a supplier invoice moves no stock: it adjusts the cost of
+    /// goods already received (the outcome's CostAdjusted*), and with <paramref name="receiveNow"/> its lines not in a
+    /// container are then received with a goods receipt, created and posted in a second transaction - a receipt that
+    /// fails leaves the invoice posted, with the reason in the outcome's ReceiveWarning.
+    /// </summary>
+    Task<PurchasePostOutcome> PostAsync(
+        int id, byte[]? rowVersion, int userId, bool receiveNow = false, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// purchase.usp_PurchaseInvoice_ReceiptCostPreview: what posting a DRAFT supplier invoice would do to the cost of the
+    /// goods already received, per line (an estimate). No rows for a document that is not a draft; 65006 when it is not
+    /// a supplier invoice.
+    /// </summary>
+    Task<IReadOnlyList<ReceiptCostPreviewLineDto>> ReceiptCostPreviewAsync(int invoiceId, CancellationToken cancellationToken = default);
 
     Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
@@ -38,18 +52,29 @@ public interface IPurchaseDocumentRepository
 
     /// <summary>
     /// What remains on the source as drafts of the target kind: from an order ONE INVOICE PER ITEM (script 45, the
-    /// references copied to each), from an invoice one return. The first id, and the rows of the invoices (none for a return).
+    /// references copied to each) or, with <paramref name="onePerItem"/> false, one invoice of every item (script 63;
+    /// null = the setting); from an invoice one return. The first id, and the rows of the invoices (none for a return).
     /// </summary>
     Task<CreatedFromSource> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
-        int userId, CancellationToken cancellationToken = default);
+        bool? onePerItem, int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>purchase.usp_PurchaseDocument_CreateFromContainers — draft invoices from container lines of one order, one per item.</summary>
+    /// <summary>
+    /// purchase.usp_PurchaseDocument_CreateFromContainers — draft invoices from container lines of one order, one per
+    /// item, or one of every item when <paramref name="onePerItem"/> is false (null = the setting).
+    /// </summary>
     Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> CreateFromContainersAsync(
         int purchaseOrderId, IReadOnlyList<ContainerLineQuantityRequest> lines, DateOnly? documentDate,
-        string? exporterReference, string? commercialInvoiceNo, int userId, CancellationToken cancellationToken = default);
+        string? exporterReference, string? commercialInvoiceNo, bool? onePerItem, int userId,
+        CancellationToken cancellationToken = default);
 
-    /// <summary>purchase.usp_PurchaseDocument_SplitByItem — a draft invoice of several items into one per item; the original first.</summary>
+    /// <summary>The setting Purchase.OneItemPerInvoice (script 63): true = one item per supplier invoice.</summary>
+    Task<bool> OneItemPerInvoiceAsync(CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// purchase.usp_PurchaseDocument_SplitByItem — a draft invoice of several items into one per item, each of one item
+    /// from then on; the original first.
+    /// </summary>
     Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> SplitByItemAsync(
         int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
@@ -84,6 +109,23 @@ public sealed class PurchaseDocumentStub
     public string DocumentTypeCode { get; init; } = string.Empty;
     public byte Status { get; init; }
     public string? DocumentNumber { get; init; }
+}
+
+/// <summary>
+/// What usp_PurchaseDocument_Post answered (script 65): the number, the cost adjustment of goods already received
+/// (amount = to stock + to cost of sales; 0 when nothing moved), and the goods receipt of "Receive the goods now" - its id
+/// and number when it was posted, else the warning saying why not (the invoice stays posted either way).
+/// </summary>
+public sealed class PurchasePostOutcome
+{
+    public string? DocumentNumber { get; init; }
+    public decimal CostAdjustedBase { get; init; }
+    public decimal CostAdjustedInventoryBase { get; init; }
+    public decimal CostAdjustedCogsBase { get; init; }
+    public int CostAdjustedLines { get; init; }
+    public int? GoodsReceiptId { get; init; }
+    public string? GoodsReceiptNumber { get; init; }
+    public string? ReceiveWarning { get; init; }
 }
 
 public sealed class PurchaseDocumentFileContent

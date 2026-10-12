@@ -1,5 +1,6 @@
 using System.Data;
 using Dapper;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Entities;
 using Inventory_Shipment.Repository.Database;
@@ -230,15 +231,36 @@ public sealed class ItemRepository : IItemRepository
     }
 
     public async Task<IReadOnlyList<ItemLookup>> LookupAsync(
-        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default)
+        bool activeOnly, int? includeId, bool salesOnly = false, bool bivacOnly = false,
+        string? search = null, int? top = null, CancellationToken cancellationToken = default)
     {
+        var parameters = new DynamicParameters(new { ActiveOnly = activeOnly, IncludeId = includeId, SalesOnly = salesOnly });
+
+        /* ONLY WHAT THE CALLER ASKED FOR. @BivacOnly exists from script 66 on: sent only when true, every
+           other picker keeps working on a database that does not have it yet. @Search and @Top are left
+           to the procedure's defaults unless given, so the limit a dropdown gets is decided in one place. */
+        if (bivacOnly)
+        {
+            parameters.Add("@BivacOnly", true, DbType.Boolean);
+        }
+
+        if (!string.IsNullOrWhiteSpace(search))
+        {
+            parameters.Add("@Search", search.Trim(), DbType.String, size: 200);
+        }
+
+        if (top is { } limit)
+        {
+            parameters.Add("@Top", limit, DbType.Int32);
+        }
+
         await using var connection = _connectionFactory.Create();
         try
         {
-            var rows = await connection.QueryAsync<ItemLookup>(new CommandDefinition(
-                "inventory.usp_Item_Lookup", new { ActiveOnly = activeOnly, IncludeId = includeId, SalesOnly = salesOnly },
+            var found = await connection.QueryAsync<ItemLookup>(new CommandDefinition(
+                "inventory.usp_Item_Lookup", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-            return rows.AsList();
+            return found.AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -310,7 +332,8 @@ public sealed class ItemRepository : IItemRepository
 
     // ----- files -----
 
-    public async Task<int> AddFileAsync(ItemFile file, int? userId, CancellationToken cancellationToken = default)
+    public async Task<int> AddFileAsync(
+        ItemFile file, DocumentFileFields? fields, int? userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@ItemId", file.ItemId, DbType.Int32);
@@ -321,6 +344,7 @@ public sealed class ItemRepository : IItemRepository
         parameters.Add("@Content", file.Content, DbType.Binary, size: -1);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+        AddFields(parameters, fields);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -370,7 +394,9 @@ public sealed class ItemRepository : IItemRepository
         int itemId, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
-        await using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
+        int opening;
+        List<ItemStockMovementDto> movements;
+        await using (var grid = await connection.QueryMultipleAsync(new CommandDefinition(
             "inventory.usp_Item_StockStatement",
             new
             {
@@ -378,10 +404,70 @@ public sealed class ItemRepository : IItemRepository
                 DateFrom = from?.ToDateTime(TimeOnly.MinValue),
                 DateTo = to?.ToDateTime(TimeOnly.MinValue),
             },
-            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-        var opening = await grid.ReadSingleAsync<int>();
-        var movements = (await grid.ReadAsync<ItemStockMovementDto>()).AsList();
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)))
+        {
+            opening = await grid.ReadSingleAsync<int>();
+            movements = (await grid.ReadAsync<ItemStockMovementDto>()).AsList();
+        }
+
+        await SetReceiptSourcesAsync(connection, movements, cancellationToken);
         return (opening, movements);
+    }
+
+    /// <summary>The ids behind a goods receipt row's SourceReference.</summary>
+    private sealed class ReceiptSourceRow
+    {
+        public long Id { get; init; }
+        public int? ContainerId { get; init; }
+        public int? PurchaseOrderId { get; init; }
+        public int? InvoiceId { get; init; }
+    }
+
+    /// <summary>
+    /// (65) A GOODS RECEIPT ROW NAMES WHAT BROUGHT ITS GOODS ("GRN-BR-002-000001 · KTG-2026-0031") and the page links
+    /// that name too: the ids behind SourceReference, by the procedure's own rule - the container, else the order (the
+    /// line's, else the receipt's), else the invoice. Read here so the statement procedure keeps its columns.
+    /// </summary>
+    private static async Task SetReceiptSourcesAsync(
+        SqlConnection connection, List<ItemStockMovementDto> movements, CancellationToken cancellationToken)
+    {
+        var rows = movements.Where(m => m.DocumentTypeCode == "GRN" && m.SourceReference is not null).ToList();
+        if (rows.Count == 0)
+        {
+            return;
+        }
+
+        const string sql = """
+            SELECT m.Id, gr.ContainerId,
+                   PurchaseOrderId = CASE WHEN gr.ContainerId IS NULL THEN COALESCE(grl.PurchaseOrderId, gr.PurchaseOrderId) END,
+                   InvoiceId = CASE WHEN gr.ContainerId IS NULL AND COALESCE(grl.PurchaseOrderId, gr.PurchaseOrderId) IS NULL
+                                    THEN gr.PurchaseInvoiceId END
+            FROM inventory.StockMovements m
+            INNER JOIN purchase.GoodsReceipts gr     ON gr.Id = m.DocumentId
+            LEFT  JOIN purchase.GoodsReceiptLines grl ON grl.Id = m.DocumentLineId AND grl.GoodsReceiptId = gr.Id
+            WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'GRN' AND m.Id IN @Ids;
+            """;
+
+        // In chunks: an IN list is one parameter per id, and SQL Server takes at most 2,100 per command.
+        var sources = new Dictionary<long, ReceiptSourceRow>();
+        foreach (var chunk in rows.Select(r => r.Id).Chunk(1000))
+        {
+            foreach (var source in await connection.QueryAsync<ReceiptSourceRow>(
+                         new CommandDefinition(sql, new { Ids = chunk }, cancellationToken: cancellationToken)))
+            {
+                sources[source.Id] = source;
+            }
+        }
+
+        foreach (var row in rows)
+        {
+            if (sources.TryGetValue(row.Id, out var source))
+            {
+                row.SourceContainerId = source.ContainerId;
+                row.SourcePurchaseOrderId = source.PurchaseOrderId;
+                row.SourceInvoiceId = source.InvoiceId;
+            }
+        }
     }
 
     public async Task<ItemFile?> GetFileAsync(int fileId, CancellationToken cancellationToken = default)
@@ -399,8 +485,27 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
-    public async Task UpdateFileAsync(
-        int fileId, string fileName, string? contentType, byte[]? content, CancellationToken cancellationToken = default)
+    public async Task<IReadOnlyList<DocumentFileDto>> ListFilesAsync(
+        int itemId, int? attachmentTypeId = null, int? fileId = null, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var rows = await connection.QueryAsync<ItemFileRow>(new CommandDefinition(
+                "inventory.usp_ItemFile_List", new { ItemId = itemId, AttachmentTypeId = attachmentTypeId, FileId = fileId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            return rows.Select(r => r.ToDto(itemId)).ToList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<DocumentFileDto?> UpdateFileAsync(
+        int fileId, string fileName, string? contentType, byte[]? content, DocumentFileFields? fields,
+        CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", fileId, DbType.Int32);
@@ -408,13 +513,17 @@ public sealed class ItemRepository : IItemRepository
         parameters.Add("@ContentType", contentType, DbType.String, size: 100);
         parameters.Add("@SizeBytes", content?.Length, DbType.Int32);
         parameters.Add("@Content", content, DbType.Binary, size: -1);
+        AddFields(parameters, fields);
 
         await using var connection = _connectionFactory.Create();
         try
         {
-            await connection.ExecuteAsync(new CommandDefinition(
+            // Script 67 answers the document's row (usp_ItemFile_List's shape); the item is the file's own.
+            var row = await connection.QuerySingleOrDefaultAsync<ItemFileRow>(new CommandDefinition(
                 "inventory.usp_ItemFile_Update", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            return row?.ToDto(row.DocumentId != 0 ? row.DocumentId : row.ItemId);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -435,6 +544,61 @@ public sealed class ItemRepository : IItemRepository
         {
             throw SqlErrors.Wrap(ex);
         }
+    }
+
+    /// <summary>
+    /// The type / date / note of a document (script 67). ONLY SENT FOR A DOCUMENT: the picture has none, and
+    /// leaving the parameters out keeps its upload the call it always was.
+    /// </summary>
+    private static void AddFields(DynamicParameters parameters, DocumentFileFields? fields)
+    {
+        if (fields is null)
+        {
+            return;
+        }
+
+        parameters.Add("@AttachmentTypeId", fields.AttachmentTypeId, DbType.Int32);
+        parameters.Add("@DocumentDate", fields.DocumentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("@Note", fields.Note, DbType.String, size: 500);
+    }
+
+    /// <summary>
+    /// One row of usp_ItemFile_List. The item is the "document" of the shared file shape, so DocumentId is the
+    /// item's id whether the procedure names the column DocumentId or ItemId.
+    /// </summary>
+    private sealed class ItemFileRow
+    {
+        public int Id { get; init; }
+        public int DocumentId { get; init; }
+        public int ItemId { get; init; }
+        public string FileName { get; init; } = string.Empty;
+        public string ContentType { get; init; } = string.Empty;
+        public int SizeBytes { get; init; }
+        public int? AttachmentTypeId { get; init; }
+        public string? Category { get; init; }
+        public string? SubType { get; init; }
+        public DateTime? DocumentDate { get; init; }
+        public string? Note { get; init; }
+        public DateTime CreatedAtUtc { get; init; }
+        public int? CreatedBy { get; init; }
+        public string? CreatedByName { get; init; }
+
+        public DocumentFileDto ToDto(int itemId) => new()
+        {
+            Id = Id,
+            DocumentId = itemId,
+            FileName = FileName,
+            ContentType = ContentType,
+            SizeBytes = SizeBytes,
+            AttachmentTypeId = AttachmentTypeId,
+            Category = Category,
+            SubType = SubType,
+            DocumentDate = DocumentDate,
+            Note = Note,
+            CreatedAtUtc = CreatedAtUtc,
+            CreatedBy = CreatedBy,
+            CreatedByName = CreatedByName,
+        };
     }
 
     public async Task SetPurchasingAsync(

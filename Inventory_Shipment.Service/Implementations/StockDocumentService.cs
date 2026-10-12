@@ -28,11 +28,14 @@ public sealed class StockDocumentService : IStockDocumentService
     }
 
     private readonly IStockDocumentRepository _documents;
+    private readonly IWarehouseRepository _warehouses;
     private readonly ILogger<StockDocumentService> _logger;
 
-    public StockDocumentService(IStockDocumentRepository documents, ILogger<StockDocumentService> logger)
+    public StockDocumentService(
+        IStockDocumentRepository documents, IWarehouseRepository warehouses, ILogger<StockDocumentService> logger)
     {
         _documents = documents;
+        _warehouses = warehouses;
         _logger = logger;
     }
 
@@ -56,7 +59,7 @@ public sealed class StockDocumentService : IStockDocumentService
         if (!StockDocumentTypes.IsKnown(query.DocumentTypeCode))
         {
             return Result<PagedResult<StockDocumentListDto>>.Failure(
-                ErrorType.Validation, "documentTypeCode must be INV_IN or INV_OUT.", "VALIDATION");
+                ErrorType.Validation, StockDocumentTypes.UnknownCodeMessage, "VALIDATION");
         }
 
         if (!Allows(permissions, query.DocumentTypeCode!, DocumentAction.View))
@@ -87,7 +90,7 @@ public sealed class StockDocumentService : IStockDocumentService
     {
         if (!StockDocumentTypes.IsKnown(request.DocumentTypeCode))
         {
-            return Failure("documentTypeCode must be INV_IN or INV_OUT.", ErrorType.Validation, "VALIDATION");
+            return Failure(StockDocumentTypes.UnknownCodeMessage, ErrorType.Validation, "VALIDATION");
         }
 
         if (!Allows(permissions, request.DocumentTypeCode, DocumentAction.Create))
@@ -187,15 +190,19 @@ public sealed class StockDocumentService : IStockDocumentService
         });
 
     /// <summary>
-    /// The imported file's lines, saved as ONE document whatever warehouses they name.
+    /// The imported file's lines, saved as ONE document whatever warehouses they name, or as one
+    /// document per warehouse when the user asked for it (<see cref="ImportCreateStockDocumentsRequest.SplitByWarehouse"/>).
     ///
-    /// THE WAREHOUSE IS A LINE'S, so a file naming several no longer becomes several documents — it
-    /// becomes one document whose rows each keep the warehouse the file gave them. The header's
-    /// warehouse is left for the database to take from the first line.
+    /// THE WAREHOUSE IS A LINE'S. By default a file naming several becomes one document whose rows each
+    /// keep the warehouse the file gave them, and the header's warehouse is left for the database to
+    /// take from the first line. Split, every warehouse gets its own document, with that warehouse on
+    /// the header and the lines numbered from 1 — each made exactly as the single document would be,
+    /// with the same header values, and posted on its own.
     ///
-    /// A REFUSED POSTING LEAVES THE DRAFT IN PLACE and is reported in Failed: the lines cost somebody
-    /// a file and are worth keeping. The result still carries a list because the shape is shared with
-    /// the other families and with the page that reads it; it now holds at most one document.
+    /// A REFUSAL IS ONE DOCUMENT'S, NEVER THE FILE'S. A refused posting leaves that draft in place and
+    /// is reported in Failed (the lines cost somebody a file and are worth keeping); a document that
+    /// cannot be created at all is reported in Failed too — with its warehouse when split, and then the
+    /// others still go in, even after an unexpected error (<see cref="ImportCreateParts.UnexpectedFailureAsync"/>).
     /// </summary>
     public async Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
@@ -203,7 +210,7 @@ public sealed class StockDocumentService : IStockDocumentService
     {
         if (!StockDocumentTypes.IsKnown(request.DocumentTypeCode))
         {
-            return Result<ImportCreateResult>.Failure(ErrorType.Validation, "documentTypeCode must be INV_IN or INV_OUT.", "VALIDATION");
+            return Result<ImportCreateResult>.Failure(ErrorType.Validation, StockDocumentTypes.UnknownCodeMessage, "VALIDATION");
         }
 
         if (!Allows(permissions, request.DocumentTypeCode, DocumentAction.Create)
@@ -222,62 +229,86 @@ public sealed class StockDocumentService : IStockDocumentService
         var failed = new List<ImportCreateFailure>();
         var posted = 0;
 
-        var warehouseCount = request.Lines.Select(line => line.WarehouseId).Distinct().Count();
+        foreach (var lines in ImportCreateParts.Of(request.Lines, request.SplitByWarehouse))
+        {
+            var warehouseCount = lines.Select(line => line.WarehouseId).Distinct().Count();
+            // SPLIT, THE PART IS ONE WAREHOUSE'S and its header names it. Otherwise null: the header warehouse
+            // is only a label, and the database takes the first line's.
+            int? partWarehouseId = request.SplitByWarehouse ? lines[0].WarehouseId : null;
 
-        var draft = new SaveStockDocumentRequest
-        {
-            DocumentTypeCode = request.DocumentTypeCode,
-            DocumentDate = request.DocumentDate,
-            BranchId = request.BranchId,
-            // Left for the database, which takes the first line's: the header warehouse is only a label.
-            WarehouseId = null,
-            ReasonId = request.ReasonId,
-            ReferenceNo = request.ReferenceNo,
-            Notes = request.Notes,
-            Lines = request.Lines.Select((line, index) => new SaveStockDocumentLineRequest
+            var draft = new SaveStockDocumentRequest
             {
-                LineNo = index + 1,
-                ItemId = line.ItemId,
-                ItemUnitId = line.ItemUnitId,
-                // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
-                WarehouseId = line.WarehouseId,
-                ExpiryDate = line.ExpiryDate,
-                Quantity = line.Quantity,
-                // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
-                UnitCost = isIn ? line.UnitPrice ?? 0 : null,
-                Notes = line.Notes,
-            }).ToList(),
-        };
-
-        var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
-        if (saved.IsFailure || saved.Value is null)
-        {
-            failed.Add(new ImportCreateFailure
-            {
-                Code = saved.Code ?? "ERROR",
-                Message = saved.Error ?? "The document could not be created.",
-            });
-        }
-        else
-        {
-            var document = saved.Value;
-            if (request.PostImmediately)
-            {
-                var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
-                if (result.IsSuccess && result.Value is not null)
+                DocumentTypeCode = request.DocumentTypeCode,
+                DocumentDate = request.DocumentDate,
+                BranchId = request.BranchId,
+                WarehouseId = partWarehouseId,
+                ReasonId = request.ReasonId,
+                ReferenceNo = request.ReferenceNo,
+                Notes = request.Notes,
+                Lines = lines.Select((line, index) => new SaveStockDocumentLineRequest
                 {
-                    document = result.Value;
-                    posted++;
-                }
-                else
+                    LineNo = index + 1,
+                    ItemId = line.ItemId,
+                    ItemUnitId = line.ItemUnitId,
+                    // THE ROW'S OWN WAREHOUSE, the one the file named on that row.
+                    WarehouseId = line.WarehouseId,
+                    ExpiryDate = line.ExpiryDate,
+                    Quantity = line.Quantity,
+                    // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
+                    UnitCost = isIn ? line.UnitPrice ?? 0 : null,
+                    Notes = line.Notes,
+                }).ToList(),
+            };
+
+            StockDocumentDto? document = null;
+            try
+            {
+                var saved = await SaveDraftAsync(null, draft, userId, permissions, cancellationToken);
+                if (saved.IsFailure || saved.Value is null)
                 {
                     failed.Add(new ImportCreateFailure
                     {
-                        WarehouseId = document.WarehouseId,
-                        WarehouseName = document.WarehouseName,
-                        Code = result.Code ?? "ERROR",
-                        Message = result.Error ?? "The document could not be posted.",
+                        WarehouseId = partWarehouseId,
+                        WarehouseName = partWarehouseId is int warehouseId
+                            ? await ImportCreateParts.WarehouseNameAsync(_warehouses, warehouseId, _logger, cancellationToken)
+                            : null,
+                        Code = saved.Code ?? "ERROR",
+                        Message = saved.Error ?? "The document could not be created.",
                     });
+                    continue;
+                }
+
+                document = saved.Value;
+                if (request.PostImmediately)
+                {
+                    var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
+                    if (result.IsSuccess && result.Value is not null)
+                    {
+                        document = result.Value;
+                        posted++;
+                    }
+                    else
+                    {
+                        failed.Add(new ImportCreateFailure
+                        {
+                            WarehouseId = document.WarehouseId,
+                            WarehouseName = document.WarehouseName,
+                            Code = result.Code ?? "ERROR",
+                            Message = result.Error ?? "The document could not be posted.",
+                        });
+                    }
+                }
+            }
+            catch (Exception ex) when (request.SplitByWarehouse && ex is not OperationCanceledException)
+            {
+                // SPLIT ONLY: the documents of the warehouses before this one are committed, perhaps posted, and
+                // must stay in the result. Unsplit there is nothing before it, and the error goes up as it always
+                // has. A draft saved before the error is still listed, for the page to open.
+                failed.Add(await ImportCreateParts.UnexpectedFailureAsync(
+                    ex, "document", _warehouses, lines[0].WarehouseId, document?.Id, _logger, cancellationToken));
+                if (document is null)
+                {
+                    continue;
                 }
             }
 
@@ -294,8 +325,8 @@ public sealed class StockDocumentService : IStockDocumentService
         }
 
         _logger.LogInformation(
-            "Import created {Created} {TypeCode} document(s) spanning {Warehouses} warehouse(s) for user {UserId}: {Posted} posted, {Failed} refused",
-            documents.Count, request.DocumentTypeCode, warehouseCount, userId, posted, failed.Count);
+            "Import created {Created} {TypeCode} document(s) from {Lines} line(s) for user {UserId} (one per warehouse: {Split}): {Posted} posted, {Failed} refused",
+            documents.Count, request.DocumentTypeCode, request.Lines.Count, userId, request.SplitByWarehouse, posted, failed.Count);
 
         return Result<ImportCreateResult>.Success(new ImportCreateResult
         {
@@ -611,31 +642,43 @@ public sealed class StockDocumentService : IStockDocumentService
     /// <summary>
     /// Which permission code answers "may this caller do this to this kind of document".
     ///
-    /// A DOCUMENT'S TYPE PICKS THE FAMILY, the action picks the verb. Anything that is not one of the
-    /// two inventory types is refused rather than defaulted: this service is the two of them, and a
-    /// Purchase document reaching it would be a routing mistake, not a permission question.
+    /// A DOCUMENT'S TYPE PICKS THE SET, the action picks the verb. Anything that is not one of the
+    /// inventory types is refused rather than defaulted: this service is those types, and a Purchase
+    /// document reaching it would be a routing mistake, not a permission question.
     /// </summary>
     private static bool Allows(IReadOnlySet<string> permissions, string documentTypeCode, DocumentAction action)
     {
-        var isIn = string.Equals(documentTypeCode, StockDocumentTypes.In, StringComparison.OrdinalIgnoreCase);
-        var isOut = string.Equals(documentTypeCode, StockDocumentTypes.Out, StringComparison.OrdinalIgnoreCase);
-
-        if (!isIn && !isOut)
+        if (VerbsOf(documentTypeCode) is not { } verbs)
         {
             return false;
         }
 
         var code = action switch
         {
-            DocumentAction.Create => isIn ? Permissions.Inventory.StockInCreate : Permissions.Inventory.StockOutCreate,
-            DocumentAction.Post => isIn ? Permissions.Inventory.StockInPost : Permissions.Inventory.StockOutPost,
-            DocumentAction.Cancel => isIn ? Permissions.Inventory.StockInCancel : Permissions.Inventory.StockOutCancel,
-            DocumentAction.Delete => isIn ? Permissions.Inventory.StockInDelete : Permissions.Inventory.StockOutDelete,
-            _ => isIn ? Permissions.Inventory.StockInView : Permissions.Inventory.StockOutView,
+            DocumentAction.Create => verbs.Create,
+            DocumentAction.Post => verbs.Post,
+            DocumentAction.Cancel => verbs.Cancel,
+            DocumentAction.Delete => verbs.Delete,
+            _ => verbs.View,
         };
 
         return permissions.Contains(code);
     }
+
+    /// <summary>The five permission codes of one inventory type; null for any other code.</summary>
+    private static DocumentVerbs? VerbsOf(string? documentTypeCode) => documentTypeCode?.ToUpperInvariant() switch
+    {
+        StockDocumentTypes.In => new DocumentVerbs(
+            Permissions.Inventory.StockInView, Permissions.Inventory.StockInCreate, Permissions.Inventory.StockInPost,
+            Permissions.Inventory.StockInCancel, Permissions.Inventory.StockInDelete),
+        StockDocumentTypes.Out => new DocumentVerbs(
+            Permissions.Inventory.StockOutView, Permissions.Inventory.StockOutCreate, Permissions.Inventory.StockOutPost,
+            Permissions.Inventory.StockOutCancel, Permissions.Inventory.StockOutDelete),
+        StockDocumentTypes.BivacOut => new DocumentVerbs(
+            Permissions.Inventory.BivacOutView, Permissions.Inventory.BivacOutCreate, Permissions.Inventory.BivacOutPost,
+            Permissions.Inventory.BivacOutCancel, Permissions.Inventory.BivacOutDelete),
+        _ => null,
+    };
 
     private static Result<StockDocumentDto> Failure(string message, ErrorType type, string code)
         => Result<StockDocumentDto>.Failure(type, message, code);
@@ -681,4 +724,6 @@ public sealed class StockDocumentService : IStockDocumentService
     }
 
     private readonly record struct RuleFailure(ErrorType Type, string Message, string Code);
+
+    private sealed record DocumentVerbs(string View, string Create, string Post, string Cancel, string Delete);
 }

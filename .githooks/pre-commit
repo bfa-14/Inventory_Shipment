@@ -1,0 +1,6 @@
+#!/usr/bin/env bash
+# Refuses a commit that would break the Windows PCs or Visual Studio (capitals, Windows names, cache files, the
+# .sqlproj file list): see tools/check-repo.sh. Turn it on once per clone:
+#   git config core.hooksPath .githooks
+# Skip it once, knowingly: git commit --no-verify
+exec "$(git rev-parse --show-toplevel)/tools/check-repo.sh"

@@ -44579,13 +44579,14 @@ LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
 ORDER BY ObjectType, o.ObjectName;                                    -- expected 11: 3 functions, 8 procedures
 
 -- Items on open orders (approved) or open containers (not offloaded, closed or cancelled) without a Container unit:
--- their containers have no known fill and an auto-plan refuses them.
+-- their containers have no known fill and an auto-plan refuses them. The lists are aggregated as NVARCHAR(MAX): over
+-- 4,000 characters (about 220 order numbers) a plain STRING_AGG stops with error 9829, and this runs at every start.
 SELECT i.ItemCode, i.ItemName,
-       OpenOrders     = (SELECT STRING_AGG(x.DocumentNumber, N', ') FROM (SELECT DISTINCT d.DocumentNumber
+       OpenOrders     = (SELECT STRING_AGG(CAST(x.DocumentNumber AS NVARCHAR(MAX)), N', ') FROM (SELECT DISTINCT d.DocumentNumber
                          FROM purchase.PurchaseDocumentLines l INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
                          INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
                          WHERE l.ItemId = i.Id AND dt.Code = N'PO' AND d.Status = 2) x),
-       OpenContainers = (SELECT STRING_AGG(x.ContainerRef, N', ') FROM (SELECT DISTINCT c.ContainerRef
+       OpenContainers = (SELECT STRING_AGG(CAST(x.ContainerRef AS NVARCHAR(MAX)), N', ') FROM (SELECT DISTINCT c.ContainerRef
                          FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                          WHERE cl.ItemId = i.Id AND c.Status < 6) x)
 FROM inventory.Items i
@@ -44608,7 +44609,7 @@ ORDER BY i.ItemCode;
 
 -- Open containers above 100 %.
 SELECT c.ContainerRef, c.Status, f.FillPct, Pieces = c.TotalAllocatedBase,
-       Items = (SELECT STRING_AGG(x.ItemCode, N', ') FROM (SELECT DISTINCT i.ItemCode FROM logistics.ContainerLines cl
+       Items = (SELECT STRING_AGG(CAST(x.ItemCode AS NVARCHAR(MAX)), N', ') FROM (SELECT DISTINCT i.ItemCode FROM logistics.ContainerLines cl
                 INNER JOIN inventory.Items i ON i.Id = cl.ItemId WHERE cl.ContainerId = c.Id) x)
 FROM logistics.Containers c
 CROSS APPLY logistics.fn_ContainerFill(c.Id) f
@@ -46316,6 +46317,12912 @@ RETURN
 GO
 
 PRINT 'Script 62 applied: a shortage plan for a parent warehouse counts its whole tree.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 63: Purchase invoice - one item per supplier invoice becomes optional =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 63: ONE ITEM PER SUPPLIER INVOICE BECOMES OPTIONAL
+
+   Script 45 (prompt 37) made every supplier invoice (PINV) hold one item. The business owner made it a choice: the
+   rule stays the default, a setting switches it off, and every creation of invoices can choose for itself.
+
+   Rule
+     - SETTING Purchase.OneItemPerInvoice (configuration.SettingDefinitions of script 39, group General, bool, default
+       true = as before, public: the web reads it as the default of its switches). Shown on Configuration > Settings.
+     - EVERY SUPPLIER INVOICE HAS ITS OWN MODE, purchase.PurchaseDocuments.OneItemOnly (BIT NULL, PINV only), set when
+       it is created and kept: 1 = it holds one item (the 65029 refusal of script 45 applies to it), 0 = it may hold
+       several items. NULL = an invoice created before this script: it follows the setting as it is NOW.
+       Effective mode = COALESCE(OneItemOnly, setting).
+     - usp_PurchaseDocument_Save: new optional @OneItemOnly, used when a PINV is INSERTED (NULL = the setting) and
+       stored; an update keeps the stored mode. 65029 only when the invoice's effective mode is 1.
+     - usp_PurchaseDocument_Post: the same effective check.
+     - usp_PurchaseDocument_CreateFromContainers and _CreateFromSource (PO -> PINV): new optional @OnePerItem (NULL =
+       the setting). 1 = one draft per item as before (each OneItemOnly = 1); 0 = ONE draft holding every selected line,
+       OneItemOnly = 0, created the same way (header, totals, container links, receipt mode). The same rows are
+       returned (one per invoice created, + ItemCount at the end) and @NewId is the first: existing callers keep working.
+     - usp_PurchaseDocument_SplitByItem: still any DRAFT PINV holding several items (a 0 one too); every invoice it
+       leaves, the original included, gets OneItemOnly = 1.
+     - usp_PurchaseDocument_Get returns OneItemOnly (effective; 0 on orders and returns). The list already gives
+       ItemCount (script 45): a multi-item invoice says how many items it holds. usp_PurchaseDocument_Search adds
+       OneItemOnly (effective; NULL on orders and returns), so the list tells an invoice of several items from a draft
+       of one item that holds several (saved before that rule, refused by Post until it is split).
+     - fn_PurchaseInvoice_ContainerState (script 51): its rule 3 (split a draft of several items before it takes
+       containers) only for an invoice whose mode is one item. A draft of several items with mode 0 is linked / given
+       containers item by item, as a posted invoice of several items already was.
+     - The Excel import of supplier invoices (API) follows the setting, or the caller's choice.
+
+   Objects
+     configuration.SettingDefinitions: Purchase.OneItemPerInvoice (new row)
+     purchase.PurchaseDocuments.OneItemOnly (new column)
+     purchase.fn_PurchaseInvoice_Row (re-created from its current body, script 45: + ItemCount)
+     purchase.usp_PurchaseDocument_Save / _CreateFromContainers / _CreateFromSource / _SplitByItem (re-created from
+       their current bodies, script 45)
+     purchase.usp_PurchaseDocument_Post (re-created from its current body, script 48)
+     purchase.usp_PurchaseDocument_Get / _Search (re-created from their current bodies, script 47)
+     purchase.fn_PurchaseInvoice_ContainerState (re-created from its current body, script 51)
+
+   Errors: unchanged (65029 a supplier invoice of one item holds one item).
+
+   Requires scripts 39, 45, 47, 48 and 51. Idempotent, additive: re-applied at every API start-up through Schema.sql.
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'configuration.SettingDefinitions', N'U') IS NULL
+   OR OBJECT_ID(N'configuration.fn_SettingBool', N'FN') IS NULL
+   OR OBJECT_ID(N'purchase.fn_PurchaseInvoice_Row', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.usp_PurchaseDocument_SplitByItem', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.fn_InvoiceSettlement', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.fn_PurchaseInvoice_ContainerState', N'IF') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 39, 45, 47, 48 and 51 before this script.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. The setting */
+
+-- The definition belongs to the application: it is written again on every run (text, type, default), the value an
+-- administrator chose (configuration.SettingValues) is never touched.
+IF EXISTS (SELECT 1 FROM configuration.SettingDefinitions WHERE SettingKey = N'Purchase.OneItemPerInvoice')
+    UPDATE configuration.SettingDefinitions
+    SET GroupName = N'General', Label = N'One item per supplier invoice',
+        Description = N'On: a new supplier invoice holds one item - creating invoices from an order, its containers or an Excel file makes one invoice per item. Off: one invoice can hold several items. The Create Invoice dialogs can still choose for each creation, and an invoice keeps the choice it was created with.',
+        ValueType = N'bool', DefaultValue = N'true', MinValue = NULL, MaxValue = NULL, IsPublic = 1, SortOrder = 20
+    WHERE SettingKey = N'Purchase.OneItemPerInvoice';
+ELSE
+    INSERT INTO configuration.SettingDefinitions (SettingKey, GroupName, Label, Description, ValueType, DefaultValue, IsPublic, SortOrder)
+    VALUES (N'Purchase.OneItemPerInvoice', N'General', N'One item per supplier invoice',
+            N'On: a new supplier invoice holds one item - creating invoices from an order, its containers or an Excel file makes one invoice per item. Off: one invoice can hold several items. The Create Invoice dialogs can still choose for each creation, and an invoice keeps the choice it was created with.',
+            N'bool', N'true', 1, 20);
+GO
+
+/* ================================================================== 2. The mode of every supplier invoice */
+
+-- Before any procedure below reads it. NULL on orders and returns, and on the invoices created before this script
+-- (they follow the setting).
+IF COL_LENGTH(N'purchase.PurchaseDocuments', N'OneItemOnly') IS NULL
+    ALTER TABLE purchase.PurchaseDocuments ADD OneItemOnly BIT NULL;   -- PINV: 1 one item (65029), 0 several items, NULL = the setting
+GO
+
+/* ================================================================== 3. The row of a created invoice: + how many items */
+
+-- Re-created (63) from the body of script 45: + ItemCount (more than 1 for an invoice of several items).
+CREATE OR ALTER FUNCTION purchase.fn_PurchaseInvoice_Row (@Id INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT d.Id, f.ItemId, i.ItemCode, i.ItemName, LineCount = x.Lines, QuantityBase = x.Qty, d.TotalAmount, d.RowVersion,
+           ItemCount = x.Items   -- (63)
+    FROM purchase.PurchaseDocuments d
+    CROSS APPLY (SELECT Lines = COUNT(*), Qty = ISNULL(SUM(QuantityBase), 0), Items = COUNT(DISTINCT ItemId)
+                 FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) x
+    OUTER APPLY (SELECT TOP (1) ItemId FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id ORDER BY LineNumber) f
+    LEFT  JOIN inventory.Items i ON i.Id = f.ItemId
+    WHERE d.Id = @Id;
+GO
+
+/* ================================================================== 4. Save: the mode of a new invoice, the check by mode */
+
+-- Re-created (63) from the body of script 45: + @OneItemOnly; 65029 only for an invoice whose mode is one item.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Save
+    @Id                  INT            = NULL,
+    @DocumentTypeCode    NVARCHAR(20),
+    @DocumentDate        DATE,
+    @ExpectedDate        DATE           = NULL,
+    @BranchId            INT,
+    @WarehouseId         INT = NULL,
+    @SupplierId          INT,
+    @CurrencyId          INT            = NULL,
+    @RateType            TINYINT        = 1,
+    @ExchangeRate        DECIMAL(18,6)  = NULL,
+    @SupplierReference   NVARCHAR(100)  = NULL,
+    @Notes               NVARCHAR(1000) = NULL,
+    @Lines               purchase.tvp_PurchaseDocumentLine READONLY,
+    @MaxDiscountPercent  DECIMAL(9,4)   = 100,
+    @SourceDocumentId    INT            = NULL,
+    @RowVersion          BINARY(8)      = NULL,
+    @UserId              INT            = NULL,
+    @ReceiptMode         TINYINT        = NULL,    -- NULL = unchanged (1 on creation)
+    @ExporterReference   NVARCHAR(50)   = NULL,
+    @CommercialInvoiceNo NVARCHAR(50)   = NULL,
+    @LineContainers      purchase.tvp_LineContainer READONLY,   -- invoice from containers: the container line of every line
+    @NewId               INT OUTPUT,
+    @OneItemOnly         BIT            = NULL     -- (63) a NEW supplier invoice: 1 one item, 0 several; NULL = the setting. Kept on update.
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    /* The warehouse lives on the LINES. The header keeps one so that document lists, filters,
+       reports and exports still have a warehouse to show; when the caller does not send one it is
+       taken from the first line. */
+    IF @WarehouseId IS NULL
+        SELECT TOP (1) @WarehouseId = WarehouseId FROM @Lines ORDER BY LineNumber;
+
+    SET @SupplierReference = NULLIF(LTRIM(RTRIM(@SupplierReference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @ExporterReference = NULLIF(LTRIM(RTRIM(@ExporterReference)), N'');
+    SET @CommercialInvoiceNo = NULLIF(LTRIM(RTRIM(@CommercialInvoiceNo)), N'');
+    IF @ReceiptMode IS NOT NULL AND @ReceiptMode NOT IN (1, 2) THROW 65000, 'Receipt mode must be 1 (on posting) or 2 (on container offload).', 1;
+    IF @ReceiptMode = 2 AND @DocumentTypeCode <> N'PINV' THROW 65000, 'Only purchase invoices can be received on container offload.', 1;
+
+    DECLARE @TypeId INT, @Direction SMALLINT, @Cur INT, @Rate DECIMAL(18,6);
+    EXEC purchase.usp_PurchaseDocument_ValidateInput @DocumentTypeCode, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
+         @CurrencyId, @RateType, @ExchangeRate, @MaxDiscountPercent, @SourceDocumentId, @Lines,
+         @TypeId OUTPUT, @Direction OUTPUT, @Cur OUTPUT, @Rate OUTPUT;
+
+    -- (63) ONE ITEM OR SEVERAL IS THE INVOICE'S OWN MODE: chosen when it is created (@OneItemOnly, NULL = the setting
+    --      Purchase.OneItemPerInvoice) and kept by every later save. An invoice saved before script 63 has none: it
+    --      follows the setting as it is now. Orders and returns have no mode.
+    DECLARE @OneItem BIT = NULL;
+    IF @DocumentTypeCode = N'PINV'
+        SET @OneItem = COALESCE(CASE WHEN @Id IS NULL THEN @OneItemOnly
+                                     ELSE (SELECT OneItemOnly FROM purchase.PurchaseDocuments WHERE Id = @Id) END,
+                                configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+
+    -- (45) A supplier invoice holds ONE item: any number of lines, all of the same item. (63) When its mode says so.
+    IF @OneItem = 1 AND (SELECT COUNT(DISTINCT ItemId) FROM @Lines) > 1
+    BEGIN
+        DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM @Lines), @ItemCodes NVARCHAR(400);
+        SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+        FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+              FROM @Lines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+              GROUP BY l.ItemId, i.ItemCode
+              ORDER BY MIN(l.LineNumber)) x;
+        SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+        THROW 65029, @ItemCodes, 1;
+    END
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM purchase.PurchaseDocuments WHERE Id = @Id);
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 65005, 'Only draft documents can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND DocumentTypeId <> @TypeId)
+            THROW 65000, 'The document type cannot be changed.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND ISNULL(SourceDocumentId, 0) <> ISNULL(@SourceDocumentId, 0))
+            THROW 65000, 'The source document cannot be changed.', 1;
+        -- (43) A container is unlinked from the Containers card of the invoice (usp_PurchaseInvoice_UnlinkContainer),
+        --      never by saving the invoice without the lines that are on it.
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines pl
+                   WHERE pl.DocumentId = @Id AND pl.ContainerLineId IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM @LineContainers x WHERE x.ContainerLineId = pl.ContainerLineId))
+        BEGIN
+            IF @ReceiptMode = 1 THROW 65026, 'Unlink the containers before switching off Shipped in containers.', 1;
+            THROW 65019, 'This invoice is linked to containers: keep their lines, or unlink a container from the Containers card of the invoice.', 1;
+        END
+    END
+
+    -- Lines linked to containers (all of them, or (43) only some: the rest is linked later) point to a container line of
+    -- the same order line and item, within what is loaded and not yet invoiced elsewhere. A linked line forces receipt
+    -- mode 2 ("shipped in containers").
+    IF EXISTS (SELECT 1 FROM @LineContainers)
+    BEGIN
+        IF @DocumentTypeCode <> N'PINV' THROW 65019, 'Only purchase invoices can be linked to containers.', 1;
+        IF @SourceDocumentId IS NULL THROW 65019, 'An invoice from containers must refer to its purchase order.', 1;
+        IF EXISTS (SELECT 1 FROM @LineContainers x WHERE NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.LineNumber = x.LineNumber))
+            THROW 65019, 'A container line is given for a line that does not exist.', 1;
+        IF @Id IS NOT NULL AND EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+            THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+
+        DECLARE @CtMsg NVARCHAR(400);
+        SELECT TOP (1) @CtMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN cl.Id IS NULL THEN N'the container line no longer exists.'
+                 WHEN c.Status IN (6, 7, 8) THEN N'container ' + c.ContainerRef + N' is already offloaded, closed or cancelled.'
+                 WHEN cl.PurchaseOrderId <> @SourceDocumentId THEN N'the container line belongs to another purchase order.'
+                 WHEN cl.ItemId <> l.ItemId THEN N'the item differs from the container line.'
+                 ELSE N'the order line differs from the container line.' END
+        FROM @Lines l
+        INNER JOIN @LineContainers x          ON x.LineNumber = l.LineNumber
+        LEFT  JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+        LEFT  JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        WHERE cl.Id IS NULL OR c.Status IN (6, 7, 8) OR cl.PurchaseOrderId <> @SourceDocumentId
+           OR cl.ItemId <> l.ItemId OR ISNULL(l.SourceLineId, 0) <> cl.PoLineId
+        ORDER BY l.LineNumber;
+        IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+
+        SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                + CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Other, 0) AS NVARCHAR(20))
+                                + N' in other invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.'
+        FROM (SELECT x.ContainerLineId, Here = SUM(l.Quantity * iu.PackingFormula)
+              FROM @Lines l
+              INNER JOIN @LineContainers x      ON x.LineNumber = l.LineNumber
+              INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+              GROUP BY x.ContainerLineId) q
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+        OUTER APPLY (SELECT Other = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3 AND (@Id IS NULL OR pd.Id <> @Id)) o
+        WHERE q.Here + ISNULL(o.Other, 0) > cl.QuantityBase
+        ORDER BY c.ContainerRef, cl.LineNumber;
+        IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+
+        IF @ReceiptMode = 1 THROW 65026, 'Unlink the containers before switching off Shipped in containers.', 1;
+        SET @ReceiptMode = 2;
+    END
+
+    -- (43) "Shipped in containers" (receipt mode 2) is chosen on a purchase invoice: NULL = unchanged (1 on creation).
+    DECLARE @EffectiveMode TINYINT = CASE WHEN @DocumentTypeCode <> N'PINV' THEN 1
+                                          ELSE COALESCE(@ReceiptMode, (SELECT ReceiptMode FROM purchase.PurchaseDocuments WHERE Id = @Id), 1) END;
+    DECLARE @ModeMsg NVARCHAR(400);
+    IF @EffectiveMode = 2
+    BEGIN
+        -- the goods enter the stock at the offload of the containers they are linked to: lines of the order only
+        IF @SourceDocumentId IS NULL THROW 65000, 'Only an invoice created from a purchase order can be shipped in containers.', 1;
+        SELECT TOP (1) @ModeMsg = N'Line ' + CAST(LineNumber AS NVARCHAR(10)) + N': only lines of the purchase order can be shipped in containers.'
+        FROM @Lines WHERE SourceLineId IS NULL ORDER BY LineNumber;
+        IF @ModeMsg IS NOT NULL THROW 65000, @ModeMsg, 1;
+    END
+    ELSE IF @DocumentTypeCode = N'PINV' AND @SourceDocumentId IS NOT NULL
+    BEGIN
+        -- received on posting: what the containers of the order hold plus what is invoiced outside containers cannot
+        -- exceed the order line, or the same goods would be received twice
+        SELECT TOP (1) @ModeMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): the containers of the order hold '
+                                  + CAST(ct.Qty AS NVARCHAR(20)) + N' of the ' + CAST(pol.QuantityBase AS NVARCHAR(20))
+                                  + N' ordered. Keep Shipped in containers on and link the invoice to them.'
+        FROM (SELECT x.SourceLineId, Qty = SUM(x.Quantity * iu.PackingFormula), LineNumber = MIN(x.LineNumber)
+              FROM @Lines x INNER JOIN inventory.ItemUnits iu ON iu.Id = x.ItemUnitId
+              WHERE x.SourceLineId IS NOT NULL GROUP BY x.SourceLineId) l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.SourceLineId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        CROSS APPLY (SELECT Qty = ISNULL(SUM(cl.QuantityBase), 0) FROM logistics.ContainerLines cl
+                     INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                     WHERE cl.PoLineId = pol.Id AND c.Status <> 8) ct
+        OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                     INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                     WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2
+                       AND (@Id IS NULL OR xd.Id <> @Id)) dir
+        WHERE ct.Qty > 0 AND l.Qty + ISNULL(dir.Qty, 0) + ct.Qty > pol.QuantityBase
+        ORDER BY l.LineNumber;
+        IF @ModeMsg IS NOT NULL THROW 65026, @ModeMsg, 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30) = NULL;
+            IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
+                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
+
+            INSERT INTO purchase.PurchaseDocuments (DocumentTypeId, DocumentNumber, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
+                                                    CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId,
+                                                    ReceiptMode, ExporterReference, CommercialInvoiceNo, CreatedBy, OneItemOnly)
+            VALUES (@TypeId, @Number, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
+                    @Cur, @RateType, @Rate, @SupplierReference, @Notes, 1, @SourceDocumentId,
+                    ISNULL(@ReceiptMode, 1), @ExporterReference, @CommercialInvoiceNo, @UserId,
+                    @OneItem);   -- (63) the mode of a new supplier invoice, stored once (NULL on orders and returns)
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Created', ISNULL(N'Draft ' + @Number, N'Draft (number assigned on posting)')
+                        + ISNULL(N' from ' + (SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @SourceDocumentId), N''), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE purchase.PurchaseDocuments
+            SET DocumentDate = @DocumentDate, ExpectedDate = @ExpectedDate, BranchId = @BranchId, WarehouseId = @WarehouseId,
+                SupplierId = @SupplierId, CurrencyId = @Cur, RateType = @RateType, ExchangeRate = @Rate,
+                SupplierReference = @SupplierReference, Notes = @Notes,
+                ReceiptMode = ISNULL(@ReceiptMode, ReceiptMode),
+                ExporterReference = @ExporterReference, CommercialInvoiceNo = @CommercialInvoiceNo,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+
+            -- Lines are replaced: manual charge allocations pointing at the old lines are dropped (the charges stay).
+            DELETE a FROM purchase.PurchaseChargeAllocations a
+            INNER JOIN purchase.PurchaseCharges c ON c.Id = a.ChargeId
+            WHERE c.DocumentKind = N'PINV' AND c.DocumentId = @Id;
+            DELETE FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+
+            INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        INSERT INTO purchase.PurchaseDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
+                                                    UnitPrice, DiscountPercent, UnitCostBase, FobCostBase, ImportRowNumber, Notes, SourceLineId)
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+               ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
+               ISNULL(l.DiscountPercent, 0),
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.LandedCostBase, src.UnitCostBase) END,   -- returns carry the LANDED cost (the container's for imports)
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.FobCostBase, src.FobCostBase) END,
+               l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N''), l.SourceLineId
+        FROM @Lines l
+        INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        LEFT  JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId
+        LEFT  JOIN logistics.ContainerLines scl       ON scl.Id = src.ContainerLineId;
+
+        UPDATE pl SET ContainerLineId = x.ContainerLineId
+        FROM purchase.PurchaseDocumentLines pl
+        INNER JOIN @LineContainers x ON x.LineNumber = pl.LineNumber
+        WHERE pl.DocumentId = @Id;
+
+        UPDATE d
+        SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / @Rate, 2), TotalLandedCostBase = ROUND(x.Amt / @Rate, 2) + d.TotalChargesBase
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        -- the value basis of the container charges follows the invoice prices
+        IF EXISTS (SELECT 1 FROM @LineContainers)
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM @LineContainers x INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 5. Post: the same check */
+
+-- Re-created (63) from the body of script 48 (approval of 42, line warehouses of any branch kept): 65029 by mode.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Post
+    @Id         INT,
+    @RowVersion   BINARY(8) = NULL,
+    @UserId       INT       = NULL,
+    @FromApproval BIT       = 0      -- 1 = called by the approval
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE,
+                @BranchId INT, @SupplierId INT, @Rate DECIMAL(18,6), @SourceId INT, @ReceiptMode TINYINT,
+                @OneItemOnly BIT;
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @SupplierId = d.SupplierId, @Rate = d.ExchangeRate,
+               @SourceId = d.SourceDocumentId, @ReceiptMode = d.ReceiptMode,
+               @OneItemOnly = d.OneItemOnly
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 1 AND @Status <> 5
+            THROW 65010, 'Only a purchase order waiting for approval can be approved.', 1;
+        IF (@TypeCode <> N'PO' OR ISNULL(@FromApproval, 0) = 0) AND @Status <> 1
+            THROW 65010, 'Only draft documents can be posted.', 1;
+
+        DECLARE @PostedWithoutApproval BIT = CASE WHEN @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 0 THEN 1 ELSE 0 END;
+        IF @PostedWithoutApproval = 1 AND purchase.fn_PurchaseOrder_NeedsApproval(@Id) = 1
+            THROW 65013, 'This order needs approval: send it for approval.', 1;
+
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
+            THROW 65009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        -- (45) A supplier invoice holds ONE item: a draft saved with several before script 45 is split first.
+        -- (63) Only when its mode is one item: its own, or the setting when it has none (saved before script 63).
+        IF @TypeCode = N'PINV' AND COALESCE(@OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice')) = 1
+           AND (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) > 1
+        BEGIN
+            DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id),
+                    @ItemCodes NVARCHAR(400);
+            SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+            FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+                  FROM purchase.PurchaseDocumentLines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+                  WHERE l.DocumentId = @Id
+                  GROUP BY l.ItemId, i.ItemCode
+                  ORDER BY MIN(l.LineNumber)) x;
+            SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+            THROW 65029, @ItemCodes, 1;
+        END
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
+            THROW 65008, 'The supplier is inactive.', 1;
+
+        -- Imports: the goods are received by the container, not by this posting.
+        DECLARE @ReceiveNow BIT = CASE WHEN @TypeCode = N'PINV' AND @ReceiptMode = 2 THEN 0 ELSE 1 END;
+
+        DECLARE @FromContainers BIT = CASE WHEN @TypeCode = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
+                                                                                WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END;
+        -- (43) Shipped in containers: an imported invoice, linked to its containers now or later. Lines not in a container
+        --      yet are allowed: they enter the stock at the offload of the containers they are linked to afterwards.
+        IF @TypeCode = N'PINV' AND @ReceiptMode = 2
+        BEGIN
+            IF NULLIF(LTRIM(RTRIM((SELECT ExporterReference FROM purchase.PurchaseDocuments WHERE Id = @Id))), N'') IS NULL
+                THROW 65018, 'The exporter reference is required on an imported invoice. Enter it before posting.', 1;
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+                THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+        END
+
+        IF @FromContainers = 1
+        BEGIN
+
+            DECLARE @CtMsg NVARCHAR(400);
+            SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                    + CASE WHEN c.Status IN (6, 7, 8) THEN N'the container is already offloaded, closed or cancelled.'
+                                           ELSE CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Posted, 0) AS NVARCHAR(20))
+                                                + N' in posted invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.' END
+            FROM (SELECT ContainerLineId, Here = SUM(QuantityBase) FROM purchase.PurchaseDocumentLines
+                  WHERE DocumentId = @Id GROUP BY ContainerLineId) q
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+            INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+            INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+            OUTER APPLY (SELECT Posted = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                         INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                         WHERE pil.ContainerLineId = cl.Id AND pd.Status IN (2, 4) AND pd.Id <> @Id) o
+            WHERE c.Status IN (6, 7, 8) OR q.Here + ISNULL(o.Posted, 0) > cl.QuantityBase
+            ORDER BY c.ContainerRef, cl.LineNumber;
+            IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+        END
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.' END
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+
+        IF @SourceId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 2)
+                THROW 65011, 'The source document is no longer open (cancelled or closed).', 1;
+
+            IF @TypeCode = N'PINV'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units invoiced but only ' + CAST(s.QuantityBase - s.ReceivedQuantityBase AS NVARCHAR(20)) + N' remain on the order line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReceivedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+            IF @TypeCode = N'PRET'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units returned but only ' + CAST(s.QuantityBase - s.ReturnedQuantityBase AS NVARCHAR(20)) + N' can still be returned from the invoice line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReturnedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+        END
+
+        IF @Direction = -1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        IF @TypeCode = N'PINV'
+        BEGIN
+            -- FOB per base unit, then charges allocated over the lines, then landed cost per base unit.
+            EXEC purchase.usp_PurchaseCharges_Allocate N'PINV', @Id, @Id;
+
+            UPDATE l
+            SET FobCostBase = (l.LineTotal / @Rate) / l.QuantityBase,
+                AllocatedChargesBase = ISNULL(a.Total, 0),
+                UnitCostBase = ((l.LineTotal / @Rate) + ISNULL(a.Total, 0)) / l.QuantityBase
+            FROM purchase.PurchaseDocumentLines l
+            OUTER APPLY (SELECT SUM(x.AmountBase) AS Total
+                         FROM purchase.PurchaseChargeAllocations x
+                         INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                         WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'PINV' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1) a
+            WHERE l.DocumentId = @Id;
+
+            UPDATE d
+            SET TotalChargesBase = ISNULL(x.Charges, 0), TotalLandedCostBase = d.TotalAmountBase + ISNULL(x.Charges, 0)
+            FROM purchase.PurchaseDocuments d
+            CROSS APPLY (SELECT SUM(AllocatedChargesBase) AS Charges FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
+        END
+        ELSE IF @TypeCode = N'PRET'
+            UPDATE l SET UnitCostBase = ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
+            FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+
+        IF @Direction = 1 AND @ReceiveNow = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0), l.FobCostBase FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId, 1;
+        END
+
+        IF @Direction <> 0 AND @ReceiveNow = 1
+        BEGIN
+            DECLARE @MovementDate DATETIME2(3) =
+                DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            -- (48) the branch of the line's warehouse, which need not be the document's branch
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, w.BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+                   N'Purchase', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
+            FROM purchase.PurchaseDocumentLines l
+            INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+            WHERE l.DocumentId = @Id;
+
+            IF @Direction = 1
+                UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = QuantityBase WHERE DocumentId = @Id;
+        END
+
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceId AND ReceivedQuantityBase < QuantityBase)
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = N'Fully received' WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Closed', N'Fully received by ' + @Number, @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        UPDATE purchase.PurchaseDocuments
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
+                                + CASE WHEN @Direction <> 0 AND @ReceiveNow = 1 THEN N' written to the stock ledger'
+                                       WHEN @ReceiveNow = 0 THEN N'; stock will be received when the container is offloaded'
+                                       WHEN @PostedWithoutApproval = 1 THEN N' (approval not needed)'
+                                       ELSE N' (order approved)' END
+                                + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END, @UserId);
+
+        -- A purchase order posted without approval: the user who posts it is recorded as approver, as an approval does.
+        IF @PostedWithoutApproval = 1
+        BEGIN
+            UPDATE purchase.PurchaseDocuments SET ApprovedAtUtc = SYSUTCDATETIME(), ApprovedBy = @UserId WHERE Id = @Id;
+
+            DECLARE @RequireApproval BIT, @ApprovalLimit DECIMAL(19, 4);
+            SELECT @RequireApproval = RequireApproval, @ApprovalLimit = ApprovalLimitBase FROM purchase.ApprovalSettings WHERE Id = 1;
+            INSERT INTO purchase.PurchaseOrderApprovalEvents (PurchaseDocumentId, EventType, UserId, Note)
+            VALUES (@Id, 7, @UserId,
+                    CASE WHEN @RequireApproval = 0 THEN N'Approval not required'
+                         ELSE N'Under the approval limit of ' + FORMAT(@ApprovalLimit, N'N2', N'en-US')
+                              + ISNULL(N' ' + (SELECT TOP (1) CurrencyCode FROM masterdata.Currencies
+                                               WHERE IsBaseCurrency = 1 AND IsActive = 1), N'') END);
+        END
+
+        -- containers of an import: the invoice is known now (value basis of the charges, history)
+        IF @FromContainers = 1
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+                INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                WHERE l.DocumentId = @Id;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                VALUES (@Cid, N'Updated', N'Purchase invoice ' + @Number + N' posted', @UserId);
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
+
+        COMMIT TRANSACTION;
+        IF ISNULL(@FromApproval, 0) = 0 SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. CreateFromContainers: one invoice per item, or one */
+
+-- Re-created (63) from the body of script 45: + @OnePerItem.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_CreateFromContainers
+    @PurchaseOrderId INT,
+    @Selection       logistics.tvp_ContainerLineQty READONLY,
+    @DocumentDate    DATE = NULL,
+    @UserId          INT  = NULL,
+    @NewId           INT OUTPUT,                      -- (45) the FIRST invoice created
+    @ExporterReference   NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
+    @OnePerItem          BIT          = NULL          -- (63) 1 one invoice per item, 0 one invoice of every item; NULL = the setting
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT,
+            @RateType TINYINT, @SupplierRef NVARCHAR(100);
+    SELECT @TypeCode = dt.Code, @Status = d.Status, @BranchId = d.BranchId, @WarehouseId = d.WarehouseId, @SupplierId = d.SupplierId,
+           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference
+    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE d.Id = @PurchaseOrderId;
+
+    IF @TypeCode IS NULL THROW 65006, 'Purchase order not found.', 1;
+    IF @TypeCode <> N'PO' THROW 65011, 'Invoices from containers are created for a purchase order.', 1;
+    IF @Status <> 2 THROW 65011, 'The purchase order must be approved and still open.', 1;
+
+    DECLARE @Pick TABLE (ContainerLineId INT PRIMARY KEY, QuantityBase INT);
+    IF EXISTS (SELECT 1 FROM @Selection)
+        INSERT INTO @Pick (ContainerLineId, QuantityBase) SELECT ContainerLineId, QuantityBase FROM @Selection;
+    ELSE
+        INSERT INTO @Pick (ContainerLineId, QuantityBase)
+        SELECT cl.Id, cl.QuantityBase - ISNULL(q.Qty, 0)
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+        OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+        WHERE cl.PurchaseOrderId = @PurchaseOrderId AND c.Status NOT IN (6, 7, 8) AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0;
+
+    IF NOT EXISTS (SELECT 1 FROM @Pick) THROW 65019, 'Nothing is left to invoice on the containers of this order.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        CASE WHEN cl.Id IS NULL THEN N'A selected container line no longer exists.'
+             WHEN cl.PurchaseOrderId <> @PurchaseOrderId THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' belongs to another purchase order.'
+             WHEN c.Status IN (6, 7, 8) THEN N'Container ' + c.ContainerRef + N' is already offloaded, closed or cancelled.'
+             WHEN p.QuantityBase <= 0 THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': the quantity must be greater than zero.'
+             ELSE N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': ' + CAST(p.QuantityBase AS NVARCHAR(20))
+                  + N' selected but only ' + CAST(cl.QuantityBase - ISNULL(q.Qty, 0) AS NVARCHAR(20)) + N' are loaded and not yet invoiced.' END
+    FROM @Pick p
+    LEFT JOIN logistics.ContainerLines cl ON cl.Id = p.ContainerLineId
+    LEFT JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+    OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                 WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+    WHERE cl.Id IS NULL OR cl.PurchaseOrderId <> @PurchaseOrderId OR c.Status IN (6, 7, 8) OR p.QuantityBase <= 0
+       OR p.QuantityBase > cl.QuantityBase - ISNULL(q.Qty, 0)
+    ORDER BY c.ContainerRef, cl.LineNumber;
+    IF @Msg IS NOT NULL THROW 65019, @Msg, 1;
+
+    -- the order line must still allow it (posted invoices + drafts)
+    SELECT TOP (1) @Msg = N'Order line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): ' + CAST(x.Qty AS NVARCHAR(20))
+                          + N' selected but only ' + CAST(pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(dr.Qty, 0) AS NVARCHAR(20))
+                          + N' remain to invoice (the rest is in posted or draft invoices).'
+    FROM (SELECT cl.PoLineId, Qty = SUM(p.QuantityBase) FROM @Pick p
+          INNER JOIN logistics.ContainerLines cl ON cl.Id = p.ContainerLineId GROUP BY cl.PoLineId) x
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = x.PoLineId
+    INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+    OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                 WHERE pil.SourceLineId = pol.Id AND pd.Status = 1) dr
+    WHERE x.Qty > pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(dr.Qty, 0)
+    ORDER BY pol.LineNumber;
+    IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+
+    DECLARE @Rows TABLE (LineNumber INT PRIMARY KEY, ContainerLineId INT, PoLineId INT, QuantityBase INT);
+    INSERT INTO @Rows (LineNumber, ContainerLineId, PoLineId, QuantityBase)
+    SELECT ROW_NUMBER() OVER (ORDER BY c.ContainerRef, cl.LineNumber), cl.Id, cl.PoLineId, p.QuantityBase
+    FROM @Pick p
+    INNER JOIN logistics.ContainerLines cl ON cl.Id = p.ContainerLineId
+    INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId;
+
+    DECLARE @Lines purchase.tvp_PurchaseDocumentLine;
+    INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+    SELECT r.LineNumber, pol.ItemId, u.ItemUnitId, @WarehouseId, pol.ExpiryDate, u.Quantity, u.UnitPrice, pol.DiscountPercent, NULL,
+           LEFT(N'Container ' + c.ContainerRef + ISNULL(N' / ' + c.ContainerNo, N''), 300), pol.Id
+    FROM @Rows r
+    INNER JOIN logistics.ContainerLines cl        ON cl.Id = r.ContainerLineId
+    INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = r.PoLineId
+    CROSS APPLY (SELECT ItemUnitId = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN pol.ItemUnitId
+                                          ELSE (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = pol.ItemId AND IsBaseUnit = 1) END,
+                        Quantity   = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN r.QuantityBase / pol.PackingFormula ELSE r.QuantityBase END,
+                        UnitPrice  = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN pol.UnitPrice ELSE ROUND(pol.UnitPrice / pol.PackingFormula, 4) END) u;
+
+    -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
+    --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    -- (63) ...UNLESS @OnePerItem = 0 (NULL = the setting Purchase.OneItemPerInvoice): then ONE invoice holds every line,
+    --      in the same order, created the same way; its mode allows several items (OneItemOnly = 0). With 1 every
+    --      invoice is of one item (OneItemOnly = 1), as before.
+    SET @OnePerItem = COALESCE(@OnePerItem, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+    DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+    INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
+
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
+    DECLARE @Part purchase.tvp_PurchaseDocumentLine, @PartContainers purchase.tvp_LineContainer;
+    DECLARE @Seq INT = 1, @Last INT = CASE WHEN @OnePerItem = 1 THEN (SELECT MAX(Seq) FROM @Items) ELSE 1 END, @Item INT, @InvoiceId INT;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            DELETE FROM @Part;
+            INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
+                   ImportRowNumber, Notes, SourceLineId
+            FROM @Lines WHERE ItemId = @Item OR @OnePerItem = 0;
+
+            DELETE FROM @PartContainers;
+            INSERT INTO @PartContainers (LineNumber, ContainerLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY r.LineNumber), r.ContainerLineId
+            FROM @Rows r INNER JOIN @Lines l ON l.LineNumber = r.LineNumber
+            WHERE l.ItemId = @Item OR @OnePerItem = 0;
+
+            SET @InvoiceId = NULL;
+            EXEC purchase.usp_PurchaseDocument_Save
+                 @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+                 @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+                 @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+                 @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @PurchaseOrderId, @RowVersion = NULL, @UserId = @UserId,
+                 @ReceiptMode = 2, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
+                 @LineContainers = @PartContainers, @NewId = @InvoiceId OUTPUT, @OneItemOnly = @OnePerItem;
+            INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            SELECT DISTINCT cl.ContainerId, N'Updated',
+                   N'Draft purchase invoice ' + ISNULL((SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId),
+                                                       N'#' + CAST(@InvoiceId AS NVARCHAR(10)))
+                   + N' created from the container', @UserId
+            FROM @PartContainers x INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId;
+
+            SET @Seq += 1;
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    -- the first invoice, as before: the callers that read @NewId keep working
+    SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
+END
+GO
+
+/* ================================================================== 7. CreateFromSource: one invoice per item, or one (PO -> PINV) */
+
+-- Re-created (63) from the body of script 45: + @OnePerItem (PO -> PINV); PINV -> PRET unchanged.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
+    @SourceId       INT,
+    @TargetTypeCode NVARCHAR(20),        -- PINV (from PO) | PRET (from PINV)
+    @DocumentDate   DATE = NULL,         -- default today
+    @Selection      purchase.tvp_SourceLineSelection READONLY,   -- lines + base quantities to take; empty = everything still available
+    @UserId         INT  = NULL,
+    @NewId          INT OUTPUT,                       -- (45) PO -> PINV: the FIRST invoice created
+    @ExporterReference   NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
+    @OnePerItem          BIT          = NULL          -- (63) PO -> PINV: 1 one invoice per item, 0 one invoice of every item; NULL = the setting
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @SrcType NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT, @RateType TINYINT, @SupplierRef NVARCHAR(100);
+    SELECT @SrcType = dt.Code, @Status = d.Status, @BranchId = d.BranchId, @WarehouseId = d.WarehouseId, @SupplierId = d.SupplierId,
+           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference
+    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceId;
+
+    IF @SrcType IS NULL THROW 65006, 'Source document not found.', 1;
+    IF @Status <> 2 THROW 65011, 'The source document must be approved / posted and still open.', 1;
+    IF NOT ((@TargetTypeCode = N'PINV' AND @SrcType = N'PO') OR (@TargetTypeCode = N'PRET' AND @SrcType = N'PINV'))
+        THROW 65011, 'Purchase orders become purchase invoices; purchase invoices become purchase returns.', 1;
+    -- (43) An order with containers gives an invoice "shipped in containers" (receipt mode 2): its lines are linked to the
+    --      containers afterwards (usp_PurchaseInvoice_LinkContainers). It used to be refused (65021).
+    DECLARE @ReceiptMode TINYINT =
+        CASE WHEN @SrcType = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                               WHERE cl.PurchaseOrderId = @SourceId AND c.Status <> 8)
+             THEN 2 END;
+
+    -- Several drafts may be created from the same document: what is already in another DRAFT of the target type is not
+    -- offered again. A selection takes only the given lines / base quantities.
+    DECLARE @HasSelection BIT = CASE WHEN EXISTS (SELECT 1 FROM @Selection) THEN 1 ELSE 0 END;
+    IF @HasSelection = 1
+    BEGIN
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg = CASE WHEN l.Id IS NULL THEN N'A selected line does not belong to the source document.'
+                                   WHEN sel.QuantityBase <= 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the quantity must be greater than zero.'
+                                   ELSE N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + CAST(sel.QuantityBase AS NVARCHAR(20))
+                                        + N' base units selected but only ' + CAST(av.Available AS NVARCHAR(20))
+                                        + N' are still available (the rest is in posted or draft documents).' END
+        FROM @Selection sel
+        LEFT JOIN purchase.PurchaseDocumentLines l ON l.Id = sel.SourceLineId AND l.DocumentId = @SourceId
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 INNER JOIN inventory.DocumentTypes xt ON xt.Id = xd.DocumentTypeId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1 AND xt.Code = @TargetTypeCode) dr
+    CROSS APPLY (SELECT Available = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                         ELSE l.QuantityBase - l.ReturnedQuantityBase END - ISNULL(dr.Qty, 0)) av
+        WHERE l.Id IS NULL OR sel.QuantityBase <= 0 OR sel.QuantityBase > av.Available
+        ORDER BY sel.SourceLineId;
+        IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+    END
+
+    -- Remaining quantity per line; when it is not a whole number of the line's unit, the new line uses the BASE unit
+    -- (price converted per base unit) so nothing is over-received or over-returned.
+    DECLARE @Lines purchase.tvp_PurchaseDocumentLine;
+    INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+    SELECT ROW_NUMBER() OVER (ORDER BY l.LineNumber), l.ItemId, c.ItemUnitId, l.WarehouseId, l.ExpiryDate,
+           c.Quantity, c.UnitPrice, l.DiscountPercent, NULL, l.Notes, l.Id
+    FROM purchase.PurchaseDocumentLines l
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 INNER JOIN inventory.DocumentTypes xt ON xt.Id = xd.DocumentTypeId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1 AND xt.Code = @TargetTypeCode) dr
+    CROSS APPLY (SELECT Available = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                         ELSE l.QuantityBase - l.ReturnedQuantityBase END - ISNULL(dr.Qty, 0)) av
+    LEFT JOIN @Selection sel ON sel.SourceLineId = l.Id
+    CROSS APPLY (SELECT Remaining = CASE WHEN @HasSelection = 1 THEN ISNULL(sel.QuantityBase, 0) ELSE av.Available END) r
+    CROSS APPLY (SELECT ItemUnitId = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN l.ItemUnitId
+                                          ELSE (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = l.ItemId AND IsBaseUnit = 1) END,
+                        Quantity   = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN r.Remaining / l.PackingFormula ELSE r.Remaining END,
+                        UnitPrice  = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN l.UnitPrice ELSE ROUND(l.UnitPrice / l.PackingFormula, 4) END) c
+    WHERE l.DocumentId = @SourceId AND r.Remaining > 0;
+
+    IF NOT EXISTS (SELECT 1 FROM @Lines) THROW 65011, 'Nothing is left on the source document: everything is already in posted or draft documents.', 1;
+
+    -- A return (any pair but PO -> PINV): one document, as before.
+    IF @TargetTypeCode <> N'PINV'
+    BEGIN
+        EXEC purchase.usp_PurchaseDocument_Save
+             @Id = NULL, @DocumentTypeCode = @TargetTypeCode, @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+             @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+             @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+             @Lines = @Lines, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
+             @ReceiptMode = @ReceiptMode, @NewId = @NewId OUTPUT;
+        RETURN;
+    END
+
+    -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
+    --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    -- (63) ...UNLESS @OnePerItem = 0 (NULL = the setting Purchase.OneItemPerInvoice): then ONE invoice holds every line,
+    --      in the same order, created the same way; its mode allows several items (OneItemOnly = 0). With 1 every
+    --      invoice is of one item (OneItemOnly = 1), as before.
+    SET @OnePerItem = COALESCE(@OnePerItem, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+    DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+    INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
+
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
+    DECLARE @Part purchase.tvp_PurchaseDocumentLine;
+    DECLARE @Seq INT = 1, @Last INT = CASE WHEN @OnePerItem = 1 THEN (SELECT MAX(Seq) FROM @Items) ELSE 1 END, @Item INT, @InvoiceId INT;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            DELETE FROM @Part;
+            INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
+                   ImportRowNumber, Notes, SourceLineId
+            FROM @Lines WHERE ItemId = @Item OR @OnePerItem = 0;
+
+            SET @InvoiceId = NULL;
+            EXEC purchase.usp_PurchaseDocument_Save
+                 @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+                 @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+                 @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+                 @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
+                 @ReceiptMode = @ReceiptMode, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
+                 @NewId = @InvoiceId OUTPUT, @OneItemOnly = @OnePerItem;
+            INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
+
+            SET @Seq += 1;
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    -- the first invoice, as before: the callers that read @NewId keep working
+    SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
+END
+GO
+
+/* ================================================================== 8. Split a draft invoice by item */
+
+-- Re-created (63) from the body of script 45: allowed on any draft purchase invoice holding several items, whatever its
+-- mode; every invoice it leaves (the original included) is of one item from then on (OneItemOnly = 1).
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_SplitByItem
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL, ItemId INT NOT NULL);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @TypeId INT, @BranchId INT;
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @TypeId = d.DocumentTypeId, @BranchId = d.BranchId
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @TypeCode <> N'PINV' OR @Status <> 1 THROW 65010, 'Only a draft purchase invoice can be split by item.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) <= 1
+            THROW 65000, 'This invoice already holds one item.', 1;
+
+        -- the items in the order of their first line: the first one stays
+        DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+        INSERT INTO @Items (ItemId)
+        SELECT ItemId FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId ORDER BY MIN(LineNumber), MIN(Id);
+        INSERT INTO @Created (Seq, InvoiceId, ItemId) SELECT 1, @Id, ItemId FROM @Items WHERE Seq = 1;
+
+        DELETE a
+        FROM purchase.PurchaseChargeAllocations a
+        INNER JOIN purchase.PurchaseCharges c       ON c.Id = a.ChargeId AND c.DocumentKind = N'PINV' AND c.DocumentId = @Id
+        INNER JOIN purchase.PurchaseDocumentLines l ON l.Id = a.PurchaseLineId
+        WHERE l.ItemId <> (SELECT ItemId FROM @Items WHERE Seq = 1);
+
+        DECLARE @Seq INT = 2, @Last INT = (SELECT MAX(Seq) FROM @Items), @Item INT, @NewId INT, @Number NVARCHAR(30);
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            -- numbered now only when the type numbers its drafts (a purchase invoice is numbered on posting)
+            SET @Number = NULL;
+            IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
+                EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+            INSERT INTO purchase.PurchaseDocuments (DocumentTypeId, DocumentNumber, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
+                                                    CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId,
+                                                    SourceShortageId, ReceiptMode, ExporterReference, CommercialInvoiceNo,
+                                                    ApprovalRequestedAtUtc, ApprovalRequestedBy, ApprovedAtUtc, ApprovedBy, ApprovalChannel,
+                                                    RejectedAtUtc, RejectedBy, RejectReason, CreatedBy)
+            SELECT DocumentTypeId, @Number, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
+                   CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, 1, SourceDocumentId,
+                   SourceShortageId, ReceiptMode, ExporterReference, CommercialInvoiceNo,
+                   ApprovalRequestedAtUtc, ApprovalRequestedBy, ApprovedAtUtc, ApprovedBy, ApprovalChannel,
+                   RejectedAtUtc, RejectedBy, RejectReason, @UserId
+            FROM purchase.PurchaseDocuments
+            WHERE Id = @Id;
+            SET @NewId = SCOPE_IDENTITY();
+
+            -- the lines of the item move, every column kept, numbered from 1
+            UPDATE l SET DocumentId = @NewId, LineNumber = x.Seq
+            FROM purchase.PurchaseDocumentLines l
+            INNER JOIN (SELECT Id, Seq = ROW_NUMBER() OVER (ORDER BY LineNumber, Id)
+                        FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND ItemId = @Item) x ON x.Id = l.Id;
+
+            INSERT INTO @Created (Seq, InvoiceId, ItemId) VALUES (@Seq, @NewId, @Item);
+            SET @Seq += 1;
+        END
+
+        -- what stays on the original, numbered from 1
+        UPDATE l SET LineNumber = x.Seq
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN (SELECT Id, Seq = ROW_NUMBER() OVER (ORDER BY LineNumber, Id)
+                    FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x ON x.Id = l.Id
+        WHERE l.LineNumber <> x.Seq;
+
+        -- the totals of every invoice, as usp_PurchaseDocument_Save computes them
+        UPDATE d
+        SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / d.ExchangeRate, 2), TotalLandedCostBase = ROUND(x.Amt / d.ExchangeRate, 2) + d.TotalChargesBase,
+            OneItemOnly = 1,      -- (63) split by item: each invoice holds one item from now on, the original too
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        FROM purchase.PurchaseDocuments d
+        INNER JOIN @Created c ON c.InvoiceId = d.Id
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) x;
+
+        DECLARE @Into NVARCHAR(MAX) =
+            (SELECT STRING_AGG(N'draft #' + CAST(c.InvoiceId AS NVARCHAR(10)) + N' (' + i.ItemCode + N')', N', ') WITHIN GROUP (ORDER BY c.Seq)
+             FROM @Created c INNER JOIN inventory.Items i ON i.Id = c.ItemId);
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT c.InvoiceId, CASE WHEN c.Seq = 1 THEN N'Updated' ELSE N'Created' END, LEFT(N'Split by item into ' + @Into, 500), @UserId
+        FROM @Created c;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
+END
+GO
+
+/* ================================================================== 9. Get: the mode of the invoice */
+
+-- Re-created (63) from the body of script 47: + OneItemOnly in the header (effective).
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT d.Id, d.DocumentTypeId, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection, dt.NumberOnPost,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate,
+           d.BranchId, b.BranchCode, b.BranchName, d.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName, sp.Phone AS SupplierPhone, sp.Email AS SupplierEmail, sp.Address AS SupplierAddress,
+           d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
+           d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode, d.Notes, d.Status,
+           IsContainerBound = CAST(CASE WHEN EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x
+                                                    WHERE x.DocumentId = d.Id AND x.ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END AS BIT),
+           ContainerCount = CASE WHEN dt.Code = N'PO'
+                                 THEN (SELECT COUNT(DISTINCT cl.ContainerId) FROM logistics.ContainerLines cl
+                                       INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
+                                       WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8)
+                                 ELSE (SELECT COUNT(DISTINCT cl.ContainerId) FROM purchase.PurchaseDocumentLines x
+                                       INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+                                       WHERE x.DocumentId = d.Id) END,
+           LoadedBase = CASE WHEN dt.Code = N'PO'
+                             THEN ISNULL((SELECT SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                                          INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
+                                          WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8), 0) END,
+           ContainerChargesBase = cch.Share,
+           ContainersNeeded = need.Containers,     -- (43) invoices: sum over the items of the pieces / pieces per container
+           d.ApprovalRequestedAtUtc, d.ApprovalRequestedBy, rqu.FullName AS ApprovalRequestedByName,
+           d.ApprovedAtUtc, d.ApprovedBy, apu.FullName AS ApprovedByName, d.ApprovalChannel,
+           d.RejectedAtUtc, d.RejectedBy, rju.FullName AS RejectedByName, d.RejectReason,
+           OrderedBase = prog.Ordered, InvoicedBase = prog.Invoiced, InDraftInvoicesBase = ISNULL(drf.InDraft, 0),
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,      -- 0 not, 1 partially, 2 fully invoiced
+           d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalChargesBase, d.TotalLandedCostBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber, sdt.Code AS SourceDocumentTypeCode,
+           d.SourceShortageId, sh.DocumentNumber AS SourceShortageNumber,
+           d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
+           d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
+           d.ClosedAtUtc, d.ClosedBy, ku.FullName AS ClosedByName, d.CloseReason,
+           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
+           d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (63) supplier invoices: 1 = it holds one item (65029 refuses a second), 0 = it may hold several. Its own mode,
+           --      or the setting when it has none (saved before script 63). 0 on orders and returns: not concerned.
+           OneItemOnly = CAST(CASE WHEN dt.Code = N'PINV'
+                                   THEN COALESCE(d.OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice')) ELSE 0 END AS BIT)
+    FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN masterdata.Currencies bc   ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN inventory.DocumentTypes sdt ON sdt.Id = src.DocumentTypeId
+    LEFT  JOIN inventory.ShortageDocuments sh ON sh.Id = d.SourceShortageId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = d.CancelledBy
+    LEFT  JOIN security.Users ku ON ku.Id = d.ClosedBy
+    LEFT  JOIN security.Users rqu ON rqu.Id = d.ApprovalRequestedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    LEFT  JOIN security.Users rju ON rju.Id = d.RejectedBy
+    OUTER APPLY (SELECT Ordered = SUM(pl.QuantityBase), Invoiced = SUM(pl.ReceivedQuantityBase)
+                 FROM purchase.PurchaseDocumentLines pl WHERE pl.DocumentId = d.Id) prog
+    OUTER APPLY (SELECT InDraft = SUM(x.QuantityBase)
+                 FROM purchase.PurchaseDocumentLines pl
+                 INNER JOIN purchase.PurchaseDocumentLines x ON x.SourceLineId = pl.Id
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId AND xd.Status = 1
+                 WHERE pl.DocumentId = d.Id) drf
+    OUTER APPLY (SELECT Share = SUM(a.AmountBase * CAST(x.QuantityBase AS DECIMAL(18,6)) / NULLIF(cl.QuantityBase, 0))
+                 FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN logistics.ContainerLines cl            ON cl.Id = x.ContainerLineId
+                 INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id
+                 INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                 WHERE x.DocumentId = d.Id) cch
+    OUTER APPLY (SELECT Containers = CASE WHEN dt.Code = N'PINV'
+                                          THEN CAST(SUM(CAST(s.InvoicedBase AS DECIMAL(19,4)) / s.PcsPerContainer) AS DECIMAL(18,2)) END
+                 FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) need
+    WHERE d.Id = @Id;
+
+    SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, iu.Barcode, l.PackingFormula,
+           l.WarehouseId, w.WarehouseCode, w.WarehouseName, l.ExpiryDate,
+           l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal,
+           l.UnitCostBase, LandedCostBase = l.UnitCostBase, l.FobCostBase, l.AllocatedChargesBase,
+           l.ReceivedQuantityBase, l.ReturnedQuantityBase, l.ShippedQuantityBase,
+           AllocatedToContainersBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Allocated, 0)
+                                            WHEN l.ContainerLineId IS NOT NULL THEN l.QuantityBase ELSE 0 END,
+           TransitBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Transit, 0)
+                              WHEN lct.Status IN (3, 4, 5) THEN l.QuantityBase ELSE 0 END,
+           RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
+           AvailableForContainerBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - ISNULL(ct.Allocated, 0) - ISNULL(dir.Qty, 0) END,
+           InvoicedDirectBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.Qty, 0) END,
+           l.ContainerLineId, ContainerId = lcl.ContainerId, ContainerRef = lct.ContainerRef, ContainerNo = lct.ContainerNo,
+           ContainerStatus = lct.Status,
+           ContainerChargesBase = CASE WHEN l.ContainerLineId IS NOT NULL THEN ISNULL(lch.Share, 0) END,
+           EstimatedLandedCostBase = CASE WHEN l.ContainerLineId IS NOT NULL
+                                          THEN COALESCE(lcl.LandedCostBase,
+                                                        ISNULL(l.FobCostBase, l.LineTotal / NULLIF(d.ExchangeRate, 0) / NULLIF(l.QuantityBase, 0))
+                                                        + ISNULL(lch.Share, 0) / NULLIF(l.QuantityBase, 0)) END,
+           InDraftDocumentsBase = ISNULL(dr.Qty, 0),
+           AvailableToInvoiceBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase - ISNULL(dr.Qty, 0) END,
+           l.ImportRowNumber, l.Notes, l.SourceLineId,
+           OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+    INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+    INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+    INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
+    INNER JOIN masterdata.Warehouses w      ON w.Id = l.WarehouseId
+    OUTER APPLY (SELECT Allocated = SUM(cl.QuantityBase),
+                        Transit   = SUM(CASE WHEN c.Status IN (3, 4, 5) THEN cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0) ELSE 0 END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                 WHERE cl.PoLineId = l.Id AND c.Status <> 8) ct
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2 AND dt.Code = N'PO') dir
+    LEFT  JOIN logistics.ContainerLines lcl ON lcl.Id = l.ContainerLineId
+    LEFT  JOIN logistics.Containers lct     ON lct.Id = lcl.ContainerId
+    OUTER APPLY (SELECT Charges = SUM(a.AmountBase)
+                 FROM logistics.ContainerChargeAllocations a
+                 INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                 WHERE a.ContainerLineId = l.ContainerLineId) lcc
+    OUTER APPLY (SELECT Share = lcc.Charges * CAST(l.QuantityBase AS DECIMAL(18,6)) / NULLIF(lcl.QuantityBase, 0)) lch
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1) dr
+    WHERE l.DocumentId = @Id
+    ORDER BY l.LineNumber;
+
+    SELECT f.Id, f.DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM purchase.PurchaseDocumentFiles f
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.DocumentId = @Id
+    ORDER BY f.CreatedAtUtc DESC;
+
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM purchase.PurchaseDocumentAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.DocumentId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+
+    SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN purchase.PurchaseDocuments x ON x.Id = d.SourceDocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE d.Id = @Id
+    UNION ALL
+    SELECT N'Child', x.Id, dt.Code, dt.Name, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments x
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE x.SourceDocumentId = @Id
+    ORDER BY Relation DESC, DocumentDate, Id;
+
+    -- 6: charges of the invoice (kind PINV), of its landed cost adjustments (kind LCA) and, for an import, the charges of
+    --    its containers (kind CNT, read-only: DocumentId = container, AdjustmentStatus = charge status) with ShareBase =
+    --    the part that falls on this invoice's lines.
+    SELECT c.Id, c.DocumentKind, c.DocumentId, SourceNumber = CASE WHEN c.DocumentKind = N'LCA' THEN lca.DocumentNumber ELSE d.DocumentNumber END,
+           c.LineNumber, c.ChargeTypeId, ct.ChargeCode, ct.ChargeName, c.Description, c.ProviderPartyId, pp.PartyName AS ProviderName, c.Reference,
+           c.CurrencyId, cur.CurrencyCode, c.RateType, c.ExchangeRate, c.Amount, c.AmountBase, c.AllocationMethod, c.IncludeInLandedCost, c.IncludedInSupplierInvoice, c.Notes,
+           AllocatedBase = (SELECT SUM(AmountBase) FROM purchase.PurchaseChargeAllocations x WHERE x.ChargeId = c.Id),
+           AdjustmentStatus = lca.Status,
+           ContainerId = CAST(NULL AS INT), ContainerRef = CAST(NULL AS NVARCHAR(30)), ChargeDate = CAST(NULL AS DATE),
+           ChargeStatus = CAST(NULL AS TINYINT), ShareBase = CAST(NULL AS DECIMAL(18,2))
+    FROM purchase.PurchaseCharges c
+    INNER JOIN purchase.ChargeTypes ct ON ct.Id = c.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = c.CurrencyId
+    LEFT  JOIN masterdata.Parties pp ON pp.Id = c.ProviderPartyId
+    LEFT  JOIN purchase.PurchaseDocuments d ON d.Id = c.DocumentId AND c.DocumentKind = N'PINV'
+    LEFT  JOIN purchase.LandedCostAdjustments lca ON lca.Id = c.DocumentId AND c.DocumentKind = N'LCA'
+    WHERE (c.DocumentKind = N'PINV' AND c.DocumentId = @Id)
+       OR (c.DocumentKind = N'LCA' AND lca.SourceInvoiceId = @Id)
+    UNION ALL
+    SELECT ch.Id, N'CNT', ch.ContainerId, cn.ContainerRef,
+           CAST(ROW_NUMBER() OVER (ORDER BY cn.ContainerRef, ch.ChargeDate, ch.Id) AS INT),
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName, ch.Reference,
+           ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase, ch.AllocationMethod, ch.IncludeInLandedCost,
+           CAST(0 AS BIT), ch.Notes,
+           ISNULL(s.Share, 0), ch.Status,
+           ch.ContainerId, cn.ContainerRef, ch.ChargeDate, ch.Status, CAST(ISNULL(s.Share, 0) AS DECIMAL(18,2))
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.Containers cn   ON cn.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    OUTER APPLY (SELECT Share = SUM(a.AmountBase * CAST(l.QuantityBase AS DECIMAL(18,6)) / NULLIF(cl.QuantityBase, 0))
+                 FROM purchase.PurchaseDocumentLines l
+                 INNER JOIN logistics.ContainerLines cl            ON cl.Id = l.ContainerLineId
+                 INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id AND a.ChargeId = ch.Id
+                 WHERE l.DocumentId = @Id) s
+    WHERE ch.Status IN (1, 2)
+      AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                  INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                  WHERE l.DocumentId = @Id AND cl.ContainerId = ch.ContainerId)
+    ORDER BY 2, 3, 5;
+
+    -- 7: containers of the document: for an order the containers carrying its lines, for an invoice its containers.
+    SELECT ct.Id, ct.ContainerRef, ct.ContainerNo, ct.Status, ct.DispatchDate, ct.Eta, ct.OffloadedDate,
+           ct.CurrentLocation, w.WarehouseCode, w.WarehouseName,
+           AllocatedBase = ISNULL(x.Allocated, 0), ReceivedBase = ISNULL(x.Received, 0), InvoicedBase = ISNULL(x.Invoiced, 0),
+           ct.ContainerTypeId, ctt.TypeCode AS ContainerTypeCode, ct.PurchaseOrderId
+    FROM logistics.Containers ct
+    INNER JOIN masterdata.ContainerTypes ctt ON ctt.Id = ct.ContainerTypeId
+    LEFT  JOIN masterdata.Warehouses w       ON w.Id = ct.WarehouseId
+    CROSS APPLY (SELECT Allocated = SUM(q.Allocated), Received = SUM(q.Received), Invoiced = SUM(q.Invoiced)
+                 FROM (SELECT Allocated = cl.QuantityBase, Received = ISNULL(cl.ReceivedQuantityBase, 0),
+                              Invoiced = ISNULL((SELECT SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                                                 INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                                                 WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (2, 4)), 0)
+                       FROM logistics.ContainerLines cl
+                       WHERE cl.ContainerId = ct.Id AND cl.PurchaseOrderId = @Id
+                       UNION ALL
+                       SELECT l.QuantityBase, l.ReceivedQuantityBase, l.QuantityBase
+                       FROM purchase.PurchaseDocumentLines l
+                       INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                       WHERE l.DocumentId = @Id AND cl.ContainerId = ct.Id) q) x
+    WHERE ct.Status <> 8
+      AND (EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = ct.Id AND cl.PurchaseOrderId = @Id)
+           OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                      INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                      WHERE l.DocumentId = @Id AND cl.ContainerId = ct.Id))
+    ORDER BY ct.ContainerRef;
+
+    -- 8: approval requests and decisions (purchase orders).
+    SELECT a.Id, a.RequestNo, a.ApproverUserId, u.FullName AS ApproverName, u.Email AS ApproverEmail,
+           a.Status, a.ExpiresAtUtc, a.DecidedAtUtc, a.DecisionNote, a.Channel, a.RequestedAtUtc, ru.FullName AS RequestedByName
+    FROM purchase.PurchaseOrderApprovals a
+    INNER JOIN security.Users u ON u.Id = a.ApproverUserId
+    LEFT  JOIN security.Users ru ON ru.Id = a.RequestedBy
+    WHERE a.DocumentId = @Id
+    ORDER BY a.RequestNo DESC, a.Id;
+END
+GO
+
+/* ================================================================== 10. Containers from the invoice: rule 3 by mode */
+
+-- Re-created (63) from the body of script 51: rule 3 (a draft of several items is split by item first) only for an
+-- invoice whose mode is one item. The other rules and the figures are unchanged.
+CREATE OR ALTER FUNCTION purchase.fn_PurchaseInvoice_ContainerState (@InvoiceId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT d.Id AS InvoiceId, d.DocumentNumber, d.Status, d.ReceiptMode,
+       OrderId = o.Id, OrderNo = o.DocumentNumber, OrderStatus = o.Status,
+       ln.ItemCount, ItemId = CASE WHEN ln.ItemCount = 1 THEN ln.FirstItemId END,
+       NotInContainerQty      = ISNULL(u.NotInContainer, 0),
+       OrderLinesAvailableQty = ISNULL(u.Available, 0),
+       MaxAddQty              = ISNULL(u.MaxAdd, 0),
+       pc.PcsPerContainer,
+       LinkableQty            = ISNULL(k.Qty, 0),
+       r.FailedRule, r.Reason,
+       CanAddContainers = CAST(CASE WHEN r.FailedRule IS NULL THEN 1 ELSE 0 END AS BIT),
+       CanTurnOnShipped = CAST(CASE WHEN r.FailedRule = 4 AND d.Status = 1 THEN 1 ELSE 0 END AS BIT),
+       CanLink          = CAST(CASE WHEN ISNULL(r.FailedRule, 7) = 7 AND ISNULL(k.Qty, 0) > 0 THEN 1 ELSE 0 END AS BIT),
+       LinkReason       = CAST(CASE WHEN ISNULL(r.FailedRule, 7) <> 7 THEN r.Reason
+                                    WHEN ISNULL(k.Qty, 0) = 0
+                                        THEN N'No container of order ' + ISNULL(o.DocumentNumber, N'(draft)')
+                                             + N' has pieces left to link: add a container.' END AS NVARCHAR(400))
+FROM purchase.PurchaseDocuments d
+INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+LEFT  JOIN purchase.PurchaseDocuments o ON o.Id = d.SourceDocumentId
+LEFT  JOIN inventory.DocumentTypes ot   ON ot.Id = o.DocumentTypeId
+CROSS APPLY (SELECT Lines = COUNT(*), ItemCount = COUNT(DISTINCT l.ItemId), FirstItemId = MIN(l.ItemId),
+                    Typed = SUM(CASE WHEN l.SourceLineId IS NULL THEN 1 ELSE 0 END)
+             FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = d.Id) ln
+-- per order line the invoice has pieces of outside containers: those pieces, and what the order line still allows
+OUTER APPLY (SELECT NotInContainer = SUM(x.Unlinked), Available = SUM(x.Allowed),
+                    MaxAdd = SUM(CASE WHEN x.Unlinked < x.Allowed THEN x.Unlinked ELSE x.Allowed END)
+             FROM (SELECT Unlinked = un.UnlinkedBase,
+                          Allowed = CASE WHEN a.Qty > 0 THEN a.Qty ELSE 0 END
+                   FROM purchase.fn_PurchaseInvoice_Unlinked(d.Id) un
+                   INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = un.PoLineId
+                   CROSS APPLY (SELECT Qty = pol.QuantityBase
+                                    - ISNULL((SELECT SUM(dl.QuantityBase) FROM purchase.PurchaseDocumentLines dl
+                                              INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = dl.DocumentId
+                                              WHERE dl.SourceLineId = pol.Id AND dl.ContainerLineId IS NULL AND dl.DocumentId <> d.Id
+                                                AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2), 0)
+                                    - ISNULL((SELECT SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                                              INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                              WHERE cl.PoLineId = pol.Id AND c.Status <> 8), 0)) a) x) u
+OUTER APPLY (SELECT PcsPerContainer = MAX(s.PcsPerContainer) FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) pc
+-- what the order's Draft / Confirmed containers have loaded and not invoiced yet, on the order lines the invoice has outside
+OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase - ISNULL(q.Qty, 0))
+             FROM logistics.ContainerLines cl
+             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+             OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                          INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                          WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+             WHERE cl.PurchaseOrderId = o.Id AND c.Status IN (1, 2) AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0
+               AND cl.PoLineId IN (SELECT PoLineId FROM purchase.fn_PurchaseInvoice_Unlinked(d.Id))) k
+-- (63) the invoice's mode: rule 3 (split a draft of several items first) concerns a one-item invoice only
+CROSS APPLY (SELECT OneItemOnly = COALESCE(d.OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'))) oi
+CROSS APPLY (SELECT FailedRule = CAST(CASE
+                        WHEN dt.Code <> N'PINV' OR d.Status NOT IN (1, 2) THEN 1
+                        WHEN o.Id IS NULL OR ot.Code <> N'PO' OR ln.Typed > 0 THEN 2
+                        WHEN ln.ItemCount > 1 AND d.Status = 1 AND oi.OneItemOnly = 1 THEN 3
+                        WHEN d.ReceiptMode <> 2 THEN 4
+                        WHEN o.Status NOT IN (2, 4) THEN 5
+                        WHEN ISNULL(u.NotInContainer, 0) = 0 THEN 6
+                        WHEN ISNULL(u.Available, 0) = 0 THEN 7 END AS TINYINT),
+                    Reason = CAST(CASE
+                        WHEN dt.Code <> N'PINV' THEN N'Only a purchase invoice can take containers.'
+                        WHEN d.Status NOT IN (1, 2) THEN N'A cancelled invoice cannot be linked to containers.'
+                        WHEN o.Id IS NULL OR ot.Code <> N'PO' OR ln.Typed > 0
+                            THEN N'Only a purchase invoice created from a purchase order can be linked to containers.'
+                        WHEN ln.ItemCount > 1 AND d.Status = 1 AND oi.OneItemOnly = 1
+                            THEN N'This invoice holds ' + CAST(ln.ItemCount AS NVARCHAR(10))
+                                 + N' items and a supplier invoice holds one: split it by item first.'
+                        WHEN d.ReceiptMode <> 2 AND d.Status = 1
+                            THEN N'Turn on "Shipped in containers" first: the goods will then enter the stock at the container offload.'
+                        WHEN d.ReceiptMode <> 2 THEN N'This invoice was received when it was posted: it cannot be linked to containers.'
+                        WHEN o.Status NOT IN (2, 4)
+                            THEN N'Order ' + ISNULL(o.DocumentNumber, N'(draft)') + N' is '
+                                 + CASE o.Status WHEN 1 THEN N'a draft' WHEN 3 THEN N'cancelled' ELSE N'waiting for approval' END
+                                 + N': containers are made from an approved order.'
+                        WHEN ln.Lines = 0 THEN N'This invoice has no lines yet.'
+                        WHEN ISNULL(u.NotInContainer, 0) = 0 THEN N'Every piece of this invoice is already in a container.'
+                        WHEN ISNULL(u.Available, 0) = 0
+                            THEN N'Order ' + o.DocumentNumber + N' allows no more pieces: its lines are already loaded in containers'
+                                 + N' or invoiced outside containers.' END AS NVARCHAR(400))) r
+WHERE d.Id = @InvoiceId;
+GO
+
+/* ================================================================== 11. The list: each supplier invoice's mode */
+
+-- Re-created (63) from the body of script 47: + OneItemOnly (effective), so the list tells an invoice of several items
+-- (mode 0) from an invoice of one item that holds several (mode 1, saved before that rule: Post refuses it, 65029, until
+-- it is split). Every other column, filter and sort is unchanged.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Search
+    @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
+    @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
+                                               -- (45) the item code of a supplier invoice
+    @BranchId         INT          = NULL,
+    @WarehouseId      INT          = NULL,
+    @SupplierId       INT          = NULL,
+    @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted (PO: approved) | 3 Cancelled | 4 Closed | 5 Pending approval
+    @InvoicingStatus  TINYINT      = NULL,     -- purchase orders: 0 not invoiced | 1 partially | 2 fully
+    @DateFrom         DATE         = NULL,
+    @DateTo           DATE         = NULL,
+    @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | SupplierName | Status | TotalAmount | CreatedAtUtc
+    @SortDirection    NVARCHAR(4)  = N'DESC',
+    @PageNumber       INT          = 1,
+    @PageSize         INT          = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'DocumentNumber', N'DocumentDate', N'SupplierName', N'Status', N'TotalAmount', N'CreatedAtUtc')
+        SET @SortColumn = N'DocumentDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+    -- (63) the setting, read once: the mode of a supplier invoice created before script 63 (OneItemOnly NULL)
+    DECLARE @OneItemSetting BIT = configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice');
+
+    SELECT d.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.BranchId, b.BranchName, d.WarehouseId, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, c.CurrencyCode, c.Symbol AS CurrencySymbol, c.DecimalPlaces, d.ExchangeRate,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode,
+           d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,
+           DraftInvoiceCount = CASE WHEN dt.Code = N'PO' THEN (SELECT COUNT(*) FROM purchase.PurchaseDocuments x WHERE x.SourceDocumentId = d.Id AND x.Status = 1) END,
+           -- (45) the item of a supplier invoice (the one of its first line) and how many it holds (more than 1: an invoice of
+           -- several items, 63, or one of one item made before 45)
+           ItemId = itm.ItemId, ItemCode = itm.ItemCode, ItemName = itm.ItemName, ItemCount = itm.ItemCount,
+           -- (63) a supplier invoice's mode (its own, else the setting): 1 one item, 0 several items; NULL on orders and returns
+           OneItemOnly = CAST(CASE WHEN dt.Code = N'PINV' THEN COALESCE(d.OneItemOnly, @OneItemSetting) END AS BIT),
+           d.ApprovalRequestedAtUtc, d.ApprovedAtUtc, apu.FullName AS ApprovedByName,
+           d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
+           d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           COUNT(*) OVER () AS TotalCount
+    FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    OUTER APPLY (SELECT Ordered = SUM(QuantityBase), Invoiced = SUM(ReceivedQuantityBase)
+                 FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) prog
+    OUTER APPLY (SELECT TOP (1) fl.ItemId, fi.ItemCode, fi.ItemName,
+                        ItemCount = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id)
+                 FROM purchase.PurchaseDocumentLines fl INNER JOIN inventory.Items fi ON fi.Id = fl.ItemId
+                 WHERE fl.DocumentId = d.Id AND dt.Code = N'PINV'
+                 ORDER BY fl.LineNumber) itm
+    WHERE dt.Family = N'Purchase'
+      AND (@DocumentTypeCode IS NULL OR dt.Code = @DocumentTypeCode)
+      AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.SupplierReference LIKE N'%' + @Search + N'%'
+           OR d.ExporterReference LIKE N'%' + @Search + N'%' OR d.CommercialInvoiceNo LIKE N'%' + @Search + N'%'
+           OR sp.PartyCode LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%' OR d.Notes LIKE N'%' + @Search + N'%'
+           OR (dt.Code = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines sl INNER JOIN inventory.Items si ON si.Id = sl.ItemId
+                                             WHERE sl.DocumentId = d.Id AND si.ItemCode LIKE N'%' + @Search + N'%')))
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR d.WarehouseId = @WarehouseId)
+      AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)
+      AND (@Status IS NULL OR d.Status = @Status)
+      AND (@InvoicingStatus IS NULL OR (dt.Code = N'PO' AND
+           CASE WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0 WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END = @InvoicingStatus))
+      AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
+      AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END DESC,
+        d.DocumentDate DESC, d.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+/* ================================================================== 12. Check */
+
+SELECT o.ObjectName, ObjectType = ISNULL(so.type_desc, N'MISSING')
+FROM (VALUES (N'purchase.fn_PurchaseInvoice_Row'), (N'purchase.fn_PurchaseInvoice_ContainerState'),
+             (N'purchase.usp_PurchaseDocument_Save'), (N'purchase.usp_PurchaseDocument_Post'),
+             (N'purchase.usp_PurchaseDocument_CreateFromContainers'), (N'purchase.usp_PurchaseDocument_CreateFromSource'),
+             (N'purchase.usp_PurchaseDocument_SplitByItem'), (N'purchase.usp_PurchaseDocument_Get'),
+             (N'purchase.usp_PurchaseDocument_Search')) o (ObjectName)
+LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
+ORDER BY ObjectType, o.ObjectName;                                    -- expected 9: 2 functions, 7 procedures, none MISSING
+
+-- The setting and its value now; the column.
+SELECT d.SettingKey, d.GroupName, d.DefaultValue, d.IsPublic, Value = configuration.fn_SettingValue(d.SettingKey),
+       OneItemOnlyColumn = CASE WHEN COL_LENGTH(N'purchase.PurchaseDocuments', N'OneItemOnly') IS NULL THEN N'MISSING' ELSE N'ok' END
+FROM configuration.SettingDefinitions d
+WHERE d.SettingKey = N'Purchase.OneItemPerInvoice';                   -- expected 1 row, column ok
+
+-- The supplier invoices by mode: 1 one item, 0 several items, NULL = created before script 63 (they follow the setting).
+SELECT Mode = CASE d.OneItemOnly WHEN 1 THEN N'one item' WHEN 0 THEN N'several items' ELSE N'follows the setting' END,
+       Drafts = SUM(CASE WHEN d.Status = 1 THEN 1 ELSE 0 END), Invoices = COUNT(*)
+FROM purchase.PurchaseDocuments d
+INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+WHERE dt.Code = N'PINV'
+GROUP BY d.OneItemOnly
+ORDER BY d.OneItemOnly DESC;
+
+-- Draft supplier invoices of one item (by their mode) that hold several: they cannot be posted - Split by item first.
+SELECT d.Id, d.DocumentNumber, Supplier = p.PartyName, ItemCount = COUNT(DISTINCT l.ItemId)
+FROM purchase.PurchaseDocuments d
+INNER JOIN inventory.DocumentTypes dt       ON dt.Id = d.DocumentTypeId
+INNER JOIN purchase.PurchaseDocumentLines l ON l.DocumentId = d.Id
+LEFT  JOIN masterdata.Parties p             ON p.Id = d.SupplierId
+WHERE dt.Code = N'PINV' AND d.Status = 1
+  AND COALESCE(d.OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice')) = 1
+GROUP BY d.Id, d.DocumentNumber, p.PartyName
+HAVING COUNT(DISTINCT l.ItemId) > 1
+ORDER BY d.Id;
+
+PRINT 'Script 63 applied: one item per supplier invoice is optional - setting Purchase.OneItemPerInvoice, each invoice''s mode (OneItemOnly), one invoice per item or one invoice from an order or its containers.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 64: Goods receipts - new objects (no behaviour changes yet) =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 64: GOODS RECEIPTS (GRN) - THE NEW OBJECTS
+
+   From script 65 on, goods enter stock only through a posted GOODS RECEIPT (document type GRN, "Goods Receipt",
+   family Purchase, numbered per branch at posting: GRN-BR-002-000001). A supplier invoice posted after the switch
+   moves no stock: it makes the amount payable and sets the INVOICE COST that received goods are valued at or
+   corrected to. THIS SCRIPT ONLY ADDS OBJECTS: no existing procedure calls them yet, and nothing that runs today
+   changes (the two attachment objects re-created here only learn the new document kind). Script 65 is the switch
+   (the existing procedures); 64 and 65 reach main together, because the switch is one-way.
+
+   Rules held by these objects
+     - ONE SOURCE PER RECEIPT (GoodsReceipts.SourceKind): Container (a draft made when a Delivery-stage movement is
+       completed, IsAuto = 1, or by "Receive goods..." on any confirmed container, status 2-5), Order, Invoice (the
+       lines of a posted invoice not linked to a container), or Manual ("Without an order": a supplier is required).
+       Statuses 1 Draft -> 2 Posted -> 3 Cancelled; the number is given at posting.
+     - ONE OPEN RECEIPT PER CONTAINER, draft or posted: 63013, and the unique index UX_GoodsReceipts_OpenContainer.
+     - A CONTAINER RECEIPT holds every container line, in pieces, received 0 to the loaded pieces, with a reason code
+       when they differ (the difference is SETTLED SHORT); one warehouse of the container's branch; dated on or after
+       the end of its latest completed Delivery; refused while a movement of the container is in progress. Posting
+       it does what the offload did - the posted charges re-spread over what arrived and frozen, the container
+       Offloaded at the warehouse - with GRN stock rows. Its charges and landed cost stay on the CONTAINER LINE and are
+       never copied: a late container charge counts once.
+     - LOCAL LINES (order, invoice, manual) receive more than 0 into an active warehouse - or 0 with "Nothing more will
+       come" on a line of an order, when the supplier says the rest will never arrive; an order line no more than what
+       remains outside containers, an invoice line without an order no more than invoiced - received (63011);
+       "Nothing more will come" settles the rest of an order line, with a reason. A receipt without an order is
+       refused at posting while its supplier has the item to receive on an order or an invoice (63011).
+     - COST: received pieces are MATCHED to the pieces of posted invoice lines (usp_GoodsReceipt_Rematch: the receipt's
+       own invoice, then the container line, the order line, the supplier + item; first in first out). Matched pieces
+       take the invoice cost, the others the order price (or the typed cost of a manual line). Every later change of
+       that cost (an invoice or an LCA posted or cancelled, a receipt posted or cancelled) is trued up: one
+       GoodsReceiptCostChanges row and inventory.CostAdjustments rows (SourceKind GRNCOST), the part still in COMPANY
+       stock to the stock value, the rest to cost of sales, never dated before the receipt. Pieces that fill a
+       negative stock at posting take the cost difference to cost of sales (NEGSTOCK).
+     - CANCEL reverses the stock; refused when the stock was used (63007), the cost was adjusted afterwards (63008),
+       the container is closed or a purchase return took the goods back (63010).
+     - ORDER LINES count what is RECEIVED (GoodsReceivedBase) and SETTLED SHORT (GoodsShortBase) next to what is
+       INVOICED (ReceivedQuantityBase, unchanged); an order fully invoiced and received closes ("Fully invoiced and
+       received") and reopens when the receipt that closed it is cancelled.
+     - THE REFUSALS OF POST AND CANCEL ARE WRITTEN ONCE (fn_GoodsReceipt_PostCheck / _CancelCheck): the receipt page
+       shows the same sentences (fn_GoodsReceipt_Blocks, usp_GoodsReceipt_Get).
+     - An invoice is marked UsesGoodsReceipts = 1 when script 65's Post posts it; GoodsReceiptSwitch gets its one row
+       from script 65. Until then GoodsReceivedBase is 0 everywhere: this script never ships without 65.
+     - A received container line keeps "reason: note" in logistics.ContainerLines.VarianceReason ("Short-shipped: 2 pcs
+       short", the reason's name, never its code), widened from 200 to 400 characters.
+
+   Objects
+     purchase.PurchaseDocuments.UsesGoodsReceipts; purchase.PurchaseDocumentLines.GoodsReceivedBase, GoodsShortBase
+       (new columns, default 0); logistics.ContainerLines.VarianceReason (widened)
+     purchase.GoodsReceipts, GoodsReceiptLines, GoodsReceiptInvoiceMatches, GoodsReceiptCostChanges, GoodsReceiptFiles,
+       GoodsReceiptAudit, GoodsReceiptSwitch (new tables)
+     purchase.tvp_GoodsReceiptLine, tvp_GoodsReceiptAnchor (new table types - FROZEN: a later change takes a new name)
+     inventory.DocumentTypes: GRN (new row; on its first insert only, the attachment types goods receipts use)
+     security.Permissions: purchase.goodsreceipts.view / create / post / cancel / delete (new), granted ONCE, when
+       first inserted, to the roles that bring goods into stock today
+     masterdata.fn_AttachmentDocumentKinds, masterdata.usp_AttachmentType_Delete (re-created from their current
+       bodies, script 55: + GRN, + the goods receipt files)
+     Functions (new): logistics.fn_Container_ReceivedBy, logistics.fn_Container_LastDelivery,
+       purchase.fn_PoLine_Progress, fn_PoLine_CommittedOutside, fn_InvoiceLine_ToReceive, fn_GoodsReceipt_GroupLines,
+       fn_GoodsReceiptLine_TargetCost, fn_GoodsReceiptLine_Cost, fn_GoodsReceipt_PostCheck, fn_GoodsReceipt_CancelCheck,
+       fn_GoodsReceipt_Blocks
+     Document procedures (new): purchase.usp_GoodsReceipt_Save, _CreateFromOrder, _CreateFromInvoice,
+       _CreateForContainer, _CreateForMovement, _Delete, _Get, _Search, _WaitingCount, _File_Add / _List / _Get /
+       _Update / _Delete
+     Cost procedures (new): purchase.usp_GoodsReceipt_LockMatching, _Rematch, _TrueUpCost, _Post, _Cancel,
+       purchase.usp_PurchaseInvoice_ReceiptCostPreview
+
+   Errors (new block 63xxx, goods receipts)
+     63000 validation (400) - 63004 changed by another user (409) - 63005 not a draft (409) - 63006 not found (404) -
+     63007 stock consumed, cannot cancel (409) - 63008 cost adjusted, cannot cancel (409) - 63009 nothing to receive /
+     no lines (400) - 63010 invalid status or source state (409) - 63011 more than remains / receive from the order
+     (400) - 63012 attachment type not used for goods receipts (400) - 63013 the container already has a receipt (409).
+     Also raised here: 65006 (the invoice of the cost preview not found), 70006 / 70010 (CreateForMovement: the movement
+     not found / not a completed Delivery), 70013 (a manual charge share on a container line receiving nothing).
+     Reserved for script 65: 69019 (new) a container with a goods receipt, 69016 a container not fully invoiced at
+     Close, 69010 the Offload retired, 65011 an order with goods receipts / a return above received, 65028 an invoice
+     line a goods receipt refers to.
+
+   Requires scripts 23, 27, 46, 52, 55 and 63. Idempotent, additive: re-applied at every API start-up through
+   Schema.sql, and builds a brand-new empty database (every table and column before the code that reads it).
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF COL_LENGTH(N'purchase.PurchaseDocuments', N'OneItemOnly') IS NULL
+   OR COL_LENGTH(N'logistics.ContainerLines', N'PoLineId') IS NULL
+   OR OBJECT_ID(N'logistics.Movements', N'U') IS NULL
+   OR TYPE_ID(N'logistics.tvp_IdList') IS NULL
+   OR OBJECT_ID(N'logistics.usp_Container_ReallocateCharges', N'P') IS NULL
+   OR OBJECT_ID(N'inventory.usp_Item_ApplyReceipts', N'P') IS NULL
+   OR OBJECT_ID(N'inventory.CostAdjustments', N'U') IS NULL
+   OR OBJECT_ID(N'purchase.PaymentFiles', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.AttachmentTypeUsages', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.usp_AttachmentType_CheckForKind', N'P') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 23, 27, 46, 52, 55 and 63 before this script.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. New columns on existing tables */
+
+-- Before any procedure reads them. Existing rows get the default: every invoice posted so far is "posted before
+-- goods receipts" (0), and every order line has received / settled nothing yet - script 65 fills GoodsReceivedBase
+-- once, from the ledger and the offloads (its switch batch). Drafts are never flipped and the defaults never change.
+IF COL_LENGTH(N'purchase.PurchaseDocuments', N'UsesGoodsReceipts') IS NULL
+BEGIN
+    ALTER TABLE purchase.PurchaseDocuments ADD
+        UsesGoodsReceipts BIT NOT NULL CONSTRAINT DF_PurchaseDocuments_UsesGoodsReceipts DEFAULT (0);   -- PINV posted by script 65's Post: stock through goods receipts
+    PRINT 'PurchaseDocuments: added UsesGoodsReceipts';
+END
+GO
+
+IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'GoodsReceivedBase') IS NULL
+BEGIN
+    ALTER TABLE purchase.PurchaseDocumentLines ADD
+        GoodsReceivedBase INT NOT NULL CONSTRAINT DF_PurchaseDocumentLines_GoodsReceived DEFAULT (0),   -- PO lines: pieces RECEIVED (goods receipts, and the receipts made before them)
+        GoodsShortBase    INT NOT NULL CONSTRAINT DF_PurchaseDocumentLines_GoodsShort DEFAULT (0);      -- PO lines: pieces SETTLED SHORT (nothing more will come)
+    PRINT 'PurchaseDocumentLines: added GoodsReceivedBase, GoodsShortBase';
+END
+GO
+
+-- A container receipt writes "reason code: note" on the container line; the receipt's note alone takes 300.
+IF COL_LENGTH(N'logistics.ContainerLines', N'VarianceReason') < 800
+BEGIN
+    ALTER TABLE logistics.ContainerLines ALTER COLUMN VarianceReason NVARCHAR(400) NULL;
+    PRINT 'ContainerLines: VarianceReason widened to 400 characters';
+END
+GO
+
+/* ================================================================== 2. The goods receipt tables */
+
+-- Its own tables, not purchase.PurchaseDocuments: some 30 queries read every PurchaseDocumentLines row that has a
+-- ContainerLineId or SourceLineId as an INVOICE line, and a receipt has no price, currency, rate or approval.
+-- Every foreign key is real: the master-data deletes (branch, warehouse, party, item) are driven by them, and the
+-- party check finds the supplier columns by their name (SupplierId).
+IF OBJECT_ID(N'purchase.GoodsReceipts', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceipts
+    (
+        Id                 INT IDENTITY(1,1) NOT NULL,
+        DocumentTypeId     INT            NOT NULL,     -- GRN
+        DocumentNumber     NVARCHAR(30)   NULL,         -- assigned on posting: GRN-BR-002-000001
+        DocumentDate       DATE           NOT NULL,     -- date received
+        BranchId           INT            NOT NULL,     -- the container's, order's or invoice's, or chosen; numbering branch
+        WarehouseId        INT            NULL,         -- "Receive into"; required to post a container receipt (every line there)
+        SupplierId         INT            NULL,         -- NULL only on a container of several suppliers; required on Manual
+        SourceKind         NVARCHAR(10)   NOT NULL,     -- Container | Order | Invoice | Manual
+        ContainerId        INT            NULL,         -- Container source only
+        PurchaseOrderId    INT            NULL,         -- the order (Order source; a container of one order)
+        PurchaseInvoiceId  INT            NULL,         -- Invoice source
+        MovementId         INT            NULL,         -- the Delivery-stage movement whose completion created it
+        IsAuto             BIT            NOT NULL CONSTRAINT DF_GoodsReceipts_IsAuto DEFAULT (0),   -- created by a Delivery completion
+        SupplierReference  NVARCHAR(100)  NULL,         -- delivery note no.
+        Notes              NVARCHAR(1000) NULL,
+        Status             TINYINT        NOT NULL CONSTRAINT DF_GoodsReceipts_Status DEFAULT (1),   -- 1 Draft, 2 Posted, 3 Cancelled
+        TotalExpectedBase  INT            NOT NULL CONSTRAINT DF_GoodsReceipts_Expected DEFAULT (0),
+        TotalReceivedBase  INT            NOT NULL CONSTRAINT DF_GoodsReceipts_Received DEFAULT (0),
+        ValueAtReceiptBase DECIMAL(18,2)  NOT NULL CONSTRAINT DF_GoodsReceipts_Value DEFAULT (0),    -- sum of received x cost at receipt, fixed at posting
+        PostedAtUtc        DATETIME2(3)   NULL,
+        PostedBy           INT            NULL,
+        CancelledAtUtc     DATETIME2(3)   NULL,
+        CancelledBy        INT            NULL,
+        CancelReason       NVARCHAR(300)  NULL,
+        CreatedAtUtc       DATETIME2(3)   NOT NULL CONSTRAINT DF_GoodsReceipts_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy          INT            NULL,
+        UpdatedAtUtc       DATETIME2(3)   NULL,
+        UpdatedBy          INT            NULL,
+        RowVersion         ROWVERSION     NOT NULL,
+        CONSTRAINT PK_GoodsReceipts PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_GoodsReceipts_Status CHECK (Status IN (1, 2, 3)),
+        CONSTRAINT CK_GoodsReceipts_Source CHECK (SourceKind IN (N'Container', N'Order', N'Invoice', N'Manual')),
+        -- the container is the source of a container receipt and of nothing else (the one-open-receipt index counts on it)
+        CONSTRAINT CK_GoodsReceipts_Container CHECK ((SourceKind = N'Container' AND ContainerId IS NOT NULL)
+                                                     OR (SourceKind <> N'Container' AND ContainerId IS NULL)),
+        CONSTRAINT CK_GoodsReceipts_Invoice CHECK (SourceKind <> N'Invoice' OR PurchaseInvoiceId IS NOT NULL),
+        CONSTRAINT CK_GoodsReceipts_Manual CHECK (SourceKind <> N'Manual' OR SupplierId IS NOT NULL),
+        -- an automatic draft belongs to the Delivery movement that made it (cancelling that movement deletes it)
+        CONSTRAINT CK_GoodsReceipts_Auto CHECK (IsAuto = 0 OR (SourceKind = N'Container' AND MovementId IS NOT NULL)),
+        CONSTRAINT CK_GoodsReceipts_Posted CHECK (Status = 1 OR (DocumentNumber IS NOT NULL AND PostedAtUtc IS NOT NULL)),
+        CONSTRAINT CK_GoodsReceipts_Cancelled CHECK (Status <> 3 OR CancelledAtUtc IS NOT NULL),
+        CONSTRAINT FK_GoodsReceipts_Type        FOREIGN KEY (DocumentTypeId)    REFERENCES inventory.DocumentTypes (Id),
+        CONSTRAINT FK_GoodsReceipts_Branch      FOREIGN KEY (BranchId)          REFERENCES masterdata.Branches (Id),
+        CONSTRAINT FK_GoodsReceipts_Warehouse   FOREIGN KEY (WarehouseId)       REFERENCES masterdata.Warehouses (Id),
+        CONSTRAINT FK_GoodsReceipts_Supplier    FOREIGN KEY (SupplierId)        REFERENCES masterdata.Parties (Id),
+        CONSTRAINT FK_GoodsReceipts_Container   FOREIGN KEY (ContainerId)       REFERENCES logistics.Containers (Id),
+        CONSTRAINT FK_GoodsReceipts_Order       FOREIGN KEY (PurchaseOrderId)   REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_GoodsReceipts_Invoice     FOREIGN KEY (PurchaseInvoiceId) REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_GoodsReceipts_Movement    FOREIGN KEY (MovementId)        REFERENCES logistics.Movements (Id),
+        CONSTRAINT FK_GoodsReceipts_PostedBy    FOREIGN KEY (PostedBy)          REFERENCES security.Users (Id),
+        CONSTRAINT FK_GoodsReceipts_CancelledBy FOREIGN KEY (CancelledBy)       REFERENCES security.Users (Id),
+        CONSTRAINT FK_GoodsReceipts_CreatedBy   FOREIGN KEY (CreatedBy)         REFERENCES security.Users (Id),
+        CONSTRAINT FK_GoodsReceipts_UpdatedBy   FOREIGN KEY (UpdatedBy)         REFERENCES security.Users (Id)
+    );
+    CREATE UNIQUE NONCLUSTERED INDEX UX_GoodsReceipts_Number ON purchase.GoodsReceipts (DocumentNumber) WHERE DocumentNumber IS NOT NULL;
+    -- ONE OPEN RECEIPT PER CONTAINER: a draft or a posted one; a cancelled receipt frees the container.
+    CREATE UNIQUE NONCLUSTERED INDEX UX_GoodsReceipts_OpenContainer ON purchase.GoodsReceipts (ContainerId) WHERE ContainerId IS NOT NULL AND Status < 3;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceipts_Order      ON purchase.GoodsReceipts (PurchaseOrderId)   WHERE PurchaseOrderId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceipts_Invoice    ON purchase.GoodsReceipts (PurchaseInvoiceId) WHERE PurchaseInvoiceId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceipts_Movement   ON purchase.GoodsReceipts (MovementId)        WHERE MovementId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceipts_StatusDate ON purchase.GoodsReceipts (Status, DocumentDate DESC);
+    CREATE NONCLUSTERED INDEX IX_GoodsReceipts_Supplier   ON purchase.GoodsReceipts (SupplierId, DocumentDate DESC);
+    PRINT 'Created purchase.GoodsReceipts';
+END
+GO
+
+-- A container line's cost lives on the CONTAINER LINE (FobCostBase, ChargesBase / ReceivedQuantityBase,
+-- LandedCostBase): it is never copied here, so a late container charge is counted once. Fob / Charges / UnitCost
+-- below are the CURRENT cost per piece of the other lines (order, invoice, manual), NULL on container lines.
+IF OBJECT_ID(N'purchase.GoodsReceiptLines', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceiptLines
+    (
+        Id                   INT IDENTITY(1,1) NOT NULL,
+        GoodsReceiptId       INT           NOT NULL,
+        LineNumber           INT           NOT NULL,
+        ItemId               INT           NOT NULL,
+        ItemUnitId           INT           NOT NULL,     -- container lines: the base unit
+        Quantity             INT           NOT NULL,     -- received, in the unit (0: a container line, or a local order line with "Nothing more will come")
+        PackingFormula       INT           NOT NULL,
+        QuantityBase         AS (Quantity * PackingFormula) PERSISTED,   -- received pieces
+        ExpectedQuantityBase INT           NULL,         -- container: loaded; order or invoice: to receive when created
+        VarianceReasonCode   NVARCHAR(20)  NULL,         -- SHORT | DAMAGED | MISSING | LOADCOUNT | OTHER
+        VarianceReason       NVARCHAR(300) NULL,         -- the free note
+        CloseShort           BIT           NOT NULL CONSTRAINT DF_GoodsReceiptLines_CloseShort DEFAULT (0),   -- local lines: "Nothing more will come"
+        SettledShortBase     INT           NOT NULL CONSTRAINT DF_GoodsReceiptLines_Settled DEFAULT (0),      -- set at posting: expected - received when settled
+        WarehouseId          INT           NULL,         -- container lines: the header's
+        SupplierId           INT           NULL,         -- the line's order (or invoice, or the manual header)
+        PurchaseOrderId      INT           NULL,
+        PoLineId             INT           NULL,         -- the order line; set on every line that comes from an order
+        InvoiceLineId        INT           NULL,         -- the invoice line it was received from (Invoice source)
+        ContainerLineId      INT           NULL,
+        ExpiryDate           DATE          NULL,
+        PoFobBase            DECIMAL(18,6) NULL,         -- order price per piece in base currency, frozen at posting
+        ManualUnitCostBase   DECIMAL(18,6) NULL,         -- typed cost per piece (manual lines)
+        FobCostBase          DECIMAL(18,6) NULL,         -- current, per piece (not on container lines)
+        ChargesBase          DECIMAL(18,6) NULL,         -- current, per piece (not on container lines)
+        UnitCostBase         DECIMAL(18,6) NULL,         -- current landed, per piece (not on container lines)
+        CostAtReceiptBase    DECIMAL(18,6) NULL,         -- the cost written on the stock movement
+        CostSource           NVARCHAR(10)  NULL,         -- Order | Invoice | Mixed | Manual (current)
+        InvoicedBase         INT           NOT NULL CONSTRAINT DF_GoodsReceiptLines_Invoiced DEFAULT (0),     -- pieces matched to posted invoices
+        Notes                NVARCHAR(300) NULL,
+        CONSTRAINT PK_GoodsReceiptLines PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT UQ_GoodsReceiptLines_LineNo UNIQUE (GoodsReceiptId, LineNumber),
+        CONSTRAINT CK_GoodsReceiptLines_Qty CHECK (Quantity >= 0),
+        CONSTRAINT CK_GoodsReceiptLines_Formula CHECK (PackingFormula >= 1),
+        CONSTRAINT CK_GoodsReceiptLines_Expected CHECK (ExpectedQuantityBase IS NULL OR ExpectedQuantityBase >= 0),
+        CONSTRAINT CK_GoodsReceiptLines_Reason CHECK (VarianceReasonCode IS NULL
+                                                      OR VarianceReasonCode IN (N'SHORT', N'DAMAGED', N'MISSING', N'LOADCOUNT', N'OTHER')),
+        CONSTRAINT CK_GoodsReceiptLines_Settled CHECK (SettledShortBase >= 0),
+        CONSTRAINT CK_GoodsReceiptLines_Invoiced CHECK (InvoicedBase >= 0 AND InvoicedBase <= Quantity * PackingFormula),
+        CONSTRAINT CK_GoodsReceiptLines_ManualCost CHECK (ManualUnitCostBase IS NULL OR ManualUnitCostBase >= 0),
+        CONSTRAINT CK_GoodsReceiptLines_CostSource CHECK (CostSource IS NULL OR CostSource IN (N'Order', N'Invoice', N'Mixed', N'Manual')),
+        -- an order line and its order go together; a container line always comes from an order line
+        CONSTRAINT CK_GoodsReceiptLines_Order CHECK ((PoLineId IS NULL AND PurchaseOrderId IS NULL) OR (PoLineId IS NOT NULL AND PurchaseOrderId IS NOT NULL)),
+        CONSTRAINT CK_GoodsReceiptLines_Container CHECK (ContainerLineId IS NULL OR PoLineId IS NOT NULL),
+        CONSTRAINT FK_GoodsReceiptLines_Receipt       FOREIGN KEY (GoodsReceiptId)  REFERENCES purchase.GoodsReceipts (Id),
+        CONSTRAINT FK_GoodsReceiptLines_Item          FOREIGN KEY (ItemId)          REFERENCES inventory.Items (Id),
+        CONSTRAINT FK_GoodsReceiptLines_Unit          FOREIGN KEY (ItemUnitId)      REFERENCES inventory.ItemUnits (Id),
+        CONSTRAINT FK_GoodsReceiptLines_Warehouse     FOREIGN KEY (WarehouseId)     REFERENCES masterdata.Warehouses (Id),
+        CONSTRAINT FK_GoodsReceiptLines_Supplier      FOREIGN KEY (SupplierId)      REFERENCES masterdata.Parties (Id),
+        CONSTRAINT FK_GoodsReceiptLines_Order         FOREIGN KEY (PurchaseOrderId) REFERENCES purchase.PurchaseDocuments (Id),
+        CONSTRAINT FK_GoodsReceiptLines_PoLine        FOREIGN KEY (PoLineId)        REFERENCES purchase.PurchaseDocumentLines (Id),
+        CONSTRAINT FK_GoodsReceiptLines_InvoiceLine   FOREIGN KEY (InvoiceLineId)   REFERENCES purchase.PurchaseDocumentLines (Id),
+        CONSTRAINT FK_GoodsReceiptLines_ContainerLine FOREIGN KEY (ContainerLineId) REFERENCES logistics.ContainerLines (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptLines_PoLine ON purchase.GoodsReceiptLines (PoLineId)
+        INCLUDE (GoodsReceiptId, ContainerLineId, QuantityBase) WHERE PoLineId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptLines_InvoiceLine ON purchase.GoodsReceiptLines (InvoiceLineId)
+        INCLUDE (GoodsReceiptId, QuantityBase) WHERE InvoiceLineId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptLines_ContainerLine ON purchase.GoodsReceiptLines (ContainerLineId)
+        INCLUDE (GoodsReceiptId) WHERE ContainerLineId IS NOT NULL;
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptLines_SupplierItem ON purchase.GoodsReceiptLines (SupplierId, ItemId);
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptLines_Item         ON purchase.GoodsReceiptLines (ItemId);
+    PRINT 'Created purchase.GoodsReceiptLines';
+END
+GO
+
+-- THE QUANTITY CHECK IS ONLY "NOT NEGATIVE". Which lines may receive 0 pieces is usp_GoodsReceipt_Save's rule: a
+-- container line (the difference is settled), or a local line of an order with "Nothing more will come" (it settles
+-- the rest of the order line when nothing more arrives). A table check cannot hold it: a CANCELLED receipt keeps its
+-- lines, and a line whose container line is removed afterwards (usp_Container_Save) lets go of it whatever it
+-- received. Re-created by name when a database holds another definition (a draft of this script required a container
+-- line on a 0-piece line), so every database ends with this one.
+IF OBJECT_ID(N'purchase.GoodsReceiptLines', N'U') IS NOT NULL
+   AND NOT EXISTS (SELECT 1 FROM sys.check_constraints
+                   WHERE parent_object_id = OBJECT_ID(N'purchase.GoodsReceiptLines') AND name = N'CK_GoodsReceiptLines_Qty'
+                     AND definition = N'([Quantity]>=(0))')
+BEGIN
+    IF EXISTS (SELECT 1 FROM sys.check_constraints
+               WHERE parent_object_id = OBJECT_ID(N'purchase.GoodsReceiptLines') AND name = N'CK_GoodsReceiptLines_Qty')
+        ALTER TABLE purchase.GoodsReceiptLines DROP CONSTRAINT CK_GoodsReceiptLines_Qty;
+    ALTER TABLE purchase.GoodsReceiptLines ADD CONSTRAINT CK_GoodsReceiptLines_Qty CHECK (Quantity >= 0);
+    PRINT 'Re-created purchase.GoodsReceiptLines check CK_GoodsReceiptLines_Qty (Quantity >= 0)';
+END
+GO
+
+-- Which received pieces each posted invoice line pays for. Rebuilt per group (an order line, or a supplier + item
+-- for goods without an order) by usp_GoodsReceipt_Rematch, first in first out.
+IF OBJECT_ID(N'purchase.GoodsReceiptInvoiceMatches', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceiptInvoiceMatches
+    (
+        GoodsReceiptLineId INT          NOT NULL,
+        InvoiceLineId      INT          NOT NULL,     -- a line of a posted (or closed) PINV
+        QuantityBase       INT          NOT NULL,
+        MatchedAtUtc       DATETIME2(3) NOT NULL CONSTRAINT DF_GoodsReceiptInvoiceMatches_At DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_GoodsReceiptInvoiceMatches PRIMARY KEY CLUSTERED (GoodsReceiptLineId, InvoiceLineId),
+        CONSTRAINT CK_GoodsReceiptInvoiceMatches_Qty CHECK (QuantityBase > 0),
+        CONSTRAINT FK_GoodsReceiptInvoiceMatches_Line        FOREIGN KEY (GoodsReceiptLineId) REFERENCES purchase.GoodsReceiptLines (Id),
+        CONSTRAINT FK_GoodsReceiptInvoiceMatches_InvoiceLine FOREIGN KEY (InvoiceLineId)      REFERENCES purchase.PurchaseDocumentLines (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptInvoiceMatches_InvoiceLine ON purchase.GoodsReceiptInvoiceMatches (InvoiceLineId) INCLUDE (QuantityBase);
+    PRINT 'Created purchase.GoodsReceiptInvoiceMatches';
+END
+GO
+
+-- The history of the cost of received goods: one row per receipt line per event (an invoice or an LCA posted or
+-- cancelled, a receipt posted or cancelled, negative stock filled at posting). Id = inventory.CostAdjustments.SourceId
+-- of its GRNCOST rows.
+IF OBJECT_ID(N'purchase.GoodsReceiptCostChanges', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceiptCostChanges
+    (
+        Id                 INT IDENTITY(1,1) NOT NULL,
+        GoodsReceiptLineId INT           NOT NULL,
+        ChangedAtUtc       DATETIME2(3)  NOT NULL CONSTRAINT DF_GoodsReceiptCostChanges_At DEFAULT (SYSUTCDATETIME()),
+        CauseKind          NVARCHAR(12)  NOT NULL,     -- PINV | PINVCANCEL | LCA | LCACANCEL | GRNPOST | GRNCANCEL | NEGSTOCK
+        CauseId            INT           NULL,         -- the invoice, LCA or goods receipt that caused it
+        CauseNumber        NVARCHAR(30)  NULL,
+        ReceivedBase       INT           NOT NULL,     -- the line's received pieces at the time
+        InStockBase        DECIMAL(18,6) NOT NULL CONSTRAINT DF_GoodsReceiptCostChanges_InStock DEFAULT (0),   -- the share used for the stock / COGS split
+        FobBefore          DECIMAL(18,6) NULL,
+        FobAfter           DECIMAL(18,6) NULL,
+        UnitCostBefore     DECIMAL(18,6) NULL,
+        UnitCostAfter      DECIMAL(18,6) NULL,
+        AmountBase         DECIMAL(18,2) NOT NULL CONSTRAINT DF_GoodsReceiptCostChanges_Amount DEFAULT (0),
+        InventoryBase      DECIMAL(18,2) NOT NULL CONSTRAINT DF_GoodsReceiptCostChanges_Inventory DEFAULT (0),
+        CogsBase           DECIMAL(18,2) NOT NULL CONSTRAINT DF_GoodsReceiptCostChanges_Cogs DEFAULT (0),
+        CreatedBy          INT           NULL,
+        CONSTRAINT PK_GoodsReceiptCostChanges PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_GoodsReceiptCostChanges_Cause CHECK (CauseKind IN (N'PINV', N'PINVCANCEL', N'LCA', N'LCACANCEL', N'GRNPOST', N'GRNCANCEL', N'NEGSTOCK')),
+        CONSTRAINT CK_GoodsReceiptCostChanges_Split CHECK (AmountBase = InventoryBase + CogsBase),
+        CONSTRAINT FK_GoodsReceiptCostChanges_Line      FOREIGN KEY (GoodsReceiptLineId) REFERENCES purchase.GoodsReceiptLines (Id),
+        CONSTRAINT FK_GoodsReceiptCostChanges_CreatedBy FOREIGN KEY (CreatedBy)          REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptCostChanges_Line  ON purchase.GoodsReceiptCostChanges (GoodsReceiptLineId, ChangedAtUtc);
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptCostChanges_Cause ON purchase.GoodsReceiptCostChanges (CauseKind, CauseId);
+    PRINT 'Created purchase.GoodsReceiptCostChanges';
+END
+GO
+
+-- The shape of the purchase files after scripts 52 and 55: a type (used for GRN), a document date, a note.
+IF OBJECT_ID(N'purchase.GoodsReceiptFiles', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceiptFiles
+    (
+        Id               INT IDENTITY(1,1) NOT NULL,
+        GoodsReceiptId   INT            NOT NULL,
+        AttachmentTypeId INT            NOT NULL,
+        DocumentDate     DATE           NULL,
+        Note             NVARCHAR(500)  NULL,
+        FileName         NVARCHAR(255)  NOT NULL,
+        ContentType      NVARCHAR(100)  NOT NULL,
+        SizeBytes        INT            NOT NULL,
+        Content          VARBINARY(MAX) NOT NULL,
+        CreatedAtUtc     DATETIME2(3)   NOT NULL CONSTRAINT DF_GoodsReceiptFiles_CreatedAtUtc DEFAULT (SYSUTCDATETIME()),
+        CreatedBy        INT            NULL,
+        CONSTRAINT PK_GoodsReceiptFiles PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_GoodsReceiptFiles_Size CHECK (SizeBytes > 0),
+        CONSTRAINT FK_GoodsReceiptFiles_Receipt   FOREIGN KEY (GoodsReceiptId)   REFERENCES purchase.GoodsReceipts (Id),
+        CONSTRAINT FK_GoodsReceiptFiles_Type      FOREIGN KEY (AttachmentTypeId) REFERENCES masterdata.AttachmentTypes (Id),
+        CONSTRAINT FK_GoodsReceiptFiles_CreatedBy FOREIGN KEY (CreatedBy)        REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptFiles_Receipt ON purchase.GoodsReceiptFiles (GoodsReceiptId);
+    PRINT 'Created purchase.GoodsReceiptFiles';
+END
+GO
+
+-- The common audit shape. No foreign key on the receipt, as purchase.PurchaseDocumentAudit: deleting a draft deletes
+-- its audit rows itself.
+IF OBJECT_ID(N'purchase.GoodsReceiptAudit', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceiptAudit
+    (
+        Id             BIGINT IDENTITY(1,1) NOT NULL,
+        GoodsReceiptId INT           NOT NULL,
+        Action         NVARCHAR(20)  NOT NULL,   -- Created | Updated | Posted | Cancelled | CostAdjusted | FileAdded | FileUpdated | FileDeleted
+        Details        NVARCHAR(500) NULL,
+        UserId         INT           NULL,
+        AtUtc          DATETIME2(3)  NOT NULL CONSTRAINT DF_GoodsReceiptAudit_AtUtc DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_GoodsReceiptAudit PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT FK_GoodsReceiptAudit_User FOREIGN KEY (UserId) REFERENCES security.Users (Id)
+    );
+    CREATE NONCLUSTERED INDEX IX_GoodsReceiptAudit_Receipt ON purchase.GoodsReceiptAudit (GoodsReceiptId, AtUtc);
+    PRINT 'Created purchase.GoodsReceiptAudit';
+END
+GO
+
+-- THE MOMENT OF THE SWITCH: one row, inserted once by script 65 in the transaction that fills GoodsReceivedBase.
+-- Empty until then. Its date is shown as "Posted before goods receipts ({date})".
+IF OBJECT_ID(N'purchase.GoodsReceiptSwitch', N'U') IS NULL
+BEGIN
+    CREATE TABLE purchase.GoodsReceiptSwitch
+    (
+        Id            TINYINT      NOT NULL,
+        SwitchedAtUtc DATETIME2(3) NOT NULL CONSTRAINT DF_GoodsReceiptSwitch_At DEFAULT (SYSUTCDATETIME()),
+        CONSTRAINT PK_GoodsReceiptSwitch PRIMARY KEY CLUSTERED (Id),
+        CONSTRAINT CK_GoodsReceiptSwitch_One CHECK (Id = 1)
+    );
+    PRINT 'Created purchase.GoodsReceiptSwitch';
+END
+GO
+
+/* ================================================================== 3. Table types (frozen) */
+
+-- FROZEN: IF TYPE_ID ... IS NULL never alters a type, and a type in use cannot be dropped at start-up. A later change
+-- takes a new name (tvp_GoodsReceiptLine2). The API passes the columns in this order.
+IF TYPE_ID(N'purchase.tvp_GoodsReceiptLine') IS NULL
+BEGIN
+    CREATE TYPE purchase.tvp_GoodsReceiptLine AS TABLE
+    (
+        LineNumber           INT           NOT NULL PRIMARY KEY,
+        ItemId               INT           NOT NULL,
+        ItemUnitId           INT           NOT NULL,
+        Quantity             INT           NOT NULL,     -- in the unit
+        WarehouseId          INT           NULL,         -- container receipts: ignored, the header's
+        PoLineId             INT           NULL,
+        InvoiceLineId        INT           NULL,
+        ContainerLineId      INT           NULL,
+        ExpectedQuantityBase INT           NULL,
+        VarianceReasonCode   NVARCHAR(20)  NULL,
+        VarianceReason       NVARCHAR(300) NULL,
+        CloseShort           BIT           NULL,         -- NULL = 0
+        ManualUnitCostBase   DECIMAL(18,6) NULL,
+        ExpiryDate           DATE          NULL,
+        Notes                NVARCHAR(300) NULL
+    );
+    PRINT 'Created type purchase.tvp_GoodsReceiptLine';
+END
+GO
+
+-- The groups a rematch rebuilds: an order line ('P', with all its container lines), or a supplier + item ('S') for
+-- goods without an order.
+IF TYPE_ID(N'purchase.tvp_GoodsReceiptAnchor') IS NULL
+BEGIN
+    CREATE TYPE purchase.tvp_GoodsReceiptAnchor AS TABLE
+    (
+        Kind       CHAR(1) NOT NULL,     -- P order line | S supplier + item
+        PoLineId   INT     NULL,
+        SupplierId INT     NULL,
+        ItemId     INT     NULL,
+        CHECK ((Kind = 'P' AND PoLineId IS NOT NULL) OR (Kind = 'S' AND SupplierId IS NOT NULL AND ItemId IS NOT NULL))
+    );
+    PRINT 'Created type purchase.tvp_GoodsReceiptAnchor';
+END
+GO
+
+/* ================================================================== 4. Document type GRN */
+
+-- Numbered per branch at posting, six digits, no year: GRN-BR-002-000001 (as PINV-BR-003-000011). No prices.
+-- THE FIRST INSERT ONLY (the OUTPUT of the MERGE) says which attachment types goods receipts use: "Other" and the
+-- delivery notes ("Delivery Note", and a container's "Offloading Note"), packing list and bill of lading of the main
+-- list. Never again: a kind an administrator takes off a type stays off. The UPDATE repairs a GRN row only while
+-- nobody changed it on the Document Types page.
+-- IN ONE TRANSACTION WITH THE MERGE: its OUTPUT is the only trigger of the seed, so a seed that fails (timeout,
+-- deadlock, lost connection) must undo the insert too; the next start then inserts the row again and seeds.
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    DECLARE @GrnInserted TABLE (Id INT NOT NULL);
+
+    MERGE inventory.DocumentTypes AS t
+    USING (VALUES (N'GRN', N'Goods Receipt', N'Purchase', 1, N'GRN-', 1, 0, N'None', 0, 1, 0, 6))
+          AS s (Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, RequiresReason,
+                DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength)
+    ON t.Code = s.Code
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, RequiresReason,
+                DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength)
+        VALUES (s.Code, s.Name, s.Family, s.StockDirection, s.NumberPrefix, s.NumberOnPost, s.RequiresReason,
+                s.DefaultPricing, s.PriceEditable, s.NumberPerBranch, s.YearInNumber, s.NumberLength)
+    OUTPUT inserted.Id INTO @GrnInserted (Id);
+
+    UPDATE inventory.DocumentTypes
+    SET DefaultPricing = N'None', PriceEditable = 0, NumberPerBranch = 1, YearInNumber = 0, NumberLength = 6
+    WHERE Code = N'GRN' AND UpdatedAtUtc IS NULL
+      AND (DefaultPricing <> N'None' OR PriceEditable <> 0 OR NumberPerBranch <> 1 OR YearInNumber <> 0 OR NumberLength <> 6);
+
+    IF EXISTS (SELECT 1 FROM @GrnInserted)
+    BEGIN
+        -- "Other": the one the purchase invoices use, else script 52's choice; created when there is none at all.
+        DECLARE @Other INT = (SELECT TOP (1) t.Id FROM masterdata.AttachmentTypes t
+                              WHERE t.SubType = N'Other' AND t.Category IN (N'Other', N'General')
+                              ORDER BY CASE WHEN EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u
+                                                         WHERE u.AttachmentTypeId = t.Id AND u.DocumentKind = N'PINV') THEN 0 ELSE 1 END,
+                                       CASE t.AppliesTo WHEN N'Logistics' THEN 0 ELSE 1 END,
+                                       CASE t.Category WHEN N'Other' THEN 0 ELSE 1 END, t.Id);
+        IF @Other IS NULL
+        BEGIN
+            INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, AppliesTo) VALUES (N'General', N'Other', 999, N'Logistics');
+            SET @Other = SCOPE_IDENTITY();
+        END
+
+        INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
+        SELECT t.Id, N'GRN'
+        FROM masterdata.AttachmentTypes t
+        WHERE (t.Id = @Other
+               OR (t.AppliesTo = N'Logistics' AND t.SubType IN (N'Delivery Note', N'Offloading Note', N'Packing List', N'Bill of Lading')))
+          AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = t.Id AND u.DocumentKind = N'GRN');
+
+        PRINT 'Document type GRN created; attachment types used for goods receipts: Other, Delivery Note, Offloading Note, Packing List, Bill of Lading.';
+    END
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 5. Permissions and their one-time grants */
+
+-- The texts are PermissionCatalog.cs's (the start-up sync copies them over and gives them to the system roles).
+-- THE GRANTS ARE MADE ONCE, in this batch and transaction, only for the codes this MERGE inserts (its OUTPUT): a right
+-- an administrator takes away later is never given back. The people who bring goods into stock today keep doing it:
+--   - roles holding containers.offload (the offload) or purchase.invoices.post (a local invoice adds stock today),
+--     and the Manager role: view, create, post;
+--   - roles holding containers.cancel or purchase.invoices.cancel: cancel;
+--   - roles holding purchase.invoices.view or purchase.orders.view: view;
+--   - every role that holds create: delete (of its own drafts' kind);
+--   - system roles: everything (as the start-up sync does).
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    DECLARE @Changed TABLE (Action NVARCHAR(10) NOT NULL, PermissionId INT NOT NULL, Code NVARCHAR(100) NOT NULL);
+
+    MERGE security.Permissions AS target
+    USING
+    (
+        VALUES
+            (N'purchase.goodsreceipts.view',   N'View Goods Receipts',   N'Purchase', N'See goods receipts.',                                                                    1102),
+            (N'purchase.goodsreceipts.create', N'Create Goods Receipts', N'Purchase', N'Create and edit draft goods receipts, from containers, orders, invoices or by hand.',     1104),
+            (N'purchase.goodsreceipts.post',   N'Post Goods Receipts',   N'Purchase', N'Post goods receipts: the goods enter stock and the item costs are set.',                 1106),
+            (N'purchase.goodsreceipts.cancel', N'Cancel Goods Receipts', N'Purchase', N'Cancel posted goods receipts (stock reversal).',                                         1108),
+            (N'purchase.goodsreceipts.delete', N'Delete Goods Receipts', N'Purchase', N'Delete draft goods receipts.',                                                           1110)
+    ) AS source (Code, Name, Module, Description, SortOrder)
+    ON target.Code = source.Code
+    WHEN MATCHED AND (target.Name <> source.Name OR target.Module <> source.Module
+                      OR ISNULL(target.Description, N'') <> source.Description OR target.SortOrder <> source.SortOrder) THEN
+        UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (Code, Name, Module, Description, SortOrder)
+        VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder)
+    OUTPUT $action, inserted.Id, inserted.Code INTO @Changed (Action, PermissionId, Code);
+
+    IF EXISTS (SELECT 1 FROM @Changed WHERE Action = N'INSERT')
+    BEGIN
+        DECLARE @Grant TABLE (RoleId INT NOT NULL, Code NVARCHAR(100) NOT NULL, PRIMARY KEY (RoleId, Code));
+
+        -- view, create and post: the roles that receive goods today
+        INSERT INTO @Grant (RoleId, Code)
+        SELECT r.Id, c.Code
+        FROM security.Roles r
+        CROSS JOIN (VALUES (N'purchase.goodsreceipts.view'), (N'purchase.goodsreceipts.create'), (N'purchase.goodsreceipts.post')) c (Code)
+        WHERE r.IsSystem = 1 OR r.Name = N'Manager'
+           OR EXISTS (SELECT 1 FROM security.RolePermissions rp INNER JOIN security.Permissions p ON p.Id = rp.PermissionId
+                      WHERE rp.RoleId = r.Id AND p.Code IN (N'containers.offload', N'purchase.invoices.post'));
+
+        -- cancel: the roles that reverse an offload or cancel an invoice today
+        INSERT INTO @Grant (RoleId, Code)
+        SELECT r.Id, N'purchase.goodsreceipts.cancel'
+        FROM security.Roles r
+        WHERE r.IsSystem = 1
+           OR EXISTS (SELECT 1 FROM security.RolePermissions rp INNER JOIN security.Permissions p ON p.Id = rp.PermissionId
+                      WHERE rp.RoleId = r.Id AND p.Code IN (N'containers.cancel', N'purchase.invoices.cancel'));
+
+        -- view: the roles that see orders or invoices
+        INSERT INTO @Grant (RoleId, Code)
+        SELECT r.Id, N'purchase.goodsreceipts.view'
+        FROM security.Roles r
+        WHERE EXISTS (SELECT 1 FROM security.RolePermissions rp INNER JOIN security.Permissions p ON p.Id = rp.PermissionId
+                      WHERE rp.RoleId = r.Id AND p.Code IN (N'purchase.invoices.view', N'purchase.orders.view'))
+          AND NOT EXISTS (SELECT 1 FROM @Grant g WHERE g.RoleId = r.Id AND g.Code = N'purchase.goodsreceipts.view');
+
+        -- delete: every role that may create (drafts are deleted by the people who make them)
+        INSERT INTO @Grant (RoleId, Code)
+        SELECT g.RoleId, N'purchase.goodsreceipts.delete' FROM @Grant g WHERE g.Code = N'purchase.goodsreceipts.create';
+
+        INSERT INTO security.RolePermissions (RoleId, PermissionId)
+        SELECT g.RoleId, c.PermissionId
+        FROM @Grant g
+        INNER JOIN @Changed c ON c.Code = g.Code AND c.Action = N'INSERT'
+        WHERE NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = g.RoleId AND rp.PermissionId = c.PermissionId);
+
+        DECLARE @Codes INT = (SELECT COUNT(*) FROM @Changed WHERE Action = N'INSERT'),
+                @Roles INT = (SELECT COUNT(DISTINCT RoleId) FROM @Grant);
+        PRINT 'Goods receipt permissions created and granted once: ' + CAST(@Codes AS NVARCHAR(10)) + ' code(s), '
+              + CAST(@Roles AS NVARCHAR(10)) + ' role(s).';
+    END
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 6. Attachments: the document kind GRN */
+
+-- Re-created (64) from the body of script 55: + GRN (goods receipts), after the purchase returns.
+CREATE OR ALTER FUNCTION masterdata.fn_AttachmentDocumentKinds ()
+RETURNS TABLE
+AS
+RETURN
+SELECT k.Code, k.Name, k.Noun, k.SortOrder
+FROM (VALUES (N'CONTAINER', N'Containers',        N'containers',              10),
+             (N'PO',        N'Purchase orders',   N'purchase orders',         20),
+             (N'PINV',      N'Purchase invoices', N'purchase invoices',       30),
+             (N'PRET',      N'Purchase returns',  N'purchase returns',        40),
+             (N'GRN',       N'Goods receipts',    N'goods receipts',          45),   -- (64)
+             (N'SO',        N'Sales orders',      N'sales orders',            50),
+             (N'SINV',      N'Sales invoices',    N'sales invoices',          60),
+             (N'SRET',      N'Sales returns',     N'sales returns',           70),
+             (N'RCPT',      N'Customer receipts', N'customer receipts',       80),
+             (N'PAY',       N'Supplier payments', N'supplier payments',       85),
+             (N'INV_IN',    N'Inventory In',      N'Inventory In documents',  90),
+             (N'INV_OUT',   N'Inventory Out',     N'Inventory Out documents', 100)) k (Code, Name, Noun, SortOrder);
+GO
+
+-- Re-created (64) from the body of script 55: + the goods receipt files.
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id) THROW 69006, 'Attachment type not found.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM logistics.ContainerFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.ReceiptFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.SalesDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptFiles WHERE AttachmentTypeId = @Id)   -- (64)
+       OR EXISTS (SELECT 1 FROM inventory.StockDocumentFiles WHERE AttachmentTypeId = @Id)
+        THROW 69014, 'This attachment type is used by documents and cannot be deleted. Deactivate it instead.', 1;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE FROM masterdata.AttachmentTypeUsages WHERE AttachmentTypeId = @Id;
+        DELETE FROM masterdata.AttachmentTypes WHERE Id = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 7. Containers: who received one, and its latest Delivery */
+
+-- THE ONLY TEST FOR "OFFLOADED BEFORE GOODS RECEIPTS". One row, always (NULL columns for a NULL or unknown id, so
+-- callers may CROSS APPLY it on an outer-joined container):
+--   ReceivedBy  'GRN' when a posted goods receipt of the container exists; 'Offload' when the container is Offloaded
+--               or Closed (6, 7) without one (the offload of script 27); NULL otherwise.
+--   GoodsReceipt*  the container's open receipt - a draft or the posted one (one at most, UX_GoodsReceipts_OpenContainer).
+CREATE OR ALTER FUNCTION logistics.fn_Container_ReceivedBy (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT ReceivedBy         = CAST(CASE WHEN g.Status = 2 THEN N'GRN'
+                                          WHEN c.Status IN (6, 7) THEN N'Offload' END AS NVARCHAR(10)),
+           GoodsReceiptId     = g.Id,
+           GoodsReceiptNumber = g.DocumentNumber,
+           GoodsReceiptStatus = g.Status
+    FROM (SELECT ContainerId = @ContainerId) k
+    LEFT  JOIN logistics.Containers c ON c.Id = k.ContainerId
+    OUTER APPLY (SELECT TOP (1) gr.Id, gr.DocumentNumber, gr.Status
+                 FROM purchase.GoodsReceipts gr
+                 WHERE gr.ContainerId = k.ContainerId AND gr.Status < 3
+                 ORDER BY gr.Status DESC, gr.Id DESC) g;
+GO
+
+-- THE LATEST COMPLETED DELIVERY of a container: the end of its latest completed movement whose type has the stage
+-- Delivery (whatever the type's code). No row when there is none. Goods cannot be received before it (Save, Post), the
+-- receipt page names its place, and the "Delivered, not received" filters start from it.
+CREATE OR ALTER FUNCTION logistics.fn_Container_LastDelivery (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT TOP (1) MovementId = m.Id, m.MovementNo, m.EndDate, PlaceId = m.ToPlaceId, PlaceName = tp.PortName,
+                   m.CompletedAtUtc
+    FROM logistics.MovementContainers mc
+    INNER JOIN logistics.Movements m       ON m.Id = mc.MovementId AND m.Status = 3
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId AND mt.Stage = N'Delivery'
+    INNER JOIN masterdata.Ports tp         ON tp.Id = m.ToPlaceId
+    WHERE mc.ContainerId = @ContainerId
+    ORDER BY m.EndDate DESC, m.CompletedAtUtc DESC, m.Id DESC;
+GO
+
+/* ================================================================== 8. Order lines: received, settled, to receive */
+
+-- One row per line of a purchase order (none for another document type). In pieces:
+--   OrderedBase          ordered
+--   InvoicedBase         invoiced = ReceivedQuantityBase (its old name, its meaning unchanged)
+--   GoodsReceivedBase    received; GoodsShortBase settled short (nothing more will come)
+--   InContainersBase     loaded in containers not received yet (status 1-5: draft to cleared)
+--   InDraftReceiptsBase  on draft goods receipts outside containers
+--   ToReceiveBase        what the "Receive goods..." dialogs propose: ordered - received - short - in containers - in drafts
+--   MaxOutsideBase       the posting cap of a local receipt line: ordered - received - in containers. Neither the drafts
+--                        (the one being posted is one) nor the pieces settled short count: pieces recorded short that
+--                        turn up later can still be received.
+--   OutstandingBase      rule 17, for Shortages and the item's "On order": an open order ordered - received - short, a
+--                        closed one invoiced - received - short; 0 when cancelled. Never below 0.
+-- ON A CLOSED ORDER (4) "ordered" is what was INVOICED in all three, as in OutstandingBase (rule 17): a closed order
+-- takes no more invoices (65011), so a piece received beyond its invoices could never be invoiced and would keep the
+-- order price for good. An order closed by itself is fully invoiced, so only an order closed by hand is capped.
+-- The status of the order is the caller's to check (OrderStatus): this function never refuses.
+CREATE OR ALTER FUNCTION purchase.fn_PoLine_Progress (@PurchaseOrderId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT PurchaseOrderId     = d.Id,
+           PoLineId            = l.Id,
+           l.LineNumber, l.ItemId, l.ItemUnitId, l.PackingFormula, l.WarehouseId,
+           OrderStatus         = d.Status,
+           OrderedBase         = l.QuantityBase,
+           InvoicedBase        = l.ReceivedQuantityBase,
+           l.GoodsReceivedBase,
+           l.GoodsShortBase,
+           InContainersBase    = q.InContainers,
+           InDraftReceiptsBase = q.InDrafts,
+           ToReceiveBase       = CASE WHEN x.ToReceive > 0 THEN x.ToReceive ELSE 0 END,
+           MaxOutsideBase      = CASE WHEN x.MaxOutside > 0 THEN x.MaxOutside ELSE 0 END,
+           OutstandingBase     = CASE WHEN x.Outstanding > 0 THEN x.Outstanding ELSE 0 END
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt         ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+    INNER JOIN purchase.PurchaseDocumentLines l   ON l.DocumentId = d.Id
+    CROSS APPLY (SELECT InContainers = ISNULL((SELECT SUM(cl.QuantityBase)
+                                               FROM logistics.ContainerLines cl
+                                               INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                               WHERE cl.PoLineId = l.Id AND c.Status BETWEEN 1 AND 5), 0),
+                        InDrafts     = ISNULL((SELECT SUM(gl.QuantityBase)
+                                               FROM purchase.GoodsReceiptLines gl
+                                               INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                                               WHERE gl.PoLineId = l.Id AND gl.ContainerLineId IS NULL AND g.Status = 1), 0)) q
+    CROSS APPLY (SELECT Expected = CASE WHEN d.Status = 4 AND l.ReceivedQuantityBase < l.QuantityBase
+                                        THEN l.ReceivedQuantityBase ELSE l.QuantityBase END) e
+    CROSS APPLY (SELECT ToReceive   = e.Expected - l.GoodsReceivedBase - l.GoodsShortBase - q.InContainers - q.InDrafts,
+                        MaxOutside  = e.Expected - l.GoodsReceivedBase - q.InContainers,
+                        Outstanding = CASE d.Status WHEN 3 THEN 0
+                                                    WHEN 4 THEN l.ReceivedQuantityBase - l.GoodsReceivedBase - l.GoodsShortBase
+                                                    ELSE l.QuantityBase - l.GoodsReceivedBase - l.GoodsShortBase END) x
+    WHERE d.Id = @PurchaseOrderId;
+GO
+
+-- WHAT AN ORDER LINE HAS COMMITTED OUTSIDE CONTAINERS, in pieces - script 65 uses it in place of the "dir" subquery
+-- (invoiced outside containers) wherever the pieces still loadable into containers are worked out:
+--   Qty = MAX(invoiced outside containers, received outside containers + on draft receipts outside containers).
+-- A maximum, not a sum: an invoiced piece and a received piece outside containers are the same goods (they are matched).
+-- Except the pieces of an invoice that took its goods into stock WHEN IT WAS POSTED, before goods receipts
+-- (UsesGoodsReceipts = 0, ReceiptMode 1): they are invoiced AND received, and never matched (usp_GoodsReceipt_Rematch
+-- leaves those invoices out), so they count on both sides - otherwise goods received later by a goods receipt for the
+-- rest of the same order line would hide behind them in the maximum and could be loaded into a container again.
+-- Qty is then: those pieces + MAX(the other invoiced pieces, received by goods receipts + on draft receipts).
+--   InvoicedOutsideBase         today's "dir": lines of invoices in status 1, 2 or 4 not shipped in containers
+--                               (ReceiptMode <> 2) with no container line; @ExceptDocumentId (NULL = none) leaves out
+--                               one invoice, as the callers that check that invoice's own lines do
+--   ReceivedOutsideBase         posted goods receipt lines of the order line with no container line, plus the pieces of
+--                               the invoices received when they were posted (above)
+--   InDraftReceiptsOutsideBase  goods receipt lines of the order line with no container line on draft receipts
+-- One row, always (0 when nothing).
+CREATE OR ALTER FUNCTION purchase.fn_PoLine_CommittedOutside (@PoLineId INT, @ExceptDocumentId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT Qty                        = CASE WHEN inv.Qty >= inv.AtPosting + rcv.Posted + rcv.Drafts THEN inv.Qty
+                                             ELSE inv.AtPosting + rcv.Posted + rcv.Drafts END,
+           InvoicedOutsideBase        = inv.Qty,
+           ReceivedOutsideBase        = inv.AtPosting + rcv.Posted,
+           InDraftReceiptsOutsideBase = rcv.Drafts
+    FROM (SELECT Qty       = ISNULL(SUM(x.QuantityBase), 0),
+                 AtPosting = ISNULL(SUM(CASE WHEN xd.Status IN (2, 4) AND xd.UsesGoodsReceipts = 0 AND xd.ReceiptMode = 1
+                                             THEN x.QuantityBase END), 0)
+          FROM purchase.PurchaseDocumentLines x
+          INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+          WHERE x.SourceLineId = @PoLineId AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2
+            AND (@ExceptDocumentId IS NULL OR xd.Id <> @ExceptDocumentId)) inv
+    CROSS JOIN (SELECT Posted = ISNULL(SUM(CASE WHEN g.Status = 2 THEN gl.QuantityBase END), 0),
+                       Drafts = ISNULL(SUM(CASE WHEN g.Status = 1 THEN gl.QuantityBase END), 0)
+                FROM purchase.GoodsReceiptLines gl
+                INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                WHERE gl.PoLineId = @PoLineId AND gl.ContainerLineId IS NULL AND g.Status IN (1, 2)) rcv;
+GO
+
+/* ================================================================== 9. Invoice lines: still to receive */
+
+-- One row per line of a purchase invoice NOT linked to a container (the linked ones are received with their
+-- containers). ToReceiveBase = invoiced - received - on draft goods receipts that point to the line, never below 0;
+-- received = ReceivedQuantityBase (the pieces matched to the line, for an invoice that uses goods receipts or is
+-- shipped in containers). 0 when the invoice is not posted or closed, and for an invoice posted before goods receipts
+-- without "Shipped in containers" (UsesGoodsReceipts = 0, ReceiptMode 1): its goods entered stock when it was posted.
+CREATE OR ALTER FUNCTION purchase.fn_InvoiceLine_ToReceive (@InvoiceId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT InvoiceId           = d.Id,
+           InvoiceLineId       = l.Id,
+           l.LineNumber, l.ItemId, l.ItemUnitId, l.PackingFormula, l.WarehouseId, l.ExpiryDate,
+           PoLineId            = l.SourceLineId,
+           d.SupplierId,
+           InvoiceStatus       = d.Status,
+           ReceivedAtPosting   = CAST(CASE WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 THEN 1 ELSE 0 END AS BIT),
+           InvoicedBase        = l.QuantityBase,
+           ReceivedBase        = l.ReceivedQuantityBase,
+           ReturnedBase        = l.ReturnedQuantityBase,
+           InDraftReceiptsBase = q.InDrafts,
+           ToReceiveBase       = CASE WHEN d.Status NOT IN (2, 4) OR (d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1) THEN 0
+                                      WHEN l.QuantityBase - l.ReceivedQuantityBase - q.InDrafts > 0
+                                      THEN l.QuantityBase - l.ReceivedQuantityBase - q.InDrafts
+                                      ELSE 0 END
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt       ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+    INNER JOIN purchase.PurchaseDocumentLines l ON l.DocumentId = d.Id AND l.ContainerLineId IS NULL
+    CROSS APPLY (SELECT InDrafts = ISNULL((SELECT SUM(gl.QuantityBase)
+                                           FROM purchase.GoodsReceiptLines gl
+                                           INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                                           WHERE gl.InvoiceLineId = l.Id AND g.Status = 1), 0)) q
+    WHERE d.Id = @InvoiceId;
+GO
+
+/* ================================================================== 10. Receipt lines: matching groups, target cost, current cost */
+
+-- THE POSTED RECEIPT LINES OF THE GROUPS: an order line ('P', every container line of it included) or a supplier +
+-- item ('S', goods without an order). The callers true up these lines after a rematch (leaving out the receipt that
+-- is being posted, whose own cost is set directly).
+CREATE OR ALTER FUNCTION purchase.fn_GoodsReceipt_GroupLines (@Anchors purchase.tvp_GoodsReceiptAnchor READONLY)
+RETURNS TABLE
+AS
+RETURN
+    SELECT GoodsReceiptLineId = gl.Id, gl.GoodsReceiptId
+    FROM purchase.GoodsReceiptLines gl
+    INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+    WHERE EXISTS (SELECT 1 FROM @Anchors a
+                  WHERE (a.Kind = 'P' AND a.PoLineId = gl.PoLineId)
+                     OR (a.Kind = 'S' AND gl.PoLineId IS NULL AND a.SupplierId = gl.SupplierId AND a.ItemId = gl.ItemId));
+GO
+
+/* PER POSTED GOODS RECEIPT LINE WITH RECEIVED PIECES (R > 0), read-only (Post, TrueUpCost and the invoice preview):
+     matched pieces    the invoice line's FOB per piece, plus its own charges per piece (AllocatedChargesBase /
+                       QuantityBase, which an LCA raises) - in the FOB of a container line, see below
+     unmatched pieces  BaseFob / BaseCharges: the ORDER PRICE (PoFobBase = order line total / order rate / pieces, no
+                       charges) when the line has an order line; else a manual line's typed cost; else the cost it was
+                       received at (an invoice without an order keeps its price when that invoice is cancelled)
+     Target FOB        (matched FOB + unmatched x BaseFob) / R; a CONTAINER line also carries here the own charges of
+                       the invoice lines matched to it: (matched FOB + matched charges + unmatched x BaseFob) / R
+     Target charges    a CONTAINER line: the container line's posted charges / R (cl.ChargesBase - moved only by the
+                       container charges, CNTCHARGE); other lines: (matched charges + unmatched x BaseCharges) / R
+                       WHY a container line's invoice charges ride on its FOB: a local invoice (receipt mode 1, with its
+                       own charges and LCAs) is matched to a container's pieces by pass 2 (same order line, first in
+                       first out). The container line has no column for an invoice's charges - its landed cost is
+                       cl.FobCostBase + cl.ChargesBase / received - and the true-up moves only its FOB, so the charges
+                       are carried by that FOB, as a local line's move carries them; left out, they were lost. An
+                       imported invoice (linked to the container) has no charges of its own (65020): nothing changes.
+     Current*          the cost the line carries now: the container line's for container lines (cl.FobCostBase,
+                       cl.LandedCostBase), the receipt line's own columns for the others
+     NetReceivedBase   R less the pieces returned from its invoice lines, shared over each invoice line's matches
+                       (the in-stock share of a true-up counts only goods that can still be here)
+     CostSource        where the target comes from: Order | Invoice | Mixed | Manual */
+CREATE OR ALTER FUNCTION purchase.fn_GoodsReceiptLine_TargetCost (@GoodsReceiptId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT GoodsReceiptId      = g.Id,
+           GoodsReceiptLineId  = gl.Id,
+           gl.LineNumber, gl.ItemId, gl.WarehouseId, gl.SupplierId, gl.PoLineId, gl.InvoiceLineId, gl.ContainerLineId,
+           ContainerId         = cl.ContainerId,
+           IsContainerLine     = CAST(CASE WHEN gl.ContainerLineId IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           ReceivedBase        = gl.QuantityBase,
+           MatchedBase         = m.Qty,
+           NetReceivedBase     = CAST(gl.QuantityBase - m.Returned AS DECIMAL(18,6)),
+           BaseFobBase         = b.Fob,
+           BaseChargesBase     = b.Charges,
+           TargetFobBase       = t.Fob,
+           TargetChargesBase   = t.Charges,
+           TargetUnitCostBase  = CAST(t.Fob + t.Charges AS DECIMAL(18,6)),
+           CurrentFobBase      = CASE WHEN gl.ContainerLineId IS NOT NULL THEN cl.FobCostBase ELSE gl.FobCostBase END,
+           CurrentChargesBase  = CASE WHEN gl.ContainerLineId IS NOT NULL THEN CAST(cl.ChargesBase / gl.QuantityBase AS DECIMAL(18,6))
+                                      ELSE gl.ChargesBase END,
+           CurrentUnitCostBase = CASE WHEN gl.ContainerLineId IS NOT NULL THEN cl.LandedCostBase ELSE gl.UnitCostBase END,
+           CostSource          = CAST(CASE WHEN m.Qty >= gl.QuantityBase THEN N'Invoice'
+                                           WHEN gl.PoLineId IS NULL AND gl.InvoiceLineId IS NOT NULL THEN N'Invoice'
+                                           WHEN m.Qty > 0 THEN N'Mixed'
+                                           WHEN gl.PoLineId IS NOT NULL THEN N'Order'
+                                           ELSE N'Manual' END AS NVARCHAR(10))
+    FROM purchase.GoodsReceipts g
+    INNER JOIN purchase.GoodsReceiptLines gl      ON gl.GoodsReceiptId = g.Id AND gl.QuantityBase > 0
+    LEFT  JOIN logistics.ContainerLines cl        ON cl.Id = gl.ContainerLineId
+    LEFT  JOIN purchase.PurchaseDocumentLines pol ON pol.Id = gl.PoLineId
+    LEFT  JOIN purchase.PurchaseDocuments po      ON po.Id = pol.DocumentId
+    LEFT  JOIN purchase.PurchaseDocumentLines il  ON il.Id = gl.InvoiceLineId
+    CROSS APPLY (SELECT Qty      = ISNULL(SUM(x.QuantityBase), 0),
+                        Fob      = ISNULL(SUM(x.QuantityBase * COALESCE(p.FobCostBase, p.LineTotal / pd.ExchangeRate / p.QuantityBase)), 0),
+                        Charges  = ISNULL(SUM(x.QuantityBase * p.AllocatedChargesBase / p.QuantityBase), 0),
+                        Returned = ISNULL(SUM(CAST(x.QuantityBase AS DECIMAL(18,6))
+                                              * CASE WHEN p.ReturnedQuantityBase < p.ReceivedQuantityBase THEN p.ReturnedQuantityBase
+                                                     ELSE p.ReceivedQuantityBase END
+                                              / NULLIF(p.ReceivedQuantityBase, 0)), 0)
+                 FROM purchase.GoodsReceiptInvoiceMatches x
+                 INNER JOIN purchase.PurchaseDocumentLines p ON p.Id = x.InvoiceLineId
+                 INNER JOIN purchase.PurchaseDocuments pd    ON pd.Id = p.DocumentId
+                 WHERE x.GoodsReceiptLineId = gl.Id) m
+    CROSS APPLY (SELECT Fob = CAST(CASE WHEN gl.PoLineId IS NOT NULL
+                                        THEN COALESCE(gl.PoFobBase, pol.LineTotal / po.ExchangeRate / NULLIF(pol.QuantityBase, 0), 0)
+                                        WHEN gl.InvoiceLineId IS NULL THEN ISNULL(gl.ManualUnitCostBase, 0)
+                                        ELSE COALESCE(gl.CostAtReceiptBase, il.UnitCostBase, 0) END AS DECIMAL(18,6)),
+                        Charges = CAST(0 AS DECIMAL(18,6))) b
+    CROSS APPLY (SELECT Fob     = CAST((m.Fob + CASE WHEN gl.ContainerLineId IS NOT NULL THEN m.Charges ELSE 0 END
+                                        + (gl.QuantityBase - m.Qty) * b.Fob) / gl.QuantityBase AS DECIMAL(18,6)),
+                        Charges = CAST(CASE WHEN gl.ContainerLineId IS NOT NULL THEN ISNULL(cl.ChargesBase, 0) / gl.QuantityBase
+                                            ELSE (m.Charges + (gl.QuantityBase - m.Qty) * b.Charges) / gl.QuantityBase END AS DECIMAL(18,6))) t
+    WHERE g.Id = @GoodsReceiptId AND g.Status = 2;
+GO
+
+-- THE CURRENT COST OF EACH LINE, per piece in base currency, and its value (received x landed).
+--   Posted: what the posting set and the cost adjustments moved since - the CONTAINER LINE's for a container line
+--           (FobCostBase, ChargesBase / received, LandedCostBase: never copied, so a late charge counts once), the
+--           receipt line's own for the others. Cancelled: the cost at receipt.
+--   Draft:  an ESTIMATE of the cost at receipt (IsEstimate = 1): container lines at the posted invoices' price of the
+--           container line, else the order price, plus the posted charges over the loaded pieces; invoice lines at
+--           the posted invoice line's FOB and charges; order lines at the order price; manual lines at the typed cost.
+--           The real cost is set when the receipt is posted (matching to the invoices).
+-- OrderPriceBase = the order line total / the order's rate / its pieces (after the line discount), or PoFobBase once
+-- frozen at posting.
+CREATE OR ALTER FUNCTION purchase.fn_GoodsReceiptLine_Cost (@GoodsReceiptId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT LineId         = l.Id,
+           l.GoodsReceiptId,
+           OrderPriceBase = CAST(op.Price AS DECIMAL(18,6)),
+           FobBase        = CAST(y.Fob AS DECIMAL(18,6)),
+           ChargesBase    = CAST(y.Charges AS DECIMAL(18,6)),
+           UnitCostBase   = CAST(z.Unit AS DECIMAL(18,6)),
+           IsEstimate     = CAST(CASE WHEN g.Status = 1 THEN 1 ELSE 0 END AS BIT),
+           ValueBase      = CAST(ROUND(CAST(l.QuantityBase AS DECIMAL(18,6)) * ISNULL(z.Unit, 0), 2) AS DECIMAL(18,2))
+    FROM purchase.GoodsReceiptLines l
+    INNER JOIN purchase.GoodsReceipts g             ON g.Id = l.GoodsReceiptId
+    LEFT  JOIN logistics.ContainerLines cl          ON cl.Id = l.ContainerLineId
+    LEFT  JOIN purchase.PurchaseDocumentLines pol   ON pol.Id = l.PoLineId
+    LEFT  JOIN purchase.PurchaseDocuments po        ON po.Id = pol.DocumentId
+    LEFT  JOIN purchase.PurchaseDocumentLines pil   ON pil.Id = l.InvoiceLineId
+    LEFT  JOIN purchase.PurchaseDocuments pid       ON pid.Id = pil.DocumentId AND pid.Status IN (2, 4)
+    OUTER APPLY (SELECT Price = COALESCE(l.PoFobBase,
+                                         pol.LineTotal / NULLIF(po.ExchangeRate, 0) / NULLIF(pol.QuantityBase, 0))) op
+    OUTER APPLY (SELECT Fob = SUM(x.LineTotal / NULLIF(xd.ExchangeRate, 0)) / NULLIF(SUM(x.QuantityBase), 0)
+                 FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId AND xd.Status IN (2, 4)
+                 WHERE l.ContainerLineId IS NOT NULL AND g.Status = 1 AND x.ContainerLineId = l.ContainerLineId) ci
+    CROSS APPLY (SELECT Fob = CASE WHEN g.Status = 3 THEN NULL
+                                   WHEN g.Status = 2 AND l.ContainerLineId IS NOT NULL THEN cl.FobCostBase
+                                   WHEN g.Status = 2 THEN l.FobCostBase
+                                   WHEN l.ContainerLineId IS NOT NULL THEN COALESCE(ci.Fob, op.Price)
+                                   WHEN pid.Id IS NOT NULL AND pil.FobCostBase IS NOT NULL THEN pil.FobCostBase
+                                   WHEN l.PoLineId IS NOT NULL THEN op.Price
+                                   ELSE l.ManualUnitCostBase END,
+                        Charges = CASE WHEN g.Status = 3 THEN NULL
+                                       WHEN g.Status = 2 AND l.ContainerLineId IS NOT NULL
+                                           THEN cl.ChargesBase / NULLIF(cl.ReceivedQuantityBase, 0)
+                                       WHEN g.Status = 2 THEN l.ChargesBase
+                                       WHEN l.ContainerLineId IS NOT NULL THEN cl.ChargesBase / NULLIF(cl.QuantityBase, 0)
+                                       WHEN pid.Id IS NOT NULL AND pil.FobCostBase IS NOT NULL
+                                           THEN ISNULL(pil.AllocatedChargesBase, 0) / NULLIF(pil.QuantityBase, 0)
+                                       ELSE CAST(0 AS DECIMAL(18,6)) END) y
+    CROSS APPLY (SELECT Unit = CASE WHEN g.Status = 3 THEN l.CostAtReceiptBase
+                                    WHEN g.Status = 2 AND l.ContainerLineId IS NOT NULL THEN COALESCE(cl.LandedCostBase, l.CostAtReceiptBase)
+                                    WHEN g.Status = 2 THEN COALESCE(l.UnitCostBase, l.CostAtReceiptBase)
+                                    ELSE y.Fob + ISNULL(y.Charges, 0) END) z
+    WHERE l.GoodsReceiptId = @GoodsReceiptId;
+GO
+
+/* ================================================================== 11. Why a goods receipt cannot be posted, cancelled or deleted */
+
+/* THE REFUSALS OF usp_GoodsReceipt_Post, in the order it raises them: one row per failing rule (its first case),
+   Seq, ErrorNumber, Message. Post raises the first one; usp_GoodsReceipt_Get shows it as PostBlockedReason (through
+   fn_GoodsReceipt_Blocks), so the page and the refusal say the same sentence. (The RowVersion check belongs to the
+   call, not to the receipt.)
+   A container receipt books every line into the header's warehouse; another receipt books each line into its own
+   warehouse, else the header's. */
+CREATE OR ALTER FUNCTION purchase.fn_GoodsReceipt_PostCheck (@Id INT)
+RETURNS TABLE
+AS
+RETURN
+WITH h AS
+(
+    SELECT g.Id, g.Status, g.SourceKind, g.ContainerId, g.SupplierId, g.WarehouseId, g.DocumentDate,
+           c.ContainerRef, CtStatus = c.Status, CtBranchId = c.BranchId
+    FROM purchase.GoodsReceipts g
+    LEFT JOIN logistics.Containers c ON c.Id = g.ContainerId
+    WHERE g.Id = @Id
+),
+l AS
+(
+    SELECT gl.Id, gl.LineNumber, gl.ItemId, gl.QuantityBase, gl.ExpectedQuantityBase, gl.VarianceReasonCode, gl.VarianceReason,
+           gl.CloseShort, gl.PoLineId, gl.PurchaseOrderId, gl.InvoiceLineId, gl.ContainerLineId,
+           i.ItemCode, ItemActive = i.IsActive,
+           WarehouseId = CASE WHEN h.SourceKind = N'Container' THEN h.WarehouseId ELSE COALESCE(gl.WarehouseId, h.WarehouseId) END,
+           Tag = N'Line ' + CAST(gl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N')'
+    FROM h
+    INNER JOIN purchase.GoodsReceiptLines gl ON gl.GoodsReceiptId = h.Id
+    INNER JOIN inventory.Items i             ON i.Id = gl.ItemId
+)
+SELECT x.Seq, x.ErrorNumber, x.Message
+FROM
+(
+    SELECT Seq = 1, ErrorNumber = 63006, Message = CAST(N'Goods receipt not found.' AS NVARCHAR(400))
+    WHERE NOT EXISTS (SELECT 1 FROM h)
+
+    UNION ALL
+    SELECT 2, 63010, N'Only a draft goods receipt can be posted.' FROM h WHERE h.Status <> 1
+
+    UNION ALL
+    SELECT 3, 63009, N'The goods receipt has no lines.' FROM h WHERE NOT EXISTS (SELECT 1 FROM l)
+
+    UNION ALL
+    SELECT 4, 63000, N'Choose the warehouse the goods are received into.'
+    FROM h WHERE h.SourceKind = N'Container' AND h.WarehouseId IS NULL
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 5, ErrorNumber = 63000, Message = l.Tag + N': choose the warehouse the goods are received into.'
+                   FROM l WHERE l.WarehouseId IS NULL AND l.ContainerLineId IS NULL ORDER BY l.LineNumber) a
+
+    UNION ALL
+    SELECT 6, 63000, N'The warehouse ' + w.WarehouseCode + N' is inactive or does not belong to the branch of container ' + h.ContainerRef + N'.'
+    FROM h INNER JOIN masterdata.Warehouses w ON w.Id = h.WarehouseId
+    WHERE h.SourceKind = N'Container' AND (w.IsActive = 0 OR w.BranchId <> h.CtBranchId)
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 7, ErrorNumber = 63000, Message = l.Tag + N': the warehouse ' + w.WarehouseCode + N' is inactive.'
+                   FROM l INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+                   WHERE l.ContainerLineId IS NULL AND w.IsActive = 0 ORDER BY l.LineNumber) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 8, ErrorNumber = 63000,
+                          Message = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + l.ItemCode + N' is inactive. Activate it in Item Definition before receiving it.'
+                   FROM l WHERE l.ItemActive = 0 ORDER BY l.LineNumber) a
+
+    UNION ALL
+    -- one day of tolerance: the date is the reader's local date, compared with a UTC one (usp_PurchaseDocument_ValidateInput)
+    SELECT 9, 63000, N'The date received cannot be in the future.'
+    FROM h WHERE h.DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+
+    UNION ALL
+    SELECT 10, 63010, N'Only a confirmed container that is not received yet can be received: ' + h.ContainerRef + N' is '
+                      + CASE h.CtStatus WHEN 1 THEN N'a draft' WHEN 6 THEN N'already offloaded' WHEN 7 THEN N'closed'
+                                        WHEN 8 THEN N'cancelled' ELSE N'not ready' END + N'.'
+    FROM h WHERE h.SourceKind = N'Container' AND (h.CtStatus IS NULL OR h.CtStatus NOT BETWEEN 2 AND 5)
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 11, ErrorNumber = 63010,
+                          Message = N'Container ' + h.ContainerRef + N' is travelling with movement ' + m.MovementNo
+                                    + N'. Complete it before receiving the goods.'
+                   FROM h
+                   INNER JOIN logistics.MovementContainers mc ON mc.ContainerId = h.ContainerId
+                   INNER JOIN logistics.Movements m           ON m.Id = mc.MovementId AND m.Status = 2
+                   WHERE h.SourceKind = N'Container'
+                   ORDER BY m.MovementNo) a
+
+    UNION ALL
+    -- not before the end of the container's latest completed Delivery (the rule of usp_GoodsReceipt_Save)
+    SELECT 12, 63000, N'The goods cannot be received before ' + d.MovementNo + N' reached ' + d.PlaceName
+                      + N' on ' + CONVERT(NVARCHAR(10), d.EndDate, 23) + N'.'
+    FROM h CROSS APPLY logistics.fn_Container_LastDelivery(h.ContainerId) d
+    WHERE h.SourceKind = N'Container' AND h.DocumentDate < d.EndDate
+
+    UNION ALL
+    -- the receipt mirrors the container line by line: same lines, items, order lines and loaded pieces
+    SELECT 13, 63000, N'The container''s lines changed after this goods receipt was created. Delete it and receive the container again.'
+    FROM h
+    WHERE h.SourceKind = N'Container'
+      AND (EXISTS (SELECT 1 FROM l
+                   LEFT JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId AND cl.ContainerId = h.ContainerId
+                   WHERE cl.Id IS NULL OR cl.ItemId <> l.ItemId OR cl.PoLineId <> ISNULL(l.PoLineId, -1)
+                      OR cl.QuantityBase <> ISNULL(l.ExpectedQuantityBase, -1))
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      WHERE cl.ContainerId = h.ContainerId AND (SELECT COUNT(*) FROM l WHERE l.ContainerLineId = cl.Id) <> 1))
+
+    UNION ALL
+    -- a container's goods are received with the container's own receipt only (it updates the container and its costs)
+    SELECT * FROM (SELECT TOP (1) Seq = 13, ErrorNumber = 63000,
+                          Message = l.Tag + N': goods loaded in a container are received with the goods receipt of that container.'
+                   FROM h INNER JOIN l ON l.ContainerLineId IS NOT NULL
+                   WHERE h.SourceKind <> N'Container'
+                   ORDER BY l.LineNumber) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 14, ErrorNumber = 63000,
+                          Message = l.Tag + N': received ' + CAST(l.QuantityBase AS NVARCHAR(20)) + N' but only '
+                                    + CAST(l.ExpectedQuantityBase AS NVARCHAR(20)) + N' were loaded.'
+                   FROM l WHERE l.ContainerLineId IS NOT NULL AND l.QuantityBase > l.ExpectedQuantityBase
+                   ORDER BY l.LineNumber) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 15, ErrorNumber = 63000,
+                          Message = CASE WHEN l.ContainerLineId IS NOT NULL
+                                         THEN l.Tag + N': choose a reason when the received quantity differs from the loaded quantity.'
+                                         ELSE l.Tag + N': give the reason why nothing more will come.' END
+                   FROM l
+                   WHERE l.VarianceReasonCode IS NULL
+                     AND ((l.ContainerLineId IS NOT NULL AND l.QuantityBase <> l.ExpectedQuantityBase)
+                          OR (l.ContainerLineId IS NULL AND l.CloseShort = 1 AND NULLIF(LTRIM(RTRIM(l.VarianceReason)), N'') IS NULL))
+                   ORDER BY l.LineNumber) a
+
+    UNION ALL
+    -- 0 PIECES on a local line only with "Nothing more will come" on a line of an order (usp_GoodsReceipt_Save's rule;
+    -- the table only refuses a negative quantity)
+    SELECT * FROM (SELECT TOP (1) Seq = 15, ErrorNumber = 63000,
+                          Message = l.Tag + N': the received quantity must be more than 0.'
+                   FROM l WHERE l.ContainerLineId IS NULL AND l.QuantityBase = 0 AND (l.CloseShort = 0 OR l.PoLineId IS NULL)
+                   ORDER BY l.LineNumber) a
+
+    UNION ALL
+    -- a manual share of a posted charge cannot sit on a line that receives nothing (it could not enter any cost)
+    SELECT * FROM (SELECT TOP (1) Seq = 16, ErrorNumber = 70013,
+                          Message = N'The posted charge ' + t.ChargeName + N' has a manual share on line ' + CAST(cl.LineNumber AS NVARCHAR(10))
+                                    + N' (' + i.ItemCode + N'), which receives nothing. Cancel that charge and enter it again on the received lines.'
+                   FROM h
+                   INNER JOIN logistics.ContainerCharges ch           ON ch.ContainerId = h.ContainerId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                   INNER JOIN logistics.ContainerChargeAllocations a ON a.ChargeId = ch.Id AND a.IsManual = 1 AND a.AmountBase > 0
+                   INNER JOIN purchase.ChargeTypes t                  ON t.Id = ch.ChargeTypeId
+                   INNER JOIN logistics.ContainerLines cl             ON cl.Id = a.ContainerLineId
+                   INNER JOIN inventory.Items i                       ON i.Id = cl.ItemId
+                   LEFT  JOIN l                                       ON l.ContainerLineId = cl.Id
+                   WHERE h.SourceKind = N'Container' AND ISNULL(l.QuantityBase, cl.QuantityBase) = 0
+                   ORDER BY cl.LineNumber) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 17, ErrorNumber = 63010,
+                          Message = CASE WHEN po.Status = 3 THEN N'The purchase order ' + ISNULL(po.DocumentNumber, N'') + N' is cancelled.'
+                                         ELSE N'Only an approved order can be received: the purchase order '
+                                              + ISNULL(po.DocumentNumber, N'(draft)') + N' is not approved.' END
+                   FROM (SELECT DISTINCT l.PurchaseOrderId FROM l WHERE l.PurchaseOrderId IS NOT NULL) x
+                   INNER JOIN purchase.PurchaseDocuments po ON po.Id = x.PurchaseOrderId
+                   WHERE po.Status NOT IN (2, 4)
+                   ORDER BY po.Id) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 18, ErrorNumber = 63010,
+                          Message = CASE WHEN d.Status = 3 THEN N'The purchase invoice ' + ISNULL(d.DocumentNumber, N'') + N' is cancelled: receive the goods from the order, or delete this goods receipt.'
+                                         WHEN d.Status NOT IN (2, 4) THEN N'Post the invoice first: goods are received against a posted invoice, or from the order.'
+                                         WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 THEN N'Posted before goods receipts: the stock of ' + ISNULL(d.DocumentNumber, N'') + N' entered when it was posted.'
+                                         ELSE N'This invoice''s goods travel in containers: they are received with their containers.' END
+                   FROM l
+                   INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = l.InvoiceLineId
+                   INNER JOIN purchase.PurchaseDocuments d      ON d.Id = il.DocumentId
+                   WHERE d.Status NOT IN (2, 4) OR (d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1) OR il.ContainerLineId IS NOT NULL
+                   ORDER BY l.LineNumber) a
+
+    UNION ALL
+    -- ORDER CAP, lines received outside containers only: their own container never counts against a container line
+    SELECT * FROM (SELECT TOP (1) Seq = 19, ErrorNumber = 63011,
+                          Message = N'Line ' + CAST(q.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(q.Rec AS NVARCHAR(20))
+                                    + N' pcs received but only ' + CAST(p.MaxOutsideBase AS NVARCHAR(20))
+                                    + N' remain to receive on the order line outside containers.'
+                   FROM (SELECT l.PoLineId, l.PurchaseOrderId, Rec = SUM(l.QuantityBase), LineNumber = MIN(l.LineNumber)
+                         FROM l WHERE l.PoLineId IS NOT NULL AND l.ContainerLineId IS NULL
+                         GROUP BY l.PoLineId, l.PurchaseOrderId) q
+                   CROSS APPLY purchase.fn_PoLine_Progress(q.PurchaseOrderId) p
+                   INNER JOIN inventory.Items i ON i.Id = p.ItemId
+                   WHERE p.PoLineId = q.PoLineId AND q.Rec > p.MaxOutsideBase
+                   ORDER BY q.LineNumber) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 20, ErrorNumber = 63011,
+                          Message = N'Line ' + CAST(q.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(q.Rec AS NVARCHAR(20))
+                                    + N' pcs received but only '
+                                    + CAST(CASE WHEN il.QuantityBase > il.ReceivedQuantityBase THEN il.QuantityBase - il.ReceivedQuantityBase ELSE 0 END AS NVARCHAR(20))
+                                    + N' remain to receive on invoice ' + ISNULL(d.DocumentNumber, N'') + N'.'
+                   FROM (SELECT l.InvoiceLineId, Rec = SUM(l.QuantityBase), LineNumber = MIN(l.LineNumber)
+                         FROM l WHERE l.InvoiceLineId IS NOT NULL AND l.PoLineId IS NULL
+                         GROUP BY l.InvoiceLineId) q
+                   INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = q.InvoiceLineId
+                   INNER JOIN purchase.PurchaseDocuments d      ON d.Id = il.DocumentId
+                   INNER JOIN inventory.Items i                 ON i.Id = il.ItemId
+                   WHERE q.Rec > il.QuantityBase - il.ReceivedQuantityBase
+                   ORDER BY q.LineNumber) a
+
+    UNION ALL
+    -- WITHOUT AN ORDER: refused while the supplier has the item to receive on an order (or on an invoice without an order)
+    SELECT * FROM (SELECT TOP (1) Seq = 21, ErrorNumber = 63011,
+                          Message = s.PartyCode + N' has ' + ISNULL(po.DocumentNumber, N'an order') + N' with ' + CAST(p.OutstandingBase AS NVARCHAR(20))
+                                    + N' pcs of ' + l.ItemCode + N' still to receive: receive them from the order.'
+                   FROM h
+                   INNER JOIN masterdata.Parties s          ON s.Id = h.SupplierId
+                   INNER JOIN l                             ON l.PoLineId IS NULL AND l.InvoiceLineId IS NULL
+                   INNER JOIN purchase.PurchaseDocuments po ON po.SupplierId = h.SupplierId AND po.Status IN (2, 4)
+                   INNER JOIN inventory.DocumentTypes dt    ON dt.Id = po.DocumentTypeId AND dt.Code = N'PO'
+                   CROSS APPLY purchase.fn_PoLine_Progress(po.Id) p
+                   WHERE p.ItemId = l.ItemId AND p.OutstandingBase > 0
+                   ORDER BY l.LineNumber, po.Id) a
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 22, ErrorNumber = 63011,
+                          Message = s.PartyCode + N' has ' + ISNULL(d.DocumentNumber, N'an invoice') + N' with '
+                                    + CAST(il.QuantityBase - il.ReceivedQuantityBase AS NVARCHAR(20))
+                                    + N' pcs of ' + l.ItemCode + N' still to receive: receive them from the invoice.'
+                   FROM h
+                   INNER JOIN masterdata.Parties s              ON s.Id = h.SupplierId
+                   INNER JOIN l                                 ON l.PoLineId IS NULL AND l.InvoiceLineId IS NULL
+                   INNER JOIN purchase.PurchaseDocuments d      ON d.SupplierId = h.SupplierId AND d.Status IN (2, 4)
+                                                               AND NOT (d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1)
+                   INNER JOIN inventory.DocumentTypes dt        ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+                   INNER JOIN purchase.PurchaseDocumentLines il ON il.DocumentId = d.Id AND il.SourceLineId IS NULL AND il.ItemId = l.ItemId
+                   WHERE il.QuantityBase > il.ReceivedQuantityBase
+                   ORDER BY l.LineNumber, d.Id) a
+
+    UNION ALL
+    SELECT 23, 63010, N'The document type GRN is inactive: activate it in Configuration ' + NCHAR(8250) + N' Document Types.'
+    WHERE NOT EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Code = N'GRN' AND IsActive = 1)
+) x;
+GO
+
+/* THE REFUSALS OF usp_GoodsReceipt_Cancel that can be told before it runs (Get shows the first as
+   CancelBlockedReason). The reason, the RowVersion and the purchase returns (63010, known only once the matches are
+   rebuilt without this receipt) are checked by the procedure itself.
+     63008  its cost was adjusted afterwards: a GRNCOST change of its lines other than the NEGSTOCK of its own posting,
+            or, for a container, a late charge (CNTCHARGE) - as 69018 for the offload
+     63007  per item and warehouse: the stock on hand is less than what it brought */
+CREATE OR ALTER FUNCTION purchase.fn_GoodsReceipt_CancelCheck (@Id INT)
+RETURNS TABLE
+AS
+RETURN
+WITH h AS
+(
+    SELECT g.Id, g.Status, g.ContainerId, c.ContainerRef, CtStatus = c.Status
+    FROM purchase.GoodsReceipts g
+    LEFT JOIN logistics.Containers c ON c.Id = g.ContainerId
+    WHERE g.Id = @Id
+)
+SELECT x.Seq, x.ErrorNumber, x.Message
+FROM
+(
+    SELECT Seq = 1, ErrorNumber = 63006, Message = CAST(N'Goods receipt not found.' AS NVARCHAR(400))
+    WHERE NOT EXISTS (SELECT 1 FROM h)
+
+    UNION ALL
+    SELECT 2, 63010, N'Only a posted goods receipt can be cancelled.' FROM h WHERE h.Status <> 2
+
+    UNION ALL
+    SELECT 3, 63010, N'Container ' + h.ContainerRef + N' is closed. Reopen it before cancelling its goods receipt.'
+    FROM h WHERE h.CtStatus = 7
+
+    UNION ALL
+    SELECT 4, 63008, N'The cost of these goods was adjusted after they were received (invoice price, landed cost or a late container charge). This goods receipt can no longer be cancelled.'
+    FROM h
+    WHERE EXISTS (SELECT 1 FROM purchase.GoodsReceiptCostChanges cc
+                  INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = cc.GoodsReceiptLineId
+                  WHERE gl.GoodsReceiptId = h.Id AND cc.CauseKind <> N'NEGSTOCK')
+       OR EXISTS (SELECT 1 FROM inventory.CostAdjustments ca
+                  INNER JOIN logistics.ContainerCharges ch ON ch.Id = ca.SourceId
+                  WHERE ca.SourceKind = N'CNTCHARGE' AND ch.ContainerId = h.ContainerId)
+
+    UNION ALL
+    SELECT * FROM (SELECT TOP (1) Seq = 5, ErrorNumber = 63007,
+                          Message = N'Cannot cancel: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
+                                    + CAST(oh.Q AS NVARCHAR(20)) + N' left, but this goods receipt brought ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
+                   FROM h
+                   CROSS APPLY (SELECT m.ItemId, m.WarehouseId, Qty = SUM(m.QuantityBase)
+                                FROM inventory.StockMovements m
+                                WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'GRN' AND m.DocumentId = h.Id AND m.IsReversal = 0
+                                GROUP BY m.ItemId, m.WarehouseId) x
+                   CROSS APPLY (SELECT Q = inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)) oh
+                   INNER JOIN inventory.Items i       ON i.Id = x.ItemId
+                   INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+                   WHERE h.Status = 2 AND x.Qty > oh.Q
+                   ORDER BY i.ItemCode, w.WarehouseCode) a
+) x;
+GO
+
+-- WHY A RECEIPT CANNOT BE POSTED, CANCELLED, DELETED OR EDITED NOW, for the receipt page (usp_GoodsReceipt_Get:
+-- PostBlockedReason, CancelBlockedReason, DeleteBlockedReason, EditBlockedReason): one row per failed rule, Action
+-- 'Post' | 'Cancel' | 'Delete' | 'Edit', in the order of the checks (Seq); the first row of an action is its reason,
+-- none = allowed. The Post and Cancel rows ARE the refusals of usp_GoodsReceipt_Post / _Cancel
+-- (fn_GoodsReceipt_PostCheck / _CancelCheck, written once), so the page and the refusal always say the same thing.
+-- One more Cancel row is only an ESTIMATE (Seq 50, after the binding ones): a purchase return that took back goods of
+-- this receipt. Cancel decides it after rebuilding the matches, inside its transaction, and never reads this row.
+CREATE OR ALTER FUNCTION purchase.fn_GoodsReceipt_Blocks (@Id INT)
+RETURNS TABLE
+AS
+RETURN
+    WITH g AS
+    (
+        SELECT gr.Id, gr.Status FROM purchase.GoodsReceipts gr WHERE gr.Id = @Id
+    )
+    /* ---------- Post: the refusals of usp_GoodsReceipt_Post ---------- */
+    SELECT Action = CAST(N'Post' AS NVARCHAR(10)), p.Seq, p.ErrorNumber, Message = CAST(p.Message AS NVARCHAR(400))
+    FROM purchase.fn_GoodsReceipt_PostCheck(@Id) p
+    /* ---------- Cancel: the refusals of usp_GoodsReceipt_Cancel ---------- */
+    UNION ALL
+    SELECT N'Cancel', c.Seq, c.ErrorNumber, CAST(c.Message AS NVARCHAR(400))
+    FROM purchase.fn_GoodsReceipt_CancelCheck(@Id) c
+    UNION ALL
+    -- ESTIMATE of Cancel's purchase-return rule: an invoice line matched to this receipt keeps what the other posted
+    -- receipts of its group still hold unmatched; returned pieces beyond that would be left without a receipt
+    SELECT x.Action, x.Seq, x.ErrorNumber, x.Message
+    FROM (SELECT TOP (1) Action = N'Cancel', Seq = 50, ErrorNumber = 63010,
+                 Message = CAST(ISNULL(N'Purchase return ' + rt.DocumentNumber, N'A purchase return')
+                                + N' took back goods of this receipt. Cancel the return first.' AS NVARCHAR(400))
+          FROM g
+          CROSS APPLY (SELECT m.InvoiceLineId, Mine = SUM(m.QuantityBase)
+                       FROM purchase.GoodsReceiptInvoiceMatches m
+                       INNER JOIN purchase.GoodsReceiptLines l ON l.Id = m.GoodsReceiptLineId
+                       WHERE l.GoodsReceiptId = g.Id
+                       GROUP BY m.InvoiceLineId) z
+          INNER JOIN purchase.PurchaseDocumentLines pil ON pil.Id = z.InvoiceLineId
+          INNER JOIN purchase.PurchaseDocuments pid     ON pid.Id = pil.DocumentId
+          CROSS APPLY (SELECT Spare = ISNULL(SUM(ol.QuantityBase - ol.InvoicedBase), 0)
+                       FROM purchase.GoodsReceiptLines ol
+                       INNER JOIN purchase.GoodsReceipts og ON og.Id = ol.GoodsReceiptId AND og.Status = 2 AND og.Id <> g.Id
+                       WHERE (pil.SourceLineId IS NOT NULL AND ol.PoLineId = pil.SourceLineId)
+                          OR (pil.SourceLineId IS NULL AND ol.PoLineId IS NULL AND ol.SupplierId = pid.SupplierId AND ol.ItemId = pil.ItemId)) sp
+          OUTER APPLY (SELECT TOP (1) rd.DocumentNumber
+                       FROM purchase.PurchaseDocumentLines rl
+                       INNER JOIN purchase.PurchaseDocuments rd ON rd.Id = rl.DocumentId AND rd.Status IN (2, 4)
+                       WHERE rl.SourceLineId = pil.Id
+                       ORDER BY rd.PostedAtUtc DESC, rd.Id DESC) rt
+          WHERE g.Status = 2 AND pil.ReturnedQuantityBase > 0 AND pil.ReturnedQuantityBase > pil.ReceivedQuantityBase - z.Mine + sp.Spare
+          ORDER BY pil.Id) x
+    /* ---------- Delete, Edit: a draft only ---------- */
+    UNION ALL
+    SELECT N'Delete', 10, 63005, N'Only a draft goods receipt can be changed or deleted.'
+    FROM g WHERE g.Status <> 1
+    UNION ALL
+    SELECT N'Edit', 10, 63005, N'Only a draft goods receipt can be changed or deleted.'
+    FROM g WHERE g.Status <> 1;
+GO
+
+/* ================================================================== 12. Save: a draft, created or updated */
+
+/* A DRAFT GOODS RECEIPT, created (@Id NULL) or updated (@Id + @RowVersion), from @Lines (purchase.tvp_GoodsReceiptLine,
+   Quantity in the line's unit). Nothing moves in stock or cost: Post does that. Updating replaces the lines.
+
+   The source is chosen when the draft is created and never changes (63000):
+     Container  @ContainerId (+ @MovementId when made by the completion of that Delivery movement: IsAuto). The lines
+                are the container's lines, each once and all of them, in pieces (the base unit), 0 to the loaded
+                pieces, with a reason code when they differ; the warehouse is the header's ("Receive into"), which
+                may stay empty on a draft but must be of the container's branch; branch = the container's.
+     Order      every line names an order line (PoLineId) of posted or closed orders of ONE supplier; branch and
+                supplier = the order's; PurchaseOrderId = the order when the lines are of one order.
+     Invoice    @PurchaseInvoiceId, a posted or closed supplier invoice (not one posted before goods receipts without
+                "Shipped in containers"); every line names one of its lines NOT linked to a container; PoLineId = that
+                line's order line; branch and supplier = the invoice's.
+     Manual     "Without an order": a supplier is required; the lines have no order, invoice or container line and a
+                cost per piece (ManualUnitCostBase, default the item's last cost, else its average cost). Branch =
+                @BranchId, else the warehouse's.
+   The source is taken from the ids when @SourceKind is NULL. Local lines (not container) receive more than 0 - or 0
+   with "Nothing more will come" on a line of an order, to settle the rest of that order line when nothing more
+   arrives (refused when nothing is left to settle) - into an active warehouse (the line's, else the header's, else the
+   order or invoice line's); "Nothing more will come" (CloseShort) only on a line of an order, with a reason (code or
+   note). An order line or an invoice line appears once.
+   Caps (as Post's, 63011): local lines of an order line no more than its MaxOutsideBase, lines of an invoice without
+   an order no more than invoiced - received. ExpectedQuantityBase is set here, never taken from the caller: container
+   = loaded; order line = its ToReceiveBase now, invoice line = its ToReceiveBase now (this receipt left out); manual
+   = NULL. The date received is not in the future (one day of tolerance) and, for a container, not before its latest
+   completed Delivery. Returns nothing: @NewId. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Save
+    @Id                INT            = NULL,
+    @SourceKind        NVARCHAR(10)   = NULL,    -- new receipt: Container | Order | Invoice | Manual; NULL = from the ids
+    @DocumentDate      DATE           = NULL,    -- date received; NULL = today (UTC)
+    @BranchId          INT            = NULL,    -- Manual (else the warehouse's); several orders; ignored otherwise
+    @WarehouseId       INT            = NULL,    -- "Receive into": a container's lines, the default of local lines
+    @SupplierId        INT            = NULL,    -- Manual: required; otherwise checked against the source
+    @ContainerId       INT            = NULL,
+    @PurchaseOrderId   INT            = NULL,    -- informative: taken from the lines
+    @PurchaseInvoiceId INT            = NULL,
+    @SupplierReference NVARCHAR(100)  = NULL,    -- delivery note no.
+    @Notes             NVARCHAR(1000) = NULL,
+    @Lines             purchase.tvp_GoodsReceiptLine READONLY,
+    @RowVersion        BINARY(8)      = NULL,
+    @UserId            INT            = NULL,
+    @NewId             INT            = NULL OUTPUT,
+    @MovementId        INT            = NULL     -- new container receipt: the completed Delivery movement that made it
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @SourceKind = NULLIF(LTRIM(RTRIM(@SourceKind)), N'');
+    SET @SupplierReference = NULLIF(LTRIM(RTRIM(@SupplierReference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @Msg NVARCHAR(400), @TypeId INT, @IsAuto BIT = 0,
+            @OldStatus TINYINT, @OldSource NVARCHAR(10), @OldContainer INT, @OldInvoice INT, @OldMovement INT, @OldBranch INT,
+            @Ref NVARCHAR(30), @CtStatus TINYINT, @CtBranch INT, @MovNo NVARCHAR(30),
+            @InvNo NVARCHAR(30), @InvStatus TINYINT, @InvBranch INT, @InvSupplier INT, @InvOld BIT, @SourceText NVARCHAR(300);
+
+    /* ---------- 1. The receipt and its source */
+    IF @Id IS NOT NULL
+    BEGIN
+        SELECT @OldStatus = Status, @OldSource = SourceKind, @OldContainer = ContainerId, @OldInvoice = PurchaseInvoiceId,
+               @OldMovement = MovementId, @OldBranch = BranchId, @IsAuto = IsAuto
+        FROM purchase.GoodsReceipts WHERE Id = @Id;
+        IF @OldStatus IS NULL THROW 63006, 'Goods receipt not found.', 1;
+        IF @OldStatus <> 1 THROW 63005, 'Only a draft goods receipt can be changed or deleted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 63004, 'This goods receipt was modified by another user. Reload the page and try again.', 1;
+        IF (@SourceKind IS NOT NULL AND @SourceKind <> @OldSource)
+           OR (@ContainerId IS NOT NULL AND @ContainerId <> ISNULL(@OldContainer, -1))
+           OR (@PurchaseInvoiceId IS NOT NULL AND @PurchaseInvoiceId <> ISNULL(@OldInvoice, -1))
+           OR (@MovementId IS NOT NULL AND @MovementId <> ISNULL(@OldMovement, -1))
+            THROW 63000, 'The source of a goods receipt cannot be changed: delete the draft and create another one.', 1;
+        SELECT @SourceKind = @OldSource, @ContainerId = @OldContainer, @PurchaseInvoiceId = @OldInvoice, @MovementId = @OldMovement;
+    END
+    ELSE
+    BEGIN
+        SET @SourceKind = COALESCE(@SourceKind,
+                                   CASE WHEN @ContainerId IS NOT NULL THEN N'Container'
+                                        WHEN @PurchaseInvoiceId IS NOT NULL THEN N'Invoice'
+                                        WHEN @PurchaseOrderId IS NOT NULL OR EXISTS (SELECT 1 FROM @Lines WHERE PoLineId IS NOT NULL) THEN N'Order'
+                                        ELSE N'Manual' END);
+        IF @SourceKind NOT IN (N'Container', N'Order', N'Invoice', N'Manual')
+            THROW 63000, 'The source of a goods receipt is a container, an order, an invoice, or none (Manual).', 1;
+        IF @SourceKind = N'Container' AND @ContainerId IS NULL THROW 63000, 'Choose the container.', 1;
+        IF @SourceKind = N'Invoice' AND @PurchaseInvoiceId IS NULL THROW 63000, 'Choose the purchase invoice.', 1;
+        IF (@SourceKind <> N'Container' AND (@ContainerId IS NOT NULL OR @MovementId IS NOT NULL))
+           OR (@SourceKind <> N'Invoice' AND @PurchaseInvoiceId IS NOT NULL)
+           OR (@SourceKind = N'Manual' AND @PurchaseOrderId IS NOT NULL)
+            THROW 63000, 'A goods receipt has one source: a container, an order, an invoice, or none (Manual).', 1;
+        SET @IsAuto = CASE WHEN @MovementId IS NOT NULL THEN 1 ELSE 0 END;
+    END
+
+    IF @DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 63000, 'The date received cannot be in the future.', 1;
+    IF NOT EXISTS (SELECT 1 FROM @Lines) THROW 63009, 'The goods receipt has no lines.', 1;
+    SET @TypeId = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'GRN');   -- an inactive type still takes drafts
+    IF @TypeId IS NULL THROW 63010, 'The document type GRN is missing: restart the API so that script 64 creates it.', 1;
+
+    /* ---------- 2. The lines, as given */
+    DECLARE @L TABLE
+    (
+        LineNumber           INT           NOT NULL PRIMARY KEY,
+        ItemId               INT           NOT NULL,
+        ItemUnitId           INT           NOT NULL,
+        Quantity             INT           NOT NULL,
+        PackingFormula       INT           NULL,      -- NULL: the unit is not one of the item's
+        IsBaseUnit           BIT           NULL,
+        QuantityBase         INT           NULL,
+        WarehouseId          INT           NULL,
+        PoLineId             INT           NULL,
+        PurchaseOrderId      INT           NULL,
+        InvoiceLineId        INT           NULL,
+        ContainerLineId      INT           NULL,
+        ExpectedQuantityBase INT           NULL,
+        VarianceReasonCode   NVARCHAR(20)  NULL,
+        VarianceReason       NVARCHAR(300) NULL,
+        CloseShort           BIT           NOT NULL,
+        ManualUnitCostBase   DECIMAL(18,6) NULL,
+        ExpiryDate           DATE          NULL,
+        Notes                NVARCHAR(300) NULL,
+        SupplierId           INT           NULL
+    );
+    INSERT INTO @L (LineNumber, ItemId, ItemUnitId, Quantity, PackingFormula, IsBaseUnit, QuantityBase, WarehouseId, PoLineId,
+                    InvoiceLineId, ContainerLineId, ExpectedQuantityBase, VarianceReasonCode, VarianceReason, CloseShort,
+                    ManualUnitCostBase, ExpiryDate, Notes)
+    SELECT l.LineNumber, l.ItemId, l.ItemUnitId, l.Quantity, iu.PackingFormula, iu.IsBaseUnit,
+           CASE WHEN iu.Id IS NOT NULL THEN l.Quantity * iu.PackingFormula END,
+           l.WarehouseId, l.PoLineId, l.InvoiceLineId, l.ContainerLineId, l.ExpectedQuantityBase,
+           NULLIF(UPPER(LTRIM(RTRIM(l.VarianceReasonCode))), N''), NULLIF(LTRIM(RTRIM(l.VarianceReason)), N''),
+           ISNULL(l.CloseShort, 0), l.ManualUnitCostBase, l.ExpiryDate, NULLIF(LTRIM(RTRIM(l.Notes)), N'')
+    FROM @Lines l
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId;
+
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+        CASE WHEN i.Id IS NULL THEN N'item not found.'
+             WHEN l.PackingFormula IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN l.Quantity < 0 THEN N'the received quantity cannot be negative.'
+             WHEN l.VarianceReasonCode NOT IN (N'SHORT', N'DAMAGED', N'MISSING', N'LOADCOUNT', N'OTHER')
+                 THEN N'the reason is Short-shipped (SHORT), Damaged (DAMAGED), Missing (MISSING), Wrongly counted at loading (LOADCOUNT) or Other (OTHER).'
+             WHEN l.ManualUnitCostBase < 0 THEN N'the unit cost cannot be negative.'
+             WHEN l.ContainerLineId IS NOT NULL AND @SourceKind <> N'Container' THEN N'only the goods receipt of a container has container lines.'
+             WHEN l.InvoiceLineId IS NOT NULL AND @SourceKind <> N'Invoice' THEN N'only the goods receipt of an invoice has invoice lines.'
+             ELSE N'a goods receipt without an order has no order lines.' END
+    FROM @L l
+    LEFT JOIN inventory.Items i ON i.Id = l.ItemId
+    WHERE i.Id IS NULL OR l.PackingFormula IS NULL OR l.Quantity < 0
+       OR (l.VarianceReasonCode IS NOT NULL AND l.VarianceReasonCode NOT IN (N'SHORT', N'DAMAGED', N'MISSING', N'LOADCOUNT', N'OTHER'))
+       OR l.ManualUnitCostBase < 0
+       OR (l.ContainerLineId IS NOT NULL AND @SourceKind <> N'Container')
+       OR (l.InvoiceLineId IS NOT NULL AND @SourceKind <> N'Invoice')
+       OR (l.PoLineId IS NOT NULL AND @SourceKind = N'Manual')
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+    /* ---------- 3. By source */
+    IF @SourceKind = N'Container'
+    BEGIN
+        SELECT @Ref = ContainerRef, @CtStatus = Status, @CtBranch = BranchId FROM logistics.Containers WHERE Id = @ContainerId;
+        IF @Ref IS NULL THROW 63006, 'Container not found.', 1;
+        IF @Id IS NULL AND @CtStatus NOT BETWEEN 2 AND 5
+            THROW 63010, 'Only a confirmed container that is not received yet can be received.', 1;
+        IF @Id IS NULL AND @MovementId IS NOT NULL
+        BEGIN
+            SELECT @MovNo = m.MovementNo FROM logistics.Movements m WHERE m.Id = @MovementId;
+            IF NOT EXISTS (SELECT 1 FROM logistics.Movements m
+                           INNER JOIN masterdata.MovementTypes mt     ON mt.Id = m.MovementTypeId AND mt.Stage = N'Delivery'
+                           INNER JOIN logistics.MovementContainers mc ON mc.MovementId = m.Id AND mc.ContainerId = @ContainerId
+                           WHERE m.Id = @MovementId AND m.Status = 3)
+            BEGIN
+                SET @Msg = N'Movement ' + ISNULL(@MovNo, N'#' + CAST(@MovementId AS NVARCHAR(10)))
+                         + N' is not a completed Delivery movement of container ' + @Ref + N'.';
+                THROW 63010, @Msg, 1;
+            END
+        END
+        IF @MovementId IS NOT NULL AND @MovNo IS NULL SET @MovNo = (SELECT MovementNo FROM logistics.Movements WHERE Id = @MovementId);
+        SET @BranchId = @CtBranch;
+        IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @CtBranch)
+        BEGIN
+            SET @Msg = N'The warehouse ' + ISNULL((SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @WarehouseId), N'#' + CAST(@WarehouseId AS NVARCHAR(10)))
+                     + N' is inactive or does not belong to the branch of container ' + @Ref + N'.';
+            THROW 63000, @Msg, 1;
+        END
+        SELECT @Msg = N'The goods cannot be received before ' + d.MovementNo + N' reached ' + d.PlaceName + N' on '
+                      + CONVERT(NVARCHAR(10), d.EndDate, 23) + N'.'
+        FROM logistics.fn_Container_LastDelivery(@ContainerId) d
+        WHERE @DocumentDate < d.EndDate;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        -- the lines are the container's lines, each once, in pieces, never above the loaded pieces
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): ' +
+            CASE WHEN cl.Id IS NULL THEN N'it is not a line of container ' + @Ref + N'.'
+                 WHEN (SELECT COUNT(*) FROM @L d WHERE d.ContainerLineId = l.ContainerLineId) > 1
+                     THEN N'line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' of container ' + @Ref + N' is on this goods receipt twice.'
+                 WHEN cl.ItemId <> l.ItemId THEN N'the item differs from the container line.'
+                 WHEN l.IsBaseUnit = 0 THEN N'a container line is received in pieces (the base unit).'
+                 ELSE N'received ' + CAST(l.QuantityBase AS NVARCHAR(20)) + N' but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' were loaded.' END
+        FROM @L l
+        INNER JOIN inventory.Items i           ON i.Id = l.ItemId
+        LEFT  JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId AND cl.ContainerId = @ContainerId
+        WHERE cl.Id IS NULL OR cl.ItemId <> l.ItemId OR l.IsBaseUnit = 0 OR l.QuantityBase > cl.QuantityBase
+           OR (SELECT COUNT(*) FROM @L d WHERE d.ContainerLineId = l.ContainerLineId) > 1
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' of container ' + @Ref + N' (' + i.ItemCode
+                              + N') is missing: a container is received with all its lines.'
+        FROM logistics.ContainerLines cl
+        INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+        WHERE cl.ContainerId = @ContainerId AND NOT EXISTS (SELECT 1 FROM @L l WHERE l.ContainerLineId = cl.Id)
+        ORDER BY cl.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        -- THE ITEM IS ACTIVE (rule 12), as on the lines of the other sources (section 4), with their sentence: a draft
+        -- that Post would refuse is not made. (CreateForContainer, silent for a Delivery, skips such a container.)
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): item ' + i.ItemCode + N' is inactive.'
+        FROM @L l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        WHERE i.IsActive = 0
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode
+                              + N'): choose a reason when the received quantity differs from the loaded quantity.'
+        FROM @L l
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+        INNER JOIN inventory.Items i           ON i.Id = l.ItemId
+        WHERE l.QuantityBase <> cl.QuantityBase AND l.VarianceReasonCode IS NULL
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        -- the links come from the container line: its order line, order and supplier; expected = loaded; one warehouse
+        UPDATE l
+        SET PoLineId = cl.PoLineId, PurchaseOrderId = cl.PurchaseOrderId, SupplierId = po.SupplierId,
+            ExpectedQuantityBase = cl.QuantityBase, WarehouseId = @WarehouseId, CloseShort = 0, ManualUnitCostBase = NULL,
+            ExpiryDate = COALESCE(l.ExpiryDate, pol.ExpiryDate)
+        FROM @L l
+        INNER JOIN logistics.ContainerLines cl        ON cl.Id = l.ContainerLineId
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = cl.PoLineId
+        INNER JOIN purchase.PurchaseDocuments po      ON po.Id = cl.PurchaseOrderId;
+
+        SET @SupplierId = CASE WHEN (SELECT COUNT(DISTINCT SupplierId) FROM @L) = 1 THEN (SELECT MIN(SupplierId) FROM @L) END;
+        SET @PurchaseOrderId = CASE WHEN (SELECT COUNT(DISTINCT PurchaseOrderId) FROM @L) = 1 THEN (SELECT MIN(PurchaseOrderId) FROM @L) END;
+        SET @SourceText = N'Draft from container ' + @Ref
+                        + ISNULL(N', created automatically when ' + @MovNo + N' was completed', N'');
+    END
+    ELSE IF @SourceKind = N'Order'
+    BEGIN
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN l.PoLineId IS NULL THEN N'choose a line of a purchase order.'
+                 WHEN pol.Id IS NULL OR dt.Id IS NULL THEN N'the order line was not found.'
+                 WHEN (SELECT COUNT(*) FROM @L d WHERE d.PoLineId = l.PoLineId) > 1
+                     THEN N'line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' of order ' + ISNULL(po.DocumentNumber, N'#' + CAST(po.Id AS NVARCHAR(10)))
+                          + N' is on this goods receipt twice.'
+                 ELSE N'the item differs from the order line.' END
+        FROM @L l
+        LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        LEFT JOIN purchase.PurchaseDocuments po      ON po.Id = pol.DocumentId
+        LEFT JOIN inventory.DocumentTypes dt         ON dt.Id = po.DocumentTypeId AND dt.Code = N'PO'
+        WHERE l.PoLineId IS NULL OR pol.Id IS NULL OR dt.Id IS NULL OR pol.ItemId <> l.ItemId
+           OR (SELECT COUNT(*) FROM @L d WHERE d.PoLineId = l.PoLineId) > 1
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        SELECT TOP (1) @Msg = CASE WHEN po.Status = 3 THEN N'The purchase order ' + ISNULL(po.DocumentNumber, N'#' + CAST(po.Id AS NVARCHAR(10))) + N' is cancelled.'
+                                   ELSE N'Only an approved order can be received.' END
+        FROM @L l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        INNER JOIN purchase.PurchaseDocuments po      ON po.Id = pol.DocumentId
+        WHERE po.Status NOT IN (2, 4)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63010, @Msg, 1;
+
+        UPDATE l
+        SET PurchaseOrderId = pol.DocumentId, SupplierId = po.SupplierId, ManualUnitCostBase = NULL,
+            WarehouseId = COALESCE(l.WarehouseId, @WarehouseId, pol.WarehouseId),
+            ExpiryDate = COALESCE(l.ExpiryDate, pol.ExpiryDate)
+        FROM @L l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        INNER JOIN purchase.PurchaseDocuments po      ON po.Id = pol.DocumentId;
+
+        IF (SELECT COUNT(DISTINCT SupplierId) FROM @L) > 1
+            THROW 63000, 'A goods receipt from purchase orders holds the orders of one supplier.', 1;
+        IF @SupplierId IS NOT NULL AND @SupplierId <> (SELECT MIN(SupplierId) FROM @L)
+            THROW 63000, 'The supplier must be the supplier of the purchase order.', 1;
+        SET @SupplierId = (SELECT MIN(SupplierId) FROM @L);
+        SET @PurchaseOrderId = CASE WHEN (SELECT COUNT(DISTINCT PurchaseOrderId) FROM @L) = 1 THEN (SELECT MIN(PurchaseOrderId) FROM @L) END;
+        -- numbered in the order's branch; a receipt of several orders keeps the branch given (or the first line's order's)
+        SET @BranchId = CASE WHEN @PurchaseOrderId IS NOT NULL THEN (SELECT BranchId FROM purchase.PurchaseDocuments WHERE Id = @PurchaseOrderId)
+                             ELSE COALESCE(@BranchId, @OldBranch,
+                                           (SELECT TOP (1) po.BranchId FROM @L l INNER JOIN purchase.PurchaseDocuments po ON po.Id = l.PurchaseOrderId
+                                            ORDER BY l.LineNumber)) END;
+        SET @SourceText = N'Draft from order ' + ISNULL((SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @PurchaseOrderId), N'(several orders)');
+    END
+    ELSE IF @SourceKind = N'Invoice'
+    BEGIN
+        SELECT @InvNo = d.DocumentNumber, @InvStatus = d.Status, @InvBranch = d.BranchId, @InvSupplier = d.SupplierId,
+               @InvOld = CASE WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 THEN 1 ELSE 0 END
+        FROM purchase.PurchaseDocuments d
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+        WHERE d.Id = @PurchaseInvoiceId;
+        IF @InvStatus IS NULL THROW 63006, 'Purchase invoice not found.', 1;
+        IF @InvStatus = 3 THROW 63010, 'The purchase invoice is cancelled.', 1;
+        IF @InvStatus NOT IN (2, 4) THROW 63010, 'Post the invoice first: goods are received against a posted invoice, or from the order.', 1;
+        IF @InvOld = 1 THROW 63010, 'Posted before goods receipts: its stock entered when it was posted (or when its container was offloaded).', 1;
+
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN pil.Id IS NULL THEN N'choose a line of invoice ' + ISNULL(@InvNo, N'#' + CAST(@PurchaseInvoiceId AS NVARCHAR(10))) + N'.'
+                 WHEN pil.ContainerLineId IS NOT NULL
+                     THEN N'this invoice line travels in container ' + ISNULL(c.ContainerRef, N'?') + N': it is received with its container.'
+                 WHEN (SELECT COUNT(*) FROM @L d WHERE d.InvoiceLineId = l.InvoiceLineId) > 1
+                     THEN N'line ' + CAST(pil.LineNumber AS NVARCHAR(10)) + N' of the invoice is on this goods receipt twice.'
+                 WHEN pil.ItemId <> l.ItemId THEN N'the item differs from the invoice line.'
+                 ELSE N'the order line differs from the invoice line.' END
+        FROM @L l
+        LEFT JOIN purchase.PurchaseDocumentLines pil ON pil.Id = l.InvoiceLineId AND pil.DocumentId = @PurchaseInvoiceId
+        LEFT JOIN logistics.ContainerLines cl        ON cl.Id = pil.ContainerLineId
+        LEFT JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+        WHERE pil.Id IS NULL OR pil.ContainerLineId IS NOT NULL OR pil.ItemId <> l.ItemId
+           OR (SELECT COUNT(*) FROM @L d WHERE d.InvoiceLineId = l.InvoiceLineId) > 1
+           OR (l.PoLineId IS NOT NULL AND l.PoLineId <> ISNULL(pil.SourceLineId, -1))
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        UPDATE l
+        SET PoLineId = pil.SourceLineId, PurchaseOrderId = pol.DocumentId, SupplierId = @InvSupplier, ManualUnitCostBase = NULL,
+            WarehouseId = COALESCE(l.WarehouseId, @WarehouseId, pil.WarehouseId),
+            ExpiryDate = COALESCE(l.ExpiryDate, pil.ExpiryDate, pol.ExpiryDate)
+        FROM @L l
+        INNER JOIN purchase.PurchaseDocumentLines pil ON pil.Id = l.InvoiceLineId
+        LEFT  JOIN purchase.PurchaseDocumentLines pol ON pol.Id = pil.SourceLineId;
+
+        IF @SupplierId IS NOT NULL AND @SupplierId <> @InvSupplier
+            THROW 63000, 'The supplier must be the supplier of the purchase invoice.', 1;
+        SELECT @SupplierId = @InvSupplier, @BranchId = @InvBranch, @PurchaseOrderId = NULL;
+        SET @SourceText = N'Draft from invoice ' + ISNULL(@InvNo, N'#' + CAST(@PurchaseInvoiceId AS NVARCHAR(10)));
+    END
+    ELSE   -- Manual: "Without an order"
+    BEGIN
+        IF @SupplierId IS NULL THROW 63000, 'Choose the supplier: a goods receipt without an order needs one.', 1;
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1)
+            THROW 63000, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
+        UPDATE l
+        SET SupplierId = @SupplierId, ExpectedQuantityBase = NULL, PurchaseOrderId = NULL,
+            WarehouseId = COALESCE(l.WarehouseId, @WarehouseId),
+            ManualUnitCostBase = COALESCE(l.ManualUnitCostBase, i.LastCost, i.AverageCost)   -- the typed cost; default the item's last cost, else its average (as Post)
+        FROM @L l INNER JOIN inventory.Items i ON i.Id = l.ItemId;
+        SET @PurchaseOrderId = NULL;
+        SET @SourceText = N'Draft without an order (' + (SELECT PartyCode FROM masterdata.Parties WHERE Id = @SupplierId) + N')';
+    END
+
+    /* ---------- 4. Local lines (order, invoice, manual): quantity, warehouse, "Nothing more will come", caps */
+    IF @SourceKind <> N'Container'
+    BEGIN
+        IF @WarehouseId IS NULL SELECT TOP (1) @WarehouseId = WarehouseId FROM @L WHERE WarehouseId IS NOT NULL ORDER BY LineNumber;
+        IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+            THROW 63000, 'The warehouse the goods are received into is not found or inactive.', 1;
+
+        -- 0 PIECES ONLY WITH "NOTHING MORE WILL COME" on a line of an order (rules 14, 17): the usual way the rest of an
+        -- order line is settled when the supplier says it will never arrive, after a partial delivery was received.
+        -- The checks below still apply to such a line (an order line, a reason, an active warehouse); a line of a
+        -- manual receipt or of an invoice without an order never takes 0.
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): ' +
+            CASE WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+                 WHEN l.Quantity = 0 AND l.CloseShort = 0 AND l.PoLineId IS NULL THEN N'the received quantity must be more than 0.'
+                 WHEN l.Quantity = 0 AND l.CloseShort = 0
+                     THEN N'the received quantity must be more than 0, or tick "Nothing more will come" to settle the rest of the order line.'
+                 WHEN l.WarehouseId IS NULL THEN N'choose the warehouse the goods are received into.'
+                 WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
+                 WHEN l.PoLineId IS NULL THEN N'"Nothing more will come" applies to a line of a purchase order.'
+                 ELSE N'give the reason why nothing more will come.' END
+        FROM @L l
+        INNER JOIN inventory.Items i          ON i.Id = l.ItemId
+        LEFT  JOIN masterdata.Warehouses w    ON w.Id = l.WarehouseId
+        WHERE i.IsActive = 0 OR (l.Quantity = 0 AND l.CloseShort = 0) OR l.WarehouseId IS NULL OR w.Id IS NULL OR w.IsActive = 0
+           OR (l.CloseShort = 1 AND l.PoLineId IS NULL)
+           OR (l.CloseShort = 1 AND l.VarianceReasonCode IS NULL AND l.VarianceReason IS NULL)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        -- the caps of Post (63011), so a draft never promises what cannot be posted
+        SELECT TOP (1) @Msg = N'Line ' + CAST(q.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(q.Qty AS NVARCHAR(20))
+                              + N' pcs received but only ' + CAST(p.MaxOutsideBase AS NVARCHAR(20))
+                              + N' remain to receive on the order line outside containers.'
+        FROM (SELECT PoLineId, OrderId = MIN(PurchaseOrderId), ItemId = MIN(ItemId), Qty = SUM(QuantityBase), LineNumber = MIN(LineNumber)
+              FROM @L WHERE PoLineId IS NOT NULL GROUP BY PoLineId) q
+        CROSS APPLY purchase.fn_PoLine_Progress(q.OrderId) p
+        INNER JOIN inventory.Items i ON i.Id = q.ItemId
+        WHERE p.PoLineId = q.PoLineId AND q.Qty > p.MaxOutsideBase
+        ORDER BY q.LineNumber;
+        IF @Msg IS NOT NULL THROW 63011, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Line ' + CAST(q.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(q.Qty AS NVARCHAR(20))
+                              + N' pcs received but only '
+                              + CAST(CASE WHEN pil.QuantityBase - pil.ReceivedQuantityBase > 0 THEN pil.QuantityBase - pil.ReceivedQuantityBase ELSE 0 END AS NVARCHAR(20))
+                              + N' remain to receive on invoice ' + ISNULL(@InvNo, N'#' + CAST(@PurchaseInvoiceId AS NVARCHAR(10))) + N'.'
+        FROM (SELECT InvoiceLineId, ItemId = MIN(ItemId), Qty = SUM(QuantityBase), LineNumber = MIN(LineNumber)
+              FROM @L WHERE InvoiceLineId IS NOT NULL AND PoLineId IS NULL GROUP BY InvoiceLineId) q
+        INNER JOIN purchase.PurchaseDocumentLines pil ON pil.Id = q.InvoiceLineId
+        INNER JOIN inventory.Items i                  ON i.Id = q.ItemId
+        WHERE q.Qty > pil.QuantityBase - pil.ReceivedQuantityBase
+        ORDER BY q.LineNumber;
+        IF @Msg IS NOT NULL THROW 63011, @Msg, 1;
+
+        IF @BranchId IS NULL SET @BranchId = (SELECT BranchId FROM masterdata.Warehouses WHERE Id = @WarehouseId);
+    END
+
+    IF @BranchId IS NULL THROW 63000, 'Choose the branch of the goods receipt.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 63000, 'Branch not found or inactive.', 1;
+
+    /* ---------- 5. Write */
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            IF @SourceKind = N'Container'
+            BEGIN
+                -- ONE OPEN RECEIPT PER CONTAINER: the container row is locked, then the receipt is inserted only when none
+                -- is open (the unique index UX_GoodsReceipts_OpenContainer would refuse a second with a raw 2601)
+                DECLARE @OpenId INT, @OpenNo NVARCHAR(30);
+                SELECT @CtStatus = Status FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @ContainerId;
+                SELECT TOP (1) @OpenId = Id, @OpenNo = DocumentNumber
+                FROM purchase.GoodsReceipts WITH (UPDLOCK, HOLDLOCK)
+                WHERE ContainerId = @ContainerId AND Status < 3
+                ORDER BY Status DESC, Id DESC;
+                IF @OpenId IS NOT NULL
+                BEGIN
+                    SET @Msg = N'Container ' + @Ref + N' already has ' + ISNULL(N'goods receipt ' + @OpenNo, N'a draft goods receipt') + N'. Open it instead.';
+                    THROW 63013, @Msg, 1;
+                END
+                IF @CtStatus NOT BETWEEN 2 AND 5
+                    THROW 63010, 'Only a confirmed container that is not received yet can be received.', 1;
+            END
+
+            INSERT INTO purchase.GoodsReceipts (DocumentTypeId, DocumentDate, BranchId, WarehouseId, SupplierId, SourceKind, ContainerId,
+                                                PurchaseOrderId, PurchaseInvoiceId, MovementId, IsAuto, SupplierReference, Notes, Status, CreatedBy)
+            SELECT @TypeId, @DocumentDate, @BranchId, @WarehouseId, @SupplierId, @SourceKind, @ContainerId,
+                   @PurchaseOrderId, @PurchaseInvoiceId, @MovementId, @IsAuto, @SupplierReference, @Notes, 1, @UserId
+            WHERE @SourceKind <> N'Container'
+               OR NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts x WHERE x.ContainerId = @ContainerId AND x.Status < 3);
+            IF @@ROWCOUNT = 0
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N' already has a goods receipt. Open it instead.';
+                THROW 63013, @Msg, 1;
+            END
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId)
+            VALUES (@Id, N'Created', LEFT(@SourceText + N' (number assigned on posting)', 500), @UserId);
+            IF @SourceKind = N'Container'
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                VALUES (@ContainerId, N'Event', LEFT(N'Draft goods receipt created' + ISNULL(N' when ' + @MovNo + N' was completed', N'')
+                                                     + N': the goods enter the stock when it is posted.', 500), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE purchase.GoodsReceipts
+            SET DocumentDate = @DocumentDate, BranchId = @BranchId, WarehouseId = @WarehouseId, SupplierId = @SupplierId,
+                PurchaseOrderId = @PurchaseOrderId, SupplierReference = @SupplierReference, Notes = @Notes,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id AND Status = 1 AND (@RowVersion IS NULL OR RowVersion = @RowVersion);
+            IF @@ROWCOUNT = 0 THROW 63004, 'This goods receipt was modified by another user. Reload the page and try again.', 1;
+
+            -- a draft has no matches; removed in case, so the lines can go
+            DELETE m FROM purchase.GoodsReceiptInvoiceMatches m
+            INNER JOIN purchase.GoodsReceiptLines l ON l.Id = m.GoodsReceiptLineId
+            WHERE l.GoodsReceiptId = @Id;
+            DELETE FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id;
+
+            INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @L) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        -- EXPECTED = what is still to receive now, this receipt left out (its old lines are deleted above)
+        IF @SourceKind = N'Order'
+            UPDATE l SET ExpectedQuantityBase = p.ToReceiveBase
+            FROM @L l CROSS APPLY purchase.fn_PoLine_Progress(l.PurchaseOrderId) p
+            WHERE p.PoLineId = l.PoLineId;
+        IF @SourceKind = N'Invoice'
+            UPDATE l SET ExpectedQuantityBase = t.ToReceiveBase
+            FROM @L l INNER JOIN purchase.fn_InvoiceLine_ToReceive(@PurchaseInvoiceId) t ON t.InvoiceLineId = l.InvoiceLineId;
+
+        -- A LINE OF 0 THAT SETTLES NOTHING is refused: nothing is left to receive on its order line (or invoice line) now
+        -- - everything received, settled, travelling in containers or on other draft receipts - so it would post as a no-op.
+        SET @Msg = NULL;
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): nothing is left to receive on the '
+                              + CASE WHEN @SourceKind = N'Invoice' THEN N'invoice line' ELSE N'order line' END
+                              + N', so "Nothing more will come" has nothing to settle.'
+        FROM @L l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        WHERE @SourceKind <> N'Container' AND l.Quantity = 0 AND l.CloseShort = 1 AND ISNULL(l.ExpectedQuantityBase, 0) = 0
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 63009, @Msg, 1;
+
+        INSERT INTO purchase.GoodsReceiptLines (GoodsReceiptId, LineNumber, ItemId, ItemUnitId, Quantity, PackingFormula,
+                                                ExpectedQuantityBase, VarianceReasonCode, VarianceReason, CloseShort, WarehouseId,
+                                                SupplierId, PurchaseOrderId, PoLineId, InvoiceLineId, ContainerLineId, ExpiryDate,
+                                                ManualUnitCostBase, Notes)
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.Quantity, l.PackingFormula,
+               l.ExpectedQuantityBase, l.VarianceReasonCode, l.VarianceReason, l.CloseShort, l.WarehouseId,
+               l.SupplierId, l.PurchaseOrderId, l.PoLineId, l.InvoiceLineId, l.ContainerLineId, l.ExpiryDate,
+               l.ManualUnitCostBase, l.Notes
+        FROM @L l;
+
+        UPDATE g
+        SET TotalExpectedBase = x.Expected, TotalReceivedBase = x.Received
+        FROM purchase.GoodsReceipts g
+        CROSS APPLY (SELECT Expected = ISNULL(SUM(ISNULL(l.ExpectedQuantityBase, l.QuantityBase)), 0),
+                            Received = ISNULL(SUM(l.QuantityBase), 0)
+                     FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id) x
+        WHERE g.Id = @Id;
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 13. Receive goods... on a purchase order */
+
+/* A DRAFT FROM A PURCHASE ORDER, posted or closed (63010 otherwise). @Lines empty = every line with something to
+   receive (fn_PoLine_Progress.ToReceiveBase: ordered - received - settled short - in containers - in draft receipts);
+   nothing (63009): "Everything still to receive on this order travels in containers..." or "Nothing is left...".
+   Otherwise one row per order line (PoLineId; ItemId = the order line's item; Quantity in the row's ItemUnitId, the
+   base unit for pieces; WarehouseId NULL = @WarehouseId, else the order line's; CloseShort with VarianceReasonCode /
+   VarianceReason = "Nothing more will come"; ExpiryDate NULL = the order line's). Rows of 0 are dropped unless
+   CloseShort. A line is written in the order line's unit when its pieces divide by its packing, else in pieces. The
+   draft is made by usp_GoodsReceipt_Save (source Order): its checks and caps apply. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_CreateFromOrder
+    @PurchaseOrderId   INT,
+    @Lines             purchase.tvp_GoodsReceiptLine READONLY,
+    @DocumentDate      DATE           = NULL,
+    @SupplierReference NVARCHAR(100)  = NULL,
+    @UserId            INT            = NULL,
+    @NewId             INT            = NULL OUTPUT,
+    @WarehouseId       INT            = NULL,
+    @Notes             NVARCHAR(1000) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT, @No NVARCHAR(30), @BranchId INT, @SupplierId INT, @Msg NVARCHAR(400);
+    SELECT @Status = d.Status, @No = ISNULL(d.DocumentNumber, N'#' + CAST(d.Id AS NVARCHAR(10))), @BranchId = d.BranchId, @SupplierId = d.SupplierId
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+    WHERE d.Id = @PurchaseOrderId;
+    IF @Status IS NULL THROW 63006, 'Purchase order not found.', 1;
+    IF @Status = 3 THROW 63010, 'The purchase order is cancelled.', 1;
+    IF @Status NOT IN (2, 4) THROW 63010, 'Only an approved order can be received.', 1;
+
+    DECLARE @Pick TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, PoLineId INT NOT NULL, QuantityBase INT NOT NULL, WarehouseId INT NULL,
+                         CloseShort BIT NOT NULL, ReasonCode NVARCHAR(20) NULL, Reason NVARCHAR(300) NULL, ExpiryDate DATE NULL,
+                         Notes NVARCHAR(300) NULL);
+
+    IF EXISTS (SELECT 1 FROM @Lines)
+    BEGIN
+        SELECT TOP (1) @Msg = N'Line ' + CAST(r.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN pol.Id IS NULL THEN N'it is not a line of order ' + @No + N'.'
+                 WHEN pol.ItemId <> r.ItemId THEN N'the item differs from the order line.'
+                 WHEN iu.Id IS NULL THEN N'the unit does not belong to the item of the order line.'
+                 ELSE N'the received quantity cannot be negative.' END
+        FROM @Lines r
+        LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = r.PoLineId AND pol.DocumentId = @PurchaseOrderId
+        LEFT JOIN inventory.ItemUnits iu             ON iu.Id = r.ItemUnitId AND iu.ItemId = r.ItemId
+        WHERE pol.Id IS NULL OR pol.ItemId <> r.ItemId OR iu.Id IS NULL OR r.Quantity < 0
+        ORDER BY r.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        INSERT INTO @Pick (PoLineId, QuantityBase, WarehouseId, CloseShort, ReasonCode, Reason, ExpiryDate, Notes)
+        SELECT r.PoLineId, r.Quantity * iu.PackingFormula, r.WarehouseId, ISNULL(r.CloseShort, 0), r.VarianceReasonCode, r.VarianceReason,
+               r.ExpiryDate, r.Notes
+        FROM @Lines r
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = r.PoLineId
+        INNER JOIN inventory.ItemUnits iu             ON iu.Id = r.ItemUnitId
+        WHERE r.Quantity > 0 OR ISNULL(r.CloseShort, 0) = 1
+        ORDER BY pol.LineNumber, r.LineNumber;
+        IF NOT EXISTS (SELECT 1 FROM @Pick) THROW 63009, 'Enter the pieces received on at least one line.', 1;
+    END
+    ELSE
+    BEGIN
+        INSERT INTO @Pick (PoLineId, QuantityBase, CloseShort)
+        SELECT p.PoLineId, p.ToReceiveBase, 0
+        FROM purchase.fn_PoLine_Progress(@PurchaseOrderId) p
+        WHERE p.ToReceiveBase > 0
+        ORDER BY p.LineNumber;
+        IF NOT EXISTS (SELECT 1 FROM @Pick)
+        BEGIN
+            IF EXISTS (SELECT 1 FROM purchase.fn_PoLine_Progress(@PurchaseOrderId) p
+                       WHERE p.InContainersBase > 0 AND p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase - p.InDraftReceiptsBase > 0)
+                THROW 63009, 'Everything still to receive on this order travels in containers: it is received with its containers.', 1;
+            THROW 63009, 'Nothing is left to receive on this order.', 1;
+        END
+    END
+
+    -- in the order line's unit when the pieces divide by its packing, else in pieces
+    DECLARE @T purchase.tvp_GoodsReceiptLine;
+    INSERT INTO @T (LineNumber, ItemId, ItemUnitId, Quantity, WarehouseId, PoLineId, VarianceReasonCode, VarianceReason, CloseShort,
+                    ExpiryDate, Notes)
+    SELECT k.Seq, pol.ItemId,
+           CASE WHEN k.QuantityBase % pol.PackingFormula = 0 OR bu.Id IS NULL THEN pol.ItemUnitId ELSE bu.Id END,
+           CASE WHEN k.QuantityBase % pol.PackingFormula = 0 OR bu.Id IS NULL THEN k.QuantityBase / pol.PackingFormula ELSE k.QuantityBase END,
+           COALESCE(k.WarehouseId, @WarehouseId, pol.WarehouseId), k.PoLineId, k.ReasonCode, k.Reason, k.CloseShort,
+           COALESCE(k.ExpiryDate, pol.ExpiryDate), k.Notes
+    FROM @Pick k
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = k.PoLineId
+    OUTER APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu;
+
+    IF @WarehouseId IS NULL SELECT TOP (1) @WarehouseId = WarehouseId FROM @T ORDER BY LineNumber;
+
+    EXEC purchase.usp_GoodsReceipt_Save @SourceKind = N'Order', @DocumentDate = @DocumentDate, @BranchId = @BranchId,
+         @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @PurchaseOrderId = @PurchaseOrderId,
+         @SupplierReference = @SupplierReference, @Notes = @Notes, @Lines = @T, @UserId = @UserId, @NewId = @NewId OUTPUT;
+END
+GO
+
+/* ================================================================== 14. Receive goods... on a posted purchase invoice */
+
+/* A DRAFT FROM A POSTED (OR CLOSED) SUPPLIER INVOICE, for its lines NOT linked to a container (those are received with
+   their containers). Refused (63010) for a draft or cancelled invoice and for one posted before goods receipts
+   without "Shipped in containers" (its stock entered when it was posted), or with every line in a container offloaded
+   the old way (its stock entered at that offload). @Lines empty = every such line with
+   something to receive (fn_InvoiceLine_ToReceive: invoiced - received - in draft receipts); nothing (63009). Otherwise
+   one row per invoice line (InvoiceLineId; ItemId = the line's item; Quantity in the row's ItemUnitId; WarehouseId
+   NULL = @WarehouseId, else the invoice line's; CloseShort + reason on a line of an order; ExpiryDate NULL = the
+   invoice line's, else the order line's). Each line keeps its order line (PoLineId), so the matching works; this
+   receipt's pieces match this invoice first. Made by usp_GoodsReceipt_Save (source Invoice). */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_CreateFromInvoice
+    @InvoiceId         INT,
+    @Lines             purchase.tvp_GoodsReceiptLine READONLY,
+    @DocumentDate      DATE           = NULL,
+    @SupplierReference NVARCHAR(100)  = NULL,
+    @UserId            INT            = NULL,
+    @NewId             INT            = NULL OUTPUT,
+    @WarehouseId       INT            = NULL,
+    @Notes             NVARCHAR(1000) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    -- POSTED BEFORE GOODS RECEIPTS (@Old): an invoice received when it was posted, or a "Shipped in containers" one
+    -- whose lines are all in containers offloaded the old way (fn_Container_ReceivedBy 'Offload') - its goods are in
+    -- stock already, they do not "travel in containers" (the reason usp_PurchaseDocument_Get gives, rule 15)
+    DECLARE @Status TINYINT, @No NVARCHAR(30), @Old BIT, @Msg NVARCHAR(400);
+    SELECT @Status = d.Status, @No = ISNULL(d.DocumentNumber, N'#' + CAST(d.Id AS NVARCHAR(10))),
+           @Old = CASE WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 THEN 1
+                       WHEN d.UsesGoodsReceipts = 0
+                            AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x WHERE x.DocumentId = d.Id AND x.ContainerLineId IS NULL)
+                            AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x
+                                            INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+                                            CROSS APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+                                            WHERE x.DocumentId = d.Id AND ISNULL(rb.ReceivedBy, N'') <> N'Offload')
+                       THEN 1 ELSE 0 END
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+    WHERE d.Id = @InvoiceId;
+    IF @Status IS NULL THROW 63006, 'Purchase invoice not found.', 1;
+    IF @Status = 3 THROW 63010, 'The purchase invoice is cancelled.', 1;
+    IF @Status NOT IN (2, 4) THROW 63010, 'Post the invoice first: goods are received against a posted invoice, or from the order.', 1;
+    IF @Old = 1 THROW 63010, 'Posted before goods receipts: its stock entered when it was posted (or when its container was offloaded).', 1;
+
+    DECLARE @Pick TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, InvoiceLineId INT NOT NULL, QuantityBase INT NOT NULL, WarehouseId INT NULL,
+                         CloseShort BIT NOT NULL, ReasonCode NVARCHAR(20) NULL, Reason NVARCHAR(300) NULL, ExpiryDate DATE NULL,
+                         Notes NVARCHAR(300) NULL);
+
+    IF EXISTS (SELECT 1 FROM @Lines)
+    BEGIN
+        SELECT TOP (1) @Msg = N'Line ' + CAST(r.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN pil.Id IS NULL THEN N'it is not a line of invoice ' + @No + N'.'
+                 WHEN pil.ContainerLineId IS NOT NULL THEN N'this invoice line travels in a container: it is received with its container.'
+                 WHEN pil.ItemId <> r.ItemId THEN N'the item differs from the invoice line.'
+                 WHEN iu.Id IS NULL THEN N'the unit does not belong to the item of the invoice line.'
+                 ELSE N'the received quantity cannot be negative.' END
+        FROM @Lines r
+        LEFT JOIN purchase.PurchaseDocumentLines pil ON pil.Id = r.InvoiceLineId AND pil.DocumentId = @InvoiceId
+        LEFT JOIN inventory.ItemUnits iu             ON iu.Id = r.ItemUnitId AND iu.ItemId = r.ItemId
+        WHERE pil.Id IS NULL OR pil.ContainerLineId IS NOT NULL OR pil.ItemId <> r.ItemId OR iu.Id IS NULL OR r.Quantity < 0
+        ORDER BY r.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        INSERT INTO @Pick (InvoiceLineId, QuantityBase, WarehouseId, CloseShort, ReasonCode, Reason, ExpiryDate, Notes)
+        SELECT r.InvoiceLineId, r.Quantity * iu.PackingFormula, r.WarehouseId, ISNULL(r.CloseShort, 0), r.VarianceReasonCode, r.VarianceReason,
+               r.ExpiryDate, r.Notes
+        FROM @Lines r
+        INNER JOIN purchase.PurchaseDocumentLines pil ON pil.Id = r.InvoiceLineId
+        INNER JOIN inventory.ItemUnits iu             ON iu.Id = r.ItemUnitId
+        WHERE r.Quantity > 0 OR ISNULL(r.CloseShort, 0) = 1
+        ORDER BY pil.LineNumber, r.LineNumber;
+        IF NOT EXISTS (SELECT 1 FROM @Pick) THROW 63009, 'Enter the pieces received on at least one line.', 1;
+    END
+    ELSE
+    BEGIN
+        INSERT INTO @Pick (InvoiceLineId, QuantityBase, CloseShort)
+        SELECT t.InvoiceLineId, t.ToReceiveBase, 0
+        FROM purchase.fn_InvoiceLine_ToReceive(@InvoiceId) t
+        WHERE t.ToReceiveBase > 0
+        ORDER BY t.LineNumber;
+        IF NOT EXISTS (SELECT 1 FROM @Pick)
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM purchase.fn_InvoiceLine_ToReceive(@InvoiceId))
+                THROW 63009, 'This invoice''s goods travel in containers: they are received with their containers.', 1;
+            IF EXISTS (SELECT 1 FROM purchase.fn_InvoiceLine_ToReceive(@InvoiceId) t
+                       WHERE t.InDraftReceiptsBase > 0 AND t.InvoicedBase - t.ReceivedBase > 0)
+                THROW 63009, 'The rest of this invoice is on draft goods receipts: post or delete them first.', 1;
+            THROW 63009, 'Every piece of this invoice is already received.', 1;
+        END
+    END
+
+    DECLARE @T purchase.tvp_GoodsReceiptLine;
+    INSERT INTO @T (LineNumber, ItemId, ItemUnitId, Quantity, WarehouseId, PoLineId, InvoiceLineId, VarianceReasonCode, VarianceReason,
+                    CloseShort, ExpiryDate, Notes)
+    SELECT k.Seq, pil.ItemId,
+           CASE WHEN k.QuantityBase % pil.PackingFormula = 0 OR bu.Id IS NULL THEN pil.ItemUnitId ELSE bu.Id END,
+           CASE WHEN k.QuantityBase % pil.PackingFormula = 0 OR bu.Id IS NULL THEN k.QuantityBase / pil.PackingFormula ELSE k.QuantityBase END,
+           COALESCE(k.WarehouseId, @WarehouseId, pil.WarehouseId), pil.SourceLineId, k.InvoiceLineId, k.ReasonCode, k.Reason, k.CloseShort,
+           COALESCE(k.ExpiryDate, pil.ExpiryDate, pol.ExpiryDate), k.Notes
+    FROM @Pick k
+    INNER JOIN purchase.PurchaseDocumentLines pil ON pil.Id = k.InvoiceLineId
+    LEFT  JOIN purchase.PurchaseDocumentLines pol ON pol.Id = pil.SourceLineId
+    OUTER APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pil.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu;
+
+    IF @WarehouseId IS NULL SELECT TOP (1) @WarehouseId = WarehouseId FROM @T ORDER BY LineNumber;
+
+    EXEC purchase.usp_GoodsReceipt_Save @SourceKind = N'Invoice', @DocumentDate = @DocumentDate, @WarehouseId = @WarehouseId,
+         @PurchaseInvoiceId = @InvoiceId, @SupplierReference = @SupplierReference, @Notes = @Notes, @Lines = @T,
+         @UserId = @UserId, @NewId = @NewId OUTPUT;
+END
+GO
+
+/* ================================================================== 15. Receive goods... on a container, and the Delivery hook */
+
+/* A CONTAINER'S DRAFT: its lines in pieces, expected = received = loaded (or the received pieces and reasons of @Lines,
+   rows by ContainerLineId, Quantity in the row's ItemUnitId), expiry = the order line's. Header: the container's
+   branch; the supplier when its orders have one (else NULL: "Several suppliers"); the order when it holds one;
+   "Receive into" = @WarehouseId, else the container's "Warehouse (offloading destination)" when it is active and of
+   the container's branch, else empty (chosen on the draft); date = @DocumentDate, else the movement's end date, else
+   today. With @MovementId (a completed Delivery-stage movement holding the container): IsAuto = 1.
+   Eligible: status Confirmed to Cleared (2-5, decision 6: no Delivery needed) and no draft or posted receipt.
+   @Silent = 0 ("Receive goods..."): THROW 63010 / 63013 / 63009, and an inactive item 63000 (usp_GoodsReceipt_Save's
+   sentence). @Silent = 1 (the Delivery hook): no THROW for eligibility, @SkipReason = 'Cancelled' | 'NotConfirmed' |
+   'Received' | 'HasDraft' | 'NoLines' | 'InactiveItem' (a line's item is inactive: Save would refuse the draft, and
+   the completion of the Delivery must not fail for it) and @NewId NULL; other errors are thrown. The container row is locked (UPDLOCK, HOLDLOCK) for the whole check-and-insert. Answers
+   only through its OUTPUT parameters (no result set), so CreateForMovement can call it. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_CreateForContainer
+    @ContainerId  INT,
+    @DocumentDate DATE         = NULL,
+    @MovementId   INT          = NULL,
+    @UserId       INT          = NULL,
+    @Silent       BIT          = 0,
+    @NewId        INT          = NULL OUTPUT,
+    @SkipReason   NVARCHAR(20) = NULL OUTPUT,
+    @WarehouseId  INT          = NULL,
+    @Lines        purchase.tvp_GoodsReceiptLine READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @NewId = NULL;
+    SET @SkipReason = NULL;
+
+    DECLARE @Status TINYINT, @Ref NVARCHAR(30), @BranchId INT, @CtWarehouse INT, @OpenId INT, @OpenNo NVARCHAR(30),
+            @OpenStatus TINYINT, @Msg NVARCHAR(400);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        SELECT @Status = Status, @Ref = ContainerRef, @BranchId = BranchId, @CtWarehouse = WarehouseId
+        FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @ContainerId;
+        IF @Status IS NULL THROW 63006, 'Container not found.', 1;
+
+        SELECT TOP (1) @OpenId = Id, @OpenNo = DocumentNumber, @OpenStatus = Status
+        FROM purchase.GoodsReceipts WITH (UPDLOCK, HOLDLOCK)
+        WHERE ContainerId = @ContainerId AND Status < 3
+        ORDER BY Status DESC, Id DESC;
+
+        SET @SkipReason = CASE WHEN @Status = 8 THEN N'Cancelled'
+                               WHEN @Status = 1 THEN N'NotConfirmed'
+                               WHEN @Status IN (6, 7) OR @OpenStatus = 2 THEN N'Received'
+                               WHEN @OpenStatus = 1 THEN N'HasDraft'
+                               WHEN NOT EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE ContainerId = @ContainerId) THEN N'NoLines' END;
+        IF @SkipReason IS NOT NULL
+        BEGIN
+            IF @Silent = 1
+            BEGIN
+                COMMIT TRANSACTION;
+                RETURN;
+            END
+            IF @OpenId IS NOT NULL
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N' already has ' + ISNULL(N'goods receipt ' + @OpenNo, N'a draft goods receipt') + N'. Open it instead.';
+                THROW 63013, @Msg, 1;
+            END
+            IF @SkipReason = N'NoLines'
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N' has no lines to receive.';
+                THROW 63009, @Msg, 1;
+            END;
+            THROW 63010, 'Only a confirmed container that is not received yet can be received.', 1;
+        END
+
+        -- the received pieces given by the dialog: rows of this container's lines, each once, in a unit of the item
+        SELECT TOP (1) @Msg = N'Line ' + CAST(r.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN cl.Id IS NULL THEN N'it is not a line of container ' + @Ref + N'.'
+                 WHEN iu.Id IS NULL THEN N'the unit does not belong to the item of the container line.'
+                 WHEN r.Quantity < 0 THEN N'the received quantity cannot be negative.'
+                 ELSE N'the container line is given twice.' END
+        FROM @Lines r
+        LEFT JOIN logistics.ContainerLines cl ON cl.Id = r.ContainerLineId AND cl.ContainerId = @ContainerId
+        LEFT JOIN inventory.ItemUnits iu      ON iu.Id = r.ItemUnitId AND iu.ItemId = cl.ItemId
+        WHERE cl.Id IS NULL OR iu.Id IS NULL OR r.Quantity < 0
+           OR (SELECT COUNT(*) FROM @Lines d WHERE d.ContainerLineId = r.ContainerLineId) > 1
+        ORDER BY r.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        DECLARE @T purchase.tvp_GoodsReceiptLine;
+        INSERT INTO @T (LineNumber, ItemId, ItemUnitId, Quantity, PoLineId, ContainerLineId, ExpectedQuantityBase,
+                        VarianceReasonCode, VarianceReason, CloseShort, ExpiryDate, Notes)
+        SELECT ROW_NUMBER() OVER (ORDER BY cl.LineNumber), cl.ItemId, COALESCE(bu.Id, cl.ItemUnitId),
+               CASE WHEN r.ContainerLineId IS NOT NULL THEN r.Quantity * iu.PackingFormula ELSE cl.QuantityBase END,
+               cl.PoLineId, cl.Id, cl.QuantityBase, r.VarianceReasonCode, r.VarianceReason, 0,
+               COALESCE(r.ExpiryDate, pol.ExpiryDate), r.Notes
+        FROM logistics.ContainerLines cl
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = cl.PoLineId
+        OUTER APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = cl.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
+        LEFT  JOIN @Lines r                           ON r.ContainerLineId = cl.Id
+        LEFT  JOIN inventory.ItemUnits iu             ON iu.Id = r.ItemUnitId
+        WHERE cl.ContainerId = @ContainerId;
+
+        -- AN INACTIVE ITEM: Save refuses the draft (rule 12). Silent (the Delivery hook), the container is skipped with its
+        -- reason, like the other skips, so the completion goes on; otherwise Save says which line.
+        IF @Silent = 1 AND EXISTS (SELECT 1 FROM @T t INNER JOIN inventory.Items i ON i.Id = t.ItemId WHERE i.IsActive = 0)
+        BEGIN
+            SET @SkipReason = N'InactiveItem';
+            COMMIT TRANSACTION;
+            RETURN;
+        END
+
+        -- "Receive into": the container's warehouse only when it can take the goods (active, of the container's branch)
+        IF @WarehouseId IS NULL
+            SET @WarehouseId = (SELECT w.Id FROM masterdata.Warehouses w WHERE w.Id = @CtWarehouse AND w.IsActive = 1 AND w.BranchId = @BranchId);
+        IF @DocumentDate IS NULL
+            SET @DocumentDate = COALESCE((SELECT EndDate FROM logistics.Movements WHERE Id = @MovementId), CAST(SYSUTCDATETIME() AS DATE));
+
+        EXEC purchase.usp_GoodsReceipt_Save @SourceKind = N'Container', @ContainerId = @ContainerId, @MovementId = @MovementId,
+             @DocumentDate = @DocumentDate, @BranchId = @BranchId, @WarehouseId = @WarehouseId, @Lines = @T,
+             @UserId = @UserId, @NewId = @NewId OUTPUT;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 16. The drafts of a completed Delivery movement */
+
+/* CALLED BY THE API AFTER usp_Movement_SetStatus HAS COMMITTED the Complete of a Delivery-stage movement (any type
+   code with the stage Delivery). Completing the movement never fails because of the receipts: each container goes
+   through usp_GoodsReceipt_CreateForContainer (@Silent = 1) in its own transaction and TRY/CATCH, so one failure
+   leaves the others. Refused (70010) for a movement that is not completed or not Delivery-stage, and inside an open
+   transaction (63010): a failure here must not roll back the completion.
+   One row per container of the movement, by reference: ContainerId, ContainerRef, GoodsReceiptId (the new draft, or
+   the open receipt that made it skip), GoodsReceiptNumber, GoodsReceiptStatus, WarehouseCode (of the draft; NULL =
+   to choose), Created, SkipReason ('Received' | 'HasDraft' | 'NotConfirmed' | 'Cancelled' | 'NoLines' | 'InactiveItem'
+   | 'Error'), Message (plain English; for 'Error' the SQL message; for 'InactiveItem' the first inactive item). */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_CreateForMovement
+    @MovementId INT,
+    @UserId     INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT OFF;
+
+    IF @@TRANCOUNT > 0
+        THROW 63010, 'The goods receipts of a movement are created after its completion is committed, outside any transaction.', 1;
+
+    DECLARE @Status TINYINT, @Stage NVARCHAR(10), @MovNo NVARCHAR(30), @EndDate DATE;
+    SELECT @Status = m.Status, @Stage = mt.Stage, @MovNo = m.MovementNo, @EndDate = m.EndDate
+    FROM logistics.Movements m
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+    WHERE m.Id = @MovementId;
+    IF @Status IS NULL THROW 70006, 'Movement not found.', 1;
+    IF @Status <> 3 OR @Stage <> N'Delivery' THROW 70010, 'Only a completed Delivery movement creates goods receipts.', 1;
+
+    DECLARE @Result TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ContainerId INT NOT NULL, ContainerRef NVARCHAR(30) NOT NULL,
+                           GoodsReceiptId INT NULL, Created BIT NOT NULL, SkipReason NVARCHAR(20) NULL, Message NVARCHAR(400) NULL);
+    DECLARE @Cid INT, @CRef NVARCHAR(30), @NewId INT, @Skip NVARCHAR(20), @Err NVARCHAR(400);
+
+    DECLARE ctn CURSOR LOCAL FAST_FORWARD FOR
+        SELECT c.Id, c.ContainerRef
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        WHERE mc.MovementId = @MovementId
+        ORDER BY c.ContainerRef;
+    OPEN ctn;
+    FETCH NEXT FROM ctn INTO @Cid, @CRef;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SELECT @NewId = NULL, @Skip = NULL, @Err = NULL;
+        BEGIN TRY
+            EXEC purchase.usp_GoodsReceipt_CreateForContainer @ContainerId = @Cid, @DocumentDate = @EndDate, @MovementId = @MovementId,
+                 @UserId = @UserId, @Silent = 1, @NewId = @NewId OUTPUT, @SkipReason = @Skip OUTPUT;
+        END TRY
+        BEGIN CATCH
+            IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+            SELECT @NewId = NULL, @Skip = N'Error', @Err = LEFT(ERROR_MESSAGE(), 400);
+        END CATCH
+
+        INSERT INTO @Result (ContainerId, ContainerRef, GoodsReceiptId, Created, SkipReason, Message)
+        VALUES (@Cid, @CRef, COALESCE(@NewId, (SELECT r.GoodsReceiptId FROM logistics.fn_Container_ReceivedBy(@Cid) r)),
+                CASE WHEN @NewId IS NOT NULL THEN 1 ELSE 0 END, @Skip, @Err);
+        FETCH NEXT FROM ctn INTO @Cid, @CRef;
+    END
+    CLOSE ctn;
+    DEALLOCATE ctn;
+
+    SELECT r.ContainerId, r.ContainerRef, r.GoodsReceiptId, GoodsReceiptNumber = g.DocumentNumber, GoodsReceiptStatus = g.Status,
+           WarehouseCode = CASE WHEN r.Created = 1 THEN w.WarehouseCode END, r.Created, r.SkipReason,
+           Message = CAST(CASE
+               WHEN r.Created = 1 AND w.Id IS NOT NULL THEN N'Draft goods receipt created into ' + w.WarehouseCode + N'.'
+               WHEN r.Created = 1 THEN N'Draft goods receipt created: choose the warehouse.'
+               WHEN r.SkipReason = N'Error' THEN r.Message
+               WHEN r.SkipReason = N'Received' AND g.Status = 2 THEN N'Already received with goods receipt ' + g.DocumentNumber + N'.'
+               WHEN r.SkipReason = N'Received' THEN N'Already offloaded.'
+               WHEN r.SkipReason = N'HasDraft' THEN N'Already has a draft goods receipt.'
+               WHEN r.SkipReason = N'NotConfirmed' THEN N'Not confirmed: confirm the container, then use Receive goods' + NCHAR(8230) + N' on it.'
+               WHEN r.SkipReason = N'Cancelled' THEN N'The container is cancelled.'
+               WHEN r.SkipReason = N'NoLines' THEN N'The container has no lines.'
+               WHEN r.SkipReason = N'InactiveItem'
+                   THEN N'Item ' + ISNULL(ia.ItemCode, N'?') + N' is inactive: activate it in Item Definition, then use Receive goods' + NCHAR(8230) + N' on the container.' END
+               AS NVARCHAR(400))
+    FROM @Result r
+    LEFT JOIN purchase.GoodsReceipts g    ON g.Id = r.GoodsReceiptId
+    LEFT JOIN masterdata.Warehouses w     ON w.Id = g.WarehouseId
+    OUTER APPLY (SELECT TOP (1) i.ItemCode
+                 FROM logistics.ContainerLines cl INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                 WHERE r.SkipReason = N'InactiveItem' AND cl.ContainerId = r.ContainerId AND i.IsActive = 0
+                 ORDER BY cl.LineNumber) ia
+    ORDER BY r.Seq;
+END
+GO
+
+/* ================================================================== 17. Delete a draft */
+
+-- A DRAFT ONLY (63005), with RowVersion (63004): its files, lines and audit go with it (nothing was in stock). The
+-- container of a container receipt keeps a history line: it then waits without a receipt ("Receive goods..." again).
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Delete
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT, @ContainerId INT, @IsAuto BIT, @MovNo NVARCHAR(30);
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        SELECT @Status = g.Status, @ContainerId = g.ContainerId, @IsAuto = g.IsAuto, @MovNo = m.MovementNo
+        FROM purchase.GoodsReceipts g WITH (UPDLOCK, HOLDLOCK)
+        LEFT JOIN logistics.Movements m ON m.Id = g.MovementId
+        WHERE g.Id = @Id;
+        IF @Status IS NULL THROW 63006, 'Goods receipt not found.', 1;
+        IF @Status <> 1 THROW 63005, 'Only a draft goods receipt can be changed or deleted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 63004, 'This goods receipt was modified by another user. Reload the page and try again.', 1;
+
+        DELETE m FROM purchase.GoodsReceiptInvoiceMatches m
+        INNER JOIN purchase.GoodsReceiptLines l ON l.Id = m.GoodsReceiptLineId
+        WHERE l.GoodsReceiptId = @Id;
+        DELETE FROM purchase.GoodsReceiptFiles WHERE GoodsReceiptId = @Id;
+        DELETE FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id;
+        DELETE FROM purchase.GoodsReceiptAudit WHERE GoodsReceiptId = @Id;
+        DELETE FROM purchase.GoodsReceipts WHERE Id = @Id;
+
+        IF @ContainerId IS NOT NULL
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@ContainerId, N'Event',
+                    LEFT(N'Draft goods receipt deleted' + CASE WHEN @IsAuto = 1 THEN ISNULL(N' (created when ' + @MovNo + N' was completed)', N'') ELSE N'' END
+                         + N': receive the container again with Receive goods' + NCHAR(8230), 500), @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 18. Get */
+
+/* ONE GOODS RECEIPT, 6 result sets (none when the id is unknown):
+     1 header: names, the source documents, the Delivery movement that made it (number, type, route, end date) and the
+       container's latest completed Delivery (place, date: "Delivered"), totals (expected, received, short, invoiced,
+       value at receipt, current value - an estimate on a draft), Can* and the *BlockedReason sentences of
+       fn_GoodsReceipt_Blocks (the same as the refusals), the switch date, RowVersion
+     2 lines: item, unit, warehouse, supplier, order / invoice / container line, expected / received / difference /
+       reason / settled short (an estimate on a draft), order price, current cost (the container line's for a
+       container line), cost at receipt, cost source, invoiced, value
+     3 matches: which posted invoice lines pay for which received pieces (invoice number, pieces, invoice FOB)
+     4 cost changes (history of the cost of the received goods)
+     5 files (no content), shaped as usp_GoodsReceipt_File_List
+     6 audit, newest first */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT g.Id, g.DocumentTypeId, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, DocumentTypeIsActive = dt.IsActive,
+           g.DocumentNumber, g.DocumentDate, g.Status,
+           StatusName = CASE g.Status WHEN 1 THEN N'Draft' WHEN 2 THEN N'Posted' ELSE N'Cancelled' END,
+           g.SourceKind, g.IsAuto,
+           g.BranchId, b.BranchCode, b.BranchName,
+           g.WarehouseId, w.WarehouseCode, w.WarehouseName, WarehouseIsActive = w.IsActive,
+           WarehouseInBranch = CAST(CASE WHEN w.Id IS NULL THEN NULL
+                                         WHEN w.BranchId = ISNULL(c.BranchId, g.BranchId) THEN 1 ELSE 0 END AS BIT),
+           g.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           SupplierDisplayName = ISNULL(sp.PartyName, CASE WHEN g.SourceKind = N'Container' THEN N'Several suppliers' END),
+           g.ContainerId, c.ContainerRef, c.ContainerNo, c.SealNo, c.TruckNo, c.WaybillNo, ContainerStatus = c.Status,
+           ContainerBranchId = c.BranchId, ContainerWarehouseId = c.WarehouseId, ContainerWarehouseCode = cw.WarehouseCode,
+           g.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber,
+           g.PurchaseInvoiceId, pi.DocumentNumber AS PurchaseInvoiceNumber,
+           g.MovementId, mv.MovementNo, MovementEndDate = mv.EndDate, MovementTypeName = mvt.TypeName, MovementStage = mvt.Stage,
+           MovementFromName = mfp.PortName, MovementToName = mtp.PortName,
+           DeliveryMovementId = ld.MovementId, DeliveryMovementNo = ld.MovementNo, DeliveredDate = ld.EndDate, DeliveryPlaceName = ld.PlaceName,
+           g.SupplierReference, g.Notes,
+           LineCount = ISNULL(tot.Lines, 0), g.TotalExpectedBase, g.TotalReceivedBase,
+           TotalShortBase = ISNULL(CASE WHEN g.Status = 1 THEN tot.ShortDraft ELSE tot.Settled END, 0), TotalInvoicedBase = ISNULL(tot.Invoiced, 0),
+           g.ValueAtReceiptBase, CurrentValueBase = ISNULL(val.Value, 0),
+           IsValueEstimate = CAST(CASE WHEN g.Status = 1 THEN 1 ELSE 0 END AS BIT),
+           BaseCurrencyCode = bc.CurrencyCode,
+           g.PostedAtUtc, g.PostedBy, pu.FullName AS PostedByName,
+           g.CancelledAtUtc, g.CancelledBy, xu.FullName AS CancelledByName, g.CancelReason,
+           g.CreatedAtUtc, g.CreatedBy, cu.FullName AS CreatedByName, g.UpdatedAtUtc, g.UpdatedBy, uu.FullName AS UpdatedByName,
+           CanEdit   = CAST(CASE WHEN g.Status = 1 THEN 1 ELSE 0 END AS BIT),
+           CanPost   = CAST(CASE WHEN g.Status = 1 AND pb.Message IS NULL THEN 1 ELSE 0 END AS BIT),
+           CanCancel = CAST(CASE WHEN g.Status = 2 AND cb.Message IS NULL THEN 1 ELSE 0 END AS BIT),
+           CanDelete = CAST(CASE WHEN g.Status = 1 THEN 1 ELSE 0 END AS BIT),
+           EditBlockedReason = eb.Message, PostBlockedReason = pb.Message, CancelBlockedReason = cb.Message, DeleteBlockedReason = db.Message,
+           SwitchedAtUtc = (SELECT s.SwitchedAtUtc FROM purchase.GoodsReceiptSwitch s WHERE s.Id = 1),
+           g.RowVersion
+    FROM purchase.GoodsReceipts g
+    INNER JOIN inventory.DocumentTypes dt   ON dt.Id = g.DocumentTypeId
+    INNER JOIN masterdata.Branches b        ON b.Id = g.BranchId
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = g.WarehouseId
+    LEFT  JOIN masterdata.Parties sp        ON sp.Id = g.SupplierId
+    LEFT  JOIN logistics.Containers c       ON c.Id = g.ContainerId
+    LEFT  JOIN masterdata.Warehouses cw     ON cw.Id = c.WarehouseId
+    LEFT  JOIN purchase.PurchaseDocuments po ON po.Id = g.PurchaseOrderId
+    LEFT  JOIN purchase.PurchaseDocuments pi ON pi.Id = g.PurchaseInvoiceId
+    LEFT  JOIN logistics.Movements mv       ON mv.Id = g.MovementId
+    LEFT  JOIN masterdata.MovementTypes mvt ON mvt.Id = mv.MovementTypeId
+    LEFT  JOIN masterdata.Ports mfp         ON mfp.Id = mv.FromPlaceId
+    LEFT  JOIN masterdata.Ports mtp         ON mtp.Id = mv.ToPlaceId
+    LEFT  JOIN masterdata.Currencies bc     ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
+    LEFT  JOIN security.Users pu ON pu.Id = g.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = g.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = g.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = g.UpdatedBy
+    OUTER APPLY logistics.fn_Container_LastDelivery(g.ContainerId) ld
+    OUTER APPLY (SELECT Lines = COUNT(*), Invoiced = SUM(l.InvoicedBase),
+                        Settled = SUM(l.SettledShortBase),
+                        ShortDraft = SUM(CASE WHEN (l.ContainerLineId IS NOT NULL OR l.CloseShort = 1) AND l.ExpectedQuantityBase > l.QuantityBase
+                                              THEN l.ExpectedQuantityBase - l.QuantityBase ELSE 0 END)
+                 FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id) tot
+    OUTER APPLY (SELECT Value = SUM(k.ValueBase) FROM purchase.fn_GoodsReceiptLine_Cost(g.Id) k) val
+    OUTER APPLY (SELECT TOP (1) k.Message FROM purchase.fn_GoodsReceipt_Blocks(g.Id) k WHERE k.Action = N'Post'   ORDER BY k.Seq) pb
+    OUTER APPLY (SELECT TOP (1) k.Message FROM purchase.fn_GoodsReceipt_Blocks(g.Id) k WHERE k.Action = N'Cancel' ORDER BY k.Seq) cb
+    OUTER APPLY (SELECT TOP (1) k.Message FROM purchase.fn_GoodsReceipt_Blocks(g.Id) k WHERE k.Action = N'Delete' ORDER BY k.Seq) db
+    OUTER APPLY (SELECT TOP (1) k.Message FROM purchase.fn_GoodsReceipt_Blocks(g.Id) k WHERE k.Action = N'Edit'   ORDER BY k.Seq) eb
+    WHERE g.Id = @Id;
+
+    -- 2: lines
+    SELECT l.Id, l.GoodsReceiptId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, l.PackingFormula,
+           l.Quantity, l.QuantityBase, l.ExpectedQuantityBase,
+           DifferenceBase = l.QuantityBase - l.ExpectedQuantityBase,
+           l.VarianceReasonCode,
+           VarianceReasonName = CASE l.VarianceReasonCode WHEN N'SHORT' THEN N'Short-shipped' WHEN N'DAMAGED' THEN N'Damaged'
+                                                          WHEN N'MISSING' THEN N'Missing' WHEN N'LOADCOUNT' THEN N'Wrongly counted at loading'
+                                                          WHEN N'OTHER' THEN N'Other' END,
+           l.VarianceReason, l.CloseShort,
+           SettledShortBase = CASE WHEN g.Status <> 1 THEN l.SettledShortBase
+                                   WHEN (l.ContainerLineId IS NOT NULL OR l.CloseShort = 1) AND l.ExpectedQuantityBase > l.QuantityBase
+                                       THEN l.ExpectedQuantityBase - l.QuantityBase ELSE 0 END,
+           l.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           l.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           l.PurchaseOrderId, po.DocumentNumber AS OrderNumber, l.PoLineId, pol.LineNumber AS PoLineNumber,
+           OrderedBase = pol.QuantityBase, OrderUnitTypeName = put.UnitTypeName, OrderPackingFormula = pol.PackingFormula,
+           l.InvoiceLineId, InvoiceId = pil.DocumentId, pid.DocumentNumber AS InvoiceNumber, pil.LineNumber AS InvoiceLineNumber,
+           l.ContainerLineId, cl.LineNumber AS ContainerLineNumber, LoadedBase = cl.QuantityBase,
+           l.ExpiryDate,
+           l.PoFobBase, k.OrderPriceBase, l.ManualUnitCostBase,
+           FobCostBase = k.FobBase, ChargesBase = k.ChargesBase, UnitCostBase = k.UnitCostBase, IsCostEstimate = k.IsEstimate,
+           l.CostAtReceiptBase, l.CostSource,
+           CostSourceName = CASE l.CostSource WHEN N'Order' THEN N'Order price' WHEN N'Invoice' THEN N'Invoice'
+                                              WHEN N'Mixed' THEN N'Order + invoice' WHEN N'Manual' THEN N'Typed' END,
+           l.InvoicedBase, NotInvoicedBase = l.QuantityBase - l.InvoicedBase,
+           k.ValueBase, l.Notes,
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost
+    FROM purchase.GoodsReceiptLines l
+    INNER JOIN purchase.GoodsReceipts g             ON g.Id = l.GoodsReceiptId
+    INNER JOIN inventory.Items i                    ON i.Id = l.ItemId
+    INNER JOIN inventory.ItemUnits iu               ON iu.Id = l.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut              ON ut.Id = iu.UnitTypeId
+    LEFT  JOIN masterdata.Warehouses w              ON w.Id = l.WarehouseId
+    LEFT  JOIN masterdata.Parties sp                ON sp.Id = l.SupplierId
+    LEFT  JOIN purchase.PurchaseDocuments po        ON po.Id = l.PurchaseOrderId
+    LEFT  JOIN purchase.PurchaseDocumentLines pol   ON pol.Id = l.PoLineId
+    LEFT  JOIN inventory.ItemUnits piu              ON piu.Id = pol.ItemUnitId
+    LEFT  JOIN masterdata.UnitTypes put             ON put.Id = piu.UnitTypeId
+    LEFT  JOIN purchase.PurchaseDocumentLines pil   ON pil.Id = l.InvoiceLineId
+    LEFT  JOIN purchase.PurchaseDocuments pid       ON pid.Id = pil.DocumentId
+    LEFT  JOIN logistics.ContainerLines cl          ON cl.Id = l.ContainerLineId
+    LEFT  JOIN purchase.fn_GoodsReceiptLine_Cost(@Id) k ON k.LineId = l.Id
+    WHERE l.GoodsReceiptId = @Id
+    ORDER BY l.LineNumber;
+
+    -- 3: matches
+    SELECT m.GoodsReceiptLineId, l.LineNumber, l.ItemId, i.ItemCode,
+           m.InvoiceLineId, InvoiceId = pil.DocumentId, pid.DocumentNumber AS InvoiceNumber, pid.DocumentDate AS InvoiceDate,
+           pid.PostedAtUtc AS InvoicePostedAtUtc, pil.LineNumber AS InvoiceLineNumber,
+           m.QuantityBase, InvoiceFobBase = pil.FobCostBase, InvoiceUnitCostBase = pil.UnitCostBase, m.MatchedAtUtc
+    FROM purchase.GoodsReceiptInvoiceMatches m
+    INNER JOIN purchase.GoodsReceiptLines l       ON l.Id = m.GoodsReceiptLineId
+    INNER JOIN inventory.Items i                  ON i.Id = l.ItemId
+    INNER JOIN purchase.PurchaseDocumentLines pil ON pil.Id = m.InvoiceLineId
+    INNER JOIN purchase.PurchaseDocuments pid     ON pid.Id = pil.DocumentId
+    WHERE l.GoodsReceiptId = @Id
+    ORDER BY l.LineNumber, pid.PostedAtUtc, pid.Id, pil.LineNumber;
+
+    -- 4: cost changes
+    SELECT cc.Id, cc.GoodsReceiptLineId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           cc.ChangedAtUtc, cc.CauseKind, cc.CauseId, cc.CauseNumber, cc.ReceivedBase, cc.InStockBase,
+           cc.FobBefore, cc.FobAfter, cc.UnitCostBefore, cc.UnitCostAfter, cc.AmountBase, cc.InventoryBase, cc.CogsBase,
+           cc.CreatedBy, u.FullName AS CreatedByName
+    FROM purchase.GoodsReceiptCostChanges cc
+    INNER JOIN purchase.GoodsReceiptLines l ON l.Id = cc.GoodsReceiptLineId
+    INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+    LEFT  JOIN security.Users u             ON u.Id = cc.CreatedBy
+    WHERE l.GoodsReceiptId = @Id
+    ORDER BY cc.ChangedAtUtc, cc.Id;
+
+    -- 5: files (no content)
+    SELECT f.Id, f.GoodsReceiptId AS DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.AttachmentTypeId, t.Category, t.SubType,
+           IsOther = CAST(CASE WHEN t.SubType = N'Other' AND t.Category IN (N'Other', N'General') THEN 1 ELSE 0 END AS BIT),
+           f.DocumentDate, f.Note, f.CreatedAtUtc, f.CreatedBy, u.FullName AS CreatedByName
+    FROM purchase.GoodsReceiptFiles f
+    LEFT JOIN masterdata.AttachmentTypes t ON t.Id = f.AttachmentTypeId
+    LEFT JOIN security.Users u             ON u.Id = f.CreatedBy
+    WHERE f.GoodsReceiptId = @Id
+    ORDER BY f.CreatedAtUtc DESC, f.Id DESC;
+
+    -- 6: audit
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM purchase.GoodsReceiptAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.GoodsReceiptId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+END
+GO
+
+/* ================================================================== 19. Search */
+
+/* THE LIST, paged, and a totals row (2 result sets).
+   Filters: @Search (number, container ref or no., order and invoice numbers - the source's and the lines' -, item
+   code, delivery note no., supplier code or name, movement no.); status, source kind, branch, supplier (the header's or
+   a line's: mixed containers), warehouse (the header's or a line's), dates; @ContainerId, @PurchaseOrderId (the
+   header's or a line's), @InvoiceId (the source invoice, or an invoice its pieces are matched to), @MovementId,
+   @IsAuto;
+     @WithDifferences      a line received differently from what was expected and settled (container lines that
+                           differ from the loaded pieces, "Nothing more will come", a reason given, pieces settled short)
+     @ReceivedNotInvoiced  posted, with pieces received and not matched to posted invoices yet
+     @DeliveredNotReceived the goods are at the warehouse but not in stock: draft container receipts whose container's
+                           Delivery is completed
+     @NotReceived          drafts of any source: nothing of them is in stock yet (the menu count's list)
+   Sort: DocumentNumber | DocumentDate | SupplierName | Status | ReceivedBase | ValueBase | CreatedAtUtc | PostedAtUtc.
+   1: one row per receipt (TotalCount = all pages); value = current value of the lines (an estimate on a draft).
+   2: totals over every receipt of the filter (all pages): ReceivedNotInvoicedBase / ReceivedNotInvoicedValueBase (at
+      the order price, for month-end; manual lines at their cost at receipt), ReceiptCount, DraftCount. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Search
+    @Search               NVARCHAR(100) = NULL,
+    @Status               TINYINT       = NULL,     -- 1 Draft | 2 Posted | 3 Cancelled
+    @SourceKind           NVARCHAR(10)  = NULL,     -- Container | Order | Invoice | Manual
+    @BranchId             INT           = NULL,
+    @SupplierId           INT           = NULL,
+    @WarehouseId          INT           = NULL,
+    @DateFrom             DATE          = NULL,
+    @DateTo               DATE          = NULL,
+    @ContainerId          INT           = NULL,
+    @PurchaseOrderId      INT           = NULL,
+    @InvoiceId            INT           = NULL,
+    @MovementId           INT           = NULL,
+    @IsAuto               BIT           = NULL,
+    @WithDifferences      BIT           = 0,
+    @ReceivedNotInvoiced  BIT           = 0,
+    @DeliveredNotReceived BIT           = 0,
+    @NotReceived          BIT           = 0,
+    @SortColumn           NVARCHAR(30)  = N'DocumentDate',
+    @SortDirection        NVARCHAR(4)   = N'DESC',
+    @PageNumber           INT           = 1,
+    @PageSize             INT           = 10
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @SourceKind = NULLIF(LTRIM(RTRIM(@SourceKind)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'DocumentNumber', N'DocumentDate', N'SupplierName', N'Status', N'ReceivedBase',
+                                                  N'ValueBase', N'CreatedAtUtc', N'PostedAtUtc')
+        SET @SortColumn = N'DocumentDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+    SELECT @WithDifferences = ISNULL(@WithDifferences, 0), @ReceivedNotInvoiced = ISNULL(@ReceivedNotInvoiced, 0),
+           @DeliveredNotReceived = ISNULL(@DeliveredNotReceived, 0), @NotReceived = ISNULL(@NotReceived, 0);
+
+    -- the filter once; the page and the totals read it
+    DECLARE @Ids TABLE (Id INT NOT NULL PRIMARY KEY);
+    INSERT INTO @Ids (Id)
+    SELECT g.Id
+    FROM purchase.GoodsReceipts g
+    LEFT JOIN logistics.Containers c         ON c.Id = g.ContainerId
+    LEFT JOIN purchase.PurchaseDocuments po  ON po.Id = g.PurchaseOrderId
+    LEFT JOIN purchase.PurchaseDocuments pi  ON pi.Id = g.PurchaseInvoiceId
+    LEFT JOIN masterdata.Parties sp          ON sp.Id = g.SupplierId
+    LEFT JOIN logistics.Movements mv         ON mv.Id = g.MovementId
+    WHERE (@Status IS NULL OR g.Status = @Status)
+      AND (@SourceKind IS NULL OR g.SourceKind = @SourceKind)
+      AND (@BranchId IS NULL OR g.BranchId = @BranchId)
+      AND (@DateFrom IS NULL OR g.DocumentDate >= @DateFrom)
+      AND (@DateTo IS NULL OR g.DocumentDate <= @DateTo)
+      AND (@ContainerId IS NULL OR g.ContainerId = @ContainerId)
+      AND (@MovementId IS NULL OR g.MovementId = @MovementId)
+      AND (@IsAuto IS NULL OR g.IsAuto = @IsAuto)
+      AND (@SupplierId IS NULL OR g.SupplierId = @SupplierId
+           OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id AND l.SupplierId = @SupplierId))
+      AND (@WarehouseId IS NULL OR g.WarehouseId = @WarehouseId
+           OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id AND l.WarehouseId = @WarehouseId))
+      AND (@PurchaseOrderId IS NULL OR g.PurchaseOrderId = @PurchaseOrderId
+           OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id AND l.PurchaseOrderId = @PurchaseOrderId))
+      AND (@InvoiceId IS NULL OR g.PurchaseInvoiceId = @InvoiceId
+           OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l
+                      INNER JOIN purchase.GoodsReceiptInvoiceMatches m ON m.GoodsReceiptLineId = l.Id
+                      INNER JOIN purchase.PurchaseDocumentLines pil    ON pil.Id = m.InvoiceLineId AND pil.DocumentId = @InvoiceId
+                      WHERE l.GoodsReceiptId = g.Id))
+      AND (@WithDifferences = 0
+           OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l
+                      WHERE l.GoodsReceiptId = g.Id
+                        AND ((l.ContainerLineId IS NOT NULL AND l.QuantityBase <> ISNULL(l.ExpectedQuantityBase, l.QuantityBase))
+                             OR l.CloseShort = 1 OR l.SettledShortBase > 0 OR l.VarianceReasonCode IS NOT NULL)))
+      AND (@ReceivedNotInvoiced = 0
+           OR (g.Status = 2 AND EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id AND l.QuantityBase > l.InvoicedBase)))
+      AND (@DeliveredNotReceived = 0
+           OR (g.Status = 1 AND g.SourceKind = N'Container' AND EXISTS (SELECT 1 FROM logistics.fn_Container_LastDelivery(g.ContainerId))))
+      AND (@NotReceived = 0 OR g.Status = 1)
+      AND (@Search IS NULL
+           OR g.DocumentNumber LIKE N'%' + @Search + N'%' OR g.SupplierReference LIKE N'%' + @Search + N'%'
+           OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
+           OR po.DocumentNumber LIKE N'%' + @Search + N'%' OR pi.DocumentNumber LIKE N'%' + @Search + N'%'
+           OR mv.MovementNo LIKE N'%' + @Search + N'%'
+           OR sp.PartyCode LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%'
+           OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines l
+                      INNER JOIN inventory.Items i               ON i.Id = l.ItemId
+                      LEFT  JOIN purchase.PurchaseDocuments lpo  ON lpo.Id = l.PurchaseOrderId
+                      LEFT  JOIN purchase.PurchaseDocumentLines lil ON lil.Id = l.InvoiceLineId
+                      LEFT  JOIN purchase.PurchaseDocuments lpi  ON lpi.Id = lil.DocumentId
+                      WHERE l.GoodsReceiptId = g.Id
+                        AND (i.ItemCode LIKE N'%' + @Search + N'%' OR lpo.DocumentNumber LIKE N'%' + @Search + N'%'
+                             OR lpi.DocumentNumber LIKE N'%' + @Search + N'%')));
+
+    -- 1: the page
+    SELECT g.Id, g.DocumentNumber, g.DocumentDate, g.Status,
+           StatusName = CASE g.Status WHEN 1 THEN N'Draft' WHEN 2 THEN N'Posted' ELSE N'Cancelled' END,
+           g.SourceKind, g.IsAuto,
+           g.BranchId, b.BranchCode, b.BranchName,
+           g.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           g.SupplierId, sp.PartyCode AS SupplierCode,
+           SupplierName = ISNULL(sp.PartyName, CASE WHEN g.SourceKind = N'Container' THEN N'Several suppliers' END),
+           g.ContainerId, c.ContainerRef, c.ContainerNo,
+           g.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber,
+           g.PurchaseInvoiceId, pi.DocumentNumber AS PurchaseInvoiceNumber,
+           g.MovementId, mv.MovementNo, g.SupplierReference,
+           LineCount = ISNULL(t.Lines, 0), ExpectedBase = g.TotalExpectedBase, ReceivedBase = g.TotalReceivedBase,
+           ShortBase = ISNULL(CASE WHEN g.Status = 1 THEN t.ShortDraft ELSE t.Settled END, 0), InvoicedBase = ISNULL(t.Invoiced, 0),
+           ValueBase = ISNULL(v.Value, 0), IsValueEstimate = CAST(CASE WHEN g.Status = 1 THEN 1 ELSE 0 END AS BIT),
+           g.PostedAtUtc, pu.FullName AS PostedByName, g.CreatedAtUtc, cu.FullName AS CreatedByName, g.UpdatedAtUtc,
+           g.RowVersion,
+           COUNT(*) OVER () AS TotalCount
+    FROM @Ids x
+    INNER JOIN purchase.GoodsReceipts g       ON g.Id = x.Id
+    INNER JOIN masterdata.Branches b          ON b.Id = g.BranchId
+    LEFT  JOIN masterdata.Warehouses w        ON w.Id = g.WarehouseId
+    LEFT  JOIN masterdata.Parties sp          ON sp.Id = g.SupplierId
+    LEFT  JOIN logistics.Containers c         ON c.Id = g.ContainerId
+    LEFT  JOIN purchase.PurchaseDocuments po  ON po.Id = g.PurchaseOrderId
+    LEFT  JOIN purchase.PurchaseDocuments pi  ON pi.Id = g.PurchaseInvoiceId
+    LEFT  JOIN logistics.Movements mv         ON mv.Id = g.MovementId
+    LEFT  JOIN security.Users pu              ON pu.Id = g.PostedBy
+    LEFT  JOIN security.Users cu              ON cu.Id = g.CreatedBy
+    OUTER APPLY (SELECT Lines = COUNT(*), Invoiced = SUM(l.InvoicedBase),
+                        Settled = SUM(l.SettledShortBase),
+                        ShortDraft = SUM(CASE WHEN (l.ContainerLineId IS NOT NULL OR l.CloseShort = 1) AND l.ExpectedQuantityBase > l.QuantityBase
+                                              THEN l.ExpectedQuantityBase - l.QuantityBase ELSE 0 END)
+                 FROM purchase.GoodsReceiptLines l WHERE l.GoodsReceiptId = g.Id) t
+    OUTER APPLY (SELECT Value = SUM(k.ValueBase) FROM purchase.fn_GoodsReceiptLine_Cost(g.Id) k) v
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN g.DocumentNumber WHEN N'SupplierName' THEN ISNULL(sp.PartyName, N'') END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN g.DocumentNumber WHEN N'SupplierName' THEN ISNULL(sp.PartyName, N'') END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'DocumentDate' THEN g.DocumentDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'DocumentDate' THEN g.DocumentDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(g.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(g.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'ReceivedBase' THEN g.TotalReceivedBase END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'ReceivedBase' THEN g.TotalReceivedBase END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'ValueBase' THEN v.Value END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'ValueBase' THEN v.Value END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN g.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN g.CreatedAtUtc END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'PostedAtUtc' THEN g.PostedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'PostedAtUtc' THEN g.PostedAtUtc END DESC,
+        g.DocumentDate DESC, g.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+
+    -- 2: totals over the whole filter: received and not invoiced yet, at the order price (month-end)
+    SELECT ReceivedNotInvoicedBase = ISNULL(SUM(CASE WHEN g.Status = 2 AND l.QuantityBase > l.InvoicedBase
+                                                     THEN l.QuantityBase - l.InvoicedBase END), 0),
+           ReceivedNotInvoicedValueBase = CAST(ISNULL(SUM(CASE WHEN g.Status = 2 AND l.QuantityBase > l.InvoicedBase
+                                                               THEN (l.QuantityBase - l.InvoicedBase)
+                                                                    * COALESCE(l.PoFobBase, pol.LineTotal / NULLIF(po.ExchangeRate, 0) / NULLIF(pol.QuantityBase, 0),
+                                                                               l.CostAtReceiptBase, 0) END), 0) AS DECIMAL(18,2)),
+           ReceiptCount = (SELECT COUNT(*) FROM @Ids),
+           DraftCount   = (SELECT COUNT(*) FROM @Ids i INNER JOIN purchase.GoodsReceipts d ON d.Id = i.Id AND d.Status = 1)
+    FROM @Ids x
+    INNER JOIN purchase.GoodsReceipts g           ON g.Id = x.Id
+    INNER JOIN purchase.GoodsReceiptLines l       ON l.GoodsReceiptId = g.Id
+    LEFT  JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+    LEFT  JOIN purchase.PurchaseDocuments po      ON po.Id = pol.DocumentId;
+END
+GO
+
+/* ================================================================== 20. The menu count */
+
+-- THE DRAFT GOODS RECEIPTS, for the menu count (hidden at 0) and its tooltip: how many, how many made by a Delivery,
+-- how many still without a warehouse, the oldest. Goods receipts are not limited by branch, so every viewer sees the
+-- same count; @UserId is kept for when they are.
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_WaitingCount
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT DraftCount            = COUNT(*),
+           AutoDraftCount        = ISNULL(SUM(CASE WHEN g.IsAuto = 1 THEN 1 ELSE 0 END), 0),
+           WithoutWarehouseCount = ISNULL(SUM(CASE WHEN g.SourceKind = N'Container' AND g.WarehouseId IS NULL THEN 1 ELSE 0 END), 0),
+           OldestDraftDate       = MIN(g.DocumentDate),
+           OldestCreatedAtUtc    = MIN(g.CreatedAtUtc)
+    FROM purchase.GoodsReceipts g
+    WHERE g.Status = 1;
+END
+GO
+
+/* ================================================================== 21. Files */
+
+-- The goods receipt's files, in the shape of the purchase documents' (scripts 52 and 55): a type used for goods
+-- receipts (63012 through usp_AttachmentType_CheckForKind), a document date, a note. A delivery note or a damage
+-- report may come after the posting, so every status takes files, as the purchase documents do.
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_File_Add
+    @GoodsReceiptId   INT,
+    @FileName         NVARCHAR(255),
+    @ContentType      NVARCHAR(100),
+    @SizeBytes        INT,
+    @Content          VARBINARY(MAX),
+    @UserId           INT           = NULL,
+    @NewId            INT           = NULL OUTPUT,
+    @AttachmentTypeId INT           = NULL,
+    @DocumentDate     DATE          = NULL,
+    @Note             NVARCHAR(500) = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts WHERE Id = @GoodsReceiptId) THROW 63006, 'Goods receipt not found.', 1;
+    IF @FileName IS NULL OR LTRIM(RTRIM(@FileName)) = N'' THROW 63000, 'File name is required.', 1;
+    IF @Content IS NULL OR @SizeBytes IS NULL OR @SizeBytes <= 0 THROW 63000, 'The file is empty.', 1;
+    EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'GRN', 63012;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        INSERT INTO purchase.GoodsReceiptFiles (GoodsReceiptId, AttachmentTypeId, DocumentDate, Note, FileName, ContentType, SizeBytes, Content, CreatedBy)
+        VALUES (@GoodsReceiptId, @AttachmentTypeId, @DocumentDate, NULLIF(LTRIM(RTRIM(@Note)), N''), LTRIM(RTRIM(@FileName)),
+                ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream'), @SizeBytes, @Content, @UserId);
+        SET @NewId = SCOPE_IDENTITY();
+        INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId)
+        VALUES (@GoodsReceiptId, N'FileAdded', LEFT(LTRIM(RTRIM(@FileName)), 500), @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- The files of a receipt (one with @FileId), newest first; IsOther = still typed "Other".
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_File_List
+    @GoodsReceiptId INT, @AttachmentTypeId INT = NULL, @FileId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT f.Id, f.GoodsReceiptId AS DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.AttachmentTypeId, t.Category, t.SubType,
+           IsOther = CAST(CASE WHEN t.SubType = N'Other' AND t.Category IN (N'Other', N'General') THEN 1 ELSE 0 END AS BIT),
+           f.DocumentDate, f.Note, f.CreatedAtUtc, f.CreatedBy, u.FullName AS CreatedByName
+    FROM purchase.GoodsReceiptFiles f
+    LEFT JOIN masterdata.AttachmentTypes t ON t.Id = f.AttachmentTypeId
+    LEFT JOIN security.Users u             ON u.Id = f.CreatedBy
+    WHERE f.GoodsReceiptId = @GoodsReceiptId
+      AND (@AttachmentTypeId IS NULL OR f.AttachmentTypeId = @AttachmentTypeId)
+      AND (@FileId IS NULL OR f.Id = @FileId)
+    ORDER BY f.CreatedAtUtc DESC, f.Id DESC;
+END
+GO
+
+-- One file with its content (the download).
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_File_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, GoodsReceiptId AS DocumentId, FileName, ContentType, SizeBytes, Content, CreatedAtUtc
+    FROM purchase.GoodsReceiptFiles WHERE Id = @Id;
+END
+GO
+
+-- Type, date and note of a file, and optionally a new name or content (the checks of the upload); answers the file's
+-- row (usp_GoodsReceipt_File_List). A type the file already has may stay though deactivated since.
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_File_Update
+    @Id               INT,
+    @AttachmentTypeId INT            = NULL,
+    @DocumentDate     DATE           = NULL,
+    @Note             NVARCHAR(500)  = NULL,
+    @FileName         NVARCHAR(255)  = NULL,
+    @ContentType      NVARCHAR(100)  = NULL,
+    @SizeBytes        INT            = NULL,
+    @Content          VARBINARY(MAX) = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @ReceiptId INT, @Old NVARCHAR(255), @OldType INT;
+    SELECT @ReceiptId = GoodsReceiptId, @Old = FileName, @OldType = AttachmentTypeId FROM purchase.GoodsReceiptFiles WHERE Id = @Id;
+    IF @ReceiptId IS NULL THROW 63006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'GRN', 63012;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 63000, 'The file is empty.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        UPDATE purchase.GoodsReceiptFiles
+        SET AttachmentTypeId = @AttachmentTypeId, DocumentDate = @DocumentDate, Note = NULLIF(LTRIM(RTRIM(@Note)), N''),
+            FileName    = @FileName,
+            ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+            SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+            Content     = ISNULL(@Content, Content)
+        WHERE Id = @Id;
+        INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId)
+        VALUES (@ReceiptId, N'FileUpdated', LEFT(CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                                                 + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    EXEC purchase.usp_GoodsReceipt_File_List @GoodsReceiptId = @ReceiptId, @FileId = @Id;
+END
+GO
+
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_File_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @ReceiptId INT, @Name NVARCHAR(255);
+    SELECT @ReceiptId = GoodsReceiptId, @Name = FileName FROM purchase.GoodsReceiptFiles WHERE Id = @Id;
+    IF @ReceiptId IS NULL THROW 63006, 'File not found.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE FROM purchase.GoodsReceiptFiles WHERE Id = @Id;
+        INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId) VALUES (@ReceiptId, N'FileDeleted', LEFT(@Name, 500), @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 22. Matching received pieces to invoiced pieces */
+
+/* ONE MATCHER AT A TIME, AND TAKEN FIRST. Every procedure that rematches or trues up the cost of received goods - goods
+   receipt Post and Cancel, supplier invoice and return Post and Cancel, landed cost adjustment Post and Cancel - calls
+   this as its FIRST statement after BEGIN TRANSACTION, before any row lock or write. Lock order: the matcher first,
+   then rows, or two postings deadlock - taken later (as usp_GoodsReceipt_Rematch takes it, after its caller locked and
+   wrote its own rows), one posting holds the lock and waits to read rows the other wrote, while the other holds those
+   rows and waits for the lock, even for unrelated suppliers and items. Held until the caller's transaction ends, and
+   re-entrant: Rematch and TrueUpCost take it again and go straight through, so a caller that forgets the early call
+   still gets one matcher at a time. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_LockMatching
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF @@TRANCOUNT = 0
+        THROW 63010, 'The goods receipt matching lock is taken inside a transaction.', 1;
+
+    DECLARE @Lock INT;
+    EXEC @Lock = sp_getapplock @Resource = N'purchase.GoodsReceiptMatching', @LockMode = N'Exclusive',
+                               @LockOwner = N'Transaction', @LockTimeout = 60000;
+    IF @Lock < 0
+        THROW 63010, 'Goods receipts and invoices are being matched for another user. Try again in a moment.', 1;
+END
+GO
+
+/* REBUILDS THE MATCHES OF THE GROUPS FROM NOTHING. Receipt side = the lines of POSTED goods receipts; invoice side =
+   the lines of POSTED or CLOSED supplier invoices (PINV), except those that received their own goods before goods
+   receipts: an invoice posted with stock (UsesGoodsReceipts = 0, ReceiptMode 1) and the lines of a container offloaded
+   the old way (fn_Container_ReceivedBy = 'Offload'). Passes, each taking only what the earlier ones left, first in
+   first out by ISNULL(PostedAtUtc, CreatedAtUtc), Id on both sides:
+     0  a receipt line made from an invoice line (InvoiceLineId) takes that invoice line first
+     1  container line X: receipt lines of X - invoice lines linked to X
+     2  order line Y: receipt lines of Y (any container or none) - invoice lines of Y (linked or not)
+     3  supplier S + item I without an order: manual and invoice receipt lines - invoice lines without an order
+   Afterwards: GoodsReceiptLines.InvoicedBase and CostSource, and the invoice lines' ReceivedQuantityBase (= the pieces
+   matched to them) for the invoices goods receipts receive. Costs are NOT changed here: the caller trues them up
+   (usp_GoodsReceipt_TrueUpCost on fn_GoodsReceipt_GroupLines). No result set unless @ReturnLines = 1 (the posted
+   receipt lines of the groups), so a caller's own result (DocumentNumber) stays the first one.
+   ONE MATCHER AT A TIME: an application lock held until the caller's transaction ends, because two postings of the
+   same group would otherwise both rebuild from what they read (usp_GoodsReceipt_LockMatching; the callers take it
+   first, before their own rows). Each side reads the rows of the groups only - an order line by its index, a supplier
+   + item by theirs - never the other groups' rows, which other users may be writing. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Rematch
+    @Anchors     purchase.tvp_GoodsReceiptAnchor READONLY,
+    @ReturnLines BIT = 0
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @G TABLE (GroupKey NVARCHAR(40) NOT NULL PRIMARY KEY, PoLineId INT NULL, SupplierId INT NULL, ItemId INT NULL);
+        INSERT INTO @G (GroupKey, PoLineId, SupplierId, ItemId)
+        SELECT N'P' + CAST(a.PoLineId AS NVARCHAR(12)), a.PoLineId, NULL, NULL
+        FROM @Anchors a WHERE a.Kind = 'P' AND a.PoLineId IS NOT NULL
+        UNION
+        SELECT N'S' + CAST(a.SupplierId AS NVARCHAR(12)) + N'.' + CAST(a.ItemId AS NVARCHAR(12)), NULL, a.SupplierId, a.ItemId
+        FROM @Anchors a WHERE a.Kind = 'S' AND a.SupplierId IS NOT NULL AND a.ItemId IS NOT NULL;
+
+        -- every receipt line of the groups, whatever its status: a cancelled receipt loses its matches here.
+        -- Rem = what it can still take (posted receipts only).
+        DECLARE @R TABLE (LineId INT NOT NULL PRIMARY KEY, GroupKey NVARCHAR(40) NOT NULL, Posted BIT NOT NULL,
+                          InvoiceLineId INT NULL, ContainerLineId INT NULL, PoLineId INT NULL, T DATETIME2(3) NOT NULL,
+                          Qty INT NOT NULL, Rem INT NOT NULL);
+        -- (the two kinds of group apart, one statement each, so each seeks its own index - an order line's filtered
+        -- index needs its IS NOT NULL said - and reads the groups' rows only: an OR join read every receipt line, and
+        -- waited on rows other users were writing)
+        INSERT INTO @R (LineId, GroupKey, Posted, InvoiceLineId, ContainerLineId, PoLineId, T, Qty, Rem)
+        SELECT gl.Id, gk.GroupKey, CASE WHEN g.Status = 2 THEN 1 ELSE 0 END, gl.InvoiceLineId, gl.ContainerLineId, gl.PoLineId,
+               ISNULL(g.PostedAtUtc, g.CreatedAtUtc), gl.QuantityBase,
+               CASE WHEN g.Status = 2 THEN gl.QuantityBase ELSE 0 END
+        FROM @G gk
+        INNER JOIN purchase.GoodsReceiptLines gl ON gl.PoLineId = gk.PoLineId AND gl.PoLineId IS NOT NULL
+        INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId
+        WHERE gk.PoLineId IS NOT NULL;
+
+        INSERT INTO @R (LineId, GroupKey, Posted, InvoiceLineId, ContainerLineId, PoLineId, T, Qty, Rem)
+        SELECT gl.Id, gk.GroupKey, CASE WHEN g.Status = 2 THEN 1 ELSE 0 END, gl.InvoiceLineId, gl.ContainerLineId, gl.PoLineId,
+               ISNULL(g.PostedAtUtc, g.CreatedAtUtc), gl.QuantityBase,
+               CASE WHEN g.Status = 2 THEN gl.QuantityBase ELSE 0 END
+        FROM @G gk
+        INNER JOIN purchase.GoodsReceiptLines gl ON gl.SupplierId = gk.SupplierId AND gl.ItemId = gk.ItemId AND gl.PoLineId IS NULL
+        INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId
+        WHERE gk.PoLineId IS NULL;
+
+        -- every supplier invoice line of the groups. Eligible = goods receipts receive its goods (its matches and its
+        -- ReceivedQuantityBase are this procedure's); Rem = what it can still pay for (posted or closed, eligible).
+        DECLARE @I TABLE (LineId INT NOT NULL PRIMARY KEY, GroupKey NVARCHAR(40) NOT NULL, Eligible BIT NOT NULL,
+                          ContainerLineId INT NULL, T DATETIME2(3) NOT NULL, Rem INT NOT NULL);
+        -- (the lines of the groups first, one statement per kind of group, as for the receipt lines)
+        DECLARE @IL TABLE (LineId INT NOT NULL PRIMARY KEY, GroupKey NVARCHAR(40) NOT NULL);
+        INSERT INTO @IL (LineId, GroupKey)
+        SELECT l.Id, gk.GroupKey
+        FROM @G gk
+        INNER JOIN purchase.PurchaseDocumentLines l ON l.SourceLineId = gk.PoLineId AND l.SourceLineId IS NOT NULL
+        WHERE gk.PoLineId IS NOT NULL;
+
+        INSERT INTO @IL (LineId, GroupKey)
+        SELECT l.Id, gk.GroupKey
+        FROM @G gk
+        INNER JOIN purchase.PurchaseDocumentLines l ON l.ItemId = gk.ItemId AND l.SourceLineId IS NULL
+        INNER JOIN purchase.PurchaseDocuments d     ON d.Id = l.DocumentId AND d.SupplierId = gk.SupplierId
+        WHERE gk.PoLineId IS NULL;
+
+        INSERT INTO @I (LineId, GroupKey, Eligible, ContainerLineId, T, Rem)
+        SELECT l.Id, x.GroupKey, e.Eligible, l.ContainerLineId, ISNULL(d.PostedAtUtc, d.CreatedAtUtc),
+               CASE WHEN e.Eligible = 1 AND d.Status IN (2, 4) THEN l.QuantityBase ELSE 0 END
+        FROM @IL x
+        INNER JOIN purchase.PurchaseDocumentLines l ON l.Id = x.LineId
+        INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+        INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+        LEFT  JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+        OUTER APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+        CROSS APPLY (SELECT Eligible = CAST(CASE WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 THEN 0
+                                                 WHEN rb.ReceivedBy = N'Offload' THEN 0
+                                                 ELSE 1 END AS BIT)) e;
+
+        DECLARE @M    TABLE (RLineId INT NOT NULL, ILineId INT NOT NULL, Qty INT NOT NULL);
+        DECLARE @Pass TABLE (RLineId INT NOT NULL, ILineId INT NOT NULL, Qty INT NOT NULL);
+
+        -- Each pass pairs the two sides of one key first in first out: the running totals give each line an interval
+        -- [E - Rem, E) of the key's pieces, and a receipt line and an invoice line share the overlap of their intervals.
+
+        -- pass 0: the invoice line the receipt was made from
+        WITH r AS (SELECT LineId, K = InvoiceLineId, Rem,
+                          E = SUM(Rem) OVER (PARTITION BY InvoiceLineId ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+                   FROM @R WHERE Rem > 0 AND InvoiceLineId IS NOT NULL),
+             i AS (SELECT LineId, K = LineId, Rem, E = Rem FROM @I WHERE Rem > 0)
+        INSERT INTO @Pass (RLineId, ILineId, Qty)
+        SELECT r.LineId, i.LineId,
+               (CASE WHEN r.E < i.E THEN r.E ELSE i.E END) - (CASE WHEN r.E - r.Rem > i.E - i.Rem THEN r.E - r.Rem ELSE i.E - i.Rem END)
+        FROM r INNER JOIN i ON i.K = r.K
+        WHERE r.E - r.Rem < i.E AND i.E - i.Rem < r.E;
+
+        UPDATE r SET Rem = r.Rem - p.Qty FROM @R r INNER JOIN (SELECT RLineId, Qty = SUM(Qty) FROM @Pass GROUP BY RLineId) p ON p.RLineId = r.LineId;
+        UPDATE i SET Rem = i.Rem - p.Qty FROM @I i INNER JOIN (SELECT ILineId, Qty = SUM(Qty) FROM @Pass GROUP BY ILineId) p ON p.ILineId = i.LineId;
+        INSERT INTO @M (RLineId, ILineId, Qty) SELECT RLineId, ILineId, Qty FROM @Pass;
+        DELETE FROM @Pass;
+
+        -- pass 1: the container line
+        WITH r AS (SELECT LineId, K = ContainerLineId, Rem,
+                          E = SUM(Rem) OVER (PARTITION BY ContainerLineId ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+                   FROM @R WHERE Rem > 0 AND ContainerLineId IS NOT NULL),
+             i AS (SELECT LineId, K = ContainerLineId, Rem,
+                          E = SUM(Rem) OVER (PARTITION BY ContainerLineId ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+                   FROM @I WHERE Rem > 0 AND ContainerLineId IS NOT NULL)
+        INSERT INTO @Pass (RLineId, ILineId, Qty)
+        SELECT r.LineId, i.LineId,
+               (CASE WHEN r.E < i.E THEN r.E ELSE i.E END) - (CASE WHEN r.E - r.Rem > i.E - i.Rem THEN r.E - r.Rem ELSE i.E - i.Rem END)
+        FROM r INNER JOIN i ON i.K = r.K
+        WHERE r.E - r.Rem < i.E AND i.E - i.Rem < r.E;
+
+        UPDATE r SET Rem = r.Rem - p.Qty FROM @R r INNER JOIN (SELECT RLineId, Qty = SUM(Qty) FROM @Pass GROUP BY RLineId) p ON p.RLineId = r.LineId;
+        UPDATE i SET Rem = i.Rem - p.Qty FROM @I i INNER JOIN (SELECT ILineId, Qty = SUM(Qty) FROM @Pass GROUP BY ILineId) p ON p.ILineId = i.LineId;
+        INSERT INTO @M (RLineId, ILineId, Qty) SELECT RLineId, ILineId, Qty FROM @Pass;
+        DELETE FROM @Pass;
+
+        -- passes 2 and 3: the group itself (the order line, or the supplier + item)
+        WITH r AS (SELECT LineId, K = GroupKey, Rem,
+                          E = SUM(Rem) OVER (PARTITION BY GroupKey ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+                   FROM @R WHERE Rem > 0),
+             i AS (SELECT LineId, K = GroupKey, Rem,
+                          E = SUM(Rem) OVER (PARTITION BY GroupKey ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+                   FROM @I WHERE Rem > 0)
+        INSERT INTO @Pass (RLineId, ILineId, Qty)
+        SELECT r.LineId, i.LineId,
+               (CASE WHEN r.E < i.E THEN r.E ELSE i.E END) - (CASE WHEN r.E - r.Rem > i.E - i.Rem THEN r.E - r.Rem ELSE i.E - i.Rem END)
+        FROM r INNER JOIN i ON i.K = r.K
+        WHERE r.E - r.Rem < i.E AND i.E - i.Rem < r.E;
+
+        INSERT INTO @M (RLineId, ILineId, Qty) SELECT RLineId, ILineId, Qty FROM @Pass;
+
+        DECLARE @New TABLE (RLineId INT NOT NULL, ILineId INT NOT NULL, Qty INT NOT NULL, PRIMARY KEY (RLineId, ILineId));
+        INSERT INTO @New (RLineId, ILineId, Qty)
+        SELECT RLineId, ILineId, SUM(Qty) FROM @M GROUP BY RLineId, ILineId HAVING SUM(Qty) > 0;
+
+        -- the matches of the groups become @New; an unchanged pair keeps its MatchedAtUtc
+        DELETE m
+        FROM purchase.GoodsReceiptInvoiceMatches m
+        WHERE (EXISTS (SELECT 1 FROM @R r WHERE r.LineId = m.GoodsReceiptLineId) OR EXISTS (SELECT 1 FROM @I i WHERE i.LineId = m.InvoiceLineId))
+          AND NOT EXISTS (SELECT 1 FROM @New n WHERE n.RLineId = m.GoodsReceiptLineId AND n.ILineId = m.InvoiceLineId);
+
+        UPDATE m SET QuantityBase = n.Qty, MatchedAtUtc = SYSUTCDATETIME()
+        FROM purchase.GoodsReceiptInvoiceMatches m
+        INNER JOIN @New n ON n.RLineId = m.GoodsReceiptLineId AND n.ILineId = m.InvoiceLineId
+        WHERE m.QuantityBase <> n.Qty;
+
+        INSERT INTO purchase.GoodsReceiptInvoiceMatches (GoodsReceiptLineId, InvoiceLineId, QuantityBase)
+        SELECT n.RLineId, n.ILineId, n.Qty
+        FROM @New n
+        WHERE NOT EXISTS (SELECT 1 FROM purchase.GoodsReceiptInvoiceMatches m WHERE m.GoodsReceiptLineId = n.RLineId AND m.InvoiceLineId = n.ILineId);
+
+        -- receipt lines: pieces invoiced, and where their cost comes from (posted lines)
+        UPDATE gl
+        SET InvoicedBase = x.Qty,
+            CostSource = CASE WHEN r.Posted = 0 THEN gl.CostSource
+                              WHEN gl.QuantityBase > 0 AND x.Qty >= gl.QuantityBase THEN N'Invoice'
+                              WHEN gl.PoLineId IS NULL AND gl.InvoiceLineId IS NOT NULL THEN N'Invoice'   -- received at its invoice's cost
+                              WHEN x.Qty > 0 THEN N'Mixed'
+                              WHEN gl.PoLineId IS NOT NULL THEN N'Order'
+                              ELSE N'Manual' END
+        FROM purchase.GoodsReceiptLines gl
+        INNER JOIN @R r ON r.LineId = gl.Id
+        CROSS APPLY (SELECT Qty = ISNULL((SELECT SUM(n.Qty) FROM @New n WHERE n.RLineId = gl.Id), 0)) x;
+
+        -- invoice lines that goods receipts receive: received = the pieces matched to them
+        UPDATE l
+        SET ReceivedQuantityBase = x.Qty
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN @I i ON i.LineId = l.Id AND i.Eligible = 1
+        CROSS APPLY (SELECT Qty = ISNULL((SELECT SUM(n.Qty) FROM @New n WHERE n.ILineId = l.Id), 0)) x
+        WHERE l.ReceivedQuantityBase <> x.Qty;
+
+        COMMIT TRANSACTION;
+
+        IF @ReturnLines = 1
+            SELECT GoodsReceiptLineId = LineId FROM @R WHERE Posted = 1 ORDER BY LineId;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 23. The cost of received goods follows the invoices */
+
+/* BRINGS POSTED RECEIPT LINES TO THEIR TARGET COST (fn_GoodsReceiptLine_TargetCost), after anything that changed
+   their matches or their invoices' cost: an invoice or an LCA posted or cancelled, a goods receipt posted or cancelled.
+   Acts on the lines whose target FOB (container lines) or target landed cost (other lines) differs from the current
+   one by 0.000001 or more.
+     Amount     container line: ROUND((target FOB - cl.FobCostBase) x R, 2) - only the FOB moves, its charges are
+                the container's (a matched local invoice's own charges ride on that FOB, see the target cost); other
+                lines: ROUND((target landed - UnitCostBase) x R, 2)
+     Split      per ITEM over the lines of this event: Remaining = min(sum of the lines' net received pieces, company
+                stock on hand); the stock part = Amount x (1 - returned share) x Remaining / net received (cents left
+                over by rounding on the line with the largest amount), the rest to cost of sales. No stock left: all to
+                cost of sales. Company stock, not the warehouse's (unlike the container late charge and the LCA): the
+                average is company-wide and transfers move goods out of the receiving warehouse. The RETURNED SHARE is
+                for an LCA (or its cancel) only: it re-prices the pieces matched to the adjustment's invoice lines, and
+                the returned ones among them are not in stock any more - their share goes to cost of sales, as the old
+                LCA did (Allocated / Qty x Remaining). The other causes re-price only pieces whose match is new or
+                removed, never returned ones (a return takes back matched pieces only).
+     Records    one GoodsReceiptCostChanges row per line with an amount (its Id = CostAdjustments.SourceId), and
+                inventory.CostAdjustments Inventory / COGS rows (SourceKind GRNCOST, SourceNumber = the GRN), dated
+                at the later of now and the receipt's own ledger date, so that no replay puts it before its receipt.
+                Compensating rows are written as they come (negative amounts included).
+     Costs      container lines: cl.FobCostBase, then usp_Container_RecalcCosts; other lines: FobCostBase /
+                ChargesBase / UnitCostBase / CostSource. Then usp_Item_RebuildCosts per item, as the late container
+                charge does - also for the items of the posted MANUAL lines given ("Without an order"), adjusted or
+                not: the caller's rematch may have matched or unmatched one at its typed cost, and such a line counts for
+                the last cost, FOB cost and last supplier only once matched (rules 16, 24).
+   Takes the matching lock (usp_GoodsReceipt_LockMatching): its callers already hold it, taken first.
+   The totals come back in the OUTPUT parameters (no result set): for the invoice audit, the API message. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_TrueUpCost
+    @LineIds       logistics.tvp_IdList READONLY,     -- goods receipt line ids (other lines and unposted receipts are ignored)
+    @CauseKind     NVARCHAR(12),                      -- PINV | PINVCANCEL | LCA | LCACANCEL | GRNPOST | GRNCANCEL
+    @CauseId       INT           = NULL,              -- the invoice, LCA or goods receipt
+    @CauseNumber   NVARCHAR(30)  = NULL,
+    @UserId        INT           = NULL,
+    @AmountBase    DECIMAL(18,2) = NULL OUTPUT,
+    @InventoryBase DECIMAL(18,2) = NULL OUTPUT,
+    @CogsBase      DECIMAL(18,2) = NULL OUTPUT,
+    @LinesAdjusted INT           = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SELECT @AmountBase = 0, @InventoryBase = 0, @CogsBase = 0, @LinesAdjusted = 0;
+    IF @CauseKind IS NULL OR @CauseKind NOT IN (N'PINV', N'PINVCANCEL', N'LCA', N'LCACANCEL', N'GRNPOST', N'GRNCANCEL', N'NEGSTOCK')
+        THROW 63000, 'Unknown cause of a goods receipt cost adjustment.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @W TABLE (LineId INT NOT NULL PRIMARY KEY, GoodsReceiptId INT NOT NULL, Number NVARCHAR(30) NOT NULL, ItemId INT NOT NULL,
+                          WarehouseId INT NOT NULL, BranchId INT NOT NULL, ContainerLineId INT NULL, ContainerId INT NULL, IsContainer BIT NOT NULL,
+                          R INT NOT NULL, RNet DECIMAL(18,6) NOT NULL,
+                          FobBefore DECIMAL(18,6) NOT NULL, FobAfter DECIMAL(18,6) NOT NULL,
+                          CostBefore DECIMAL(18,6) NOT NULL, CostAfter DECIMAL(18,6) NOT NULL, ChargesAfter DECIMAL(18,6) NOT NULL,
+                          CostSource NVARCHAR(10) NULL,
+                          Amount DECIMAL(18,2) NOT NULL DEFAULT (0), Inv DECIMAL(18,2) NOT NULL DEFAULT (0), InStock DECIMAL(18,6) NOT NULL DEFAULT (0),
+                          RetShare DECIMAL(18,10) NOT NULL DEFAULT (0));
+
+        INSERT INTO @W (LineId, GoodsReceiptId, Number, ItemId, WarehouseId, BranchId, ContainerLineId, ContainerId, IsContainer, R, RNet,
+                        FobBefore, FobAfter, CostBefore, CostAfter, ChargesAfter, CostSource)
+        SELECT t.GoodsReceiptLineId, t.GoodsReceiptId, g.DocumentNumber, t.ItemId, t.WarehouseId, w.BranchId, t.ContainerLineId, t.ContainerId,
+               t.IsContainerLine, t.ReceivedBase, t.NetReceivedBase,
+               t.CurrentFobBase, t.TargetFobBase, t.CurrentUnitCostBase, t.TargetUnitCostBase, t.TargetChargesBase, t.CostSource
+        FROM (SELECT DISTINCT gl.GoodsReceiptId FROM @LineIds x INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = x.Id) r
+        CROSS APPLY purchase.fn_GoodsReceiptLine_TargetCost(r.GoodsReceiptId) t
+        INNER JOIN purchase.GoodsReceipts g    ON g.Id = t.GoodsReceiptId
+        INNER JOIN masterdata.Warehouses w     ON w.Id = t.WarehouseId
+        WHERE EXISTS (SELECT 1 FROM @LineIds x WHERE x.Id = t.GoodsReceiptLineId)
+          AND t.CurrentFobBase IS NOT NULL AND t.CurrentUnitCostBase IS NOT NULL       -- set by every posting
+          AND (ABS(t.TargetFobBase - t.CurrentFobBase) >= 0.000001
+               OR (t.IsContainerLine = 0 AND ABS(t.TargetUnitCostBase - t.CurrentUnitCostBase) >= 0.000001));
+
+        IF EXISTS (SELECT 1 FROM @W)
+        BEGIN
+            UPDATE @W SET Amount = ROUND(CASE WHEN IsContainer = 1 THEN FobAfter - FobBefore ELSE CostAfter - CostBefore END * R, 2);
+
+            -- (LCA / LCACANCEL) THE RETURNED SHARE of what this event re-prices: the line's pieces matched to the
+            -- adjustment's invoice lines, weighted by what the adjustment adds per piece of each, and of those the share
+            -- returned from each invoice line (spread over its matches, as the net received is). Returned pieces are no
+            -- longer in stock: that share goes to cost of sales whatever the stock, as the old LCA did. The adjustment's
+            -- lines exist at both calls (Post inserts them first, Cancel keeps them). The other causes re-price only
+            -- pieces whose match is new or removed, never a returned one.
+            UPDATE w SET RetShare = ISNULL(x.Ret / NULLIF(x.Qty, 0), 0)
+            FROM @W w
+            CROSS APPLY (SELECT Qty = SUM(CAST(m.QuantityBase AS DECIMAL(18,6)) * ABS(a.ExtraPerBaseUnit)),
+                                Ret = SUM(CAST(m.QuantityBase AS DECIMAL(18,6)) * ABS(a.ExtraPerBaseUnit)
+                                          * CASE WHEN p.ReturnedQuantityBase < p.ReceivedQuantityBase THEN p.ReturnedQuantityBase
+                                                 ELSE p.ReceivedQuantityBase END
+                                          / NULLIF(p.ReceivedQuantityBase, 0))
+                         FROM purchase.GoodsReceiptInvoiceMatches m
+                         INNER JOIN purchase.PurchaseDocumentLines p     ON p.Id = m.InvoiceLineId
+                         INNER JOIN purchase.LandedCostAdjustmentLines a ON a.PurchaseLineId = p.Id AND a.AdjustmentId = @CauseId
+                         WHERE m.GoodsReceiptLineId = w.LineId) x
+            WHERE @CauseKind IN (N'LCA', N'LCACANCEL');
+
+            -- the part still in stock, per item for the whole event, on company stock
+            DECLARE @Items TABLE (ItemId INT NOT NULL PRIMARY KEY, NetReceived DECIMAL(18,6) NOT NULL, OnHand DECIMAL(18,6) NOT NULL,
+                                  Remaining DECIMAL(18,6) NULL, Amount DECIMAL(18,2) NOT NULL, Inv DECIMAL(18,2) NULL);
+            INSERT INTO @Items (ItemId, NetReceived, OnHand, Amount)
+            SELECT ItemId, SUM(CASE WHEN RNet > 0 THEN RNet ELSE 0 END), inventory.fn_StockOnHand(ItemId, NULL), SUM(Amount)
+            FROM @W GROUP BY ItemId;
+
+            UPDATE @Items SET Remaining = CASE WHEN OnHand <= 0 OR NetReceived <= 0 THEN 0
+                                               WHEN OnHand < NetReceived THEN OnHand ELSE NetReceived END;
+
+            -- the stock part of the amount that can still be in stock (all of it, but for the returned share above)
+            UPDATE w
+            SET Inv     = CASE WHEN i.Remaining = 0 THEN 0 ELSE ROUND(w.Amount * (1 - w.RetShare) * i.Remaining / i.NetReceived, 2) END,
+                InStock = CASE WHEN i.Remaining = 0 OR w.RNet <= 0 THEN 0 ELSE w.RNet * i.Remaining / i.NetReceived END
+            FROM @W w INNER JOIN @Items i ON i.ItemId = w.ItemId;
+
+            UPDATE i
+            SET Inv = CASE WHEN i.Remaining = 0 THEN 0 ELSE ROUND(x.Eligible * i.Remaining / i.NetReceived, 2) END
+            FROM @Items i
+            CROSS APPLY (SELECT Eligible = SUM(w.Amount * (1 - w.RetShare)) FROM @W w WHERE w.ItemId = i.ItemId) x;
+
+            -- the cents lost by rounding the lines go to the line of the item with the largest amount
+            WITH d AS (SELECT w.LineId, Diff = i.Inv - SUM(w.Inv) OVER (PARTITION BY w.ItemId),
+                              Rn = ROW_NUMBER() OVER (PARTITION BY w.ItemId ORDER BY ABS(w.Amount) DESC, w.LineId)
+                       FROM @W w INNER JOIN @Items i ON i.ItemId = w.ItemId)
+            UPDATE w SET Inv = w.Inv + d.Diff
+            FROM @W w INNER JOIN d ON d.LineId = w.LineId
+            WHERE d.Rn = 1 AND d.Diff <> 0;
+
+            DECLARE @Changes TABLE (ChangeId INT NOT NULL PRIMARY KEY, LineId INT NOT NULL);
+            INSERT INTO purchase.GoodsReceiptCostChanges (GoodsReceiptLineId, CauseKind, CauseId, CauseNumber, ReceivedBase, InStockBase,
+                                                          FobBefore, FobAfter, UnitCostBefore, UnitCostAfter, AmountBase, InventoryBase, CogsBase, CreatedBy)
+            OUTPUT inserted.Id, inserted.GoodsReceiptLineId INTO @Changes (ChangeId, LineId)
+            SELECT LineId, @CauseKind, @CauseId, @CauseNumber, R, InStock, FobBefore, FobAfter, CostBefore, CostAfter, Amount, Inv, Amount - Inv, @UserId
+            FROM @W WHERE Amount <> 0;
+
+            INSERT INTO inventory.CostAdjustments (AdjustmentDate, ItemId, WarehouseId, BranchId, Kind, AmountBase, SourceKind, SourceId, SourceNumber, PurchaseLineId, CreatedBy)
+            SELECT CASE WHEN md.D > SYSUTCDATETIME() THEN md.D ELSE SYSUTCDATETIME() END,
+                   w.ItemId, w.WarehouseId, w.BranchId, k.Kind, k.Amount, N'GRNCOST', c.ChangeId, w.Number, NULL, @UserId
+            FROM @W w
+            INNER JOIN @Changes c ON c.LineId = w.LineId
+            OUTER APPLY (SELECT D = MAX(m.MovementDate) FROM inventory.StockMovements m
+                         WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'GRN' AND m.DocumentId = w.GoodsReceiptId
+                           AND m.IsReversal = 0) md
+            CROSS APPLY (VALUES (N'Inventory', w.Inv), (N'COGS', w.Amount - w.Inv)) k (Kind, Amount)
+            WHERE k.Amount <> 0;
+
+            -- the new current cost: on the container line for container lines (its landed cost follows), else on the line
+            UPDATE cl SET FobCostBase = w.FobAfter
+            FROM logistics.ContainerLines cl INNER JOIN @W w ON w.ContainerLineId = cl.Id
+            WHERE w.IsContainer = 1;
+
+            UPDATE gl
+            SET FobCostBase  = CASE WHEN w.IsContainer = 1 THEN gl.FobCostBase ELSE w.FobAfter END,
+                ChargesBase  = CASE WHEN w.IsContainer = 1 THEN gl.ChargesBase ELSE w.ChargesAfter END,
+                UnitCostBase = CASE WHEN w.IsContainer = 1 THEN gl.UnitCostBase ELSE w.CostAfter END,
+                CostSource   = w.CostSource
+            FROM purchase.GoodsReceiptLines gl INNER JOIN @W w ON w.LineId = gl.Id;
+
+            DECLARE @ContainerId INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ContainerId FROM @W WHERE IsContainer = 1;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @ContainerId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+                FETCH NEXT FROM cts INTO @ContainerId;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+
+            INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId)
+            SELECT w.GoodsReceiptId, N'CostAdjusted',
+                   LEFT(N'Cost adjusted by ' + ISNULL(@CauseNumber + N' ', N'')
+                        + N'(' + CASE @CauseKind WHEN N'PINV' THEN N'invoice posted'
+                                                 WHEN N'PINVCANCEL' THEN N'invoice cancelled'
+                                                 WHEN N'LCA' THEN N'landed cost adjustment posted'
+                                                 WHEN N'LCACANCEL' THEN N'landed cost adjustment cancelled'
+                                                 WHEN N'GRNPOST' THEN N'goods receipt posted'
+                                                 WHEN N'GRNCANCEL' THEN N'goods receipt cancelled'
+                                                 ELSE N'negative stock filled' END
+                        + N'): ' + CAST(SUM(w.Amount) AS NVARCHAR(30)) + N' (stock ' + CAST(SUM(w.Inv) AS NVARCHAR(30))
+                        + N', cost of sales ' + CAST(SUM(w.Amount - w.Inv) AS NVARCHAR(30)) + N')', 500),
+                   @UserId
+            FROM @W w
+            GROUP BY w.GoodsReceiptId
+            HAVING SUM(CASE WHEN w.Amount <> 0 THEN 1 ELSE 0 END) > 0;
+
+            SELECT @AmountBase = ISNULL(SUM(Amount), 0), @InventoryBase = ISNULL(SUM(Inv), 0), @CogsBase = ISNULL(SUM(Amount - Inv), 0),
+                   @LinesAdjusted = SUM(CASE WHEN Amount <> 0 THEN 1 ELSE 0 END)
+            FROM @W;
+        END
+
+        -- ITEM COSTS REPLAYED: the items of the adjusted lines, and those of the posted MANUAL lines given, adjusted or
+        -- not. The caller's rematch can match or unmatch a manual line without changing its cost (an invoice at the
+        -- typed price), and such a line counts for the last cost, FOB cost and last supplier only once matched (rules
+        -- 16, 24): its item is replayed either way. (@Items is empty when nothing was adjusted.)
+        DECLARE @ItemId INT;
+        DECLARE items CURSOR LOCAL FAST_FORWARD FOR
+            SELECT ItemId FROM @Items
+            UNION
+            SELECT gl.ItemId
+            FROM @LineIds x
+            INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = x.Id
+            INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+            WHERE gl.PoLineId IS NULL AND gl.InvoiceLineId IS NULL AND gl.QuantityBase > 0;
+        OPEN items;
+        FETCH NEXT FROM items INTO @ItemId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC inventory.usp_Item_RebuildCosts @ItemId;
+            FETCH NEXT FROM items INTO @ItemId;
+        END
+        CLOSE items;
+        DEALLOCATE items;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 24. Post a goods receipt */
+
+/* THE GOODS ENTER STOCK, numbered GRN-<branch>-NNNNNN. One transaction: the matching lock first
+   (usp_GoodsReceipt_LockMatching, before any row), then the receipt, its container, its order lines and its invoice
+   lines without an order locked.
+     1 Checks: fn_GoodsReceipt_PostCheck (its first refusal), and the RowVersion (63004).
+     2 Number (inventory.usp_DocumentType_NextNumber), then Status 2 and PostedAtUtc in the same UPDATE - before the
+       rematch, so this receipt is on the receipt side.
+     3 Lines: warehouse (a container receipt: the header's), supplier, the typed cost of a manual line (default: the
+       item's last cost, else its average), PoFobBase (order price per piece, frozen), SettledShortBase (container lines: loaded -
+       received; a local line marked "Nothing more will come": the rest of its order line). Then the rematch of its
+       groups (usp_GoodsReceipt_Rematch).
+     4 Cost at receipt. A container (as the offload did): received and variance on the container lines, their FOB =
+       the target FOB, the posted charges re-spread over what arrived and frozen (AppliedAtOffload), landed cost =
+       the container line's. Other lines: the target cost (fn_GoodsReceiptLine_TargetCost) on the line.
+     5 The other posted receipts of the same groups are trued up (GRNPOST): this one may have taken invoiced pieces
+       they held. BEFORE this receipt's stock goes in: their in-stock share (company stock on hand) must count only
+       goods that were already in stock - this receipt's pieces are already at their own cost.
+     6 Stock, per supplier of the lines (last supplier and last cost follow the goods; a manual line not matched to an
+       invoice changes neither): pieces that fill a negative company stock first take the cost difference to cost of
+       sales (NEGSTOCK, rule 9a), then the moving average (usp_Item_ApplyReceipts, before the movements), then the
+       movements (family Purchase, type GRN, the document date + the time of posting, each line's warehouse and the
+       branch of that warehouse). Lines receiving nothing write nothing. The average starts from the one step 5 left.
+     7 Order lines: received and settled short; an order fully invoiced and received closes ("Fully invoiced and
+       received").
+     8 The container becomes Offloaded at the warehouse (usp_Container_RefreshStatus).
+     9 Totals and audits (the receipt, the orders, the container, the invoices it is matched to).
+   Returns DocumentNumber. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- lock order: the matcher first, then rows, or two postings deadlock (usp_GoodsReceipt_LockMatching)
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @SourceKind NVARCHAR(10), @ContainerId INT, @BranchId INT, @WarehouseId INT, @SupplierId INT,
+                @DocumentDate DATE, @Ref NVARCHAR(30);
+        SELECT @Status = g.Status, @SourceKind = g.SourceKind, @ContainerId = g.ContainerId, @BranchId = g.BranchId,
+               @WarehouseId = g.WarehouseId, @SupplierId = g.SupplierId, @DocumentDate = g.DocumentDate
+        FROM purchase.GoodsReceipts g WITH (UPDLOCK, HOLDLOCK)
+        WHERE g.Id = @Id;
+
+        IF @Status IS NULL THROW 63006, 'Goods receipt not found.', 1;
+        IF @Status <> 1 THROW 63010, 'Only a draft goods receipt can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 63004, 'This goods receipt was modified by another user. Reload the page and try again.', 1;
+
+        -- the container, the order lines and the invoice lines without an order stay as they are until this receipt is
+        -- posted: an invoice line's received pieces change only in usp_GoodsReceipt_Rematch, after the check, so a
+        -- second posting of the same line must wait here and then read them (Seq 20, 63011), as an order line does
+        IF @ContainerId IS NOT NULL
+            SELECT @Ref = c.ContainerRef FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK) WHERE c.Id = @ContainerId;
+        DECLARE @Locked INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines pol WITH (UPDLOCK, HOLDLOCK)
+                               WHERE pol.Id IN (SELECT gl.PoLineId FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = @Id
+                                                UNION
+                                                SELECT gl.InvoiceLineId FROM purchase.GoodsReceiptLines gl
+                                                WHERE gl.GoodsReceiptId = @Id AND gl.PoLineId IS NULL));
+
+        DECLARE @Err INT, @Msg NVARCHAR(400);
+        SELECT TOP (1) @Err = ErrorNumber, @Msg = Message FROM purchase.fn_GoodsReceipt_PostCheck(@Id) ORDER BY Seq;
+        IF @Err IS NOT NULL
+        BEGIN
+            SET @Msg = ISNULL(@Msg, N'This goods receipt cannot be posted.');
+            THROW @Err, @Msg, 1;
+        END
+
+        /* ---- 2. Number and status */
+        DECLARE @Number NVARCHAR(30);
+        EXEC inventory.usp_DocumentType_NextNumber N'GRN', @Number OUTPUT, @BranchId;
+
+        UPDATE purchase.GoodsReceipts
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        /* ---- 3. Lines, settled short, matches */
+        UPDATE gl
+        SET WarehouseId        = CASE WHEN @SourceKind = N'Container' THEN @WarehouseId ELSE COALESCE(gl.WarehouseId, @WarehouseId) END,
+            SupplierId         = COALESCE(po.SupplierId, inv.SupplierId, gl.SupplierId, @SupplierId),
+            ManualUnitCostBase = CASE WHEN gl.PoLineId IS NULL AND gl.InvoiceLineId IS NULL
+                                      THEN COALESCE(gl.ManualUnitCostBase, i.LastCost, i.AverageCost) ELSE gl.ManualUnitCostBase END,
+            PoFobBase          = CASE WHEN gl.PoLineId IS NOT NULL
+                                      THEN CAST(pol.LineTotal / po.ExchangeRate / NULLIF(pol.QuantityBase, 0) AS DECIMAL(18,6)) END
+        FROM purchase.GoodsReceiptLines gl
+        INNER JOIN inventory.Items i                  ON i.Id = gl.ItemId
+        LEFT  JOIN purchase.PurchaseDocumentLines pol ON pol.Id = gl.PoLineId
+        LEFT  JOIN purchase.PurchaseDocuments po      ON po.Id = pol.DocumentId
+        LEFT  JOIN purchase.PurchaseDocumentLines il  ON il.Id = gl.InvoiceLineId
+        LEFT  JOIN purchase.PurchaseDocuments inv     ON inv.Id = il.DocumentId
+        WHERE gl.GoodsReceiptId = @Id;
+
+        -- SETTLED SHORT: nothing more is expected for those pieces. A container line always settles loaded - received
+        -- (a reason is required). A local line marked "Nothing more will come" settles the rest of its order line -
+        -- at most what it expected - and never more than the order line still lacks.
+        WITH s AS
+        (
+            SELECT gl.Id, gl.PoLineId, gl.LineNumber,
+                   Want = CASE WHEN gl.ContainerLineId IS NOT NULL
+                               THEN CASE WHEN gl.ExpectedQuantityBase > gl.QuantityBase THEN gl.ExpectedQuantityBase - gl.QuantityBase ELSE 0 END
+                               WHEN gl.CloseShort = 1 AND gl.PoLineId IS NOT NULL
+                               THEN CASE WHEN gl.ExpectedQuantityBase IS NULL THEN rest.Q
+                                         WHEN gl.ExpectedQuantityBase - gl.QuantityBase < rest.Q
+                                         THEN CASE WHEN gl.ExpectedQuantityBase > gl.QuantityBase THEN gl.ExpectedQuantityBase - gl.QuantityBase ELSE 0 END
+                                         ELSE rest.Q END
+                               ELSE 0 END,
+                   IsLocal = CASE WHEN gl.ContainerLineId IS NULL THEN 1 ELSE 0 END,
+                   Rest = rest.Q
+            FROM purchase.GoodsReceiptLines gl
+            OUTER APPLY (SELECT Q = CASE WHEN x.Q > 0 THEN x.Q ELSE 0 END
+                         FROM (SELECT Q = p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase - p.InContainersBase
+                                          - (SELECT SUM(o.QuantityBase) FROM purchase.GoodsReceiptLines o
+                                             WHERE o.GoodsReceiptId = @Id AND o.PoLineId = gl.PoLineId AND o.ContainerLineId IS NULL)
+                               FROM purchase.fn_PoLine_Progress(gl.PurchaseOrderId) p
+                               WHERE p.PoLineId = gl.PoLineId) x) rest
+            WHERE gl.GoodsReceiptId = @Id
+        ),
+        c AS
+        (
+            SELECT s.Id, s.Want, s.IsLocal, s.Rest,
+                   Before = ISNULL(SUM(CASE WHEN s.IsLocal = 1 THEN s.Want ELSE 0 END)
+                                   OVER (PARTITION BY s.PoLineId, s.IsLocal ORDER BY s.LineNumber ROWS BETWEEN UNBOUNDED PRECEDING AND 1 PRECEDING), 0)
+            FROM s
+        )
+        UPDATE gl
+        SET SettledShortBase = CASE WHEN c.IsLocal = 0 THEN c.Want
+                                    WHEN c.Want <= 0 THEN 0
+                                    WHEN ISNULL(c.Rest, 0) - c.Before <= 0 THEN 0
+                                    WHEN c.Want > ISNULL(c.Rest, 0) - c.Before THEN ISNULL(c.Rest, 0) - c.Before
+                                    ELSE c.Want END
+        FROM purchase.GoodsReceiptLines gl INNER JOIN c ON c.Id = gl.Id;
+
+        DECLARE @Anchors purchase.tvp_GoodsReceiptAnchor;
+        INSERT INTO @Anchors (Kind, PoLineId, SupplierId, ItemId)
+        SELECT DISTINCT 'P', gl.PoLineId, NULL, NULL FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = @Id AND gl.PoLineId IS NOT NULL
+        UNION
+        SELECT DISTINCT 'S', NULL, gl.SupplierId, gl.ItemId FROM purchase.GoodsReceiptLines gl
+        WHERE gl.GoodsReceiptId = @Id AND gl.PoLineId IS NULL AND gl.SupplierId IS NOT NULL;
+
+        EXEC purchase.usp_GoodsReceipt_Rematch @Anchors;
+
+        /* ---- 4. Cost at receipt */
+        IF @SourceKind = N'Container'
+        BEGIN
+            UPDATE cl
+            SET ReceivedQuantityBase = gl.QuantityBase,
+                -- the reason's NAME, as the receipt shows it ("Short-shipped: 2 pcs short"), never the internal code: the
+                -- container page and the item's containers show this text as it is
+                VarianceReason = CASE WHEN gl.VarianceReasonCode IS NULL THEN NULLIF(LTRIM(RTRIM(gl.VarianceReason)), N'')
+                                      ELSE CASE gl.VarianceReasonCode WHEN N'SHORT' THEN N'Short-shipped' WHEN N'DAMAGED' THEN N'Damaged'
+                                                                      WHEN N'MISSING' THEN N'Missing'
+                                                                      WHEN N'LOADCOUNT' THEN N'Wrongly counted at loading'
+                                                                      WHEN N'OTHER' THEN N'Other' ELSE gl.VarianceReasonCode END
+                                           + ISNULL(N': ' + NULLIF(LTRIM(RTRIM(gl.VarianceReason)), N''), N'') END,
+                FobCostBase = COALESCE(t.TargetFobBase, gl.PoFobBase)
+            FROM logistics.ContainerLines cl
+            INNER JOIN purchase.GoodsReceiptLines gl ON gl.ContainerLineId = cl.Id AND gl.GoodsReceiptId = @Id
+            LEFT  JOIN purchase.fn_GoodsReceiptLine_TargetCost(@Id) t ON t.GoodsReceiptLineId = gl.Id
+            WHERE cl.ContainerId = @ContainerId;
+
+            -- the posted charges follow the real quantities and values, then they are frozen in the cost of the goods
+            EXEC logistics.usp_Container_ReallocateCharges @ContainerId, 0;
+            UPDATE logistics.ContainerCharges SET AppliedAtOffload = 1
+            WHERE ContainerId = @ContainerId AND Status = 2 AND IncludeInLandedCost = 1;
+            EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+        END
+
+        UPDATE gl
+        SET FobCostBase       = CASE WHEN gl.ContainerLineId IS NULL THEN t.TargetFobBase END,
+            ChargesBase       = CASE WHEN gl.ContainerLineId IS NULL THEN t.TargetChargesBase END,
+            UnitCostBase      = CASE WHEN gl.ContainerLineId IS NULL THEN t.TargetUnitCostBase END,
+            CostAtReceiptBase = CASE WHEN gl.ContainerLineId IS NOT NULL THEN cl.LandedCostBase ELSE t.TargetUnitCostBase END,
+            CostSource        = COALESCE(t.CostSource, CASE WHEN gl.PoLineId IS NOT NULL THEN N'Order' ELSE gl.CostSource END)
+        FROM purchase.GoodsReceiptLines gl
+        LEFT JOIN logistics.ContainerLines cl ON cl.Id = gl.ContainerLineId
+        LEFT JOIN purchase.fn_GoodsReceiptLine_TargetCost(@Id) t ON t.GoodsReceiptLineId = gl.Id
+        WHERE gl.GoodsReceiptId = @Id;
+
+        /* ---- 5. The other receipts of the same groups, BEFORE this receipt's stock goes in: their in-stock share
+                  (company stock on hand) must count only goods that were in stock before it. This receipt's pieces are
+                  already at their own cost (step 4); counted as the others' goods, the others' cost change would go to
+                  the stock value instead of cost of sales. Its own lines are never among the others. */
+        DECLARE @Others logistics.tvp_IdList;
+        INSERT INTO @Others (Id)
+        SELECT GoodsReceiptLineId FROM purchase.fn_GoodsReceipt_GroupLines(@Anchors) WHERE GoodsReceiptId <> @Id;
+        IF EXISTS (SELECT 1 FROM @Others)
+            EXEC purchase.usp_GoodsReceipt_TrueUpCost @Others, N'GRNPOST', @Id, @Number, @UserId;
+
+        /* ---- 6. Stock (the average as step 5 left it) */
+        DECLARE @MovementDate DATETIME2(3) =
+            DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+        DECLARE @AdjustmentDate DATETIME2(3) = CASE WHEN @MovementDate > SYSUTCDATETIME() THEN @MovementDate ELSE SYSUTCDATETIME() END;
+
+        -- one batch per supplier and per "changes the last cost": usp_Item_ApplyReceipts takes one supplier and one flag,
+        -- and each batch's movements go in before the next batch's average is worked out
+        DECLARE @Rec TABLE (LineId INT NOT NULL PRIMARY KEY, Batch INT NOT NULL, ItemId INT NOT NULL, WarehouseId INT NOT NULL, BranchId INT NOT NULL,
+                            SupplierId INT NULL, UpdateLast BIT NOT NULL, QuantityBase INT NOT NULL, UnitCostBase DECIMAL(18,6) NOT NULL,
+                            FobCostBase DECIMAL(18,6) NULL, ExpiryDate DATE NULL);
+        INSERT INTO @Rec (LineId, Batch, ItemId, WarehouseId, BranchId, SupplierId, UpdateLast, QuantityBase, UnitCostBase, FobCostBase, ExpiryDate)
+        SELECT x.LineId, DENSE_RANK() OVER (ORDER BY ISNULL(x.SupplierId, 0), x.UpdateLast DESC),
+               x.ItemId, x.WarehouseId, x.BranchId, x.SupplierId, x.UpdateLast, x.QuantityBase, x.UnitCostBase, x.FobCostBase, x.ExpiryDate
+        FROM (SELECT LineId = gl.Id, gl.ItemId, gl.WarehouseId, w.BranchId, gl.SupplierId,
+                     UpdateLast = CAST(CASE WHEN gl.PoLineId IS NULL AND gl.InvoiceLineId IS NULL AND gl.InvoicedBase = 0 THEN 0 ELSE 1 END AS BIT),
+                     gl.QuantityBase, UnitCostBase = ISNULL(gl.CostAtReceiptBase, 0),
+                     FobCostBase = CASE WHEN gl.ContainerLineId IS NOT NULL THEN cl.FobCostBase ELSE gl.FobCostBase END, gl.ExpiryDate
+              FROM purchase.GoodsReceiptLines gl
+              INNER JOIN masterdata.Warehouses w    ON w.Id = gl.WarehouseId
+              LEFT  JOIN logistics.ContainerLines cl ON cl.Id = gl.ContainerLineId
+              WHERE gl.GoodsReceiptId = @Id AND gl.QuantityBase > 0) x;
+
+        -- the average the goods sold before this receipt went out at (rule 9a)
+        DECLARE @Before TABLE (ItemId INT NOT NULL PRIMARY KEY, AverageCost DECIMAL(18,6) NOT NULL);
+        INSERT INTO @Before (ItemId, AverageCost)
+        SELECT i.Id, i.AverageCost FROM inventory.Items i WHERE i.Id IN (SELECT ItemId FROM @Rec);
+
+        DECLARE @Neg TABLE (LineId INT NOT NULL PRIMARY KEY, ItemId INT NOT NULL, WarehouseId INT NOT NULL, BranchId INT NOT NULL, R INT NOT NULL,
+                            CostBefore DECIMAL(18,6) NOT NULL, CostAfter DECIMAL(18,6) NOT NULL, Raw DECIMAL(38,10) NOT NULL, Amount DECIMAL(18,2) NULL);
+        DECLARE @NegChanges TABLE (ChangeId INT NOT NULL PRIMARY KEY, LineId INT NOT NULL);
+        DECLARE @R inventory.tvp_ItemReceipt;
+        DECLARE @Batch INT = 1, @Batches INT = ISNULL((SELECT MAX(Batch) FROM @Rec), 0), @BatchSupplier INT, @BatchLast BIT;
+
+        WHILE @Batch <= @Batches
+        BEGIN
+            SELECT TOP (1) @BatchSupplier = SupplierId, @BatchLast = UpdateLast FROM @Rec WHERE Batch = @Batch;
+
+            -- NEGATIVE COMPANY STOCK FILLED BY THIS BATCH: those pieces were sold at the average before the receipt and are
+            -- not in stock; the moving average starts again at the batch's cost, so (cost - average before) x the pieces
+            -- filled would be in neither the stock nor the cost of sales. It goes to cost of sales, shared over the
+            -- batch's lines of the item by their pieces (cents to the largest line).
+            DELETE FROM @Neg;
+            INSERT INTO @Neg (LineId, ItemId, WarehouseId, BranchId, R, CostBefore, CostAfter, Raw)
+            SELECT r.LineId, r.ItemId, r.WarehouseId, r.BranchId, r.QuantityBase, bf.AverageCost, r.UnitCostBase,
+                   CAST((r.UnitCostBase - bf.AverageCost) * f.F * r.QuantityBase AS DECIMAL(38,10)) / q.Qty
+            FROM @Rec r
+            INNER JOIN (SELECT ItemId, Qty = SUM(QuantityBase) FROM @Rec WHERE Batch = @Batch GROUP BY ItemId) q ON q.ItemId = r.ItemId
+            INNER JOIN @Before bf ON bf.ItemId = r.ItemId
+            CROSS APPLY (SELECT OnHand = inventory.fn_StockOnHand(r.ItemId, NULL)) oh
+            CROSS APPLY (SELECT F = CASE WHEN oh.OnHand >= 0 THEN 0 WHEN -oh.OnHand < q.Qty THEN -oh.OnHand ELSE q.Qty END) f
+            WHERE r.Batch = @Batch AND f.F > 0;
+
+            IF EXISTS (SELECT 1 FROM @Neg)
+            BEGIN
+                UPDATE @Neg SET Amount = ROUND(Raw, 2);
+                WITH d AS (SELECT n.LineId, Diff = ROUND(SUM(n.Raw) OVER (PARTITION BY n.ItemId), 2) - SUM(n.Amount) OVER (PARTITION BY n.ItemId),
+                                  Rn = ROW_NUMBER() OVER (PARTITION BY n.ItemId ORDER BY n.R DESC, n.LineId)
+                           FROM @Neg n)
+                UPDATE n SET Amount = n.Amount + d.Diff FROM @Neg n INNER JOIN d ON d.LineId = n.LineId WHERE d.Rn = 1 AND d.Diff <> 0;
+
+                DELETE FROM @NegChanges;
+                INSERT INTO purchase.GoodsReceiptCostChanges (GoodsReceiptLineId, CauseKind, CauseId, CauseNumber, ReceivedBase, InStockBase,
+                                                              FobBefore, FobAfter, UnitCostBefore, UnitCostAfter, AmountBase, InventoryBase, CogsBase, CreatedBy)
+                OUTPUT inserted.Id, inserted.GoodsReceiptLineId INTO @NegChanges (ChangeId, LineId)
+                SELECT n.LineId, N'NEGSTOCK', @Id, @Number, n.R, 0, NULL, NULL, n.CostBefore, n.CostAfter, n.Amount, 0, n.Amount, @UserId
+                FROM @Neg n WHERE n.Amount <> 0;
+
+                INSERT INTO inventory.CostAdjustments (AdjustmentDate, ItemId, WarehouseId, BranchId, Kind, AmountBase, SourceKind, SourceId, SourceNumber, PurchaseLineId, CreatedBy)
+                SELECT @AdjustmentDate, n.ItemId, n.WarehouseId, n.BranchId, N'COGS', n.Amount, N'GRNCOST', c.ChangeId, @Number, NULL, @UserId
+                FROM @Neg n INNER JOIN @NegChanges c ON c.LineId = n.LineId;
+            END
+
+            -- moving average first (on-hand before these movements), then the movements of the batch
+            DELETE FROM @R;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT ItemId, QuantityBase, UnitCostBase, FobCostBase FROM @Rec WHERE Batch = @Batch;
+            EXEC inventory.usp_Item_ApplyReceipts @R, @BatchSupplier, @UserId, @BatchLast;
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            SELECT @MovementDate, r.ItemId, r.WarehouseId, r.BranchId, r.QuantityBase, r.UnitCostBase,
+                   N'Purchase', N'GRN', @Id, r.LineId, @Number, NULL, r.ExpiryDate, @UserId
+            FROM @Rec r
+            WHERE r.Batch = @Batch;
+
+            SET @Batch += 1;
+        END
+
+        /* ---- 7. Order lines: received, settled short; an order fully invoiced and received closes */
+        UPDATE pol
+        SET GoodsReceivedBase = pol.GoodsReceivedBase + x.Rec, GoodsShortBase = pol.GoodsShortBase + x.Short
+        FROM purchase.PurchaseDocumentLines pol
+        INNER JOIN (SELECT PoLineId, Rec = SUM(QuantityBase), Short = SUM(SettledShortBase)
+                    FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id AND PoLineId IS NOT NULL GROUP BY PoLineId) x ON x.PoLineId = pol.Id;
+
+        DECLARE @Orders TABLE (Id INT NOT NULL PRIMARY KEY, Pcs INT NOT NULL);
+        INSERT INTO @Orders (Id, Pcs)
+        SELECT PurchaseOrderId, SUM(QuantityBase) FROM purchase.GoodsReceiptLines
+        WHERE GoodsReceiptId = @Id AND PurchaseOrderId IS NOT NULL GROUP BY PurchaseOrderId;
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT o.Id, N'Updated', N'Goods received by ' + @Number + N' - ' + CAST(o.Pcs AS NVARCHAR(20)) + N' pcs', @UserId FROM @Orders o;
+
+        DECLARE @Closed TABLE (Id INT NOT NULL PRIMARY KEY);
+        UPDATE po
+        SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = N'Fully invoiced and received'
+        OUTPUT inserted.Id INTO @Closed (Id)
+        FROM purchase.PurchaseDocuments po
+        INNER JOIN @Orders o ON o.Id = po.Id
+        WHERE po.Status = 2
+          AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                          WHERE l.DocumentId = po.Id
+                            AND (l.ReceivedQuantityBase < l.QuantityBase OR l.GoodsReceivedBase + l.GoodsShortBase < l.QuantityBase));
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT c.Id, N'Closed', N'Closed: fully invoiced and received (' + @Number + N')', @UserId FROM @Closed c;
+
+        /* ---- 8. The container */
+        IF @SourceKind = N'Container'
+        BEGIN
+            UPDATE logistics.Containers
+            SET OffloadedDate = @DocumentDate, OffloadedAtUtc = SYSUTCDATETIME(), OffloadedBy = @UserId,
+                WarehouseId = @WarehouseId, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @ContainerId;
+
+            EXEC logistics.usp_Container_RefreshStatus @ContainerId;
+
+            DECLARE @CtPcs INT, @CtValue DECIMAL(18,2), @CtShort INT;
+            SELECT @CtPcs = ISNULL(SUM(gl.QuantityBase), 0),
+                   @CtValue = ISNULL(SUM(gl.QuantityBase * gl.CostAtReceiptBase), 0),
+                   @CtShort = SUM(CASE WHEN gl.QuantityBase < gl.ExpectedQuantityBase THEN 1 ELSE 0 END)
+            FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = @Id;
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@ContainerId, N'Offloaded',
+                    LEFT(@Number + N': received ' + CAST(@CtPcs AS NVARCHAR(20)) + N' pcs into '
+                         + (SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @WarehouseId)
+                         + N' at a landed value of ' + CAST(@CtValue AS NVARCHAR(30))
+                         + CASE WHEN @CtShort > 0 THEN N'; ' + CAST(@CtShort AS NVARCHAR(10)) + N' line(s) short-shipped' ELSE N'' END, 500), @UserId);
+        END
+
+        /* ---- 9. Totals and audits */
+        UPDATE g
+        SET TotalExpectedBase = x.Expected, TotalReceivedBase = x.Received, ValueAtReceiptBase = x.Value
+        FROM purchase.GoodsReceipts g
+        CROSS APPLY (SELECT Expected = ISNULL(SUM(ISNULL(gl.ExpectedQuantityBase, gl.QuantityBase)), 0),
+                            Received = ISNULL(SUM(gl.QuantityBase), 0),
+                            Value    = CAST(ROUND(ISNULL(SUM(gl.QuantityBase * gl.CostAtReceiptBase), 0), 2) AS DECIMAL(18,2))
+                     FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = g.Id) x
+        WHERE g.Id = @Id;
+
+        DECLARE @Pcs INT = (SELECT TotalReceivedBase FROM purchase.GoodsReceipts WHERE Id = @Id),
+                @Settled INT = (SELECT SUM(SettledShortBase) FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id);
+        DECLARE @Into NVARCHAR(100) =
+            CASE WHEN (SELECT COUNT(DISTINCT WarehouseId) FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id AND QuantityBase > 0) > 1
+                 THEN CAST((SELECT COUNT(DISTINCT WarehouseId) FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id AND QuantityBase > 0) AS NVARCHAR(10)) + N' warehouses'
+                 ELSE ISNULL((SELECT TOP (1) w.WarehouseCode FROM purchase.GoodsReceiptLines gl
+                              INNER JOIN masterdata.Warehouses w ON w.Id = gl.WarehouseId
+                              WHERE gl.GoodsReceiptId = @Id ORDER BY CASE WHEN gl.QuantityBase > 0 THEN 0 ELSE 1 END, gl.LineNumber), N'-') END;
+
+        INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', LEFT(N'Posted as ' + @Number + N' - ' + CAST(@Pcs AS NVARCHAR(20)) + N' pcs into ' + @Into
+                                     + CASE WHEN @Settled > 0 THEN N', ' + CAST(@Settled AS NVARCHAR(20)) + N' pcs settled short' ELSE N'' END, 500), @UserId);
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT DISTINCT il.DocumentId, N'Updated', N'Goods received by ' + @Number, @UserId
+        FROM purchase.GoodsReceiptInvoiceMatches m
+        INNER JOIN purchase.GoodsReceiptLines gl     ON gl.Id = m.GoodsReceiptLineId AND gl.GoodsReceiptId = @Id
+        INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = m.InvoiceLineId;
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 25. Cancel a goods receipt */
+
+/* THE STOCK GOES BACK OUT, and everything the receipt set is undone. Only a posted receipt, with a reason (63000).
+   Refused (fn_GoodsReceipt_CancelCheck): a closed container (63010), a cost adjusted afterwards (63008), stock used
+   (63007); and, once the matches are rebuilt without it, when a purchase return took back goods that would be left
+   without a receipt (63010: an invoice line ending with returned > received).
+     - reversal movements (the copies, negative, IsReversal = 1, dated now) and Status 3;
+     - the NEGSTOCK cost of sales of its own posting is reversed: the sold pieces are again without a receipt;
+     - a container: its received quantities, variances and costs cleared, its charges no longer frozen and re-spread,
+       back to its movement status (for example Cleared), so it can be received again;
+     - the matches of its groups rebuilt, and the other receipts of those groups trued up (GRNCANCEL);
+     - the order lines' received and settled short reduced; an order closed because it was fully received reopens;
+     - the item costs replayed (usp_Item_RebuildCosts).
+   The matching lock is taken first (usp_GoodsReceipt_LockMatching): a purchase return or a posting of the same goods
+   then either commits before this cancel reads them (63007, 63010) or waits for it. */
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- lock order: the matcher first, then rows, or two postings deadlock (usp_GoodsReceipt_LockMatching)
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @ContainerId INT, @Number NVARCHAR(30), @Ref NVARCHAR(30);
+        SELECT @Status = g.Status, @ContainerId = g.ContainerId, @Number = g.DocumentNumber
+        FROM purchase.GoodsReceipts g WITH (UPDLOCK, HOLDLOCK)
+        WHERE g.Id = @Id;
+
+        IF @Status IS NULL THROW 63006, 'Goods receipt not found.', 1;
+        IF @Status <> 2 THROW 63010, 'Only a posted goods receipt can be cancelled.', 1;
+        IF @Reason IS NULL THROW 63000, 'A cancellation reason is required.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 63004, 'This goods receipt was modified by another user. Reload the page and try again.', 1;
+
+        IF @ContainerId IS NOT NULL
+            SELECT @Ref = c.ContainerRef FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK) WHERE c.Id = @ContainerId;
+        DECLARE @Locked INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines pol WITH (UPDLOCK, HOLDLOCK)
+                               WHERE pol.Id IN (SELECT gl.PoLineId FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = @Id));
+
+        DECLARE @Err INT, @Msg NVARCHAR(400);
+        SELECT TOP (1) @Err = ErrorNumber, @Msg = Message FROM purchase.fn_GoodsReceipt_CancelCheck(@Id) ORDER BY Seq;
+        IF @Err IS NOT NULL
+        BEGIN
+            SET @Msg = ISNULL(@Msg, N'This goods receipt cannot be cancelled.');
+            THROW @Err, @Msg, 1;
+        END
+
+        -- what it was matched to (the audit of those invoices) and the groups of its lines
+        DECLARE @Invoices TABLE (Id INT NOT NULL PRIMARY KEY);
+        INSERT INTO @Invoices (Id)
+        SELECT DISTINCT il.DocumentId
+        FROM purchase.GoodsReceiptInvoiceMatches m
+        INNER JOIN purchase.GoodsReceiptLines gl     ON gl.Id = m.GoodsReceiptLineId AND gl.GoodsReceiptId = @Id
+        INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = m.InvoiceLineId;
+
+        DECLARE @Anchors purchase.tvp_GoodsReceiptAnchor;
+        INSERT INTO @Anchors (Kind, PoLineId, SupplierId, ItemId)
+        SELECT DISTINCT 'P', gl.PoLineId, NULL, NULL FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = @Id AND gl.PoLineId IS NOT NULL
+        UNION
+        SELECT DISTINCT 'S', NULL, gl.SupplierId, gl.ItemId FROM purchase.GoodsReceiptLines gl
+        WHERE gl.GoodsReceiptId = @Id AND gl.PoLineId IS NULL AND gl.SupplierId IS NOT NULL;
+
+        -- the invoice lines of those groups and what they had received, to tell which ones lose pieces
+        DECLARE @GroupInvoiceLines TABLE (LineId INT NOT NULL PRIMARY KEY, ReceivedBefore INT NOT NULL);
+        INSERT INTO @GroupInvoiceLines (LineId, ReceivedBefore)
+        SELECT il.Id, il.ReceivedQuantityBase
+        FROM purchase.PurchaseDocumentLines il
+        INNER JOIN purchase.PurchaseDocuments d ON d.Id = il.DocumentId
+        INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+        WHERE EXISTS (SELECT 1 FROM @Anchors a
+                      WHERE (a.Kind = 'P' AND a.PoLineId = il.SourceLineId)
+                         OR (a.Kind = 'S' AND il.SourceLineId IS NULL AND a.SupplierId = d.SupplierId AND a.ItemId = il.ItemId));
+
+        /* ---- stock */
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
+        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+               m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
+        FROM inventory.StockMovements m
+        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'GRN' AND m.DocumentId = @Id AND m.IsReversal = 0;
+
+        UPDATE purchase.GoodsReceipts
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        -- the cost of sales of the negative stock it filled goes back: without this receipt those pieces are again
+        -- sold without a receipt (compensating rows, as the GRNCOST rows always are)
+        DECLARE @NegBack TABLE (ChangeId INT NOT NULL PRIMARY KEY, LineId INT NOT NULL, Amount DECIMAL(18,2) NOT NULL);
+        INSERT INTO purchase.GoodsReceiptCostChanges (GoodsReceiptLineId, CauseKind, CauseId, CauseNumber, ReceivedBase, InStockBase,
+                                                      FobBefore, FobAfter, UnitCostBefore, UnitCostAfter, AmountBase, InventoryBase, CogsBase, CreatedBy)
+        OUTPUT inserted.Id, inserted.GoodsReceiptLineId, inserted.AmountBase INTO @NegBack (ChangeId, LineId, Amount)
+        SELECT cc.GoodsReceiptLineId, N'NEGSTOCK', @Id, @Number, cc.ReceivedBase, 0, NULL, NULL, cc.UnitCostAfter, cc.UnitCostBefore,
+               -cc.AmountBase, -cc.InventoryBase, -cc.CogsBase, @UserId
+        FROM purchase.GoodsReceiptCostChanges cc
+        INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = cc.GoodsReceiptLineId AND gl.GoodsReceiptId = @Id
+        WHERE cc.CauseKind = N'NEGSTOCK' AND cc.AmountBase <> 0;
+
+        INSERT INTO inventory.CostAdjustments (AdjustmentDate, ItemId, WarehouseId, BranchId, Kind, AmountBase, SourceKind, SourceId, SourceNumber, PurchaseLineId, CreatedBy)
+        SELECT SYSUTCDATETIME(), gl.ItemId, gl.WarehouseId, w.BranchId, N'COGS', n.Amount, N'GRNCOST', n.ChangeId, @Number, NULL, @UserId
+        FROM @NegBack n
+        INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = n.LineId
+        INNER JOIN masterdata.Warehouses w       ON w.Id = gl.WarehouseId;
+
+        /* ---- the container: back to its movement status, to be received again. BEFORE the rematch: a container still
+           Offloaded without a posted receipt reads as offloaded the old way (fn_Container_ReceivedBy), and its invoice
+           lines would be left out of the matching. */
+        IF @ContainerId IS NOT NULL
+        BEGIN
+            UPDATE logistics.ContainerLines
+            SET ReceivedQuantityBase = NULL, VarianceReason = NULL, FobCostBase = NULL, LandedCostBase = NULL
+            WHERE ContainerId = @ContainerId;
+
+            UPDATE logistics.ContainerCharges SET AppliedAtOffload = 0 WHERE ContainerId = @ContainerId;
+            EXEC logistics.usp_Container_ReallocateCharges @ContainerId;
+
+            UPDATE logistics.Containers
+            SET OffloadedDate = NULL, OffloadedAtUtc = NULL, OffloadedBy = NULL,
+                StatusNote = LEFT(N'Goods receipt ' + @Number + N' cancelled: ' + @Reason, 200),
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @ContainerId;
+
+            EXEC logistics.usp_Container_RefreshStatus @ContainerId;
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@ContainerId, N'OffloadCancelled', LEFT(N'Goods receipt ' + @Number + N' cancelled: ' + @Reason, 500), @UserId);
+        END
+
+        /* ---- matches and costs */
+        EXEC purchase.usp_GoodsReceipt_Rematch @Anchors;
+
+        SELECT TOP (1) @Msg = N'Purchase return ' + ISNULL(r.DocumentNumber, N'') + N' took back goods of this receipt. Cancel the return first.'
+        FROM @GroupInvoiceLines g
+        INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = g.LineId
+        OUTER APPLY (SELECT TOP (1) rd.DocumentNumber
+                     FROM purchase.PurchaseDocumentLines rl
+                     INNER JOIN purchase.PurchaseDocuments rd ON rd.Id = rl.DocumentId AND rd.Status IN (2, 4)
+                     WHERE rl.SourceLineId = il.Id
+                     ORDER BY rd.PostedAtUtc DESC, rd.Id DESC) r
+        WHERE il.ReceivedQuantityBase < g.ReceivedBefore AND il.ReturnedQuantityBase > il.ReceivedQuantityBase
+        ORDER BY il.Id;
+        IF @Msg IS NOT NULL THROW 63010, @Msg, 1;
+
+        DECLARE @Others logistics.tvp_IdList;
+        INSERT INTO @Others (Id) SELECT GoodsReceiptLineId FROM purchase.fn_GoodsReceipt_GroupLines(@Anchors);
+        IF EXISTS (SELECT 1 FROM @Others)
+            EXEC purchase.usp_GoodsReceipt_TrueUpCost @Others, N'GRNCANCEL', @Id, @Number, @UserId;
+
+        /* ---- order lines */
+        UPDATE pol
+        SET GoodsReceivedBase = pol.GoodsReceivedBase - x.Rec, GoodsShortBase = pol.GoodsShortBase - x.Short
+        FROM purchase.PurchaseDocumentLines pol
+        INNER JOIN (SELECT PoLineId, Rec = SUM(QuantityBase), Short = SUM(SettledShortBase)
+                    FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id AND PoLineId IS NOT NULL GROUP BY PoLineId) x ON x.PoLineId = pol.Id;
+
+        DECLARE @Reopened TABLE (Id INT NOT NULL PRIMARY KEY);
+        UPDATE po
+        SET Status = 2, ClosedAtUtc = NULL, ClosedBy = NULL, CloseReason = NULL
+        OUTPUT inserted.Id INTO @Reopened (Id)
+        FROM purchase.PurchaseDocuments po
+        WHERE po.Id IN (SELECT PurchaseOrderId FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id AND PurchaseOrderId IS NOT NULL)
+          AND po.Status = 4 AND po.CloseReason IN (N'Fully received', N'Fully invoiced and received')
+          AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                      WHERE l.DocumentId = po.Id AND l.GoodsReceivedBase + l.GoodsShortBase < l.QuantityBase);
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT r.Id, N'Updated', N'Re-opened: ' + @Number + N' was cancelled', @UserId FROM @Reopened r;
+
+        /* ---- item costs and audits */
+        DECLARE @ItemId INT;
+        DECLARE items CURSOR LOCAL FAST_FORWARD FOR
+            SELECT DISTINCT ItemId FROM purchase.GoodsReceiptLines WHERE GoodsReceiptId = @Id AND QuantityBase > 0;
+        OPEN items;
+        FETCH NEXT FROM items INTO @ItemId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC inventory.usp_Item_RebuildCosts @ItemId;
+            FETCH NEXT FROM items INTO @ItemId;
+        END
+        CLOSE items;
+        DEALLOCATE items;
+
+        INSERT INTO purchase.GoodsReceiptAudit (GoodsReceiptId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT i.Id, N'Updated', N'Goods receipt ' + @Number + N' cancelled', @UserId FROM @Invoices i;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 26. What posting a draft invoice would do to received goods */
+
+/* AN ESTIMATE, READ-ONLY, for the post confirmation of a DRAFT supplier invoice. One row per invoice line:
+     ReceivedNotInvoicedBase  the received pieces of its group not matched to an invoice yet, up to the line's
+                              pieces, first in first out (a line linked to a container takes that container's first)
+     CurrentCostBase          what those pieces cost now, per piece (landed)
+     InvoiceCostBase          what they would cost with this invoice, per piece: its FOB (rate of the invoice) and
+                              its own charges (allocated, else shared by value); container pieces also keep their
+                              container charges (a local invoice's own charges ride on a container line's FOB, as
+                              fn_GoodsReceiptLine_TargetCost has it; an imported invoice has none)
+     DifferenceBase           the cost adjustment
+     EstimatedInventoryBase / EstimatedCogsBase   the split on today's company stock, as the true-up does it
+   Nothing for a document that is not a draft. The posting itself re-matches everything and may differ slightly. */
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseInvoice_ReceiptCostPreview
+    @InvoiceId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Status TINYINT, @Rate DECIMAL(18,6), @SupplierId INT, @Code NVARCHAR(20);
+    SELECT @Status = d.Status, @Rate = d.ExchangeRate, @SupplierId = d.SupplierId, @Code = dt.Code
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE d.Id = @InvoiceId;
+    IF @Status IS NULL OR @Code <> N'PINV' THROW 65006, 'Purchase invoice not found.', 1;
+
+    -- the draft's own charges per line: as allocated, else shared by value (an estimate until it is posted)
+    DECLARE @ChargesTotal DECIMAL(18,2) = ISNULL((SELECT SUM(AmountBase) FROM purchase.PurchaseCharges
+                                                  WHERE DocumentKind = N'PINV' AND DocumentId = @InvoiceId AND IncludeInLandedCost = 1), 0);
+    DECLARE @HasAllocations BIT = CASE WHEN EXISTS (SELECT 1 FROM purchase.PurchaseChargeAllocations x
+                                                    INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                                                    WHERE c.DocumentKind = N'PINV' AND c.DocumentId = @InvoiceId AND c.IncludeInLandedCost = 1)
+                                       THEN 1 ELSE 0 END;
+    DECLARE @ValueTotal DECIMAL(18,6) = (SELECT SUM(LineTotal / @Rate) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
+
+    DECLARE @L TABLE (LineId INT NOT NULL PRIMARY KEY, LineNumber INT NOT NULL, ItemId INT NOT NULL, GroupKey NVARCHAR(40) NOT NULL,
+                      ContainerLineId INT NULL, QuantityBase INT NOT NULL, FobBase DECIMAL(18,6) NOT NULL, ChargesBase DECIMAL(18,6) NOT NULL,
+                      Rem INT NOT NULL);
+    INSERT INTO @L (LineId, LineNumber, ItemId, GroupKey, ContainerLineId, QuantityBase, FobBase, ChargesBase, Rem)
+    SELECT l.Id, l.LineNumber, l.ItemId,
+           CASE WHEN l.SourceLineId IS NOT NULL THEN N'P' + CAST(l.SourceLineId AS NVARCHAR(12))
+                ELSE N'S' + CAST(@SupplierId AS NVARCHAR(12)) + N'.' + CAST(l.ItemId AS NVARCHAR(12)) END,
+           l.ContainerLineId, l.QuantityBase,
+           CAST(l.LineTotal / @Rate / l.QuantityBase AS DECIMAL(18,6)),
+           CAST(CASE WHEN @HasAllocations = 1
+                     THEN ISNULL((SELECT SUM(x.AmountBase) FROM purchase.PurchaseChargeAllocations x
+                                  INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                                  WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'PINV' AND c.DocumentId = @InvoiceId
+                                    AND c.IncludeInLandedCost = 1), 0)
+                     WHEN @ValueTotal > 0 THEN @ChargesTotal * (l.LineTotal / @Rate) / @ValueTotal
+                     ELSE 0 END / l.QuantityBase AS DECIMAL(18,6)),
+           -- a line of a container offloaded before goods receipts takes nothing: its goods are received already
+           CASE WHEN rb.ReceivedBy = N'Offload' THEN 0 ELSE l.QuantityBase END
+    FROM purchase.PurchaseDocumentLines l
+    LEFT JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+    OUTER APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+    WHERE l.DocumentId = @InvoiceId AND @Status = 1;
+
+    -- received pieces of those groups not matched to an invoice yet, with what they cost now
+    DECLARE @U TABLE (LineId INT NOT NULL PRIMARY KEY, GoodsReceiptId INT NOT NULL, GroupKey NVARCHAR(40) NOT NULL, ContainerLineId INT NULL,
+                      ItemId INT NOT NULL, T DATETIME2(3) NOT NULL, Rem INT NOT NULL, IsContainer BIT NOT NULL,
+                      BaseFob DECIMAL(18,6) NOT NULL, BaseCharges DECIMAL(18,6) NOT NULL, ContainerCharges DECIMAL(18,6) NOT NULL,
+                      RNet DECIMAL(18,6) NOT NULL);
+    INSERT INTO @U (LineId, GoodsReceiptId, GroupKey, ContainerLineId, ItemId, T, Rem, IsContainer, BaseFob, BaseCharges, ContainerCharges, RNet)
+    SELECT t.GoodsReceiptLineId, t.GoodsReceiptId,
+           CASE WHEN t.PoLineId IS NOT NULL THEN N'P' + CAST(t.PoLineId AS NVARCHAR(12))
+                ELSE N'S' + CAST(t.SupplierId AS NVARCHAR(12)) + N'.' + CAST(t.ItemId AS NVARCHAR(12)) END,
+           t.ContainerLineId, t.ItemId, ISNULL(g.PostedAtUtc, g.CreatedAtUtc), t.ReceivedBase - t.MatchedBase, t.IsContainerLine,
+           t.BaseFobBase, t.BaseChargesBase, CASE WHEN t.IsContainerLine = 1 THEN t.TargetChargesBase ELSE 0 END, t.NetReceivedBase
+    FROM (SELECT DISTINCT gl.GoodsReceiptId
+          FROM purchase.GoodsReceiptLines gl
+          INNER JOIN purchase.GoodsReceipts gr ON gr.Id = gl.GoodsReceiptId AND gr.Status = 2
+          WHERE gl.PoLineId IN (SELECT l.SourceLineId FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @InvoiceId)
+             OR (gl.PoLineId IS NULL AND gl.SupplierId = @SupplierId
+                 AND gl.ItemId IN (SELECT l.ItemId FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @InvoiceId AND l.SourceLineId IS NULL))) r
+    CROSS APPLY purchase.fn_GoodsReceiptLine_TargetCost(r.GoodsReceiptId) t
+    INNER JOIN purchase.GoodsReceipts g ON g.Id = t.GoodsReceiptId
+    WHERE t.ReceivedBase > t.MatchedBase;
+
+    DELETE FROM @U WHERE GroupKey NOT IN (SELECT GroupKey FROM @L);
+
+    -- first in first out, as the rematch would: the container line first, then the group
+    DECLARE @Take TABLE (ULineId INT NOT NULL, LLineId INT NOT NULL, Qty INT NOT NULL);
+    DECLARE @Pass TABLE (ULineId INT NOT NULL, LLineId INT NOT NULL, Qty INT NOT NULL);
+
+    WITH u AS (SELECT LineId, K = ContainerLineId, Rem,
+                      E = SUM(Rem) OVER (PARTITION BY ContainerLineId ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+               FROM @U WHERE Rem > 0 AND ContainerLineId IS NOT NULL),
+         l AS (SELECT LineId, K = ContainerLineId, Rem,
+                      E = SUM(Rem) OVER (PARTITION BY ContainerLineId ORDER BY LineNumber ROWS UNBOUNDED PRECEDING)
+               FROM @L WHERE Rem > 0 AND ContainerLineId IS NOT NULL)
+    INSERT INTO @Pass (ULineId, LLineId, Qty)
+    SELECT u.LineId, l.LineId,
+           (CASE WHEN u.E < l.E THEN u.E ELSE l.E END) - (CASE WHEN u.E - u.Rem > l.E - l.Rem THEN u.E - u.Rem ELSE l.E - l.Rem END)
+    FROM u INNER JOIN l ON l.K = u.K
+    WHERE u.E - u.Rem < l.E AND l.E - l.Rem < u.E;
+
+    UPDATE u SET Rem = u.Rem - p.Qty FROM @U u INNER JOIN (SELECT ULineId, Qty = SUM(Qty) FROM @Pass GROUP BY ULineId) p ON p.ULineId = u.LineId;
+    UPDATE l SET Rem = l.Rem - p.Qty FROM @L l INNER JOIN (SELECT LLineId, Qty = SUM(Qty) FROM @Pass GROUP BY LLineId) p ON p.LLineId = l.LineId;
+    INSERT INTO @Take (ULineId, LLineId, Qty) SELECT ULineId, LLineId, Qty FROM @Pass;
+    DELETE FROM @Pass;
+
+    WITH u AS (SELECT LineId, K = GroupKey, Rem,
+                      E = SUM(Rem) OVER (PARTITION BY GroupKey ORDER BY T, LineId ROWS UNBOUNDED PRECEDING)
+               FROM @U WHERE Rem > 0),
+         l AS (SELECT LineId, K = GroupKey, Rem,
+                      E = SUM(Rem) OVER (PARTITION BY GroupKey ORDER BY LineNumber ROWS UNBOUNDED PRECEDING)
+               FROM @L WHERE Rem > 0)
+    INSERT INTO @Take (ULineId, LLineId, Qty)
+    SELECT u.LineId, l.LineId,
+           (CASE WHEN u.E < l.E THEN u.E ELSE l.E END) - (CASE WHEN u.E - u.Rem > l.E - l.Rem THEN u.E - u.Rem ELSE l.E - l.Rem END)
+    FROM u INNER JOIN l ON l.K = u.K
+    WHERE u.E - u.Rem < l.E AND l.E - l.Rem < u.E;
+
+    -- per piece taken: now = its base cost (+ its container's charges); with the invoice = the invoice FOB + the invoice's
+    -- own charges (+ the same container charges for container pieces: fn_GoodsReceiptLine_TargetCost)
+    DECLARE @T TABLE (LLineId INT NOT NULL, ULineId INT NOT NULL, ItemId INT NOT NULL, Qty INT NOT NULL,
+                      CostNow DECIMAL(18,6) NOT NULL, CostNew DECIMAL(18,6) NOT NULL, PRIMARY KEY (LLineId, ULineId));
+    INSERT INTO @T (LLineId, ULineId, ItemId, Qty, CostNow, CostNew)
+    SELECT k.LLineId, k.ULineId, u.ItemId, SUM(k.Qty),
+           MAX(CASE WHEN u.IsContainer = 1 THEN u.BaseFob + u.ContainerCharges ELSE u.BaseFob + u.BaseCharges END),
+           MAX(CASE WHEN u.IsContainer = 1 THEN l.FobBase + l.ChargesBase + u.ContainerCharges ELSE l.FobBase + l.ChargesBase END)
+    FROM @Take k
+    INNER JOIN @U u ON u.LineId = k.ULineId
+    INNER JOIN @L l ON l.LineId = k.LLineId
+    GROUP BY k.LLineId, k.ULineId, u.ItemId;
+
+    -- the stock share per item, on today's company stock, over the receipt lines involved (as the true-up)
+    DECLARE @Items TABLE (ItemId INT NOT NULL PRIMARY KEY, NetReceived DECIMAL(18,6) NOT NULL, OnHand DECIMAL(18,6) NOT NULL, Ratio DECIMAL(18,10) NOT NULL);
+    INSERT INTO @Items (ItemId, NetReceived, OnHand, Ratio)
+    SELECT x.ItemId, x.NetReceived, oh.Q,
+           CASE WHEN oh.Q <= 0 OR x.NetReceived <= 0 THEN 0 WHEN oh.Q < x.NetReceived THEN oh.Q / x.NetReceived ELSE 1 END
+    FROM (SELECT u.ItemId, NetReceived = SUM(CASE WHEN u.RNet > 0 THEN u.RNet ELSE 0 END)
+          FROM @U u WHERE u.LineId IN (SELECT ULineId FROM @T) GROUP BY u.ItemId) x
+    CROSS APPLY (SELECT Q = CAST(inventory.fn_StockOnHand(x.ItemId, NULL) AS DECIMAL(18,6))) oh;
+
+    SELECT InvoiceLineId           = l.Id,
+           l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           InvoicedBase            = l.QuantityBase,
+           ReceivedNotInvoicedBase = ISNULL(x.Qty, 0),
+           CurrentCostBase         = CAST(x.Now / NULLIF(x.Qty, 0) AS DECIMAL(18,6)),
+           InvoiceCostBase         = CAST(x.New / NULLIF(x.Qty, 0) AS DECIMAL(18,6)),
+           DifferenceBase          = CAST(ISNULL(x.Diff, 0) AS DECIMAL(18,2)),
+           EstimatedInventoryBase  = CAST(ROUND(ISNULL(x.Diff, 0) * ISNULL(it.Ratio, 0), 2) AS DECIMAL(18,2)),
+           EstimatedCogsBase       = CAST(ISNULL(x.Diff, 0) - ROUND(ISNULL(x.Diff, 0) * ISNULL(it.Ratio, 0), 2) AS DECIMAL(18,2)),
+           CompanyOnHandBase       = CAST(inventory.fn_StockOnHand(l.ItemId, NULL) AS INT),
+           Receipts                = x.Receipts,
+           IsEstimate              = CAST(1 AS BIT)
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN inventory.Items i ON i.Id = l.ItemId
+    OUTER APPLY (SELECT Qty  = SUM(t.Qty),
+                        Now  = SUM(t.Qty * t.CostNow),
+                        New  = SUM(t.Qty * t.CostNew),
+                        Diff = SUM(ROUND((t.CostNew - t.CostNow) * t.Qty, 2)),
+                        Receipts = (SELECT STRING_AGG(z.DocumentNumber, N', ') WITHIN GROUP (ORDER BY z.DocumentNumber)
+                                    FROM (SELECT DISTINCT g.DocumentNumber FROM @T t2
+                                          INNER JOIN @U u2 ON u2.LineId = t2.ULineId
+                                          INNER JOIN purchase.GoodsReceipts g ON g.Id = u2.GoodsReceiptId
+                                          WHERE t2.LLineId = l.Id) z)
+                 FROM @T t WHERE t.LLineId = l.Id) x
+    LEFT JOIN @Items it ON it.ItemId = l.ItemId
+    WHERE l.DocumentId = @InvoiceId AND @Status = 1
+    ORDER BY l.LineNumber;
+END
+GO
+
+/* ================================================================== 99. Check */
+
+SELECT o.ObjectName, ObjectType = ISNULL(so.type_desc, N'MISSING')
+FROM (VALUES (N'purchase.GoodsReceipts'), (N'purchase.GoodsReceiptLines'), (N'purchase.GoodsReceiptInvoiceMatches'),
+             (N'purchase.GoodsReceiptCostChanges'), (N'purchase.GoodsReceiptFiles'), (N'purchase.GoodsReceiptAudit'),
+             (N'purchase.GoodsReceiptSwitch'),
+             (N'masterdata.fn_AttachmentDocumentKinds'), (N'masterdata.usp_AttachmentType_Delete'),
+             (N'logistics.fn_Container_ReceivedBy'), (N'logistics.fn_Container_LastDelivery'),
+             (N'purchase.fn_PoLine_Progress'), (N'purchase.fn_PoLine_CommittedOutside'), (N'purchase.fn_InvoiceLine_ToReceive'),
+             (N'purchase.fn_GoodsReceipt_GroupLines'), (N'purchase.fn_GoodsReceiptLine_TargetCost'), (N'purchase.fn_GoodsReceiptLine_Cost'),
+             (N'purchase.fn_GoodsReceipt_PostCheck'), (N'purchase.fn_GoodsReceipt_CancelCheck'), (N'purchase.fn_GoodsReceipt_Blocks'),
+             (N'purchase.usp_GoodsReceipt_Save'), (N'purchase.usp_GoodsReceipt_CreateFromOrder'),
+             (N'purchase.usp_GoodsReceipt_CreateFromInvoice'), (N'purchase.usp_GoodsReceipt_CreateForContainer'),
+             (N'purchase.usp_GoodsReceipt_CreateForMovement'), (N'purchase.usp_GoodsReceipt_Delete'),
+             (N'purchase.usp_GoodsReceipt_Get'), (N'purchase.usp_GoodsReceipt_Search'), (N'purchase.usp_GoodsReceipt_WaitingCount'),
+             (N'purchase.usp_GoodsReceipt_File_Add'), (N'purchase.usp_GoodsReceipt_File_List'), (N'purchase.usp_GoodsReceipt_File_Get'),
+             (N'purchase.usp_GoodsReceipt_File_Update'), (N'purchase.usp_GoodsReceipt_File_Delete'),
+             (N'purchase.usp_GoodsReceipt_LockMatching'),
+             (N'purchase.usp_GoodsReceipt_Rematch'), (N'purchase.usp_GoodsReceipt_TrueUpCost'),
+             (N'purchase.usp_GoodsReceipt_Post'), (N'purchase.usp_GoodsReceipt_Cancel'),
+             (N'purchase.usp_PurchaseInvoice_ReceiptCostPreview')) o (ObjectName)
+LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
+ORDER BY ObjectType, o.ObjectName;                                    -- expected 40: 12 functions, 21 procedures, 7 tables, none MISSING
+
+SELECT TypeName = SCHEMA_NAME(schema_id) + N'.' + name FROM sys.table_types
+WHERE SCHEMA_NAME(schema_id) = N'purchase' AND name IN (N'tvp_GoodsReceiptLine', N'tvp_GoodsReceiptAnchor');   -- expected 2
+
+-- The new columns, and the widened container line note (800 bytes = 400 characters).
+SELECT UsesGoodsReceipts = CASE WHEN COL_LENGTH(N'purchase.PurchaseDocuments', N'UsesGoodsReceipts') IS NULL THEN N'MISSING' ELSE N'ok' END,
+       GoodsReceivedBase = CASE WHEN COL_LENGTH(N'purchase.PurchaseDocumentLines', N'GoodsReceivedBase') IS NULL THEN N'MISSING' ELSE N'ok' END,
+       GoodsShortBase    = CASE WHEN COL_LENGTH(N'purchase.PurchaseDocumentLines', N'GoodsShortBase') IS NULL THEN N'MISSING' ELSE N'ok' END,
+       VarianceReasonBytes = COL_LENGTH(N'logistics.ContainerLines', N'VarianceReason');   -- expected ok, ok, ok, 800
+
+SELECT Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, NumberPerBranch, YearInNumber, NumberLength, DefaultPricing, IsActive
+FROM inventory.DocumentTypes WHERE Code = N'GRN';                    -- expected 1 row
+
+SELECT p.Code, p.Name, p.SortOrder, Roles = (SELECT COUNT(*) FROM security.RolePermissions rp WHERE rp.PermissionId = p.Id)
+FROM security.Permissions p WHERE p.Code LIKE N'purchase.goodsreceipts.%' ORDER BY p.SortOrder;   -- expected 5
+
+-- The attachment types used for goods receipts (as an administrator left them).
+SELECT a.Category, a.SubType, a.AppliesTo, a.IsActive
+FROM masterdata.AttachmentTypes a
+WHERE EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = a.Id AND u.DocumentKind = N'GRN')
+ORDER BY a.SortOrder;
+
+-- The goods receipts by source and status, and the switch (empty until script 65).
+SELECT g.SourceKind, Drafts = SUM(CASE WHEN g.Status = 1 THEN 1 ELSE 0 END), Posted = SUM(CASE WHEN g.Status = 2 THEN 1 ELSE 0 END),
+       Cancelled = SUM(CASE WHEN g.Status = 3 THEN 1 ELSE 0 END)
+FROM purchase.GoodsReceipts g
+GROUP BY g.SourceKind
+ORDER BY g.SourceKind;
+SELECT SwitchedAtUtc FROM purchase.GoodsReceiptSwitch;              -- empty until script 65
+
+PRINT 'Script 64 applied: goods receipts - tables, document type GRN, permissions, attachment kind, progress functions, drafts, posting, matching and cost true-up (not called before script 65).';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 65: Goods receipts - the switch (stock enters only through goods receipts) =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 65: GOODS RECEIPTS (GRN) - THE SWITCH
+
+   From this script on, GOODS ENTER STOCK ONLY THROUGH A POSTED GOODS RECEIPT (script 64's objects). A supplier
+   invoice posted from now on moves no stock and no item cost, whatever its receipt mode: it makes the amount payable
+   and sets the INVOICE COST that received goods are valued at or corrected to. Documents posted before the switch keep
+   their stock and their cost ("from now"). THE SWITCH IS ONE-WAY: once a goods receipt, or an invoice posted the new
+   way, exists, the code before this script would receive goods twice. 64 and 65 reach main together, never 64 alone.
+
+   Rules (spec "Goods Receipts (GRN)", sections 1 and 7; the business owner's decisions 1-8)
+     - THE SWITCH, once (purchase.GoodsReceiptSwitch empty, one transaction with its marker row): every order line
+       counts what was RECEIVED before goods receipts (GoodsReceivedBase: the non-reversed stock rows of old local
+       invoices, the pieces of containers offloaded the old way, posted goods receipt lines) and what was SETTLED SHORT
+       (GoodsShortBase: the pieces old offloads recorded short - loaded - received, always with a reason - and the
+       receipt lines' settled pieces). Later starts change nothing; "99. Check" reports drift and never overwrites.
+     - INVOICES: Post marks a supplier invoice UsesGoodsReceipts = 1 and moves no stock; its pieces are matched to the
+       goods already received (usp_GoodsReceipt_Rematch) and their cost brought to the invoice's
+       (usp_GoodsReceipt_TrueUpCost: the part in stock to the stock value, the rest to cost of sales; an exchange-rate
+       difference is part of it, decision 4). "Receive the goods now" (@ReceiveNow, decision 7) receives its lines not
+       in a container with a goods receipt, in a second transaction. Cancel (decision 3) is allowed when its goods were
+       received: they go back to the order price. A container received with a goods receipt can still be invoiced
+       (rule 19). A return takes back only what was received (rule 23), at the invoice line's current cost, from the
+       warehouse the goods were received into. Purchase documents are orders, invoices and returns only (65008).
+     - ORDERS close by themselves when fully invoiced AND received or settled short ("Fully invoiced and received",
+       decision 2), and reopen when an invoice or goods receipt that closed them is cancelled. An order with goods
+       receipts cannot be cancelled (65011), nor closed by hand while goods received on it wait for their invoice or a
+       draft goods receipt waits on it (65021). What an order line committed outside containers - and so what can still
+       be loaded into containers - is the larger of invoiced and received outside containers (fn_PoLine_CommittedOutside).
+     - CONTAINERS: the Offload is retired (69010: "Use Receive goods..." - any confirmed container, decision 6); Cancel
+       Offload only reverses an offload of the old kind (and lowers the order counters); Close needs every received
+       piece invoiced (69016); a container with a goods receipt keeps its lines and branch and cannot be cancelled or
+       deleted (69019); it stays "Offloaded" once received (decision 8). Cancelling a completed Delivery movement
+       deletes the automatic draft receipts it created. Invoice lines a goods receipt refers to stay linked or
+       unlinked (65028).
+     - REPORTS: item last cost / FOB / supplier from the latest goods receipt line (or the old receipts); the stock
+       statement names a receipt's supplier and source; Shortages and the item's orders use one "still to come"
+       (rule 25); landed cost adjustments on an invoice that uses goods receipts adjust the received goods through the
+       true-up. The order, invoice and container pages and lists show received, to receive and the goods receipts.
+
+   Objects (each re-created with CREATE OR ALTER from its LAST definition in Schema.sql plus the change of its section)
+     purchase.PurchaseDocumentLines.GoodsReceivedBase / GoodsShortBase (filled once, section 1) and the switch row
+     purchase.usp_PurchaseDocument_ValidateInput (script 48), _Save / _Post / _CreateFromSource /
+       _CreateFromContainers / _Get / _Search (script 63), _Cancel (script 47), _Close (script 27)
+     logistics.usp_Container_InvoiceCandidates (script 27)
+     logistics.usp_Movement_SetStatus (script 53), usp_Movement_Get (script 27)
+     logistics.usp_Container_Offload, _CancelOffload, _Close, _Reopen, _Cancel, _Delete, _Tracking (script 27); _Save,
+       _PlanFromOrder, _CreateBatch, _AvailablePoLines, _Get, _Search (script 54); logistics.fn_Container_CloseBlock (new:
+       why an offloaded container cannot be closed yet - Close refuses with it, Get and Search show it)
+     purchase.fn_PurchaseInvoice_ContainerState (script 63), usp_PurchaseInvoice_LinkContainers (script 51),
+       usp_PurchaseInvoice_UnlinkContainer, usp_PurchaseInvoice_LinkCandidates (script 43)
+     inventory.usp_Item_RebuildCosts (script 27), usp_Item_StockStatement (script 58), fn_Shortage_Live (script 62),
+       usp_Item_PurchaseOrders (script 59)
+     purchase.usp_LandedCostAdjustment_Save (script 27), _Post / _Cancel (script 23)
+     logistics.usp_ContainerCharge_Post (script 27), usp_ContainerCharge_Cancel (script 47)
+
+   LOCK ORDER. Every procedure here that rematches or trues up the cost of received goods - supplier invoice and return
+   Post and Cancel, landed cost adjustment Post and Cancel - takes the matching lock FIRST
+   (purchase.usp_GoodsReceipt_LockMatching, script 64), before any row lock or write, as goods receipt Post and Cancel
+   do: taken later, two postings deadlock. The container charges read the container's status under lock, so a charge
+   posted or cancelled while its container is being received waits for the receipt. Container Save, Cancel, Close and
+   Reopen read the container under lock (UPDLOCK, HOLDLOCK) before their checks and write in the same transaction, as
+   "Receive goods..." and goods receipt Post and Cancel hold it: the container first, then the goods receipts.
+
+   Errors raised by the re-created objects (the goods receipt errors 63000-63013 are script 64's)
+     69019 (new, 409) a container with a goods receipt: lines, branch, cancel, delete - 69010 (409) the Offload retired /
+     Cancel Offload of a container received with a goods receipt - 69016 (409) Close with received pieces not invoiced -
+     65011 an order with goods receipts (409) / a return above what was received (400) - 65028 (409) Link or Unlink of
+     an invoice line a goods receipt refers to (Add container and Auto-plan from the invoice answer 65030 for it: rule 6
+     of the invoice's containers state, from usp_PurchaseInvoice_CheckContainers) - 65021 (409) an order closed by hand
+     while received goods are not invoiced or a draft goods receipt waits on it - 65008 (400) a purchase document type
+     other than PO, PINV, PRET - 65019 its text names a container cancelled or offloaded before goods receipts - 67012
+     (409) a landed cost adjustment on an imported invoice now also refuses a "Shipped in containers" one (receipt mode
+     2), at Save and at Post - 63010 (409, script 64's) the matching lock not obtained in 60 seconds.
+
+   Requires script 64. Idempotent, additive: re-applied at every API start-up through Schema.sql, and builds a
+   brand-new empty database (it creates no table or column; the switch finds nothing to count there).
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'purchase.GoodsReceiptSwitch', N'U') IS NULL
+   OR COL_LENGTH(N'purchase.PurchaseDocuments', N'UsesGoodsReceipts') IS NULL
+   OR COL_LENGTH(N'purchase.PurchaseDocumentLines', N'GoodsShortBase') IS NULL
+   OR TYPE_ID(N'purchase.tvp_GoodsReceiptAnchor') IS NULL
+   OR OBJECT_ID(N'logistics.fn_Container_ReceivedBy', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.fn_PoLine_Progress', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.fn_PoLine_CommittedOutside', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.fn_InvoiceLine_ToReceive', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.fn_GoodsReceipt_GroupLines', N'IF') IS NULL
+   OR OBJECT_ID(N'purchase.usp_GoodsReceipt_LockMatching', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.usp_GoodsReceipt_Rematch', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.usp_GoodsReceipt_TrueUpCost', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.usp_GoodsReceipt_CreateFromInvoice', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.usp_GoodsReceipt_Post', N'P') IS NULL
+BEGIN
+    RAISERROR ('Run script 64 before this script.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. The switch: received pieces of the order lines, once */
+
+-- THE MOMENT OF THE SWITCH (spec 7.2). From now on an order line counts what is RECEIVED (GoodsReceivedBase) next to
+-- what is invoiced (ReceivedQuantityBase): every goods receipt posted or cancelled, every old invoice cancelled and
+-- every old offload reversed keeps it up to date. Before that, goods entered stock in two other ways, which this batch
+-- counts once, per order line:
+--   (a) a local invoice posted with stock: its non-reversed PINV stock rows (the ledger, so it is right whatever the
+--       invoice's flags say; a cancelled invoice has a reversal row and counts nothing - the rule of
+--       usp_Item_RebuildCosts: family + type + document);
+--   (b) a container offloaded the old way (fn_Container_ReceivedBy = 'Offload'): its lines' received pieces;
+--   (c) a posted goods receipt line (none at the switch; counted for a database where script 64 already ran).
+-- And what is SETTLED SHORT (GoodsShortBase), rule 17: an old offload received fewer pieces than were loaded only with a
+-- reason (script 27), exactly as a container goods receipt settles its difference - so the pieces it recorded short
+-- (loaded - received) are settled, and (c)'s receipt lines bring their SettledShortBase. Without it every old short
+-- offload would count its missing pieces as still to come (Shortages, "On order", "Receive goods...") after the switch,
+-- where they counted nothing before.
+-- One transaction with the marker: the counters and the marker go in together or not at all, and a later start finds
+-- the marker and does nothing - an administrator's data is never recomputed again (the Check section reports drift,
+-- it never overwrites). Nothing else changes: no draft is flipped, no default changes, no item cost is replayed
+-- (usp_Item_RebuildCosts runs on the next event of each item).
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    IF NOT EXISTS (SELECT 1 FROM purchase.GoodsReceiptSwitch WITH (UPDLOCK, HOLDLOCK))
+    BEGIN
+        DECLARE @SwitchLines INT;
+
+        WITH inv AS
+        (
+            -- (a) the stock rows of local invoices posted before goods receipts, by the order line of their invoice line
+            SELECT PoLineId = il.SourceLineId, Qty = SUM(m.QuantityBase)
+            FROM inventory.StockMovements m
+            INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = m.DocumentLineId AND il.DocumentId = m.DocumentId
+            WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'PINV' AND m.IsReversal = 0
+              AND il.SourceLineId IS NOT NULL
+              AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r
+                              WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                                AND r.DocumentId = m.DocumentId AND r.IsReversal = 1)
+            GROUP BY il.SourceLineId
+        ),
+        olo AS
+        (
+            -- (b) the containers offloaded the old way: received, and recorded short (loaded - received)
+            SELECT cl.PoLineId, Qty = SUM(ISNULL(cl.ReceivedQuantityBase, 0)),
+                   Short = SUM(CASE WHEN cl.ReceivedQuantityBase IS NOT NULL AND cl.QuantityBase > cl.ReceivedQuantityBase
+                                    THEN cl.QuantityBase - cl.ReceivedQuantityBase ELSE 0 END)
+            FROM logistics.ContainerLines cl
+            CROSS APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+            WHERE cl.PoLineId IS NOT NULL AND rb.ReceivedBy = N'Offload'
+            GROUP BY cl.PoLineId
+        ),
+        grn AS
+        (
+            -- (c) posted goods receipts: received, and settled short
+            SELECT gl.PoLineId, Qty = SUM(gl.QuantityBase), Short = SUM(gl.SettledShortBase)
+            FROM purchase.GoodsReceiptLines gl
+            INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+            WHERE gl.PoLineId IS NOT NULL
+            GROUP BY gl.PoLineId
+        )
+        UPDATE pol
+        SET GoodsReceivedBase = x.Qty, GoodsShortBase = x.Short
+        FROM purchase.PurchaseDocumentLines pol
+        INNER JOIN purchase.PurchaseDocuments d ON d.Id = pol.DocumentId
+        INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+        LEFT  JOIN inv ON inv.PoLineId = pol.Id
+        LEFT  JOIN olo ON olo.PoLineId = pol.Id
+        LEFT  JOIN grn ON grn.PoLineId = pol.Id
+        CROSS APPLY (SELECT Qty   = ISNULL(inv.Qty, 0) + ISNULL(olo.Qty, 0) + ISNULL(grn.Qty, 0),
+                            Short = ISNULL(olo.Short, 0) + ISNULL(grn.Short, 0)) x
+        WHERE pol.GoodsReceivedBase <> x.Qty OR pol.GoodsShortBase <> x.Short;
+        SET @SwitchLines = @@ROWCOUNT;
+
+        INSERT INTO purchase.GoodsReceiptSwitch (Id) VALUES (1);
+
+        PRINT 'Goods receipts switched on: received and settled pieces counted on ' + CAST(@SwitchLines AS NVARCHAR(10))
+              + ' order line(s) (old local invoices, old offloads, goods receipts). From now on goods enter stock only through goods receipts.';
+    END
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 2. Purchase documents are orders, invoices and returns only */
+
+-- Re-created (65) from the body of script 48: + the refusal of any other type code (65008). A goods receipt (GRN) has
+-- its own tables and procedures (script 64).
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_ValidateInput
+    @DocumentTypeCode   NVARCHAR(20),
+    @DocumentDate       DATE,
+    @ExpectedDate       DATE,
+    @BranchId           INT,
+    @WarehouseId        INT = NULL,
+    @SupplierId         INT,
+    @CurrencyId         INT,             -- NULL = supplier default currency, else base
+    @RateType           TINYINT,
+    @ExchangeRate       DECIMAL(18,6),   -- NULL = resolve
+    @MaxDiscountPercent DECIMAL(9,4),
+    @SourceDocumentId   INT,
+    @Lines              purchase.tvp_PurchaseDocumentLine READONLY,
+    @DocumentTypeId     INT OUTPUT,
+    @StockDirection     SMALLINT OUTPUT,
+    @ResolvedCurrencyId INT OUTPUT,
+    @ResolvedRate       DECIMAL(18,6) OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- (65) ONLY ORDERS, INVOICES AND RETURNS ARE PURCHASE DOCUMENTS. A goods receipt (GRN) is of the Purchase family
+    --      too, but it lives in its own tables: a purchase.PurchaseDocuments row of type GRN would share the stock-ledger
+    --      key (family Purchase + type + id) with a real goods receipt, and every query that reads a line with a source
+    --      or container line as an invoice line would count it.
+    IF @DocumentTypeCode IS NULL OR @DocumentTypeCode NOT IN (N'PO', N'PINV', N'PRET')
+        THROW 65008, 'Only purchase orders, purchase invoices and purchase returns are saved as purchase documents. Goods receipts are made in Purchase > Goods Receipts.', 1;
+
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Purchase' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL THROW 65008, 'Document type not found, inactive, or not a purchase document.', 1;
+
+    IF @DocumentDate IS NULL THROW 65000, 'Document Date is required.', 1;
+    /* ONE DAY OF TOLERANCE, because this compares a LOCAL date against a UTC one. The date on the
+       document is the one the reader sees on their own clock; SYSUTCDATETIME() is the server's in
+       UTC. East of Greenwich the two disagree for the first hours after midnight - at 00:20 in
+       Beirut (UTC+3) it is still yesterday in UTC, so a document dated today was refused as being
+       in the future. A day covers every offset without letting a genuinely future date through by
+       more than one. */
+    IF @DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 65000, 'Document Date cannot be in the future.', 1;
+    IF @ExpectedDate IS NOT NULL AND @ExpectedDate < @DocumentDate THROW 65000, 'Expected / due date cannot be before the Document Date.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 65008, 'Branch not found or inactive.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+        THROW 65008, 'The header warehouse must be an active warehouse.', 1;
+    IF @SupplierId IS NULL THROW 65000, 'Supplier is required.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1)
+        THROW 65008, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
+
+    SET @ResolvedCurrencyId = COALESCE(@CurrencyId,
+                                       (SELECT DefaultCurrencyId FROM masterdata.Parties WHERE Id = @SupplierId),
+                                       (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1));
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId AND IsActive = 1)
+        THROW 65008, 'Currency not found or inactive.', 1;
+
+    IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) THROW 65000, 'Rate type must be Official, Non-official or Market.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 65000, 'Exchange rate must be greater than zero.', 1;
+    SET @ResolvedRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@ResolvedCurrencyId, @RateType, @DocumentDate));
+    IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId AND IsBaseCurrency = 1) SET @ResolvedRate = 1;
+    IF @ResolvedRate IS NULL
+    BEGIN
+        DECLARE @Cur NVARCHAR(3) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @ResolvedCurrencyId);
+        DECLARE @RateMsg NVARCHAR(300) = N'No ' + CASE @RateType WHEN 1 THEN N'official' WHEN 2 THEN N'non-official' ELSE N'market' END
+                                       + N' exchange rate is defined for ' + @Cur + N' on or before ' + CONVERT(NVARCHAR(10), @DocumentDate, 120)
+                                       + N'. Add one in Master Data > Exchange Rates or enter the rate manually.';
+        THROW 65008, @RateMsg, 1;
+    END
+
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    IF @MaxDiscountPercent > 100 SET @MaxDiscountPercent = 100;
+
+    -- Source document rules.
+    IF @SourceDocumentId IS NOT NULL
+    BEGIN
+        DECLARE @SrcType NVARCHAR(20), @SrcStatus TINYINT, @SrcSupplier INT, @SrcBranch INT;
+        SELECT @SrcType = dt.Code, @SrcStatus = d.Status, @SrcSupplier = d.SupplierId, @SrcBranch = d.BranchId
+        FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceDocumentId;
+        IF @SrcType IS NULL THROW 65011, 'Source document not found.', 1;
+        IF (@DocumentTypeCode = N'PINV' AND @SrcType <> N'PO') OR (@DocumentTypeCode = N'PRET' AND @SrcType <> N'PINV') OR @DocumentTypeCode = N'PO'
+            THROW 65011, 'A purchase invoice can only come from a purchase order and a return from a purchase invoice.', 1;
+        IF @SrcStatus <> 2 THROW 65011, 'The source document must be posted (and, for an order, still open).', 1;
+        IF @SrcSupplier <> @SupplierId THROW 65011, 'The supplier must be the supplier of the source document.', 1;
+        IF @SrcBranch <> @BranchId THROW 65011, 'The branch must be the branch of the source document.', 1;
+        IF EXISTS (SELECT 1 FROM @Lines l WHERE l.SourceLineId IS NOT NULL
+                   AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines s WHERE s.Id = l.SourceLineId AND s.DocumentId = @SourceDocumentId))
+            THROW 65011, 'A line refers to a source line that does not belong to the source document.', 1;
+    END
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+        CASE WHEN i.Id IS NULL THEN N'item not found.'
+             WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+             WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
+             WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
+             WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
+                  THEN N'discount must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(12)) + N'%.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    LEFT JOIN masterdata.Warehouses w  ON w.Id = l.WarehouseId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
+       OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+END
+GO
+
+/* ================================================================== 3. Save: goods received outside containers, returns at the invoice's cost */
+
+-- Re-created (65) from the body of script 63:
+--   - the 65026 guard (an invoice not shipped in containers cannot take pieces the containers of its order hold): what
+--     is committed outside containers is MAX(invoiced outside, this invoice included; received + on draft goods receipts
+--     outside) - purchase.fn_PoLine_CommittedOutside - in place of the invoiced pieces alone;
+--   - a return (PRET) from an invoice that uses goods receipts, or is shipped in containers, carries the invoice line's
+--     own current cost (rule 23): its landed cost, or for a container line its FOB + the container line's charges per
+--     piece received; a "Shipped in containers" line that is NOT linked takes the charges of the container goods it is
+--     matched to (usp_GoodsReceipt_Rematch, pass 2), weighted by the matched pieces. Returns from the other invoices
+--     keep their cost as before;
+--   - lines linked to containers: a container received with a goods receipt (status 6 or 7, fn_Container_ReceivedBy
+--     'GRN') can be invoiced (rule 19); a cancelled one, or one offloaded before goods receipts, is still refused (65019).
+-- Save never sets UsesGoodsReceipts: an invoice is marked when it is posted.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Save
+    @Id                  INT            = NULL,
+    @DocumentTypeCode    NVARCHAR(20),
+    @DocumentDate        DATE,
+    @ExpectedDate        DATE           = NULL,
+    @BranchId            INT,
+    @WarehouseId         INT = NULL,
+    @SupplierId          INT,
+    @CurrencyId          INT            = NULL,
+    @RateType            TINYINT        = 1,
+    @ExchangeRate        DECIMAL(18,6)  = NULL,
+    @SupplierReference   NVARCHAR(100)  = NULL,
+    @Notes               NVARCHAR(1000) = NULL,
+    @Lines               purchase.tvp_PurchaseDocumentLine READONLY,
+    @MaxDiscountPercent  DECIMAL(9,4)   = 100,
+    @SourceDocumentId    INT            = NULL,
+    @RowVersion          BINARY(8)      = NULL,
+    @UserId              INT            = NULL,
+    @ReceiptMode         TINYINT        = NULL,    -- NULL = unchanged (1 on creation)
+    @ExporterReference   NVARCHAR(50)   = NULL,
+    @CommercialInvoiceNo NVARCHAR(50)   = NULL,
+    @LineContainers      purchase.tvp_LineContainer READONLY,   -- invoice from containers: the container line of every line
+    @NewId               INT OUTPUT,
+    @OneItemOnly         BIT            = NULL     -- (63) a NEW supplier invoice: 1 one item, 0 several; NULL = the setting. Kept on update.
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    /* The warehouse lives on the LINES. The header keeps one so that document lists, filters,
+       reports and exports still have a warehouse to show; when the caller does not send one it is
+       taken from the first line. */
+    IF @WarehouseId IS NULL
+        SELECT TOP (1) @WarehouseId = WarehouseId FROM @Lines ORDER BY LineNumber;
+
+    SET @SupplierReference = NULLIF(LTRIM(RTRIM(@SupplierReference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @ExporterReference = NULLIF(LTRIM(RTRIM(@ExporterReference)), N'');
+    SET @CommercialInvoiceNo = NULLIF(LTRIM(RTRIM(@CommercialInvoiceNo)), N'');
+    IF @ReceiptMode IS NOT NULL AND @ReceiptMode NOT IN (1, 2) THROW 65000, 'Receipt mode must be 1 (on posting) or 2 (on container offload).', 1;
+    IF @ReceiptMode = 2 AND @DocumentTypeCode <> N'PINV' THROW 65000, 'Only purchase invoices can be received on container offload.', 1;
+
+    DECLARE @TypeId INT, @Direction SMALLINT, @Cur INT, @Rate DECIMAL(18,6);
+    EXEC purchase.usp_PurchaseDocument_ValidateInput @DocumentTypeCode, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
+         @CurrencyId, @RateType, @ExchangeRate, @MaxDiscountPercent, @SourceDocumentId, @Lines,
+         @TypeId OUTPUT, @Direction OUTPUT, @Cur OUTPUT, @Rate OUTPUT;
+
+    -- (63) ONE ITEM OR SEVERAL IS THE INVOICE'S OWN MODE: chosen when it is created (@OneItemOnly, NULL = the setting
+    --      Purchase.OneItemPerInvoice) and kept by every later save. An invoice saved before script 63 has none: it
+    --      follows the setting as it is now. Orders and returns have no mode.
+    DECLARE @OneItem BIT = NULL;
+    IF @DocumentTypeCode = N'PINV'
+        SET @OneItem = COALESCE(CASE WHEN @Id IS NULL THEN @OneItemOnly
+                                     ELSE (SELECT OneItemOnly FROM purchase.PurchaseDocuments WHERE Id = @Id) END,
+                                configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+
+    -- (45) A supplier invoice holds ONE item: any number of lines, all of the same item. (63) When its mode says so.
+    IF @OneItem = 1 AND (SELECT COUNT(DISTINCT ItemId) FROM @Lines) > 1
+    BEGIN
+        DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM @Lines), @ItemCodes NVARCHAR(400);
+        SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+        FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+              FROM @Lines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+              GROUP BY l.ItemId, i.ItemCode
+              ORDER BY MIN(l.LineNumber)) x;
+        SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+        THROW 65029, @ItemCodes, 1;
+    END
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM purchase.PurchaseDocuments WHERE Id = @Id);
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 65005, 'Only draft documents can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND DocumentTypeId <> @TypeId)
+            THROW 65000, 'The document type cannot be changed.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND ISNULL(SourceDocumentId, 0) <> ISNULL(@SourceDocumentId, 0))
+            THROW 65000, 'The source document cannot be changed.', 1;
+        -- (43) A container is unlinked from the Containers card of the invoice (usp_PurchaseInvoice_UnlinkContainer),
+        --      never by saving the invoice without the lines that are on it.
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines pl
+                   WHERE pl.DocumentId = @Id AND pl.ContainerLineId IS NOT NULL
+                     AND NOT EXISTS (SELECT 1 FROM @LineContainers x WHERE x.ContainerLineId = pl.ContainerLineId))
+        BEGIN
+            IF @ReceiptMode = 1 THROW 65026, 'Unlink the containers before switching off Shipped in containers.', 1;
+            THROW 65019, 'This invoice is linked to containers: keep their lines, or unlink a container from the Containers card of the invoice.', 1;
+        END
+    END
+
+    -- Lines linked to containers (all of them, or (43) only some: the rest is linked later) point to a container line of
+    -- the same order line and item, within what is loaded and not yet invoiced elsewhere. A linked line forces receipt
+    -- mode 2 ("shipped in containers").
+    IF EXISTS (SELECT 1 FROM @LineContainers)
+    BEGIN
+        IF @DocumentTypeCode <> N'PINV' THROW 65019, 'Only purchase invoices can be linked to containers.', 1;
+        IF @SourceDocumentId IS NULL THROW 65019, 'An invoice from containers must refer to its purchase order.', 1;
+        IF EXISTS (SELECT 1 FROM @LineContainers x WHERE NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.LineNumber = x.LineNumber))
+            THROW 65019, 'A container line is given for a line that does not exist.', 1;
+        IF @Id IS NOT NULL AND EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+            THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+
+        -- (65) A container received with a goods receipt can still be invoiced (the goods may arrive first): only a
+        --      cancelled container, or one offloaded before goods receipts, is refused.
+        DECLARE @CtMsg NVARCHAR(400);
+        SELECT TOP (1) @CtMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN cl.Id IS NULL THEN N'the container line no longer exists.'
+                 WHEN c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+                      THEN N'container ' + c.ContainerRef + N' is cancelled or was offloaded before goods receipts.'
+                 WHEN cl.PurchaseOrderId <> @SourceDocumentId THEN N'the container line belongs to another purchase order.'
+                 WHEN cl.ItemId <> l.ItemId THEN N'the item differs from the container line.'
+                 ELSE N'the order line differs from the container line.' END
+        FROM @Lines l
+        INNER JOIN @LineContainers x          ON x.LineNumber = l.LineNumber
+        LEFT  JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+        LEFT  JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        OUTER APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+        WHERE cl.Id IS NULL OR c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload') OR cl.PurchaseOrderId <> @SourceDocumentId
+           OR cl.ItemId <> l.ItemId OR ISNULL(l.SourceLineId, 0) <> cl.PoLineId
+        ORDER BY l.LineNumber;
+        IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+
+        SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                + CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Other, 0) AS NVARCHAR(20))
+                                + N' in other invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.'
+        FROM (SELECT x.ContainerLineId, Here = SUM(l.Quantity * iu.PackingFormula)
+              FROM @Lines l
+              INNER JOIN @LineContainers x      ON x.LineNumber = l.LineNumber
+              INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+              GROUP BY x.ContainerLineId) q
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+        OUTER APPLY (SELECT Other = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3 AND (@Id IS NULL OR pd.Id <> @Id)) o
+        WHERE q.Here + ISNULL(o.Other, 0) > cl.QuantityBase
+        ORDER BY c.ContainerRef, cl.LineNumber;
+        IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+
+        IF @ReceiptMode = 1 THROW 65026, 'Unlink the containers before switching off Shipped in containers.', 1;
+        SET @ReceiptMode = 2;
+    END
+
+    -- (43) "Shipped in containers" (receipt mode 2) is chosen on a purchase invoice: NULL = unchanged (1 on creation).
+    DECLARE @EffectiveMode TINYINT = CASE WHEN @DocumentTypeCode <> N'PINV' THEN 1
+                                          ELSE COALESCE(@ReceiptMode, (SELECT ReceiptMode FROM purchase.PurchaseDocuments WHERE Id = @Id), 1) END;
+    DECLARE @ModeMsg NVARCHAR(400);
+    IF @EffectiveMode = 2
+    BEGIN
+        -- the goods enter the stock at the offload of the containers they are linked to: lines of the order only
+        IF @SourceDocumentId IS NULL THROW 65000, 'Only an invoice created from a purchase order can be shipped in containers.', 1;
+        SELECT TOP (1) @ModeMsg = N'Line ' + CAST(LineNumber AS NVARCHAR(10)) + N': only lines of the purchase order can be shipped in containers.'
+        FROM @Lines WHERE SourceLineId IS NULL ORDER BY LineNumber;
+        IF @ModeMsg IS NOT NULL THROW 65000, @ModeMsg, 1;
+    END
+    ELSE IF @DocumentTypeCode = N'PINV' AND @SourceDocumentId IS NOT NULL
+    BEGIN
+        -- received on posting: what the containers of the order hold plus what is invoiced outside containers cannot
+        -- exceed the order line, or the same goods would be received twice
+        -- (65) Outside containers = MAX(invoiced outside containers, this invoice included; received outside containers +
+        --      on draft goods receipts outside containers) - fn_PoLine_CommittedOutside, without this invoice. A maximum,
+        --      not a sum: goods received from the order and the invoice that pays for them are the same pieces.
+        SELECT TOP (1) @ModeMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): the containers of the order hold '
+                                  + CAST(ct.Qty AS NVARCHAR(20)) + N' of the ' + CAST(pol.QuantityBase AS NVARCHAR(20))
+                                  + N' ordered. Keep Shipped in containers on and link the invoice to them.'
+        FROM (SELECT x.SourceLineId, Qty = SUM(x.Quantity * iu.PackingFormula), LineNumber = MIN(x.LineNumber)
+              FROM @Lines x INNER JOIN inventory.ItemUnits iu ON iu.Id = x.ItemUnitId
+              WHERE x.SourceLineId IS NOT NULL GROUP BY x.SourceLineId) l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.SourceLineId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        CROSS APPLY (SELECT Qty = ISNULL(SUM(cl.QuantityBase), 0) FROM logistics.ContainerLines cl
+                     INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                     WHERE cl.PoLineId = pol.Id AND c.Status <> 8) ct
+        CROSS APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, @Id) co
+        CROSS APPLY (SELECT Qty = CASE WHEN l.Qty + co.InvoicedOutsideBase >= co.ReceivedOutsideBase + co.InDraftReceiptsOutsideBase
+                                       THEN l.Qty + co.InvoicedOutsideBase
+                                       ELSE co.ReceivedOutsideBase + co.InDraftReceiptsOutsideBase END) dir
+        WHERE ct.Qty > 0 AND dir.Qty + ct.Qty > pol.QuantityBase
+        ORDER BY l.LineNumber;
+        IF @ModeMsg IS NOT NULL THROW 65026, @ModeMsg, 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30) = NULL;
+            IF EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @TypeId AND NumberOnPost = 0)
+                EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
+
+            INSERT INTO purchase.PurchaseDocuments (DocumentTypeId, DocumentNumber, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
+                                                    CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId,
+                                                    ReceiptMode, ExporterReference, CommercialInvoiceNo, CreatedBy, OneItemOnly)
+            VALUES (@TypeId, @Number, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
+                    @Cur, @RateType, @Rate, @SupplierReference, @Notes, 1, @SourceDocumentId,
+                    ISNULL(@ReceiptMode, 1), @ExporterReference, @CommercialInvoiceNo, @UserId,
+                    @OneItem);   -- (63) the mode of a new supplier invoice, stored once (NULL on orders and returns)
+            SET @Id = SCOPE_IDENTITY();
+
+            INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Created', ISNULL(N'Draft ' + @Number, N'Draft (number assigned on posting)')
+                        + ISNULL(N' from ' + (SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @SourceDocumentId), N''), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE purchase.PurchaseDocuments
+            SET DocumentDate = @DocumentDate, ExpectedDate = @ExpectedDate, BranchId = @BranchId, WarehouseId = @WarehouseId,
+                SupplierId = @SupplierId, CurrencyId = @Cur, RateType = @RateType, ExchangeRate = @Rate,
+                SupplierReference = @SupplierReference, Notes = @Notes,
+                ReceiptMode = ISNULL(@ReceiptMode, ReceiptMode),
+                ExporterReference = @ExporterReference, CommercialInvoiceNo = @CommercialInvoiceNo,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+
+            -- Lines are replaced: manual charge allocations pointing at the old lines are dropped (the charges stay).
+            DELETE a FROM purchase.PurchaseChargeAllocations a
+            INNER JOIN purchase.PurchaseCharges c ON c.Id = a.ChargeId
+            WHERE c.DocumentKind = N'PINV' AND c.DocumentId = @Id;
+            DELETE FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+
+            INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        INSERT INTO purchase.PurchaseDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
+                                                    UnitPrice, DiscountPercent, UnitCostBase, FobCostBase, ImportRowNumber, Notes, SourceLineId)
+        SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
+               ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
+               ISNULL(l.DiscountPercent, 0),
+               -- returns carry the LANDED cost (the container's for imports). (65) From an invoice that uses goods receipts,
+               -- or is shipped in containers, the invoice line's OWN current cost: its landed cost, or for a container
+               -- line its FOB + the container line's charges per piece received (the container line's FOB mixes the
+               -- prices of every invoice and of the order). A line NOT linked to a container whose pieces are matched to
+               -- goods received in containers (pass 2 of the matching) takes those containers' charges the same way, per
+               -- matched piece; its pieces matched outside containers keep its landed cost. Worked out again when the
+               -- return is posted.
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN
+                    CASE WHEN sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2
+                         THEN CASE WHEN scl.Id IS NOT NULL THEN src.FobCostBase + ISNULL(scl.ChargesBase / NULLIF(scl.ReceivedQuantityBase, 0), 0)
+                                   WHEN mc.CtPcs > 0 THEN (mc.CtPcs * src.FobCostBase + mc.CtCharges + (mc.Pcs - mc.CtPcs) * src.UnitCostBase) / mc.Pcs
+                                   ELSE src.UnitCostBase END
+                         ELSE COALESCE(scl.LandedCostBase, src.UnitCostBase) END END,
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN
+                    CASE WHEN sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2 THEN src.FobCostBase
+                         ELSE COALESCE(scl.FobCostBase, src.FobCostBase) END END,
+               l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N''), l.SourceLineId
+        FROM @Lines l
+        INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        LEFT  JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId
+        LEFT  JOIN purchase.PurchaseDocuments sd      ON sd.Id = src.DocumentId     -- (65) the source invoice
+        LEFT  JOIN logistics.ContainerLines scl       ON scl.Id = src.ContainerLineId
+        -- (65) an unlinked invoice line: its matched pieces, those received in containers and their containers' charges
+        OUTER APPLY (SELECT Pcs       = SUM(m.QuantityBase),
+                            CtPcs     = SUM(CASE WHEN gl.ContainerLineId IS NOT NULL THEN m.QuantityBase ELSE 0 END),
+                            CtCharges = SUM(CASE WHEN gl.ContainerLineId IS NOT NULL
+                                                 THEN m.QuantityBase * ISNULL(mcl.ChargesBase / NULLIF(mcl.ReceivedQuantityBase, 0), 0)
+                                                 ELSE 0 END)
+                     FROM purchase.GoodsReceiptInvoiceMatches m
+                     INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                     LEFT  JOIN logistics.ContainerLines mcl  ON mcl.Id = gl.ContainerLineId
+                     WHERE @DocumentTypeCode = N'PRET' AND m.InvoiceLineId = src.Id AND src.ContainerLineId IS NULL) mc;
+
+        UPDATE pl SET ContainerLineId = x.ContainerLineId
+        FROM purchase.PurchaseDocumentLines pl
+        INNER JOIN @LineContainers x ON x.LineNumber = pl.LineNumber
+        WHERE pl.DocumentId = @Id;
+
+        UPDATE d
+        SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / @Rate, 2), TotalLandedCostBase = ROUND(x.Amt / @Rate, 2) + d.TotalChargesBase
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+        WHERE d.Id = @Id;
+
+        -- the value basis of the container charges follows the invoice prices
+        IF EXISTS (SELECT 1 FROM @LineContainers)
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM @LineContainers x INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 4. Post: a supplier invoice moves no stock; the cost of received goods follows it */
+
+-- Re-created (65) from the body of script 63 (approval of 42, line warehouses of any branch of 48, one item by mode of 63):
+--   - PINV, every receipt mode: no usp_Item_ApplyReceipts, no stock movements, its lines not "received" by posting. The
+--     FOB, the charges and the landed cost per line are still worked out (the invoice cost). Marked UsesGoodsReceipts = 1
+--     in the UPDATE that posts it; then usp_GoodsReceipt_Rematch of its groups (its order lines; supplier + item for lines
+--     without an order) and usp_GoodsReceipt_TrueUpCost (cause PINV) of the posted receipt lines of those groups.
+--   - 65019: a container in status 6 or 7 is refused only when it was offloaded before goods receipts; cancelled
+--     containers and more than the loaded pieces are still refused.
+--   - PRET from an invoice that uses goods receipts, or is shipped in containers: at most received - returned per source
+--     line (65011), at the source line's current cost worked out again at posting (rule 23). Older invoices: as before.
+--   - The order closes "Fully invoiced and received" when every line is invoiced and received or settled short.
+--   - The audit: "...; goods are received with goods receipts", + "; cost of received goods adjusted by {amount} (stock
+--     {inv}, cost of sales {cogs})" when the true-up moved something.
+--   - Result (when not called by the approval): DocumentNumber + CostAdjustedBase, CostAdjustedInventoryBase,
+--     CostAdjustedCogsBase, CostAdjustedLines.
+--   - @ReceiveNow = 1 (decision 7, a PINV): after the commit, a goods receipt of the invoice's lines not in a container,
+--     created and posted in a second transaction; @GoodsReceiptId / @GoodsReceiptNumber, or @ReceiveWarning "Invoice
+--     posted; the goods receipt was not: {reason}. Use Receive goods..." (the invoice stays posted).
+--   - A PINV or a PRET takes the goods receipt matching lock FIRST (usp_GoodsReceipt_LockMatching), before the header
+--     lock: an invoice rematches and trues up; a return checks and raises what its invoice lines returned against what
+--     they received (65011, the source lines locked), which a goods receipt posted or cancelled changes. The second
+--     transaction of @ReceiveNow takes it again before it creates its receipt.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Post
+    @Id         INT,
+    @RowVersion   BINARY(8) = NULL,
+    @UserId       INT       = NULL,
+    @FromApproval BIT       = 0,     -- 1 = called by the approval
+    -- (65) "Receive the goods now" (a supplier invoice only): once the invoice is posted and committed, its lines not in
+    --      a container are received with a goods receipt, created and posted in a second transaction. The API passes 1
+    --      only for a user who may also create and post goods receipts. A receipt that fails leaves the invoice posted
+    --      and says why in @ReceiveWarning.
+    @ReceiveNow         BIT           = 0,
+    @GoodsReceiptId     INT           = NULL OUTPUT,
+    @GoodsReceiptNumber NVARCHAR(30)  = NULL OUTPUT,
+    @ReceiveWarning     NVARCHAR(700) = NULL OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SELECT @GoodsReceiptId = NULL, @GoodsReceiptNumber = NULL, @ReceiveWarning = NULL;
+    -- (65) the cost of goods already received, brought to this invoice's price (usp_GoodsReceipt_TrueUpCost)
+    DECLARE @CostAmount DECIMAL(18,2) = 0, @CostInventory DECIMAL(18,2) = 0, @CostCogs DECIMAL(18,2) = 0, @CostLines INT = 0;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) lock order: the goods receipt matcher first, then rows, or two postings deadlock. Only a supplier invoice or
+        --      a return (their type, read without a lock: it never changes).
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                   WHERE d.Id = @Id AND dt.Code IN (N'PINV', N'PRET'))
+            EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE,
+                @BranchId INT, @SupplierId INT, @Rate DECIMAL(18,6), @SourceId INT, @ReceiptMode TINYINT,
+                @OneItemOnly BIT;
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @SupplierId = d.SupplierId, @Rate = d.ExchangeRate,
+               @SourceId = d.SourceDocumentId, @ReceiptMode = d.ReceiptMode,
+               @OneItemOnly = d.OneItemOnly
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 1 AND @Status <> 5
+            THROW 65010, 'Only a purchase order waiting for approval can be approved.', 1;
+        IF (@TypeCode <> N'PO' OR ISNULL(@FromApproval, 0) = 0) AND @Status <> 1
+            THROW 65010, 'Only draft documents can be posted.', 1;
+
+        DECLARE @PostedWithoutApproval BIT = CASE WHEN @TypeCode = N'PO' AND ISNULL(@FromApproval, 0) = 0 THEN 1 ELSE 0 END;
+        IF @PostedWithoutApproval = 1 AND purchase.fn_PurchaseOrder_NeedsApproval(@Id) = 1
+            THROW 65013, 'This order needs approval: send it for approval.', 1;
+
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id)
+            THROW 65009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        -- (45) A supplier invoice holds ONE item: a draft saved with several before script 45 is split first.
+        -- (63) Only when its mode is one item: its own, or the setting when it has none (saved before script 63).
+        IF @TypeCode = N'PINV' AND COALESCE(@OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice')) = 1
+           AND (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) > 1
+        BEGIN
+            DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id),
+                    @ItemCodes NVARCHAR(400);
+            SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
+            FROM (SELECT TOP (5) i.ItemCode, FirstLine = MIN(l.LineNumber)
+                  FROM purchase.PurchaseDocumentLines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+                  WHERE l.DocumentId = @Id
+                  GROUP BY l.ItemId, i.ItemCode
+                  ORDER BY MIN(l.LineNumber)) x;
+            SET @ItemCodes = N'A supplier invoice holds one item. This one has ' + CAST(@ItemCount AS NVARCHAR(10)) + N': ' + @ItemCodes
+                         + CASE WHEN @ItemCount > 5 THEN N'...' ELSE N'.' END + N' Create one invoice per item, or use Split by item.';
+            THROW 65029, @ItemCodes, 1;
+        END
+        IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsActive = 1)
+            THROW 65008, 'The supplier is inactive.', 1;
+
+        -- Imports: the goods are received by the container, not by this posting.
+        -- (65) EVERY SUPPLIER INVOICE, whatever its receipt mode: goods enter stock only through a posted goods receipt.
+        --      The invoice still gets its FOB, its charges and its landed cost per line (the INVOICE COST that received
+        --      goods are valued at or corrected to), and it is marked UsesGoodsReceipts = 1 when it is posted below.
+        --      Returns still take their goods out at posting. (Was @ReceiveNow, now the name of the parameter.)
+        DECLARE @StockAtPosting BIT = CASE WHEN @TypeCode = N'PINV' THEN 0 ELSE 1 END;
+
+        DECLARE @FromContainers BIT = CASE WHEN @TypeCode = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
+                                                                                WHERE DocumentId = @Id AND ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END;
+        -- (43) Shipped in containers: an imported invoice, linked to its containers now or later. Lines not in a container
+        --      yet are allowed: they enter the stock at the offload of the containers they are linked to afterwards.
+        IF @TypeCode = N'PINV' AND @ReceiptMode = 2
+        BEGIN
+            IF NULLIF(LTRIM(RTRIM((SELECT ExporterReference FROM purchase.PurchaseDocuments WHERE Id = @Id))), N'') IS NULL
+                THROW 65018, 'The exporter reference is required on an imported invoice. Enter it before posting.', 1;
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
+                THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+        END
+
+        IF @FromContainers = 1
+        BEGIN
+
+            -- (65) A container received with a goods receipt can be invoiced (the goods may arrive first): only a cancelled
+            --      container, or one offloaded before goods receipts, is refused - and more than the loaded pieces.
+            DECLARE @CtMsg NVARCHAR(400);
+            SELECT TOP (1) @CtMsg = N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                    + CASE WHEN c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+                                           THEN N'the container is cancelled or was offloaded before goods receipts.'
+                                           ELSE CAST(q.Here AS NVARCHAR(20)) + N' invoiced here + ' + CAST(ISNULL(o.Posted, 0) AS NVARCHAR(20))
+                                                + N' in posted invoices, but only ' + CAST(cl.QuantityBase AS NVARCHAR(20)) + N' are loaded.' END
+            FROM (SELECT ContainerLineId, Here = SUM(QuantityBase) FROM purchase.PurchaseDocumentLines
+                  WHERE DocumentId = @Id GROUP BY ContainerLineId) q
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = q.ContainerLineId
+            INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+            INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+            OUTER APPLY (SELECT Posted = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                         INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                         WHERE pil.ContainerLineId = cl.Id AND pd.Status IN (2, 4) AND pd.Id <> @Id) o
+            CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+            WHERE c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload') OR q.Here + ISNULL(o.Posted, 0) > cl.QuantityBase
+            ORDER BY c.ContainerRef, cl.LineNumber;
+            IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
+        END
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.' END
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+
+        IF @SourceId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 2)
+                THROW 65011, 'The source document is no longer open (cancelled or closed).', 1;
+
+            IF @TypeCode = N'PINV'
+            BEGIN
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + N' base units invoiced but only ' + CAST(s.QuantityBase - s.ReceivedQuantityBase AS NVARCHAR(20)) + N' remain on the order line.'
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s ON s.Id = x.SourceLineId
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                WHERE x.Qty > s.QuantityBase - s.ReceivedQuantityBase
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+            IF @TypeCode = N'PRET'
+            BEGIN
+                -- (65) From an invoice that uses goods receipts, or is shipped in containers, only what was RECEIVED and not
+                --      returned yet goes back (rule 23): goods received but not invoiced, or invoiced but not received, are
+                --      not on the invoice line. An invoice posted with its stock before goods receipts keeps invoiced - returned.
+                --      The source lines are locked until the return raises their ReturnedQuantityBase below, so what they
+                --      received cannot move in between (the matching lock above keeps goods receipts out meanwhile).
+                SELECT TOP (1) @Msg = N'Line ' + CAST(x.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - ' + CAST(x.Qty AS NVARCHAR(20))
+                                     + CASE WHEN g.ByReceipts = 1
+                                            THEN N' base units returned but only ' + CAST(CASE WHEN g.Avail > 0 THEN g.Avail ELSE 0 END AS NVARCHAR(20))
+                                                 + N' were received and not returned on the invoice line.'
+                                            ELSE N' base units returned but only ' + CAST(s.QuantityBase - s.ReturnedQuantityBase AS NVARCHAR(20)) + N' can still be returned from the invoice line.' END
+                FROM (SELECT SourceLineId, SUM(QuantityBase) AS Qty, MIN(LineNumber) AS LineNumber FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x
+                INNER JOIN purchase.PurchaseDocumentLines s WITH (UPDLOCK, HOLDLOCK) ON s.Id = x.SourceLineId
+                INNER JOIN purchase.PurchaseDocuments sd    ON sd.Id = s.DocumentId
+                INNER JOIN inventory.Items i ON i.Id = s.ItemId
+                CROSS APPLY (SELECT ByReceipts = CASE WHEN sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2 THEN 1 ELSE 0 END,
+                                    Avail      = CASE WHEN sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2 THEN s.ReceivedQuantityBase - s.ReturnedQuantityBase
+                                                      ELSE s.QuantityBase - s.ReturnedQuantityBase END) g
+                WHERE x.Qty > g.Avail
+                ORDER BY x.LineNumber;
+                IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+            END
+        END
+
+        IF @Direction = -1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        IF @TypeCode = N'PINV'
+        BEGIN
+            -- FOB per base unit, then charges allocated over the lines, then landed cost per base unit.
+            EXEC purchase.usp_PurchaseCharges_Allocate N'PINV', @Id, @Id;
+
+            UPDATE l
+            SET FobCostBase = (l.LineTotal / @Rate) / l.QuantityBase,
+                AllocatedChargesBase = ISNULL(a.Total, 0),
+                UnitCostBase = ((l.LineTotal / @Rate) + ISNULL(a.Total, 0)) / l.QuantityBase
+            FROM purchase.PurchaseDocumentLines l
+            OUTER APPLY (SELECT SUM(x.AmountBase) AS Total
+                         FROM purchase.PurchaseChargeAllocations x
+                         INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                         WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'PINV' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1) a
+            WHERE l.DocumentId = @Id;
+
+            UPDATE d
+            SET TotalChargesBase = ISNULL(x.Charges, 0), TotalLandedCostBase = d.TotalAmountBase + ISNULL(x.Charges, 0)
+            FROM purchase.PurchaseDocuments d
+            CROSS APPLY (SELECT SUM(AllocatedChargesBase) AS Charges FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
+        END
+        ELSE IF @TypeCode = N'PRET'
+        BEGIN
+            -- (65) Rule 23: from an invoice that uses goods receipts, or is shipped in containers, the goods go back at the
+            --      invoice line's OWN CURRENT cost, worked out again now (a landed cost adjustment or a late container
+            --      charge may have moved it since the draft): its landed cost, or for a container line its FOB + the
+            --      container line's charges per piece received; for a line NOT linked whose pieces are matched to goods
+            --      received in containers, those containers' charges per matched piece (as usp_PurchaseDocument_Save).
+            --      The FOB is the invoice line's.
+            UPDATE l
+            SET UnitCostBase = CASE WHEN scl.Id IS NOT NULL THEN src.FobCostBase + ISNULL(scl.ChargesBase / NULLIF(scl.ReceivedQuantityBase, 0), 0)
+                                    WHEN mc.CtPcs > 0 THEN (mc.CtPcs * src.FobCostBase + mc.CtCharges + (mc.Pcs - mc.CtPcs) * src.UnitCostBase) / mc.Pcs
+                                    ELSE src.UnitCostBase END,
+                FobCostBase  = src.FobCostBase
+            FROM purchase.PurchaseDocumentLines l
+            INNER JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId
+            INNER JOIN purchase.PurchaseDocuments sd      ON sd.Id = src.DocumentId
+            LEFT  JOIN logistics.ContainerLines scl       ON scl.Id = src.ContainerLineId
+            OUTER APPLY (SELECT Pcs       = SUM(m.QuantityBase),
+                                CtPcs     = SUM(CASE WHEN gl.ContainerLineId IS NOT NULL THEN m.QuantityBase ELSE 0 END),
+                                CtCharges = SUM(CASE WHEN gl.ContainerLineId IS NOT NULL
+                                                     THEN m.QuantityBase * ISNULL(mcl.ChargesBase / NULLIF(mcl.ReceivedQuantityBase, 0), 0)
+                                                     ELSE 0 END)
+                         FROM purchase.GoodsReceiptInvoiceMatches m
+                         INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                         LEFT  JOIN logistics.ContainerLines mcl  ON mcl.Id = gl.ContainerLineId
+                         WHERE m.InvoiceLineId = src.Id AND src.ContainerLineId IS NULL) mc
+            WHERE l.DocumentId = @Id AND (sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2) AND src.FobCostBase IS NOT NULL;
+
+            UPDATE l SET UnitCostBase = ISNULL(l.UnitCostBase, ISNULL(inventory.fn_AverageCost(l.ItemId), 0))
+            FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+        END
+
+        IF @Direction = 1 AND @StockAtPosting = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, ISNULL(l.UnitCostBase, 0), l.FobCostBase FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, @SupplierId, @UserId, 1;
+        END
+
+        IF @Direction <> 0 AND @StockAtPosting = 1
+        BEGIN
+            DECLARE @MovementDate DATETIME2(3) =
+                DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+            INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                                  DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+            -- (48) the branch of the line's warehouse, which need not be the document's branch
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, w.BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+                   N'Purchase', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
+            FROM purchase.PurchaseDocumentLines l
+            INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+            WHERE l.DocumentId = @Id;
+
+            IF @Direction = 1
+                UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = QuantityBase WHERE DocumentId = @Id;
+        END
+
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            -- (65) An order closes by itself when every line is fully invoiced AND received or settled short (the goods
+            --      receipts count what arrived; ReceivedQuantityBase on an order line still means invoiced).
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceId
+                           AND (ReceivedQuantityBase < QuantityBase OR GoodsReceivedBase + GoodsShortBase < QuantityBase))
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = N'Fully invoiced and received' WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Closed', N'Closed: fully invoiced and received (' + @Number + N')', @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase + x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        -- (65) A supplier invoice is marked as using goods receipts WHEN IT IS POSTED (never as a draft): from now on its
+        --      lines are matched to received pieces, and their ReceivedQuantityBase is the pieces matched to them.
+        UPDATE purchase.PurchaseDocuments
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UsesGoodsReceipts = CASE WHEN @TypeCode = N'PINV' THEN 1 ELSE UsesGoodsReceipts END,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        -- (65) GOODS ALREADY RECEIVED FOLLOW THIS INVOICE'S COST. Its pieces are matched to the received pieces of its
+        --      groups - each order line it invoices, and the supplier + item for lines without an order - now that it is
+        --      posted (usp_GoodsReceipt_Rematch, first in first out); then every posted receipt line of those groups is
+        --      brought to its target cost (usp_GoodsReceipt_TrueUpCost, cause PINV): the part still in stock to the
+        --      stock value, the rest to cost of sales.
+        IF @TypeCode = N'PINV'
+        BEGIN
+            DECLARE @Anchors purchase.tvp_GoodsReceiptAnchor;
+            INSERT INTO @Anchors (Kind, PoLineId, SupplierId, ItemId)
+            SELECT DISTINCT 'P', l.SourceLineId, NULL, NULL FROM purchase.PurchaseDocumentLines l
+            WHERE l.DocumentId = @Id AND l.SourceLineId IS NOT NULL
+            UNION
+            SELECT DISTINCT 'S', NULL, @SupplierId, l.ItemId FROM purchase.PurchaseDocumentLines l
+            WHERE l.DocumentId = @Id AND l.SourceLineId IS NULL;
+
+            EXEC purchase.usp_GoodsReceipt_Rematch @Anchors;
+
+            DECLARE @GroupLines logistics.tvp_IdList;
+            INSERT INTO @GroupLines (Id) SELECT GoodsReceiptLineId FROM purchase.fn_GoodsReceipt_GroupLines(@Anchors);
+            IF EXISTS (SELECT 1 FROM @GroupLines)
+                EXEC purchase.usp_GoodsReceipt_TrueUpCost @GroupLines, N'PINV', @Id, @Number, @UserId,
+                     @CostAmount OUTPUT, @CostInventory OUTPUT, @CostCogs OUTPUT, @CostLines OUTPUT;
+        END
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', LEFT(N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s)'
+                                + CASE WHEN @Direction <> 0 AND @StockAtPosting = 1 THEN N' written to the stock ledger'
+                                       WHEN @StockAtPosting = 0 THEN N'; goods are received with goods receipts'     -- (65) every supplier invoice
+                                       WHEN @PostedWithoutApproval = 1 THEN N' (approval not needed)'
+                                       ELSE N' (order approved)' END
+                                + CASE WHEN @TypeCode = N'PINV' THEN N'; landed charges ' + CAST((SELECT TotalChargesBase FROM purchase.PurchaseDocuments WHERE Id = @Id) AS NVARCHAR(30)) ELSE N'' END
+                                + CASE WHEN @CostLines > 0 THEN N'; cost of received goods adjusted by ' + CAST(@CostAmount AS NVARCHAR(30))
+                                                                + N' (stock ' + CAST(@CostInventory AS NVARCHAR(30)) + N', cost of sales ' + CAST(@CostCogs AS NVARCHAR(30)) + N')'
+                                       ELSE N'' END, 500), @UserId);
+
+        -- A purchase order posted without approval: the user who posts it is recorded as approver, as an approval does.
+        IF @PostedWithoutApproval = 1
+        BEGIN
+            UPDATE purchase.PurchaseDocuments SET ApprovedAtUtc = SYSUTCDATETIME(), ApprovedBy = @UserId WHERE Id = @Id;
+
+            DECLARE @RequireApproval BIT, @ApprovalLimit DECIMAL(19, 4);
+            SELECT @RequireApproval = RequireApproval, @ApprovalLimit = ApprovalLimitBase FROM purchase.ApprovalSettings WHERE Id = 1;
+            INSERT INTO purchase.PurchaseOrderApprovalEvents (PurchaseDocumentId, EventType, UserId, Note)
+            VALUES (@Id, 7, @UserId,
+                    CASE WHEN @RequireApproval = 0 THEN N'Approval not required'
+                         ELSE N'Under the approval limit of ' + FORMAT(@ApprovalLimit, N'N2', N'en-US')
+                              + ISNULL(N' ' + (SELECT TOP (1) CurrencyCode FROM masterdata.Currencies
+                                               WHERE IsBaseCurrency = 1 AND IsActive = 1), N'') END);
+        END
+
+        -- containers of an import: the invoice is known now (value basis of the charges, history)
+        IF @FromContainers = 1
+        BEGIN
+            DECLARE @Cid INT;
+            DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+                INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                WHERE l.DocumentId = @Id;
+            OPEN cts;
+            FETCH NEXT FROM cts INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                VALUES (@Cid, N'Updated', N'Purchase invoice ' + @Number + N' posted', @UserId);
+                FETCH NEXT FROM cts INTO @Cid;
+            END
+            CLOSE cts;
+            DEALLOCATE cts;
+        END
+
+        COMMIT TRANSACTION;
+        -- (65) + what the posting did to the cost of goods already received (0 when nothing)
+        IF ISNULL(@FromApproval, 0) = 0
+            SELECT @Number AS DocumentNumber, CostAdjustedBase = @CostAmount, CostAdjustedInventoryBase = @CostInventory,
+                   CostAdjustedCogsBase = @CostCogs, CostAdjustedLines = @CostLines;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    /* (65) "RECEIVE THE GOODS NOW" (decision 7): the invoice is posted and committed above, whatever happens here. Its
+       lines not in a container are received with ONE goods receipt (usp_GoodsReceipt_CreateFromInvoice: every line with
+       something to receive, into the line's warehouse, dated like the invoice) and posted at once
+       (usp_GoodsReceipt_Post), in a second transaction: all or nothing, so a refusal leaves no draft behind and
+       "Receive goods..." on the invoice still offers everything. The refusal comes back in @ReceiveWarning; the
+       receipt's id and number in @GoodsReceiptId / @GoodsReceiptNumber. usp_GoodsReceipt_Post returns its own
+       DocumentNumber as a further result set, after the invoice's row: the receipt's outcome is read from the OUTPUT
+       parameters. Inside a caller's transaction there is no second transaction to make: nothing is received. */
+    IF ISNULL(@ReceiveNow, 0) = 1 AND @TypeCode = N'PINV'
+    BEGIN
+        DECLARE @ReceiptId INT = NULL, @ReceiptReason NVARCHAR(600) = NULL, @ReceiptDate DATE = @DocumentDate;
+        IF @@TRANCOUNT > 0
+            SET @ReceiptReason = N'it is made in a transaction of its own, and this posting runs inside another one';
+        ELSE
+        BEGIN
+            BEGIN TRY
+                BEGIN TRANSACTION;
+
+                -- the matcher first, before the draft's rows are written (usp_GoodsReceipt_Post takes it again)
+                EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+                DECLARE @NoLines purchase.tvp_GoodsReceiptLine;
+                EXEC purchase.usp_GoodsReceipt_CreateFromInvoice @InvoiceId = @Id, @Lines = @NoLines, @DocumentDate = @ReceiptDate,
+                     @UserId = @UserId, @NewId = @ReceiptId OUTPUT;
+                EXEC purchase.usp_GoodsReceipt_Post @Id = @ReceiptId, @RowVersion = NULL, @UserId = @UserId;
+
+                SELECT @GoodsReceiptId = Id, @GoodsReceiptNumber = DocumentNumber FROM purchase.GoodsReceipts WHERE Id = @ReceiptId;
+                COMMIT TRANSACTION;
+            END TRY
+            BEGIN CATCH
+                IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+                SELECT @GoodsReceiptId = NULL, @GoodsReceiptNumber = NULL, @ReceiptReason = ERROR_MESSAGE();
+            END CATCH
+        END
+
+        IF @ReceiptReason IS NOT NULL
+        BEGIN
+            -- "Invoice posted; the goods receipt was not: {reason}. Use Receive goods..." (one final period)
+            SET @ReceiptReason = LTRIM(RTRIM(@ReceiptReason));
+            IF RIGHT(@ReceiptReason, 1) = N'.' SET @ReceiptReason = LEFT(@ReceiptReason, LEN(@ReceiptReason) - 1);
+            SET @ReceiveWarning = LEFT(N'Invoice posted; the goods receipt was not: ' + @ReceiptReason + N'. Use Receive goods' + NCHAR(8230), 700);
+        END
+    END
+END
+GO
+
+/* ================================================================== 5. Cancel: an invoice whose goods were received */
+
+-- Re-created (65) from the body of script 47 (supplier payments):
+--   - DECISION 3: a supplier invoice whose goods were received with goods receipts can be cancelled. It has no stock
+--     effect: its lines leave the matches (usp_GoodsReceipt_Rematch of its groups, once it is cancelled) and the goods
+--     received against it go back to their cost without it (usp_GoodsReceipt_TrueUpCost, cause PINVCANCEL) - the order
+--     price, or another posted invoice of the same order line; goods without an order keep the cost they were received
+--     at. For an invoice posted after the switch (UsesGoodsReceipts = 1) and an older "Shipped in containers" one.
+--   - 69012 only for a container offloaded before goods receipts (fn_Container_ReceivedBy = 'Offload').
+--   - An invoice posted with its stock before goods receipts (UsesGoodsReceipts = 0, receipt mode 1): its stock check
+--     (65007) and reversal as before, and its order lines' received counter (GoodsReceivedBase) lowered by the pieces of
+--     its stock rows, which the switch counted as received.
+--   - A purchase order with goods receipts is refused (65011): posted ones are cancelled first, drafts deleted first.
+--   - The order reopens when it was closed "Fully received" (before goods receipts) or "Fully invoiced and received".
+--   - Audit: + "Cost of received goods adjusted by ..." when the true-up moved something.
+--   - A PINV or a PRET takes the goods receipt matching lock FIRST (usp_GoodsReceipt_LockMatching), before the header
+--     lock: an invoice rematches and trues up, a return changes what its invoice lines returned.
+-- The other refusals stay: posted documents made from it (returns), posted landed cost adjustments, payments allocated.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 65000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) lock order: the goods receipt matcher first, then rows, or two postings deadlock. Only a supplier invoice or
+        --      a return (their type, read without a lock: it never changes).
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                   WHERE d.Id = @Id AND dt.Code IN (N'PINV', N'PRET'))
+            EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @SourceId INT, @Number NVARCHAR(30), @ReceiptMode TINYINT,
+                @UsesGoodsReceipts BIT, @SupplierId INT;
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @SourceId = d.SourceDocumentId,
+               @Number = d.DocumentNumber, @ReceiptMode = d.ReceiptMode, @UsesGoodsReceipts = d.UsesGoodsReceipts, @SupplierId = d.SupplierId
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @Status NOT IN (2, 4) THROW 65010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE SourceDocumentId = @Id AND Status IN (2, 4))
+            THROW 65011, 'This document cannot be cancelled: posted documents were created from it. Cancel those first.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @Id AND Status = 2)
+            THROW 65011, 'This invoice cannot be cancelled: posted landed cost adjustments refer to it. Cancel those first.', 1;
+        -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+        IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+                   WHERE a.PurchaseDocumentId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+            THROW 65011, 'This invoice cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
+
+        -- (65) RULE 18: goods received against an order would be left without their order. A posted receipt is
+        --      cancelled first, a draft deleted first (the order's own receipts, and those of its container lines).
+        IF @TypeCode = N'PO'
+        BEGIN
+            DECLARE @ReceiptStatus TINYINT =
+                (SELECT MAX(g.Status) FROM purchase.GoodsReceipts g
+                 WHERE g.Status IN (1, 2)
+                   AND (g.PurchaseOrderId = @Id
+                        OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = g.Id AND gl.PurchaseOrderId = @Id)));
+            IF @ReceiptStatus = 2 THROW 65011, 'This purchase order has posted goods receipts. Cancel those first.', 1;
+            IF @ReceiptStatus = 1 THROW 65011, 'This purchase order has draft goods receipts. Delete them first.', 1;
+        END
+
+        DECLARE @Ct NVARCHAR(400);
+        IF @TypeCode = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                         WHERE cl.PurchaseOrderId = @Id AND c.Status <> 8)
+            THROW 65021, 'This purchase order is loaded into containers. Cancel those containers (or remove its lines from them) first.', 1;
+        -- (65) Only a container offloaded BEFORE goods receipts received its goods with this invoice (its CNT stock rows were
+        --      valued at its lines). A container received with a goods receipt keeps its goods: their cost goes back to
+        --      the order price below (decision 3).
+        SELECT TOP (1) @Ct = N'This invoice cannot be cancelled: container ' + c.ContainerRef + N' was already offloaded with it. Reverse the offload first.'
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+        WHERE l.DocumentId = @Id AND c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload'
+        ORDER BY c.ContainerRef;
+        IF @Ct IS NOT NULL THROW 69012, @Ct, 1;
+
+        -- (65) AN INVOICE POSTED WITH ITS STOCK, BEFORE GOODS RECEIPTS (UsesGoodsReceipts = 0, receipt mode 1): its stock
+        --      rows are reversed below, as before. The switch counted those rows as received on the order lines
+        --      (GoodsReceivedBase), so the same pieces - read from the ledger, as the switch did - leave that counter.
+        DECLARE @OldStock BIT = CASE WHEN @TypeCode = N'PINV' AND @UsesGoodsReceipts = 0 AND @ReceiptMode = 1 THEN 1 ELSE 0 END;
+        DECLARE @OldReceived TABLE (PoLineId INT NOT NULL PRIMARY KEY, Qty INT NOT NULL);
+        IF @OldStock = 1
+            INSERT INTO @OldReceived (PoLineId, Qty)
+            SELECT il.SourceLineId, SUM(m.QuantityBase)
+            FROM inventory.StockMovements m
+            INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = m.DocumentLineId AND il.DocumentId = m.DocumentId
+            WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'PINV' AND m.DocumentId = @Id AND m.IsReversal = 0
+              AND il.SourceLineId IS NOT NULL
+            GROUP BY il.SourceLineId;
+
+        DECLARE @Msg NVARCHAR(400);
+        -- (65) the stock check only for an invoice that brought its own stock (an invoice using goods receipts brought none)
+        IF @Direction = 1 AND @ReceiptMode = 1 AND @OldStock = 1
+        BEGIN
+            SELECT TOP (1) @Msg = N'Cannot cancel: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N' left, but this document added ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 65007, @Msg, 1;
+        END
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
+        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+               m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
+        FROM inventory.StockMovements m
+        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = @TypeCode AND m.DocumentId = @Id AND m.IsReversal = 0;
+
+        IF @TypeCode = N'PINV'
+            UPDATE purchase.PurchaseDocumentLines SET ReceivedQuantityBase = 0 WHERE DocumentId = @Id;
+
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PINV'
+        BEGIN
+            UPDATE s SET ReceivedQuantityBase = s.ReceivedQuantityBase - x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+
+            -- (65) the pieces an old invoice received are no longer received (see @OldReceived)
+            UPDATE s SET GoodsReceivedBase = s.GoodsReceivedBase - o.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN @OldReceived o ON o.PoLineId = s.Id;
+
+            -- (65) closed as fully invoiced before goods receipts ("Fully received") or since ("Fully invoiced and received")
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceId AND Status = 4 AND CloseReason IN (N'Fully received', N'Fully invoiced and received'))
+            BEGIN
+                UPDATE purchase.PurchaseDocuments SET Status = 2, ClosedAtUtc = NULL, ClosedBy = NULL, CloseReason = NULL WHERE Id = @SourceId;
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@SourceId, N'Updated', N'Re-opened: ' + @Number + N' was cancelled', @UserId);
+            END
+        END
+        IF @SourceId IS NOT NULL AND @TypeCode = N'PRET'
+        BEGIN
+            UPDATE s SET ReturnedQuantityBase = s.ReturnedQuantityBase - x.Qty
+            FROM purchase.PurchaseDocumentLines s
+            INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
+        END
+
+        UPDATE purchase.PurchaseDocuments
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        -- (65) DECISION 3: GOODS RECEIVED AGAINST THIS INVOICE GO BACK TO THEIR COST WITHOUT IT. Now that it is cancelled
+        --      (its lines received nothing, above), the received pieces of its groups - each order line it invoiced, and
+        --      the supplier + item of its lines without an order - are matched again without it (usp_GoodsReceipt_Rematch:
+        --      to another posted invoice of the line, else unmatched) and brought to their target cost
+        --      (usp_GoodsReceipt_TrueUpCost, cause PINVCANCEL): the order price, or another invoice's price; goods without
+        --      an order keep the cost they were received at. The part still in stock changes the average cost, the rest
+        --      goes to cost of sales. For an invoice posted after the switch (UsesGoodsReceipts = 1) and an older one
+        --      "Shipped in containers" (receipt mode 2; one whose container was offloaded the old way was refused, 69012).
+        DECLARE @CostAmount DECIMAL(18,2) = 0, @CostInventory DECIMAL(18,2) = 0, @CostCogs DECIMAL(18,2) = 0, @CostLines INT = 0;
+        IF @TypeCode = N'PINV' AND (@UsesGoodsReceipts = 1 OR @ReceiptMode = 2)
+        BEGIN
+            DECLARE @Anchors purchase.tvp_GoodsReceiptAnchor;
+            INSERT INTO @Anchors (Kind, PoLineId, SupplierId, ItemId)
+            SELECT DISTINCT 'P', l.SourceLineId, NULL, NULL FROM purchase.PurchaseDocumentLines l
+            WHERE l.DocumentId = @Id AND l.SourceLineId IS NOT NULL
+            UNION
+            SELECT DISTINCT 'S', NULL, @SupplierId, l.ItemId FROM purchase.PurchaseDocumentLines l
+            WHERE l.DocumentId = @Id AND l.SourceLineId IS NULL;
+
+            EXEC purchase.usp_GoodsReceipt_Rematch @Anchors;
+
+            DECLARE @GroupLines logistics.tvp_IdList;
+            INSERT INTO @GroupLines (Id) SELECT GoodsReceiptLineId FROM purchase.fn_GoodsReceipt_GroupLines(@Anchors);
+            IF EXISTS (SELECT 1 FROM @GroupLines)
+                EXEC purchase.usp_GoodsReceipt_TrueUpCost @GroupLines, N'PINVCANCEL', @Id, @Number, @UserId,
+                     @CostAmount OUTPUT, @CostInventory OUTPUT, @CostCogs OUTPUT, @CostLines OUTPUT;
+
+            IF @CostLines > 0
+                INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+                VALUES (@Id, N'Updated', LEFT(N'Cost of received goods adjusted by ' + CAST(@CostAmount AS NVARCHAR(30))
+                                             + N' (stock ' + CAST(@CostInventory AS NVARCHAR(30)) + N', cost of sales '
+                                             + CAST(@CostCogs AS NVARCHAR(30)) + N'): the invoice was cancelled', 500), @UserId);
+        END
+
+        -- A cancelled receipt / return changes the cost history: replay the ledger for the items concerned.
+        IF @Direction <> 0
+        BEGIN
+            DECLARE @ItemId INT;
+            DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM purchase.PurchaseDocumentLines WHERE DocumentId = @Id;
+            OPEN items; FETCH NEXT FROM items INTO @ItemId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC inventory.usp_Item_RebuildCosts @ItemId;
+                FETCH NEXT FROM items INTO @ItemId;
+            END
+            CLOSE items; DEALLOCATE items;
+        END
+
+        -- containers of an import: the value basis of their charges changed
+        DECLARE @Cid INT;
+        DECLARE cts CURSOR LOCAL FAST_FORWARD FOR
+            SELECT DISTINCT cl.ContainerId FROM purchase.PurchaseDocumentLines l
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+            WHERE l.DocumentId = @Id;
+        OPEN cts;
+        FETCH NEXT FROM cts INTO @Cid;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@Cid, N'Updated', LEFT(N'Purchase invoice ' + ISNULL(@Number, N'') + N' cancelled: ' + @Reason, 500), @UserId);
+            FETCH NEXT FROM cts INTO @Cid;
+        END
+        CLOSE cts;
+        DEALLOCATE cts;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 5b. Close by hand: not while received goods wait for their invoice */
+
+-- Re-created (65) from the body of script 27: goods may now arrive before their invoice (rules 19, 20), and a closed
+-- order takes no more invoices (65011) and has no Reopen - so an order closed by hand while goods received on it are
+-- not invoiced would leave them at the order price for good (and a received container could never be closed, 69016).
+-- Refused (65021), besides the containers not fully invoiced of script 27:
+--   - a container received with a goods receipt whose received pieces are not all matched to posted invoices (the
+--     test of usp_Container_Close, rule 20; the invoices may be linked to it or not - pass 2 matches by order line);
+--     a container offloaded the old way, or cancelled, is not looked at, as before;
+--   - an order line with more pieces received than invoiced (GoodsReceivedBase > ReceivedQuantityBase);
+--   - a draft goods receipt on the order: it must be posted (or deleted) first.
+-- After a close by hand, an order line expects only what was invoiced (purchase.fn_PoLine_Progress), so "Receive
+-- goods..." and a draft made earlier cannot bring pieces that could never be invoiced.
+-- One transaction: the matching lock first (usp_GoodsReceipt_LockMatching - the counters read here change only under
+-- it, in goods receipt and invoice postings), then the order row.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Close
+    @Id         INT,
+    @Reason     NVARCHAR(300) = NULL,
+    @RowVersion BINARY(8)     = NULL,
+    @UserId     INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- lock order: the matcher first, then rows, or two postings deadlock (usp_GoodsReceipt_LockMatching)
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20);
+        SELECT @Status = d.Status, @TypeCode = dt.Code
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @Id;
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @TypeCode <> N'PO' THROW 65010, 'Only purchase orders can be closed.', 1;
+        IF @Status <> 2 THROW 65010, 'Only open (posted) purchase orders can be closed.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+        DECLARE @Ct NVARCHAR(400);
+        SELECT TOP (1) @Ct = CASE WHEN rb.ReceivedBy = N'GRN'
+                                  THEN N'Container ' + c.ContainerRef + N' received goods of this order with goods receipt ' + rb.GoodsReceiptNumber
+                                       + N' that are not invoiced yet. Post their supplier invoices (or cancel the goods receipt) before closing the order.'
+                                  ELSE N'Container ' + c.ContainerRef + N' carries lines of this order that are not fully invoiced. Invoice them (or remove the lines) before closing the order.' END
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+        CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+        OUTER APPLY (SELECT Q = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status IN (2, 4)) q
+        -- (65) a container received with a goods receipt: its received pieces matched to posted invoices (rule 20)
+        OUTER APPLY (SELECT Received = SUM(gl.QuantityBase), Matched = SUM(mm.Qty)
+                     FROM purchase.GoodsReceiptLines gl
+                     INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                     OUTER APPLY (SELECT Qty = SUM(m.QuantityBase) FROM purchase.GoodsReceiptInvoiceMatches m
+                                  WHERE m.GoodsReceiptLineId = gl.Id) mm
+                     WHERE gl.ContainerLineId = cl.Id) gx
+        WHERE cl.PurchaseOrderId = @Id
+          AND ((c.Status NOT IN (6, 7, 8) AND ISNULL(q.Q, 0) < cl.QuantityBase)
+               OR (rb.ReceivedBy = N'GRN' AND ISNULL(gx.Matched, 0) < ISNULL(gx.Received, 0)))
+        ORDER BY c.ContainerRef;
+        IF @Ct IS NOT NULL THROW 65021, @Ct, 1;
+
+        -- (65) goods received on an order line (any receipt) and not invoiced
+        SELECT TOP (1) @Ct = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                             + CAST(l.GoodsReceivedBase AS NVARCHAR(20)) + N' pcs received but ' + CAST(l.ReceivedQuantityBase AS NVARCHAR(20))
+                             + N' invoiced. Goods received on this order are not invoiced yet: post their supplier invoices'
+                             + N' (or cancel the goods receipts) before closing it.'
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        WHERE l.DocumentId = @Id AND l.GoodsReceivedBase > l.ReceivedQuantityBase
+        ORDER BY l.LineNumber;
+        IF @Ct IS NOT NULL THROW 65021, @Ct, 1;
+
+        -- (65) draft goods receipts on the order
+        IF EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl
+                   INNER JOIN purchase.GoodsReceipts g          ON g.Id = gl.GoodsReceiptId AND g.Status = 1
+                   INNER JOIN purchase.PurchaseDocumentLines l  ON l.Id = gl.PoLineId
+                   WHERE l.DocumentId = @Id)
+            THROW 65021, 'This purchase order has draft goods receipts. Post or delete them first.', 1;
+
+        UPDATE purchase.PurchaseDocuments
+        SET Status = 4, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, CloseReason = ISNULL(NULLIF(LTRIM(RTRIM(@Reason)), N''), N'Closed manually'),
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Closed', ISNULL(@Reason, N'Closed manually'), @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. CreateFromSource: a return of what was received */
+
+-- Re-created (65) from the body of script 63 (one invoice per item, or one): PINV -> PRET from an invoice whose goods
+-- came through goods receipts (UsesGoodsReceipts = 1) or travel in containers (receipt mode 2) - rule 23:
+--   - what each line can still return = received (ReceivedQuantityBase: the pieces matched to it) - returned - on draft
+--     returns, as usp_PurchaseDocument_Post checks it (65011); goods received but not invoiced are not on the invoice;
+--   - the line's warehouse = the warehouse of the posted goods receipt line matched to it with the most pieces (where
+--     the goods are), else the invoice line's.
+-- Returns from older invoices, and PO -> PINV, are unchanged. The cost of the return is set by Save and again by Post.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
+    @SourceId       INT,
+    @TargetTypeCode NVARCHAR(20),        -- PINV (from PO) | PRET (from PINV)
+    @DocumentDate   DATE = NULL,         -- default today
+    @Selection      purchase.tvp_SourceLineSelection READONLY,   -- lines + base quantities to take; empty = everything still available
+    @UserId         INT  = NULL,
+    @NewId          INT OUTPUT,                       -- (45) PO -> PINV: the FIRST invoice created
+    @ExporterReference   NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
+    @OnePerItem          BIT          = NULL          -- (63) PO -> PINV: 1 one invoice per item, 0 one invoice of every item; NULL = the setting
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @SrcType NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT, @RateType TINYINT, @SupplierRef NVARCHAR(100),
+            @SrcByReceipts BIT;
+    SELECT @SrcType = dt.Code, @Status = d.Status, @BranchId = d.BranchId, @WarehouseId = d.WarehouseId, @SupplierId = d.SupplierId,
+           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference,
+           -- (65) rule 23: an invoice whose goods came (or come) through goods receipts - posted after the switch, or
+           --      "Shipped in containers" - returns only what was RECEIVED and not returned yet
+           @SrcByReceipts = CASE WHEN dt.Code = N'PINV' AND (d.UsesGoodsReceipts = 1 OR d.ReceiptMode = 2) THEN 1 ELSE 0 END
+    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceId;
+
+    IF @SrcType IS NULL THROW 65006, 'Source document not found.', 1;
+    IF @Status <> 2 THROW 65011, 'The source document must be approved / posted and still open.', 1;
+    IF NOT ((@TargetTypeCode = N'PINV' AND @SrcType = N'PO') OR (@TargetTypeCode = N'PRET' AND @SrcType = N'PINV'))
+        THROW 65011, 'Purchase orders become purchase invoices; purchase invoices become purchase returns.', 1;
+    -- (43) An order with containers gives an invoice "shipped in containers" (receipt mode 2): its lines are linked to the
+    --      containers afterwards (usp_PurchaseInvoice_LinkContainers). It used to be refused (65021).
+    DECLARE @ReceiptMode TINYINT =
+        CASE WHEN @SrcType = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                               WHERE cl.PurchaseOrderId = @SourceId AND c.Status <> 8)
+             THEN 2 END;
+
+    -- Several drafts may be created from the same document: what is already in another DRAFT of the target type is not
+    -- offered again. A selection takes only the given lines / base quantities.
+    DECLARE @HasSelection BIT = CASE WHEN EXISTS (SELECT 1 FROM @Selection) THEN 1 ELSE 0 END;
+    IF @HasSelection = 1
+    BEGIN
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg = CASE WHEN l.Id IS NULL THEN N'A selected line does not belong to the source document.'
+                                   WHEN sel.QuantityBase <= 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the quantity must be greater than zero.'
+                                   ELSE N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + CAST(sel.QuantityBase AS NVARCHAR(20))
+                                        + N' base units selected but only ' + CAST(av.Available AS NVARCHAR(20))
+                                        + N' are still available (the rest is in posted or draft documents).' END
+        FROM @Selection sel
+        LEFT JOIN purchase.PurchaseDocumentLines l ON l.Id = sel.SourceLineId AND l.DocumentId = @SourceId
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 INNER JOIN inventory.DocumentTypes xt ON xt.Id = xd.DocumentTypeId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1 AND xt.Code = @TargetTypeCode) dr
+    CROSS APPLY (SELECT Available = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                         WHEN @SrcByReceipts = 1 THEN l.ReceivedQuantityBase - l.ReturnedQuantityBase   -- (65) received, not returned
+                                         ELSE l.QuantityBase - l.ReturnedQuantityBase END - ISNULL(dr.Qty, 0)) av
+        WHERE l.Id IS NULL OR sel.QuantityBase <= 0 OR sel.QuantityBase > av.Available
+        ORDER BY sel.SourceLineId;
+        IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+    END
+
+    -- Remaining quantity per line; when it is not a whole number of the line's unit, the new line uses the BASE unit
+    -- (price converted per base unit) so nothing is over-received or over-returned.
+    -- (65) A return from an invoice whose goods came through goods receipts takes them out of the warehouse they were
+    --      received into: that of the posted receipt line matched to the invoice line with the most pieces (else the
+    --      invoice line's).
+    DECLARE @Lines purchase.tvp_PurchaseDocumentLine;
+    INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+    SELECT ROW_NUMBER() OVER (ORDER BY l.LineNumber), l.ItemId, c.ItemUnitId, COALESCE(rw.WarehouseId, l.WarehouseId), l.ExpiryDate,
+           c.Quantity, c.UnitPrice, l.DiscountPercent, NULL, l.Notes, l.Id
+    FROM purchase.PurchaseDocumentLines l
+    OUTER APPLY (SELECT TOP (1) WarehouseId = COALESCE(gl.WarehouseId, g.WarehouseId)
+                 FROM purchase.GoodsReceiptInvoiceMatches m
+                 INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                 INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                 WHERE m.InvoiceLineId = l.Id AND @SrcByReceipts = 1 AND COALESCE(gl.WarehouseId, g.WarehouseId) IS NOT NULL
+                 ORDER BY m.QuantityBase DESC, gl.Id) rw
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 INNER JOIN inventory.DocumentTypes xt ON xt.Id = xd.DocumentTypeId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1 AND xt.Code = @TargetTypeCode) dr
+    CROSS APPLY (SELECT Available = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                         WHEN @SrcByReceipts = 1 THEN l.ReceivedQuantityBase - l.ReturnedQuantityBase   -- (65) received, not returned
+                                         ELSE l.QuantityBase - l.ReturnedQuantityBase END - ISNULL(dr.Qty, 0)) av
+    LEFT JOIN @Selection sel ON sel.SourceLineId = l.Id
+    CROSS APPLY (SELECT Remaining = CASE WHEN @HasSelection = 1 THEN ISNULL(sel.QuantityBase, 0) ELSE av.Available END) r
+    CROSS APPLY (SELECT ItemUnitId = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN l.ItemUnitId
+                                          ELSE (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = l.ItemId AND IsBaseUnit = 1) END,
+                        Quantity   = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN r.Remaining / l.PackingFormula ELSE r.Remaining END,
+                        UnitPrice  = CASE WHEN r.Remaining % l.PackingFormula = 0 THEN l.UnitPrice ELSE ROUND(l.UnitPrice / l.PackingFormula, 4) END) c
+    WHERE l.DocumentId = @SourceId AND r.Remaining > 0;
+
+    IF NOT EXISTS (SELECT 1 FROM @Lines) THROW 65011, 'Nothing is left on the source document: everything is already in posted or draft documents.', 1;
+
+    -- A return (any pair but PO -> PINV): one document, as before.
+    IF @TargetTypeCode <> N'PINV'
+    BEGIN
+        EXEC purchase.usp_PurchaseDocument_Save
+             @Id = NULL, @DocumentTypeCode = @TargetTypeCode, @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+             @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+             @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+             @Lines = @Lines, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
+             @ReceiptMode = @ReceiptMode, @NewId = @NewId OUTPUT;
+        RETURN;
+    END
+
+    -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
+    --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    -- (63) ...UNLESS @OnePerItem = 0 (NULL = the setting Purchase.OneItemPerInvoice): then ONE invoice holds every line,
+    --      in the same order, created the same way; its mode allows several items (OneItemOnly = 0). With 1 every
+    --      invoice is of one item (OneItemOnly = 1), as before.
+    SET @OnePerItem = COALESCE(@OnePerItem, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+    DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+    INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
+
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
+    DECLARE @Part purchase.tvp_PurchaseDocumentLine;
+    DECLARE @Seq INT = 1, @Last INT = CASE WHEN @OnePerItem = 1 THEN (SELECT MAX(Seq) FROM @Items) ELSE 1 END, @Item INT, @InvoiceId INT;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            DELETE FROM @Part;
+            INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
+                   ImportRowNumber, Notes, SourceLineId
+            FROM @Lines WHERE ItemId = @Item OR @OnePerItem = 0;
+
+            SET @InvoiceId = NULL;
+            EXEC purchase.usp_PurchaseDocument_Save
+                 @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+                 @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+                 @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+                 @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
+                 @ReceiptMode = @ReceiptMode, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
+                 @NewId = @InvoiceId OUTPUT, @OneItemOnly = @OnePerItem;
+            INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
+
+            SET @Seq += 1;
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    -- the first invoice, as before: the callers that read @NewId keep working
+    SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
+END
+GO
+
+/* ================================================================== 7. Containers received with a goods receipt can still be invoiced */
+
+-- Re-created (65) from the body of script 63 (one invoice per item, or one): rule 19 - the goods may arrive before their
+-- invoice, so "Create Invoice from Containers..." also takes a container RECEIVED WITH A GOODS RECEIPT (Offloaded or
+-- Closed, fn_Container_ReceivedBy = 'GRN'), with an empty selection too. Still refused (65019): a cancelled container
+-- and one offloaded before goods receipts ("... the container is cancelled or was offloaded before goods receipts."),
+-- and more than the loaded pieces not yet invoiced; a line already fully invoiced is still left out. The invoices are
+-- "Shipped in containers" and linked to the container lines, as before; posting one trues up the cost of the goods
+-- already received (usp_PurchaseDocument_Post).
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_CreateFromContainers
+    @PurchaseOrderId INT,
+    @Selection       logistics.tvp_ContainerLineQty READONLY,
+    @DocumentDate    DATE = NULL,
+    @UserId          INT  = NULL,
+    @NewId           INT OUTPUT,                      -- (45) the FIRST invoice created
+    @ExporterReference   NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
+    @OnePerItem          BIT          = NULL          -- (63) 1 one invoice per item, 0 one invoice of every item; NULL = the setting
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT,
+            @RateType TINYINT, @SupplierRef NVARCHAR(100);
+    SELECT @TypeCode = dt.Code, @Status = d.Status, @BranchId = d.BranchId, @WarehouseId = d.WarehouseId, @SupplierId = d.SupplierId,
+           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference
+    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE d.Id = @PurchaseOrderId;
+
+    IF @TypeCode IS NULL THROW 65006, 'Purchase order not found.', 1;
+    IF @TypeCode <> N'PO' THROW 65011, 'Invoices from containers are created for a purchase order.', 1;
+    IF @Status <> 2 THROW 65011, 'The purchase order must be approved and still open.', 1;
+
+    -- (65) RULE 19: the goods may arrive before the invoice. A container RECEIVED WITH A GOODS RECEIPT (Offloaded or
+    --      Closed, fn_Container_ReceivedBy = 'GRN') is invoiced like one still travelling; only a cancelled container,
+    --      or one offloaded before goods receipts (its goods entered stock with its invoices then), is refused - and
+    --      never more than the loaded pieces.
+    DECLARE @Pick TABLE (ContainerLineId INT PRIMARY KEY, QuantityBase INT);
+    IF EXISTS (SELECT 1 FROM @Selection)
+        INSERT INTO @Pick (ContainerLineId, QuantityBase) SELECT ContainerLineId, QuantityBase FROM @Selection;
+    ELSE
+        INSERT INTO @Pick (ContainerLineId, QuantityBase)
+        SELECT cl.Id, cl.QuantityBase - ISNULL(q.Qty, 0)
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+        OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+        CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+        WHERE cl.PurchaseOrderId = @PurchaseOrderId AND c.Status <> 8 AND NOT (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+          AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0;
+
+    IF NOT EXISTS (SELECT 1 FROM @Pick) THROW 65019, 'Nothing is left to invoice on the containers of this order.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        CASE WHEN cl.Id IS NULL THEN N'A selected container line no longer exists.'
+             WHEN cl.PurchaseOrderId <> @PurchaseOrderId THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' belongs to another purchase order.'
+             WHEN c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+                  THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10))
+                       + N': the container is cancelled or was offloaded before goods receipts.'
+             WHEN p.QuantityBase <= 0 THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': the quantity must be greater than zero.'
+             ELSE N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': ' + CAST(p.QuantityBase AS NVARCHAR(20))
+                  + N' selected but only ' + CAST(cl.QuantityBase - ISNULL(q.Qty, 0) AS NVARCHAR(20)) + N' are loaded and not yet invoiced.' END
+    FROM @Pick p
+    LEFT JOIN logistics.ContainerLines cl ON cl.Id = p.ContainerLineId
+    LEFT JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+    OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                 WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+    WHERE cl.Id IS NULL OR cl.PurchaseOrderId <> @PurchaseOrderId OR c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+       OR p.QuantityBase <= 0
+       OR p.QuantityBase > cl.QuantityBase - ISNULL(q.Qty, 0)
+    ORDER BY c.ContainerRef, cl.LineNumber;
+    IF @Msg IS NOT NULL THROW 65019, @Msg, 1;
+
+    -- the order line must still allow it (posted invoices + drafts)
+    SELECT TOP (1) @Msg = N'Order line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): ' + CAST(x.Qty AS NVARCHAR(20))
+                          + N' selected but only ' + CAST(pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(dr.Qty, 0) AS NVARCHAR(20))
+                          + N' remain to invoice (the rest is in posted or draft invoices).'
+    FROM (SELECT cl.PoLineId, Qty = SUM(p.QuantityBase) FROM @Pick p
+          INNER JOIN logistics.ContainerLines cl ON cl.Id = p.ContainerLineId GROUP BY cl.PoLineId) x
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = x.PoLineId
+    INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+    OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                 WHERE pil.SourceLineId = pol.Id AND pd.Status = 1) dr
+    WHERE x.Qty > pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(dr.Qty, 0)
+    ORDER BY pol.LineNumber;
+    IF @Msg IS NOT NULL THROW 65011, @Msg, 1;
+
+    DECLARE @Rows TABLE (LineNumber INT PRIMARY KEY, ContainerLineId INT, PoLineId INT, QuantityBase INT);
+    INSERT INTO @Rows (LineNumber, ContainerLineId, PoLineId, QuantityBase)
+    SELECT ROW_NUMBER() OVER (ORDER BY c.ContainerRef, cl.LineNumber), cl.Id, cl.PoLineId, p.QuantityBase
+    FROM @Pick p
+    INNER JOIN logistics.ContainerLines cl ON cl.Id = p.ContainerLineId
+    INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId;
+
+    DECLARE @Lines purchase.tvp_PurchaseDocumentLine;
+    INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+    SELECT r.LineNumber, pol.ItemId, u.ItemUnitId, @WarehouseId, pol.ExpiryDate, u.Quantity, u.UnitPrice, pol.DiscountPercent, NULL,
+           LEFT(N'Container ' + c.ContainerRef + ISNULL(N' / ' + c.ContainerNo, N''), 300), pol.Id
+    FROM @Rows r
+    INNER JOIN logistics.ContainerLines cl        ON cl.Id = r.ContainerLineId
+    INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = r.PoLineId
+    CROSS APPLY (SELECT ItemUnitId = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN pol.ItemUnitId
+                                          ELSE (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = pol.ItemId AND IsBaseUnit = 1) END,
+                        Quantity   = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN r.QuantityBase / pol.PackingFormula ELSE r.QuantityBase END,
+                        UnitPrice  = CASE WHEN r.QuantityBase % pol.PackingFormula = 0 THEN pol.UnitPrice ELSE ROUND(pol.UnitPrice / pol.PackingFormula, 4) END) u;
+
+    -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
+    --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    -- (63) ...UNLESS @OnePerItem = 0 (NULL = the setting Purchase.OneItemPerInvoice): then ONE invoice holds every line,
+    --      in the same order, created the same way; its mode allows several items (OneItemOnly = 0). With 1 every
+    --      invoice is of one item (OneItemOnly = 1), as before.
+    SET @OnePerItem = COALESCE(@OnePerItem, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+    DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
+    INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
+
+    DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
+    DECLARE @Part purchase.tvp_PurchaseDocumentLine, @PartContainers purchase.tvp_LineContainer;
+    DECLARE @Seq INT = 1, @Last INT = CASE WHEN @OnePerItem = 1 THEN (SELECT MAX(Seq) FROM @Items) ELSE 1 END, @Item INT, @InvoiceId INT;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        WHILE @Seq <= @Last
+        BEGIN
+            SET @Item = (SELECT ItemId FROM @Items WHERE Seq = @Seq);
+
+            DELETE FROM @Part;
+            INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
+                   ImportRowNumber, Notes, SourceLineId
+            FROM @Lines WHERE ItemId = @Item OR @OnePerItem = 0;
+
+            DELETE FROM @PartContainers;
+            INSERT INTO @PartContainers (LineNumber, ContainerLineId)
+            SELECT ROW_NUMBER() OVER (ORDER BY r.LineNumber), r.ContainerLineId
+            FROM @Rows r INNER JOIN @Lines l ON l.LineNumber = r.LineNumber
+            WHERE l.ItemId = @Item OR @OnePerItem = 0;
+
+            SET @InvoiceId = NULL;
+            EXEC purchase.usp_PurchaseDocument_Save
+                 @Id = NULL, @DocumentTypeCode = N'PINV', @DocumentDate = @DocumentDate, @ExpectedDate = NULL,
+                 @BranchId = @BranchId, @WarehouseId = @WarehouseId, @SupplierId = @SupplierId, @CurrencyId = @CurrencyId,
+                 @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
+                 @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @PurchaseOrderId, @RowVersion = NULL, @UserId = @UserId,
+                 @ReceiptMode = 2, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
+                 @LineContainers = @PartContainers, @NewId = @InvoiceId OUTPUT, @OneItemOnly = @OnePerItem;
+            INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            SELECT DISTINCT cl.ContainerId, N'Updated',
+                   N'Draft purchase invoice ' + ISNULL((SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId),
+                                                       N'#' + CAST(@InvoiceId AS NVARCHAR(10)))
+                   + N' created from the container', @UserId
+            FROM @PartContainers x INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId;
+
+            SET @Seq += 1;
+        END
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    -- the first invoice, as before: the callers that read @NewId keep working
+    SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
+
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
+    FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
+    ORDER BY c.Seq;
+END
+GO
+
+-- Re-created (65) from the body of script 27: goods may arrive before their invoice (rule 19), so a container RECEIVED
+-- WITH A GOODS RECEIPT (Offloaded or Closed, fn_Container_ReceivedBy = 'GRN') can still be invoiced. Still left out:
+-- cancelled containers and containers offloaded before goods receipts (ReceivedBy = 'Offload'); a line already fully
+-- invoiced unless @IncludeAll. + ReceivedBy and ReceivedBase (the pieces received on the line) at the end.
+-- Container lines that can still be invoiced (containers not offloaded the old way / cancelled), by order or by container.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_InvoiceCandidates
+    @PurchaseOrderId INT = NULL,
+    @ContainerId     INT = NULL,
+    @IncludeAll      BIT = 0      -- 1 = also the lines already fully invoiced
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PurchaseOrderId IS NULL AND @ContainerId IS NULL THROW 69000, 'Give a purchase order or a container.', 1;
+
+    SELECT cl.Id AS ContainerLineId, cl.ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus, cl.LineNumber,
+           cl.PurchaseOrderId, d.DocumentNumber AS PurchaseOrderNumber, d.Status AS OrderStatus,
+           d.SupplierId, sp.PartyName AS SupplierName, d.CurrencyId, cur.CurrencyCode,
+           cl.PoLineId, pol.LineNumber AS PoLineNumber, cl.ItemId, i.ItemCode, i.ItemName,
+           PoItemUnitId = pol.ItemUnitId, PoUnitTypeName = ut.UnitTypeName, PoPackingFormula = pol.PackingFormula,
+           pol.UnitPrice, pol.DiscountPercent,
+           LoadedBase         = cl.QuantityBase,
+           InvoicedPostedBase = ISNULL(q.Posted, 0),
+           InvoicedDraftBase  = ISNULL(q.Draft, 0),
+           AvailableBase      = cl.QuantityBase - ISNULL(q.Posted, 0) - ISNULL(q.Draft, 0),
+           OrderLineRemainingBase = pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(od.Draft, 0),
+           rb.ReceivedBy,                                        -- (65) 'GRN' once its goods receipt is posted, else NULL
+           ReceivedBase = cl.ReceivedQuantityBase                 -- (65) received by that goods receipt (NULL before)
+    FROM logistics.ContainerLines cl
+    INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+    INNER JOIN purchase.PurchaseDocuments d       ON d.Id = cl.PurchaseOrderId
+    INNER JOIN masterdata.Parties sp              ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies cur          ON cur.Id = d.CurrencyId
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = cl.PoLineId
+    INNER JOIN inventory.ItemUnits iu             ON iu.Id = pol.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut            ON ut.Id = iu.UnitTypeId
+    INNER JOIN inventory.Items i                  ON i.Id = cl.ItemId
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN x.Status IN (2, 4) THEN pil.QuantityBase END),
+                        Draft  = SUM(CASE WHEN x.Status = 1 THEN pil.QuantityBase END)
+                 FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments x ON x.Id = pil.DocumentId
+                 WHERE pil.ContainerLineId = cl.Id) q
+    OUTER APPLY (SELECT Draft = SUM(pil.QuantityBase)
+                 FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments x ON x.Id = pil.DocumentId
+                 WHERE pil.SourceLineId = pol.Id AND x.Status = 1) od
+    WHERE (c.Status NOT IN (6, 7, 8) OR rb.ReceivedBy = N'GRN')     -- (65) received with a goods receipt: still invoiceable
+      AND (@PurchaseOrderId IS NULL OR cl.PurchaseOrderId = @PurchaseOrderId)
+      AND (@ContainerId IS NULL OR cl.ContainerId = @ContainerId)
+      AND (@IncludeAll = 1 OR cl.QuantityBase - ISNULL(q.Posted, 0) - ISNULL(q.Draft, 0) > 0)
+    ORDER BY d.DocumentNumber, c.ContainerRef, cl.LineNumber;
+END
+GO
+
+/* ================================================================== 8. Get: received, to receive, the goods receipts */
+
+-- Re-created (65) from the body of script 63 (the mode of the invoice):
+--   - header + UsesGoodsReceipts, CanReceive / ReceiveBlockedReason ("Receive goods...": rule 14 for an order, rule 15
+--     for an invoice, with their texts; "Posted before goods receipts" also for an older "Shipped in containers" invoice
+--     whose lines are all in containers offloaded the old way) and GoodsReceiptsSinceUtc (the switch, for "Posted
+--     before goods receipts");
+--   - order lines + the columns of purchase.fn_PoLine_Progress (received, settled short, in containers, in draft
+--     receipts, to receive, the posting cap outside containers, still to come); what the line committed outside
+--     containers is purchase.fn_PoLine_CommittedOutside (InvoicedDirectBase keeps its name and its place in
+--     AvailableForContainerBase and holds the larger of invoiced, and received + on draft receipts; its parts at the end);
+--   - invoice lines + ToReceiveBase / InDraftReceiptsBase (purchase.fn_InvoiceLine_ToReceive; 0 on a line in a
+--     container); RemainingBase of an invoice whose goods come through goods receipts = received - returned (rule 23);
+--   - NEW LAST result sets, so the readers of sets 1-8 keep their order: 9 the goods receipts of the document, 10 the
+--     cost adjustments of received goods this invoice (or its landed cost adjustments) caused.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT d.Id, d.DocumentTypeId, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection, dt.NumberOnPost,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate,
+           d.BranchId, b.BranchCode, b.BranchName, d.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName, sp.Phone AS SupplierPhone, sp.Email AS SupplierEmail, sp.Address AS SupplierAddress,
+           d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
+           d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode, d.Notes, d.Status,
+           IsContainerBound = CAST(CASE WHEN EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x
+                                                    WHERE x.DocumentId = d.Id AND x.ContainerLineId IS NOT NULL) THEN 1 ELSE 0 END AS BIT),
+           ContainerCount = CASE WHEN dt.Code = N'PO'
+                                 THEN (SELECT COUNT(DISTINCT cl.ContainerId) FROM logistics.ContainerLines cl
+                                       INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
+                                       WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8)
+                                 ELSE (SELECT COUNT(DISTINCT cl.ContainerId) FROM purchase.PurchaseDocumentLines x
+                                       INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+                                       WHERE x.DocumentId = d.Id) END,
+           LoadedBase = CASE WHEN dt.Code = N'PO'
+                             THEN ISNULL((SELECT SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                                          INNER JOIN logistics.Containers c9 ON c9.Id = cl.ContainerId
+                                          WHERE cl.PurchaseOrderId = d.Id AND c9.Status <> 8), 0) END,
+           ContainerChargesBase = cch.Share,
+           ContainersNeeded = need.Containers,     -- (43) invoices: sum over the items of the pieces / pieces per container
+           d.ApprovalRequestedAtUtc, d.ApprovalRequestedBy, rqu.FullName AS ApprovalRequestedByName,
+           d.ApprovedAtUtc, d.ApprovedBy, apu.FullName AS ApprovedByName, d.ApprovalChannel,
+           d.RejectedAtUtc, d.RejectedBy, rju.FullName AS RejectedByName, d.RejectReason,
+           OrderedBase = prog.Ordered, InvoicedBase = prog.Invoiced, InDraftInvoicesBase = ISNULL(drf.InDraft, 0),
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,      -- 0 not, 1 partially, 2 fully invoiced
+           d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalChargesBase, d.TotalLandedCostBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber, sdt.Code AS SourceDocumentTypeCode,
+           d.SourceShortageId, sh.DocumentNumber AS SourceShortageNumber,
+           d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
+           d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
+           d.ClosedAtUtc, d.ClosedBy, ku.FullName AS ClosedByName, d.CloseReason,
+           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
+           d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (63) supplier invoices: 1 = it holds one item (65029 refuses a second), 0 = it may hold several. Its own mode,
+           --      or the setting when it has none (saved before script 63). 0 on orders and returns: not concerned.
+           OneItemOnly = CAST(CASE WHEN dt.Code = N'PINV'
+                                   THEN COALESCE(d.OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice')) ELSE 0 END AS BIT),
+           -- (65) goods receipts: 1 = a supplier invoice posted after the switch (its goods enter with goods receipts);
+           --      CanReceive / ReceiveBlockedReason = "Receive goods..." on this order or invoice (rules 14, 15);
+           --      GoodsReceiptsSinceUtc = the switch ("Posted before goods receipts ({date})")
+           d.UsesGoodsReceipts,
+           CanReceive = CAST(CASE WHEN rcv.Reason IS NULL THEN 1 ELSE 0 END AS BIT),
+           ReceiveBlockedReason = rcv.Reason,
+           GoodsReceiptsSinceUtc = (SELECT TOP (1) s.SwitchedAtUtc FROM purchase.GoodsReceiptSwitch s)
+    FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN masterdata.Currencies bc   ON bc.IsBaseCurrency = 1 AND bc.IsActive = 1
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN inventory.DocumentTypes sdt ON sdt.Id = src.DocumentTypeId
+    LEFT  JOIN inventory.ShortageDocuments sh ON sh.Id = d.SourceShortageId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = d.CancelledBy
+    LEFT  JOIN security.Users ku ON ku.Id = d.ClosedBy
+    LEFT  JOIN security.Users rqu ON rqu.Id = d.ApprovalRequestedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    LEFT  JOIN security.Users rju ON rju.Id = d.RejectedBy
+    OUTER APPLY (SELECT Ordered = SUM(pl.QuantityBase), Invoiced = SUM(pl.ReceivedQuantityBase)
+                 FROM purchase.PurchaseDocumentLines pl WHERE pl.DocumentId = d.Id) prog
+    OUTER APPLY (SELECT InDraft = SUM(x.QuantityBase)
+                 FROM purchase.PurchaseDocumentLines pl
+                 INNER JOIN purchase.PurchaseDocumentLines x ON x.SourceLineId = pl.Id
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId AND xd.Status = 1
+                 WHERE pl.DocumentId = d.Id) drf
+    OUTER APPLY (SELECT Share = SUM(a.AmountBase * CAST(x.QuantityBase AS DECIMAL(18,6)) / NULLIF(cl.QuantityBase, 0))
+                 FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN logistics.ContainerLines cl            ON cl.Id = x.ContainerLineId
+                 INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id
+                 INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                 WHERE x.DocumentId = d.Id) cch
+    OUTER APPLY (SELECT Containers = CASE WHEN dt.Code = N'PINV'
+                                          THEN CAST(SUM(CAST(s.InvoicedBase AS DECIMAL(19,4)) / s.PcsPerContainer) AS DECIMAL(18,2)) END
+                 FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) need
+    -- (65) what "Receive goods..." would find: an order's lines (rule 14), an invoice's lines not in a container (rule 15)
+    OUTER APPLY (SELECT ToReceive = SUM(p.ToReceiveBase), MaxOutside = SUM(p.MaxOutsideBase), InContainers = SUM(p.InContainersBase),
+                        NotReceived = SUM(CASE WHEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase > 0
+                                               THEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase ELSE 0 END),
+                        InDrafts = SUM(p.InDraftReceiptsBase),
+                        Room = SUM(CASE WHEN p.MaxOutsideBase > p.InDraftReceiptsBase THEN p.MaxOutsideBase - p.InDraftReceiptsBase ELSE 0 END)
+                 FROM purchase.fn_PoLine_Progress(d.Id) p
+                 WHERE dt.Code = N'PO') pr
+    OUTER APPLY (SELECT Lines = COUNT(*), ToReceive = SUM(t.ToReceiveBase), InDrafts = SUM(t.InDraftReceiptsBase),
+                        NotReceived = SUM(CASE WHEN t.InvoicedBase - t.ReceivedBase > 0 THEN t.InvoicedBase - t.ReceivedBase ELSE 0 END)
+                 FROM purchase.fn_InvoiceLine_ToReceive(d.Id) t
+                 WHERE dt.Code = N'PINV') ir
+    -- (65) why "Receive goods..." is disabled (NULL = it is not). An order also opens it for pieces recorded short that
+    --      turn up later (MaxOutsideBase: what remains outside containers, settled pieces included; the dialog proposes 0),
+    --      but not for what draft goods receipts already hold (Room: MaxOutsideBase - InDraftReceiptsBase per line).
+    CROSS APPLY (SELECT Reason = CAST(CASE
+                     WHEN dt.Code = N'PO' THEN
+                         CASE WHEN d.Status = 1 THEN N'Approve the order first: goods are received against an approved order.'
+                              WHEN d.Status = 5 THEN N'This order is waiting for approval.'
+                              WHEN d.Status = 3 THEN N'This order is cancelled.'
+                              WHEN ISNULL(pr.ToReceive, 0) > 0 OR ISNULL(pr.Room, 0) > 0 THEN NULL
+                              WHEN ISNULL(pr.InDrafts, 0) > 0
+                                  THEN N'The rest of this order is on draft goods receipts: post or delete them first.'
+                              WHEN ISNULL(pr.InContainers, 0) > 0 AND ISNULL(pr.NotReceived, 0) > 0
+                                  THEN N'Everything still to receive travels in containers: it is received with its containers.'
+                              ELSE N'Everything ordered is already received.' END
+                     WHEN dt.Code = N'PINV' THEN
+                         CASE WHEN d.Status = 1 THEN N'Post the invoice first: goods are received against a posted invoice, or from the order.'
+                              WHEN d.Status = 3 THEN N'This invoice is cancelled.'
+                              WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1
+                                  THEN N'Posted before goods receipts: its stock entered when it was posted (or when its container was offloaded).'
+                              -- an older "Shipped in containers" invoice whose lines are all in containers offloaded the old way
+                              WHEN d.UsesGoodsReceipts = 0 AND ISNULL(ir.Lines, 0) = 0
+                                   AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x
+                                                   INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+                                                   CROSS APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+                                                   WHERE x.DocumentId = d.Id AND ISNULL(rb.ReceivedBy, N'') <> N'Offload')
+                                  THEN N'Posted before goods receipts: its stock entered when it was posted (or when its container was offloaded).'
+                              WHEN ISNULL(ir.Lines, 0) = 0 THEN N'This invoice''s goods travel in containers: they are received with their containers.'
+                              WHEN ISNULL(ir.ToReceive, 0) > 0 THEN NULL
+                              WHEN ISNULL(ir.InDrafts, 0) > 0 AND ISNULL(ir.NotReceived, 0) > 0
+                                  THEN N'The rest of this invoice is on draft goods receipts: post or delete them first.'
+                              ELSE N'Every piece of this invoice is already received.' END
+                     ELSE N'A purchase return takes goods out: it is not received.' END AS NVARCHAR(400))) rcv
+    WHERE d.Id = @Id;
+
+    SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
+           l.ItemUnitId, ut.UnitTypeName, iu.SkuCode, iu.Barcode, l.PackingFormula,
+           l.WarehouseId, w.WarehouseCode, w.WarehouseName, l.ExpiryDate,
+           l.Quantity, l.QuantityBase, l.UnitPrice, l.DiscountPercent, l.LineDiscount, l.LineTotal,
+           l.UnitCostBase, LandedCostBase = l.UnitCostBase, l.FobCostBase, l.AllocatedChargesBase,
+           l.ReceivedQuantityBase, l.ReturnedQuantityBase, l.ShippedQuantityBase,
+           AllocatedToContainersBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Allocated, 0)
+                                            WHEN l.ContainerLineId IS NOT NULL THEN l.QuantityBase ELSE 0 END,
+           TransitBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Transit, 0)
+                              WHEN lct.Status IN (3, 4, 5) THEN l.QuantityBase ELSE 0 END,
+           -- (65) an invoice whose goods come through goods receipts returns what was received (rule 23), as Post checks it
+           RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                WHEN dt.Code = N'PINV' AND (d.UsesGoodsReceipts = 1 OR d.ReceiptMode = 2) THEN l.ReceivedQuantityBase - l.ReturnedQuantityBase
+                                WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
+           AvailableForContainerBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - ISNULL(ct.Allocated, 0) - ISNULL(dir.Qty, 0) END,
+           InvoicedDirectBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.Qty, 0) END,
+           l.ContainerLineId, ContainerId = lcl.ContainerId, ContainerRef = lct.ContainerRef, ContainerNo = lct.ContainerNo,
+           ContainerStatus = lct.Status,
+           ContainerChargesBase = CASE WHEN l.ContainerLineId IS NOT NULL THEN ISNULL(lch.Share, 0) END,
+           EstimatedLandedCostBase = CASE WHEN l.ContainerLineId IS NOT NULL
+                                          THEN COALESCE(lcl.LandedCostBase,
+                                                        ISNULL(l.FobCostBase, l.LineTotal / NULLIF(d.ExchangeRate, 0) / NULLIF(l.QuantityBase, 0))
+                                                        + ISNULL(lch.Share, 0) / NULLIF(l.QuantityBase, 0)) END,
+           InDraftDocumentsBase = ISNULL(dr.Qty, 0),
+           AvailableToInvoiceBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase - ISNULL(dr.Qty, 0) END,
+           l.ImportRowNumber, l.Notes, l.SourceLineId,
+           OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost,
+           -- (65) order lines: received, settled short, in containers / draft receipts, to receive, still to come
+           --      (purchase.fn_PoLine_Progress); invoice lines: to receive with "Receive goods..." (fn_InvoiceLine_ToReceive;
+           --      0 on a line in a container). InvoicedDirectBase above now holds what the order line committed outside
+           --      containers (fn_PoLine_CommittedOutside: the larger of invoiced, and received + on draft receipts); its parts:
+           GoodsReceivedBase   = pp.GoodsReceivedBase,
+           GoodsShortBase      = pp.GoodsShortBase,
+           InContainersBase    = pp.InContainersBase,
+           InDraftReceiptsBase = COALESCE(pp.InDraftReceiptsBase, ip.InDraftReceiptsBase, CASE WHEN dt.Code = N'PINV' THEN 0 END),
+           ToReceiveBase       = COALESCE(pp.ToReceiveBase, ip.ToReceiveBase, CASE WHEN dt.Code = N'PINV' THEN 0 END),
+           MaxOutsideBase      = pp.MaxOutsideBase,
+           OutstandingBase     = pp.OutstandingBase,
+           InvoicedOutsideBase        = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.InvoicedOutsideBase, 0) END,
+           ReceivedOutsideBase        = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.ReceivedOutsideBase, 0) END,
+           InDraftReceiptsOutsideBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.InDraftReceiptsOutsideBase, 0) END
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+    INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+    INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+    INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
+    INNER JOIN masterdata.Warehouses w      ON w.Id = l.WarehouseId
+    OUTER APPLY (SELECT Allocated = SUM(cl.QuantityBase),
+                        Transit   = SUM(CASE WHEN c.Status IN (3, 4, 5) THEN cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0) ELSE 0 END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                 WHERE cl.PoLineId = l.Id AND c.Status <> 8) ct
+    -- (65) committed outside containers: the larger of invoiced, and received + on draft goods receipts (was: invoiced)
+    OUTER APPLY (SELECT co.Qty, co.InvoicedOutsideBase, co.ReceivedOutsideBase, co.InDraftReceiptsOutsideBase
+                 FROM purchase.fn_PoLine_CommittedOutside(l.Id, NULL) co
+                 WHERE dt.Code = N'PO') dir
+    LEFT  JOIN purchase.fn_PoLine_Progress(@Id) pp      ON pp.PoLineId = l.Id
+    LEFT  JOIN purchase.fn_InvoiceLine_ToReceive(@Id) ip ON ip.InvoiceLineId = l.Id
+    LEFT  JOIN logistics.ContainerLines lcl ON lcl.Id = l.ContainerLineId
+    LEFT  JOIN logistics.Containers lct     ON lct.Id = lcl.ContainerId
+    OUTER APPLY (SELECT Charges = SUM(a.AmountBase)
+                 FROM logistics.ContainerChargeAllocations a
+                 INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId AND ch.Status = 2 AND ch.IncludeInLandedCost = 1
+                 WHERE a.ContainerLineId = l.ContainerLineId) lcc
+    OUTER APPLY (SELECT Share = lcc.Charges * CAST(l.QuantityBase AS DECIMAL(18,6)) / NULLIF(lcl.QuantityBase, 0)) lch
+    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
+                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+                 WHERE x.SourceLineId = l.Id AND xd.Status = 1) dr
+    WHERE l.DocumentId = @Id
+    ORDER BY l.LineNumber;
+
+    SELECT f.Id, f.DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM purchase.PurchaseDocumentFiles f
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.DocumentId = @Id
+    ORDER BY f.CreatedAtUtc DESC;
+
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM purchase.PurchaseDocumentAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.DocumentId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+
+    SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN purchase.PurchaseDocuments x ON x.Id = d.SourceDocumentId
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE d.Id = @Id
+    UNION ALL
+    SELECT N'Child', x.Id, dt.Code, dt.Name, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    FROM purchase.PurchaseDocuments x
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
+    INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    WHERE x.SourceDocumentId = @Id
+    ORDER BY Relation DESC, DocumentDate, Id;
+
+    -- 6: charges of the invoice (kind PINV), of its landed cost adjustments (kind LCA) and, for an import, the charges of
+    --    its containers (kind CNT, read-only: DocumentId = container, AdjustmentStatus = charge status) with ShareBase =
+    --    the part that falls on this invoice's lines.
+    SELECT c.Id, c.DocumentKind, c.DocumentId, SourceNumber = CASE WHEN c.DocumentKind = N'LCA' THEN lca.DocumentNumber ELSE d.DocumentNumber END,
+           c.LineNumber, c.ChargeTypeId, ct.ChargeCode, ct.ChargeName, c.Description, c.ProviderPartyId, pp.PartyName AS ProviderName, c.Reference,
+           c.CurrencyId, cur.CurrencyCode, c.RateType, c.ExchangeRate, c.Amount, c.AmountBase, c.AllocationMethod, c.IncludeInLandedCost, c.IncludedInSupplierInvoice, c.Notes,
+           AllocatedBase = (SELECT SUM(AmountBase) FROM purchase.PurchaseChargeAllocations x WHERE x.ChargeId = c.Id),
+           AdjustmentStatus = lca.Status,
+           ContainerId = CAST(NULL AS INT), ContainerRef = CAST(NULL AS NVARCHAR(30)), ChargeDate = CAST(NULL AS DATE),
+           ChargeStatus = CAST(NULL AS TINYINT), ShareBase = CAST(NULL AS DECIMAL(18,2))
+    FROM purchase.PurchaseCharges c
+    INNER JOIN purchase.ChargeTypes ct ON ct.Id = c.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = c.CurrencyId
+    LEFT  JOIN masterdata.Parties pp ON pp.Id = c.ProviderPartyId
+    LEFT  JOIN purchase.PurchaseDocuments d ON d.Id = c.DocumentId AND c.DocumentKind = N'PINV'
+    LEFT  JOIN purchase.LandedCostAdjustments lca ON lca.Id = c.DocumentId AND c.DocumentKind = N'LCA'
+    WHERE (c.DocumentKind = N'PINV' AND c.DocumentId = @Id)
+       OR (c.DocumentKind = N'LCA' AND lca.SourceInvoiceId = @Id)
+    UNION ALL
+    SELECT ch.Id, N'CNT', ch.ContainerId, cn.ContainerRef,
+           CAST(ROW_NUMBER() OVER (ORDER BY cn.ContainerRef, ch.ChargeDate, ch.Id) AS INT),
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName, ch.Reference,
+           ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase, ch.AllocationMethod, ch.IncludeInLandedCost,
+           CAST(0 AS BIT), ch.Notes,
+           ISNULL(s.Share, 0), ch.Status,
+           ch.ContainerId, cn.ContainerRef, ch.ChargeDate, ch.Status, CAST(ISNULL(s.Share, 0) AS DECIMAL(18,2))
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.Containers cn   ON cn.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    OUTER APPLY (SELECT Share = SUM(a.AmountBase * CAST(l.QuantityBase AS DECIMAL(18,6)) / NULLIF(cl.QuantityBase, 0))
+                 FROM purchase.PurchaseDocumentLines l
+                 INNER JOIN logistics.ContainerLines cl            ON cl.Id = l.ContainerLineId
+                 INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id AND a.ChargeId = ch.Id
+                 WHERE l.DocumentId = @Id) s
+    WHERE ch.Status IN (1, 2)
+      AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                  INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                  WHERE l.DocumentId = @Id AND cl.ContainerId = ch.ContainerId)
+    ORDER BY 2, 3, 5;
+
+    -- 7: containers of the document: for an order the containers carrying its lines, for an invoice its containers.
+    SELECT ct.Id, ct.ContainerRef, ct.ContainerNo, ct.Status, ct.DispatchDate, ct.Eta, ct.OffloadedDate,
+           ct.CurrentLocation, w.WarehouseCode, w.WarehouseName,
+           AllocatedBase = ISNULL(x.Allocated, 0), ReceivedBase = ISNULL(x.Received, 0), InvoicedBase = ISNULL(x.Invoiced, 0),
+           ct.ContainerTypeId, ctt.TypeCode AS ContainerTypeCode, ct.PurchaseOrderId
+    FROM logistics.Containers ct
+    INNER JOIN masterdata.ContainerTypes ctt ON ctt.Id = ct.ContainerTypeId
+    LEFT  JOIN masterdata.Warehouses w       ON w.Id = ct.WarehouseId
+    CROSS APPLY (SELECT Allocated = SUM(q.Allocated), Received = SUM(q.Received), Invoiced = SUM(q.Invoiced)
+                 FROM (SELECT Allocated = cl.QuantityBase, Received = ISNULL(cl.ReceivedQuantityBase, 0),
+                              Invoiced = ISNULL((SELECT SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                                                 INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                                                 WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (2, 4)), 0)
+                       FROM logistics.ContainerLines cl
+                       WHERE cl.ContainerId = ct.Id AND cl.PurchaseOrderId = @Id
+                       UNION ALL
+                       SELECT l.QuantityBase, l.ReceivedQuantityBase, l.QuantityBase
+                       FROM purchase.PurchaseDocumentLines l
+                       INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                       WHERE l.DocumentId = @Id AND cl.ContainerId = ct.Id) q) x
+    WHERE ct.Status <> 8
+      AND (EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = ct.Id AND cl.PurchaseOrderId = @Id)
+           OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                      INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                      WHERE l.DocumentId = @Id AND cl.ContainerId = ct.Id))
+    ORDER BY ct.ContainerRef;
+
+    -- 8: approval requests and decisions (purchase orders).
+    SELECT a.Id, a.RequestNo, a.ApproverUserId, u.FullName AS ApproverName, u.Email AS ApproverEmail,
+           a.Status, a.ExpiresAtUtc, a.DecidedAtUtc, a.DecisionNote, a.Channel, a.RequestedAtUtc, ru.FullName AS RequestedByName
+    FROM purchase.PurchaseOrderApprovals a
+    INNER JOIN security.Users u ON u.Id = a.ApproverUserId
+    LEFT  JOIN security.Users ru ON ru.Id = a.RequestedBy
+    WHERE a.DocumentId = @Id
+    ORDER BY a.RequestNo DESC, a.Id;
+
+    -- 9 (65): goods receipts of the document - an order: those of its lines (from the order, its invoices, its
+    --    containers); an invoice: those made from it and those whose pieces are matched to its lines. HereBase = the
+    --    pieces of the receipt that concern this document (an order: on its lines; an invoice: matched to its lines,
+    --    or received from it). Value = the value at receipt (fixed when posted).
+    SELECT g.Id, g.DocumentNumber, g.DocumentDate, g.Status, g.SourceKind, g.IsAuto,
+           g.ContainerId, ContainerRef = c.ContainerRef, g.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           ReceivedBase = g.TotalReceivedBase, HereBase = ISNULL(h.Pcs, 0), ValueAtReceiptBase = g.ValueAtReceiptBase,
+           g.PostedAtUtc, g.CreatedAtUtc
+    FROM purchase.GoodsReceipts g
+    LEFT  JOIN logistics.Containers c    ON c.Id = g.ContainerId
+    LEFT  JOIN masterdata.Warehouses w   ON w.Id = g.WarehouseId
+    OUTER APPLY (SELECT Pcs = SUM(x.Pcs)
+                 FROM (SELECT Pcs = gl.QuantityBase
+                       FROM purchase.GoodsReceiptLines gl
+                       WHERE gl.GoodsReceiptId = g.Id AND gl.PurchaseOrderId = @Id
+                       UNION ALL
+                       SELECT m.QuantityBase
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.GoodsReceiptInvoiceMatches m ON m.GoodsReceiptLineId = gl.Id
+                       INNER JOIN purchase.PurchaseDocumentLines il     ON il.Id = m.InvoiceLineId AND il.DocumentId = @Id
+                       WHERE gl.GoodsReceiptId = g.Id
+                       UNION ALL
+                       SELECT gl.QuantityBase
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = gl.InvoiceLineId AND il.DocumentId = @Id
+                       WHERE gl.GoodsReceiptId = g.Id AND g.Status = 1) x) h
+    WHERE g.PurchaseOrderId = @Id OR g.PurchaseInvoiceId = @Id
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = g.Id AND gl.PurchaseOrderId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl
+                  INNER JOIN purchase.GoodsReceiptInvoiceMatches m ON m.GoodsReceiptLineId = gl.Id
+                  INNER JOIN purchase.PurchaseDocumentLines il     ON il.Id = m.InvoiceLineId AND il.DocumentId = @Id
+                  WHERE gl.GoodsReceiptId = g.Id)
+    ORDER BY g.DocumentDate, g.Id;
+
+    -- 10 (65): cost adjustments of received goods caused by this invoice - posted or cancelled - and by its landed
+    --    cost adjustments (purchase.GoodsReceiptCostChanges; empty for an order or a return).
+    SELECT cc.Id, cc.ChangedAtUtc, cc.CauseKind, cc.CauseId, cc.CauseNumber,
+           cc.GoodsReceiptLineId, GoodsReceiptId = g.Id, GoodsReceiptNumber = g.DocumentNumber, gl.ItemId, i.ItemCode, i.ItemName,
+           cc.ReceivedBase, cc.InStockBase, cc.FobBefore, cc.FobAfter, cc.UnitCostBefore, cc.UnitCostAfter,
+           cc.AmountBase, cc.InventoryBase, cc.CogsBase
+    FROM purchase.GoodsReceiptCostChanges cc
+    INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = cc.GoodsReceiptLineId
+    INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId
+    INNER JOIN inventory.Items i             ON i.Id = gl.ItemId
+    WHERE (cc.CauseKind IN (N'PINV', N'PINVCANCEL') AND cc.CauseId = @Id)
+       OR (cc.CauseKind IN (N'LCA', N'LCACANCEL')
+           AND cc.CauseId IN (SELECT a.Id FROM purchase.LandedCostAdjustments a WHERE a.SourceInvoiceId = @Id))
+    ORDER BY cc.ChangedAtUtc, cc.Id;
+END
+GO
+
+/* ================================================================== 9. Search: received and invoiced progress, "To receive" */
+
+-- Re-created (65) from the body of script 63 (each supplier invoice's mode): ReceivedPercent of an order = pieces
+-- received (GoodsReceivedBase) / ordered - it was the invoiced percent, which InvoicedPercent still gives. + the
+-- invoice's UsesGoodsReceipts, and QuantityBase / ReceivedBase for the lists' "Received" progress (an order: ordered /
+-- received; an invoice: invoiced / received). Two filters: @ToReceive (posted or closed orders with goods still to
+-- come, the outstanding of rule 17) and @NotFullyReceived (posted or closed supplier invoices not fully received; one
+-- posted with its stock before goods receipts is). ReceivedPercent and InvoicedPercent are NULL on a draft order. Every
+-- other column, filter and sort is unchanged.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Search
+    @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
+    @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
+                                               -- (45) the item code of a supplier invoice
+    @BranchId         INT          = NULL,
+    @WarehouseId      INT          = NULL,
+    @SupplierId       INT          = NULL,
+    @Status           TINYINT      = NULL,     -- 1 Draft | 2 Posted (PO: approved) | 3 Cancelled | 4 Closed | 5 Pending approval
+    @InvoicingStatus  TINYINT      = NULL,     -- purchase orders: 0 not invoiced | 1 partially | 2 fully
+    @DateFrom         DATE         = NULL,
+    @DateTo           DATE         = NULL,
+    @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | SupplierName | Status | TotalAmount | CreatedAtUtc
+    @SortDirection    NVARCHAR(4)  = N'DESC',
+    @PageNumber       INT          = 1,
+    @PageSize         INT          = 10,
+    -- (65) goods receipts: purchase orders with goods still to come (rule 17's outstanding on a posted or closed order);
+    --      supplier invoices posted or closed whose pieces are not all received (those posted with their stock before
+    --      goods receipts are received)
+    @ToReceive        BIT          = NULL,
+    @NotFullyReceived BIT          = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'DocumentNumber', N'DocumentDate', N'SupplierName', N'Status', N'TotalAmount', N'CreatedAtUtc')
+        SET @SortColumn = N'DocumentDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+    -- (63) the setting, read once: the mode of a supplier invoice created before script 63 (OneItemOnly NULL)
+    DECLARE @OneItemSetting BIT = configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice');
+
+    SELECT d.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection,
+           d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.BranchId, b.BranchName, d.WarehouseId, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, c.CurrencyCode, c.Symbol AS CurrencySymbol, c.DecimalPlaces, d.ExchangeRate,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode,
+           d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
+           d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
+           -- (65) received = goods receipts (GoodsReceivedBase); invoiced stays below. Both NULL on a draft order: nothing
+           --      is received or invoiced against a draft, so the list shows a dash and its export writes nothing, not 0%
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND d.Status <> 1 AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.GoodsReceived / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND d.Status <> 1 AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
+                                  WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,
+           DraftInvoiceCount = CASE WHEN dt.Code = N'PO' THEN (SELECT COUNT(*) FROM purchase.PurchaseDocuments x WHERE x.SourceDocumentId = d.Id AND x.Status = 1) END,
+           -- (45) the item of a supplier invoice (the one of its first line) and how many it holds (more than 1: an invoice of
+           -- several items, 63, or one of one item made before 45)
+           ItemId = itm.ItemId, ItemCode = itm.ItemCode, ItemName = itm.ItemName, ItemCount = itm.ItemCount,
+           -- (63) a supplier invoice's mode (its own, else the setting): 1 one item, 0 several items; NULL on orders and returns
+           OneItemOnly = CAST(CASE WHEN dt.Code = N'PINV' THEN COALESCE(d.OneItemOnly, @OneItemSetting) END AS BIT),
+           d.ApprovalRequestedAtUtc, d.ApprovedAtUtc, apu.FullName AS ApprovedByName,
+           d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
+           d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (65) the "Received" progress: pieces received of the pieces ordered (orders) or invoiced (supplier invoices; one
+           --      posted with its stock before goods receipts received everything when it was posted)
+           d.UsesGoodsReceipts,
+           QuantityBase = CASE WHEN dt.Code IN (N'PO', N'PINV') THEN ISNULL(prog.Ordered, 0) END,
+           ReceivedBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(prog.GoodsReceived, 0)
+                               WHEN dt.Code = N'PINV' AND d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 AND d.Status IN (2, 4) THEN ISNULL(prog.Ordered, 0)
+                               WHEN dt.Code = N'PINV' THEN ISNULL(prog.Invoiced, 0) END,
+           COUNT(*) OVER () AS TotalCount
+    FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp      ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies c    ON c.Id = d.CurrencyId
+    LEFT  JOIN purchase.PurchaseDocuments src ON src.Id = d.SourceDocumentId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
+    -- Invoiced = ReceivedQuantityBase: invoiced on an order line, received (matched) on an invoice line
+    OUTER APPLY (SELECT Ordered = SUM(QuantityBase), Invoiced = SUM(ReceivedQuantityBase), GoodsReceived = SUM(GoodsReceivedBase)
+                 FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) prog
+    OUTER APPLY (SELECT TOP (1) fl.ItemId, fi.ItemCode, fi.ItemName,
+                        ItemCount = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id)
+                 FROM purchase.PurchaseDocumentLines fl INNER JOIN inventory.Items fi ON fi.Id = fl.ItemId
+                 WHERE fl.DocumentId = d.Id AND dt.Code = N'PINV'
+                 ORDER BY fl.LineNumber) itm
+    WHERE dt.Family = N'Purchase'
+      AND (@DocumentTypeCode IS NULL OR dt.Code = @DocumentTypeCode)
+      AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.SupplierReference LIKE N'%' + @Search + N'%'
+           OR d.ExporterReference LIKE N'%' + @Search + N'%' OR d.CommercialInvoiceNo LIKE N'%' + @Search + N'%'
+           OR sp.PartyCode LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%' OR d.Notes LIKE N'%' + @Search + N'%'
+           OR (dt.Code = N'PINV' AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines sl INNER JOIN inventory.Items si ON si.Id = sl.ItemId
+                                             WHERE sl.DocumentId = d.Id AND si.ItemCode LIKE N'%' + @Search + N'%')))
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR d.WarehouseId = @WarehouseId)
+      AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)
+      AND (@Status IS NULL OR d.Status = @Status)
+      AND (@InvoicingStatus IS NULL OR (dt.Code = N'PO' AND
+           CASE WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0 WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END = @InvoicingStatus))
+      AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
+      AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
+      AND (ISNULL(@ToReceive, 0) = 0 OR (dt.Code = N'PO' AND d.Status IN (2, 4)
+           AND EXISTS (SELECT 1 FROM purchase.fn_PoLine_Progress(d.Id) p WHERE p.OutstandingBase > 0)))
+      AND (ISNULL(@NotFullyReceived, 0) = 0 OR (dt.Code = N'PINV' AND d.Status IN (2, 4)
+           AND NOT (d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1)
+           AND ISNULL(prog.Invoiced, 0) < ISNULL(prog.Ordered, 0)))
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN
+            CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END
+        END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'DocumentDate' THEN d.DocumentDate END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(d.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'TotalAmount' THEN d.TotalAmount END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN d.CreatedAtUtc END DESC,
+        d.DocumentDate DESC, d.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+/* ================================================================== 10. Movements: cancelling a completed Delivery */
+
+-- Re-created (65) from the body of script 53: Cancel of a completed movement deletes the automatic draft goods receipts
+-- its completion created (rule 22). Complete is unchanged: the API creates the drafts after the commit.
+-- Status changes of a movement. @Action: Start | Complete | Cancel. The containers' status and dates follow.
+CREATE OR ALTER PROCEDURE logistics.usp_Movement_SetStatus
+    @Id         INT,
+    @Action     NVARCHAR(10),
+    @Date       DATE          = NULL,    -- Start: start date; Complete: end date (default today)
+    @Reason     NVARCHAR(300) = NULL,    -- Cancel
+    @RowVersion BINARY(8)     = NULL,
+    @UserId     INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Action = NULLIF(LTRIM(RTRIM(@Action)), N'');
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Date IS NULL SET @Date = CAST(SYSUTCDATETIME() AS DATE);
+    IF @Action IS NULL OR @Action NOT IN (N'Start', N'Complete', N'Cancel') THROW 70000, 'Action must be Start, Complete or Cancel.', 1;
+
+    DECLARE @Status TINYINT, @StartDate DATE, @Label NVARCHAR(300), @FromPlaceId INT, @ToPlaceId INT, @MovementTypeId INT,
+            @MovementNo NVARCHAR(30);
+    SELECT @Status = m.Status, @StartDate = m.StartDate, @MovementNo = m.MovementNo,
+           @FromPlaceId = m.FromPlaceId, @ToPlaceId = m.ToPlaceId, @MovementTypeId = m.MovementTypeId,
+           @Label = m.MovementNo + N' ' + mt.TypeName + N': ' + fp.PortName + N' ' + NCHAR(8594) + N' ' + tp.PortName
+    FROM logistics.Movements m WITH (UPDLOCK, HOLDLOCK)
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+    INNER JOIN masterdata.Ports fp ON fp.Id = m.FromPlaceId
+    INNER JOIN masterdata.Ports tp ON tp.Id = m.ToPlaceId
+    WHERE m.Id = @Id;
+
+    IF @Status IS NULL THROW 70006, 'Movement not found.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This movement was modified by another user. Reload the page and try again.', 1;
+    IF @Action = N'Start' AND @Status <> 1 THROW 70010, 'Only a planned movement can be started.', 1;
+    IF @Action = N'Complete' AND @Status <> 2 THROW 70010, 'Only a movement in progress can be completed.', 1;
+    IF @Action = N'Complete' AND @Date < @StartDate THROW 70000, 'The end date cannot be earlier than the start date.', 1;
+    IF @Action = N'Cancel' AND @Status = 4 THROW 70010, 'The movement is already cancelled.', 1;
+    IF @Action = N'Cancel' AND @Reason IS NULL THROW 70000, 'A cancellation reason is required.', 1;
+    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action = N'Start'
+        THROW 70000, 'Tick at least one container before starting.', 1;
+    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action = N'Complete'
+        THROW 70000, 'The movement has no containers.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    IF @Action = N'Start'
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + CASE WHEN c.Status = 1 THEN N' is not confirmed yet.'
+                                                                    ELSE N' is already offloaded, closed or cancelled.' END
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        WHERE mc.MovementId = @Id AND (c.Status = 1 OR c.Status >= 6)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is already travelling with movement ' + m.MovementNo + N'. Complete it first.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c         ON c.Id = mc.ContainerId
+        INNER JOIN logistics.MovementContainers o ON o.ContainerId = mc.ContainerId AND o.MovementId <> @Id
+        INNER JOIN logistics.Movements m          ON m.Id = o.MovementId AND m.Status = 2
+        WHERE mc.MovementId = @Id
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
+
+        -- the place rules (script 53): the previous movement of every container is completed (70016), then every
+        -- container fits the movement's From, To and stage (70015) - the rules of Save, fn_ContainerFitForMovement
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N': the previous movement ' + p.PreviousMovementNo + N' (' + pf.PortName
+                              + N' ' + NCHAR(8594) + N' ' + p.PlaceName + N') is not completed yet.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        INNER JOIN logistics.fn_ContainerPlaceForMovement(@Id) p ON p.ContainerId = mc.ContainerId
+        INNER JOIN logistics.Movements pm ON pm.Id = p.PreviousMovementId
+        INNER JOIN masterdata.Ports pf    ON pf.Id = pm.FromPlaceId
+        WHERE mc.MovementId = @Id AND p.PreviousStatus <> 3
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70016, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        INNER JOIN logistics.fn_ContainerFitForMovement(@Id, @FromPlaceId, @ToPlaceId, @MovementTypeId) p ON p.ContainerId = mc.ContainerId
+        INNER JOIN masterdata.Ports f     ON f.Id = @FromPlaceId
+        WHERE mc.MovementId = @Id AND p.Fits = 0
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70015, @Msg, 1;
+    END
+    IF @Action = N'Cancel'
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is already offloaded: its route can no longer change.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        WHERE mc.MovementId = @Id AND c.Status IN (6, 7) AND @Status IN (2, 3)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        UPDATE logistics.Movements
+        SET Status = CASE @Action WHEN N'Start' THEN 2 WHEN N'Complete' THEN 3 ELSE 4 END,
+            StartDate = CASE WHEN @Action = N'Start' THEN @Date ELSE StartDate END,
+            EndDate = CASE WHEN @Action = N'Complete' THEN @Date ELSE EndDate END,
+            StartedAtUtc = CASE WHEN @Action = N'Start' THEN SYSUTCDATETIME() ELSE StartedAtUtc END,
+            StartedBy = CASE WHEN @Action = N'Start' THEN @UserId ELSE StartedBy END,
+            CompletedAtUtc = CASE WHEN @Action = N'Complete' THEN SYSUTCDATETIME() ELSE CompletedAtUtc END,
+            CompletedBy = CASE WHEN @Action = N'Complete' THEN @UserId ELSE CompletedBy END,
+            CancelledAtUtc = CASE WHEN @Action = N'Cancel' THEN SYSUTCDATETIME() ELSE CancelledAtUtc END,
+            CancelledBy = CASE WHEN @Action = N'Cancel' THEN @UserId ELSE CancelledBy END,
+            CancelReason = CASE WHEN @Action = N'Cancel' THEN @Reason ELSE CancelReason END,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT mc.ContainerId, N'Event',
+               LEFT(CASE @Action WHEN N'Start' THEN N'Started ' WHEN N'Complete' THEN N'Arrived / completed ' ELSE N'Cancelled ' END
+                    + @Label + N' on ' + CONVERT(NVARCHAR(10), @Date, 23) + ISNULL(N' - ' + @Reason, N''), 500),
+               @UserId
+        FROM logistics.MovementContainers mc WHERE mc.MovementId = @Id;
+
+        -- (65) RULE 22: CANCELLING A COMPLETED DELIVERY TAKES BACK THE DRAFT GOODS RECEIPTS ITS COMPLETION CREATED (IsAuto,
+        -- MovementId = this movement), edited or not - the cancel dialog names the edited ones first (usp_Movement_Get).
+        -- A draft made by hand is kept. A posted receipt made its container Offloaded, so the check above refused the
+        -- cancel. The same plain deletes as usp_GoodsReceipt_Delete: a draft has no stock, number or cost to undo.
+        IF @Action = N'Cancel' AND @Status = 3
+        BEGIN
+            DECLARE @AutoDrafts TABLE (Id INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
+            INSERT INTO @AutoDrafts (Id, ContainerId)
+            SELECT g.Id, g.ContainerId
+            FROM purchase.GoodsReceipts g WITH (UPDLOCK, HOLDLOCK)
+            WHERE g.MovementId = @Id AND g.IsAuto = 1 AND g.Status = 1;
+
+            IF EXISTS (SELECT 1 FROM @AutoDrafts)
+            BEGIN
+                DELETE m FROM purchase.GoodsReceiptInvoiceMatches m
+                INNER JOIN purchase.GoodsReceiptLines l ON l.Id = m.GoodsReceiptLineId
+                INNER JOIN @AutoDrafts d                ON d.Id = l.GoodsReceiptId;
+                DELETE f FROM purchase.GoodsReceiptFiles f INNER JOIN @AutoDrafts d ON d.Id = f.GoodsReceiptId;
+                DELETE l FROM purchase.GoodsReceiptLines l INNER JOIN @AutoDrafts d ON d.Id = l.GoodsReceiptId;
+                DELETE a FROM purchase.GoodsReceiptAudit a INNER JOIN @AutoDrafts d ON d.Id = a.GoodsReceiptId;
+                DELETE g FROM purchase.GoodsReceipts g INNER JOIN @AutoDrafts d ON d.Id = g.Id;
+
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                SELECT d.ContainerId, N'Event', LEFT(N'Draft goods receipt removed: movement ' + @MovementNo + N' cancelled', 500), @UserId
+                FROM @AutoDrafts d;
+            END
+        END
+
+        DECLARE @Cid INT;
+        DECLARE ctn CURSOR LOCAL FAST_FORWARD FOR SELECT ContainerId FROM logistics.MovementContainers WHERE MovementId = @Id;
+        OPEN ctn;
+        FETCH NEXT FROM ctn INTO @Cid;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_Container_RefreshStatus @Cid;
+            FETCH NEXT FROM ctn INTO @Cid;
+        END
+        CLOSE ctn;
+        DEALLOCATE ctn;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 11. The container Offload is retired */
+
+-- Re-created (65) from the body of script 27 as a refusal (rule 26): containers are received with a goods receipt
+-- (purchase.usp_GoodsReceipt_CreateForContainer, then _Post), which does what the offload did. The parameters stay,
+-- so an old caller gets the reason rather than an error about the call.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Offload
+    @Id            INT,
+    @Lines         logistics.tvp_ContainerReceipt READONLY,   -- (65) ignored
+    @OffloadedDate DATE      = NULL,                          -- (65) ignored
+    @WarehouseId   INT       = NULL,                          -- (65) ignored
+    @RowVersion    BINARY(8) = NULL,                          -- (65) ignored
+    @UserId        INT       = NULL                           -- (65) ignored
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Msg NVARCHAR(200) = N'Containers are received with a goods receipt now. Use Receive goods' + NCHAR(8230) + N' on the container.';
+    THROW 69010, @Msg, 1;
+END
+GO
+
+/* ================================================================== 12. Cancel Offload: offloads of the old kind only */
+
+-- Re-created (65) from the body of script 27: refused (69010) for a container received with a goods receipt; the order
+-- lines' received and settled-short counters (GoodsReceivedBase, GoodsShortBase) follow the reversal, and an order
+-- closed as fully invoiced and received opens again.
+-- Reverses an offload: movements reversed, invoice lines released, charges spread again (not frozen), costs replayed.
+-- Refused once a charge changed the item costs after the offload (69018).
+CREATE OR ALTER PROCEDURE logistics.usp_Container_CancelOffload
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 69000, 'A reason is required.', 1;
+
+    DECLARE @Status TINYINT = (SELECT Status FROM logistics.Containers WHERE Id = @Id);
+    IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+
+    -- (65) RULE 26: ONLY AN OFFLOAD OF THE OLD KIND (script 27, fn_Container_ReceivedBy = 'Offload') IS REVERSED HERE. A
+    -- container received with a goods receipt is un-received by cancelling that receipt (usp_GoodsReceipt_Cancel), which
+    -- also re-matches its invoices and trues up the costs; the status check below refuses the rest (2-5, 7, 8).
+    DECLARE @Msg NVARCHAR(400);
+    SELECT @Msg = N'This container was received with goods receipt ' + r.GoodsReceiptNumber + N': cancel that goods receipt instead.'
+    FROM logistics.fn_Container_ReceivedBy(@Id) r
+    WHERE r.ReceivedBy = N'GRN';
+    IF @Msg IS NOT NULL THROW 69010, @Msg, 1;
+
+    IF @Status <> 6 THROW 69010, 'Only an offloaded container that is not closed can be reversed.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
+    IF EXISTS (SELECT 1 FROM inventory.CostAdjustments ca
+               INNER JOIN logistics.ContainerCharges ch ON ch.Id = ca.SourceId
+               WHERE ca.SourceKind = N'CNTCHARGE' AND ch.ContainerId = @Id)
+        THROW 69018, 'Charges were posted or cancelled after the offload and the item costs were adjusted. The offload can no longer be reversed.', 1;
+
+    -- the offload to reverse = the latest one of this container that is not reversed yet
+    DECLARE @Tag NVARCHAR(30) =
+        (SELECT TOP (1) m.DocumentNumber FROM inventory.StockMovements m
+         WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'CNT' AND m.DocumentId = @Id AND m.IsReversal = 0
+           AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r
+                           WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                             AND r.DocumentId = m.DocumentId AND r.DocumentNumber = m.DocumentNumber AND r.IsReversal = 1)
+         ORDER BY m.Id DESC);
+
+    SELECT TOP (1) @Msg = N'Cannot reverse: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
+                         + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20))
+                         + N' left, but this container brought ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
+    FROM (SELECT m.ItemId, m.WarehouseId, Qty = SUM(m.QuantityBase)
+          FROM inventory.StockMovements m
+          WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'CNT' AND m.DocumentId = @Id AND m.IsReversal = 0
+            AND m.DocumentNumber = @Tag
+          GROUP BY m.ItemId, m.WarehouseId) x
+    INNER JOIN inventory.Items i ON i.Id = x.ItemId
+    INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+    WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+    ORDER BY i.ItemCode;
+    IF @Msg IS NOT NULL THROW 69015, @Msg, 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
+        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+               m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
+        FROM inventory.StockMovements m
+        WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'CNT' AND m.DocumentId = @Id AND m.IsReversal = 0
+          AND m.DocumentNumber = @Tag;
+
+        -- the invoice lines of the container were received only by this offload
+        UPDATE pl SET ReceivedQuantityBase = 0
+        FROM purchase.PurchaseDocumentLines pl
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = pl.ContainerLineId
+        WHERE cl.ContainerId = @Id;
+
+        DECLARE @Items TABLE (ItemId INT PRIMARY KEY);
+        INSERT INTO @Items (ItemId) SELECT DISTINCT ItemId FROM logistics.ContainerLines WHERE ContainerId = @Id;
+
+        -- (65) THE ORDER LINES NO LONGER COUNT THESE PIECES AS RECEIVED, NOR THE MISSING ONES AS SETTLED: script 65
+        -- filled GoodsReceivedBase from the offloads of the old kind (the received pieces of their container lines) and
+        -- GoodsShortBase from what they recorded short (loaded - received), before they are cleared below. An order that
+        -- closed as fully invoiced and received opens again; one closed "Fully received" (the old wording of fully
+        -- invoiced) stays closed - the reversal changes nothing invoiced.
+        UPDATE pol
+        SET GoodsReceivedBase = pol.GoodsReceivedBase - x.Rec, GoodsShortBase = pol.GoodsShortBase - x.Short
+        FROM purchase.PurchaseDocumentLines pol
+        INNER JOIN (SELECT PoLineId, Rec = SUM(ReceivedQuantityBase),
+                           Short = SUM(CASE WHEN QuantityBase > ReceivedQuantityBase THEN QuantityBase - ReceivedQuantityBase ELSE 0 END)
+                    FROM logistics.ContainerLines
+                    WHERE ContainerId = @Id AND PoLineId IS NOT NULL AND ReceivedQuantityBase IS NOT NULL
+                    GROUP BY PoLineId) x ON x.PoLineId = pol.Id;
+
+        DECLARE @Reopened TABLE (Id INT NOT NULL PRIMARY KEY);
+        UPDATE po
+        SET Status = 2, ClosedAtUtc = NULL, ClosedBy = NULL, CloseReason = NULL
+        OUTPUT inserted.Id INTO @Reopened (Id)
+        FROM purchase.PurchaseDocuments po
+        WHERE po.Id IN (SELECT PurchaseOrderId FROM logistics.ContainerLines WHERE ContainerId = @Id)
+          AND po.Status = 4 AND po.CloseReason = N'Fully invoiced and received'
+          AND EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                      WHERE l.DocumentId = po.Id AND l.GoodsReceivedBase + l.GoodsShortBase < l.QuantityBase);
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT r.Id, N'Updated', LEFT(N'Re-opened: the offload of ' + c.ContainerRef + N' was reversed', 500), @UserId
+        FROM @Reopened r CROSS JOIN logistics.Containers c
+        WHERE c.Id = @Id;
+
+        UPDATE logistics.ContainerLines
+        SET ReceivedQuantityBase = NULL, VarianceReason = NULL, FobCostBase = NULL, LandedCostBase = NULL
+        WHERE ContainerId = @Id;
+
+        UPDATE logistics.ContainerCharges SET AppliedAtOffload = 0 WHERE ContainerId = @Id;
+        EXEC logistics.usp_Container_ReallocateCharges @Id;
+
+        UPDATE logistics.Containers
+        SET OffloadedDate = NULL, OffloadedAtUtc = NULL, OffloadedBy = NULL,
+            StatusNote = LEFT(N'Offload reversed: ' + @Reason, 200), UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        EXEC logistics.usp_Container_RefreshStatus @Id;
+
+        DECLARE @ItemId INT;
+        DECLARE citems CURSOR LOCAL FAST_FORWARD FOR SELECT ItemId FROM @Items;
+        OPEN citems;
+        FETCH NEXT FROM citems INTO @ItemId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC inventory.usp_Item_RebuildCosts @ItemId;
+            FETCH NEXT FROM citems INTO @ItemId;
+        END
+        CLOSE citems;
+        DEALLOCATE citems;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId) VALUES (@Id, N'OffloadCancelled', @Reason, @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 13. Close: every received piece invoiced (Close and Reopen under lock) */
+
+-- (65) WHY AN OFFLOADED CONTAINER CANNOT BE CLOSED YET, IN ONE PLACE: Close refuses with it, and the container page and
+-- list show it (CloseBlockedReason), so the Close button says why before the click. At most one row: draft charges
+-- first (70010), then rule 20 (69016): the first container line, in line order, whose pieces received by posted goods
+-- receipts are not all matched to posted invoices. A container offloaded before goods receipts had its posted invoices
+-- before the offload: rule 20 does not apply to it. No row: nothing here blocks it (the status is checked apart).
+-- No NULL reaches a SUM (a receipt line nothing is matched to counts 0): a NULL inside the SUM raised warning 8153 ("Null
+-- value is eliminated by an aggregate"), which SqlClient joined to the 69016 message the user read.
+CREATE OR ALTER FUNCTION logistics.fn_Container_CloseBlock (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT TOP (1) b.ErrorNumber, b.Reason
+    FROM (SELECT ErrorNumber = 70010, Ord = 0, LineNumber = 0,
+                 Reason = CAST(N'The container still has draft charges. Post or delete them before closing it.' AS NVARCHAR(400))
+          WHERE EXISTS (SELECT 1 FROM logistics.ContainerCharges ch WHERE ch.ContainerId = @ContainerId AND ch.Status = 1)
+          UNION ALL
+          SELECT 69016, 1, cl.LineNumber,
+                 CAST(N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                      + CAST(x.Received AS NVARCHAR(20)) + N' received but ' + CAST(x.Invoiced AS NVARCHAR(20))
+                      + N' invoiced by posted invoices. Post the supplier invoices before closing the container.' AS NVARCHAR(400))
+          FROM logistics.ContainerLines cl
+          INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+          CROSS APPLY (SELECT Received = ISNULL(SUM(ISNULL(gl.QuantityBase, 0)), 0), Invoiced = ISNULL(SUM(mm.Qty), 0)
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                       CROSS APPLY (SELECT Qty = ISNULL(SUM(m.QuantityBase), 0) FROM purchase.GoodsReceiptInvoiceMatches m
+                                    WHERE m.GoodsReceiptLineId = gl.Id) mm
+                       WHERE gl.ContainerLineId = cl.Id) x
+          WHERE cl.ContainerId = @ContainerId AND x.Invoiced < x.Received
+            AND EXISTS (SELECT 1 FROM logistics.fn_Container_ReceivedBy(@ContainerId) r WHERE r.ReceivedBy = N'GRN')) b
+    ORDER BY b.Ord, b.LineNumber;
+GO
+
+-- Re-created (65) from the body of script 27: a container received with a goods receipt closes only when its received
+-- pieces are matched to posted invoices (69016, rule 20).
+-- (65) ONE TRANSACTION, THE CONTAINER READ UNDER LOCK (UPDLOCK, HOLDLOCK) BEFORE ANY CHECK: goods receipt Post and
+-- Cancel hold the container the same way while they change its status, so Close waits for them and checks what they
+-- committed. Read without the lock, a Close that ran during the Cancel of the container's receipt read "Offloaded",
+-- waited, then closed a container whose receipt was cancelled (no stock, no offload date, and taken from then on for an
+-- offload of the old kind). The write is guarded as well (Status = 6).
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Close
+    @Id INT, @RowVersion BINARY(8) = NULL, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT;
+        SELECT @Status = Status FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+        IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+        IF @Status <> 6 THROW 69010, 'Only an offloaded container can be closed.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
+        -- Draft charges (70010), then (65) RULE 20: A CONTAINER RECEIVED WITH A GOODS RECEIPT CLOSES WHEN EVERY RECEIVED
+        -- PIECE IS MATCHED TO A POSTED INVOICE (69016: the matches of its receipt's lines, per container line). Goods
+        -- may now arrive before their invoice, and a closed container is frozen. An offload of the old kind needed the
+        -- posted invoices before it: no check for those. Both from fn_Container_CloseBlock, which the container page and
+        -- list read too.
+        DECLARE @BlockNumber INT, @Msg NVARCHAR(400);
+        SELECT @BlockNumber = b.ErrorNumber, @Msg = b.Reason FROM logistics.fn_Container_CloseBlock(@Id) b;
+        IF @BlockNumber = 70010 THROW 70010, @Msg, 1;
+        IF @BlockNumber = 69016 THROW 69016, @Msg, 1;
+
+        UPDATE logistics.Containers
+        SET Status = 7, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id AND Status = 6;
+        IF @@ROWCOUNT = 0 THROW 69010, 'Only an offloaded container can be closed.', 1;
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId) VALUES (@Id, N'Closed', N'Container closed', @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- A closed container is opened again (e.g. a late charge arrives).
+-- Re-created (65) from the body of script 27 the way Close is above: one transaction, the container read under lock
+-- before the checks, and a guarded write (Status = 7) - the status it checks is the status it changes.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Reopen
+    @Id INT, @RowVersion BINARY(8) = NULL, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT;
+        SELECT @Status = Status FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+        IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+        IF @Status <> 7 THROW 69010, 'Only a closed container can be reopened.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM logistics.Containers c
+                   INNER JOIN logistics.Containers o ON o.ContainerNo = c.ContainerNo AND o.Id <> c.Id AND o.Status < 7
+                   WHERE c.Id = @Id AND c.ContainerNo IS NOT NULL)
+            THROW 69013, 'Another open container already uses this container number. Change that one first.', 1;
+
+        UPDATE logistics.Containers
+        SET Status = 6, ClosedAtUtc = NULL, ClosedBy = NULL, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id AND Status = 7;
+        IF @@ROWCOUNT = 0 THROW 69010, 'Only a closed container can be reopened.', 1;
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId) VALUES (@Id, N'Updated', N'Container reopened', @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 14. Save, Cancel, Delete: a container with a goods receipt */
+
+-- Re-created (65) from the body of script 54: 69019 when a container with an open goods receipt would change its load
+-- lines or its branch (rule 21; the header stays editable); what is committed outside containers is
+-- purchase.fn_PoLine_CommittedOutside; the lines of CANCELLED goods receipts let go of the container lines removed
+-- (as the lines of cancelled invoices do), so a container whose receipt was cancelled can change its lines again.
+-- (65) THE CHECKS AND THE WRITE IN ONE TRANSACTION, THE CONTAINER READ UNDER LOCK (UPDLOCK, HOLDLOCK) FIRST: "Receive
+-- goods..." and goods receipt Post hold the container the same way before they write, so a save made meanwhile waits
+-- and is then refused (69005, 69019). Checked without the lock, it passed while the receipt was being posted, waited,
+-- and wrote the form's header over the received container - its warehouse back to the form's (empty) value, which a
+-- late charge needs (70010) - or changed the lines of a container whose draft receipt had just been created.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
+    @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
+    @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
+    @ContainerNo         NVARCHAR(20)   = NULL,
+    @ContainerTypeId     INT,
+    @SealNo              NVARCHAR(30)   = NULL,
+    @CustomsSealNo       NVARCHAR(30)   = NULL,
+    @Description         NVARCHAR(500)  = NULL,
+    @OrderDate           DATE,
+    @ShippingMethod      NVARCHAR(10)   = N'Sea',
+    @CountryOfOrigin     NCHAR(2)       = NULL,
+    @ForwarderId         INT            = NULL,
+    @TransporterId       INT            = NULL,
+    @ShippingLine        NVARCHAR(100)  = NULL,
+    @VesselName          NVARCHAR(100)  = NULL,
+    @VoyageNo            NVARCHAR(30)   = NULL,
+    @BookingNo           NVARCHAR(30)   = NULL,
+    @PortOfLoadingId     INT            = NULL,
+    @PortOfDestinationId INT            = NULL,
+    @FinalDestinationId  INT            = NULL,
+    @DispatchDate        DATE           = NULL,   -- the four milestone dates are replaced by the movements when there are some
+    @Eta                 DATE           = NULL,
+    @FreeDays            INT            = NULL,
+    @GrossWeightKg       DECIMAL(18,3)  = NULL,
+    @VolumeCbm           DECIMAL(18,3)  = NULL,
+    @Packages            INT            = NULL,
+    @BlNo                NVARCHAR(30)   = NULL,
+    @BlDate              DATE           = NULL,
+    @BlNotes             NVARCHAR(500)  = NULL,
+    @MaxUnits            INT            = NULL,   -- (54) ignored: the capacity is the items' Container units
+    @BranchId            INT,
+    @WarehouseId         INT            = NULL,
+    @TruckNo             NVARCHAR(30)   = NULL,
+    @WaybillNo           NVARCHAR(30)   = NULL,
+    @DeclarationNo       NVARCHAR(30)   = NULL,
+    @FeriNo              NVARCHAR(30)   = NULL,
+    @ActualPortArrival   DATE           = NULL,
+    @BorderCrossingDate  DATE           = NULL,
+    @CustomsReleaseDate  DATE           = NULL,
+    @StatusNote          NVARCHAR(200)  = NULL,
+    @Notes               NVARCHAR(1000) = NULL,
+    @Lines               logistics.tvp_ContainerLoadLine READONLY,
+    @AllowOverCapacity   BIT            = 0,
+    @RowVersion          BINARY(8)      = NULL,
+    @UserId              INT            = NULL,
+    @ForInvoiceId        INT            = NULL,   -- (43) for this invoice of the order: the order may be closed by it
+    @NewId               INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @ContainerNo = UPPER(NULLIF(LTRIM(RTRIM(@ContainerNo)), N''));
+    SET @SealNo = NULLIF(LTRIM(RTRIM(@SealNo)), N'');
+    SET @CustomsSealNo = NULLIF(LTRIM(RTRIM(@CustomsSealNo)), N'');
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @ShippingMethod = NULLIF(LTRIM(RTRIM(@ShippingMethod)), N'');
+    SET @BlNo = NULLIF(LTRIM(RTRIM(@BlNo)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
+    IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
+
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
+    BEGIN
+        DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
+        EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Add', @QuantityBase = @ForInvoiceQty;
+    END
+
+    IF @OrderDate IS NULL THROW 69000, 'Order date is required.', 1;
+    IF @ShippingMethod NOT IN (N'Sea', N'Air', N'Road') THROW 69000, 'Shipping method must be Sea, Air or Road.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId AND IsActive = 1)
+        THROW 69000, 'Container type not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 69000, 'Branch not found or inactive.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+        THROW 69000, 'Offloading warehouse not found or inactive.', 1;
+    IF @FreeDays IS NOT NULL AND @FreeDays < 0 THROW 69000, 'Free days cannot be negative.', 1;
+    IF @DispatchDate IS NOT NULL AND @Eta IS NOT NULL AND @Eta < @DispatchDate
+        THROW 69000, 'The ETA cannot be earlier than the dispatch date.', 1;
+    IF @ContainerNo IS NOT NULL AND EXISTS (SELECT 1 FROM logistics.Containers
+                                            WHERE ContainerNo = @ContainerNo AND Status < 7 AND (@Id IS NULL OR Id <> @Id))
+        THROW 69013, 'Another open container already uses this container number.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT = NULL;
+        IF @Id IS NOT NULL
+        BEGIN
+            SELECT @Status = Status, @PurchaseOrderId = ISNULL(PurchaseOrderId, @PurchaseOrderId)
+            FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+            IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+            IF @Status >= 6 THROW 69005, 'An offloaded, closed or cancelled container can no longer be changed.', 1;
+            IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
+                THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
+
+            -- (65) RULE 21: A CONTAINER WITH AN OPEN GOODS RECEIPT KEEPS ITS LOAD LINES AND ITS BRANCH (the draft
+            -- mirrors the lines, order line by order line, with the loaded pieces; its warehouse must be of the
+            -- branch). A posted receipt made the container Offloaded, refused above. The header stays editable (truck,
+            -- waybill, declaration, FERI, B/L, free days, notes, warehouse: the draft keeps its own "Receive into"),
+            -- and so do a line's oil and notes.
+            DECLARE @GrnMsg NVARCHAR(400);
+            SELECT @GrnMsg = N'Container ' + c.ContainerRef + N' has ' + ISNULL(N'goods receipt ' + r.GoodsReceiptNumber, N'a draft goods receipt')
+                             + N'. Delete the draft (or cancel the receipt) first.'
+            FROM logistics.Containers c
+            CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) r
+            WHERE c.Id = @Id AND r.GoodsReceiptId IS NOT NULL
+              AND (c.BranchId <> @BranchId
+                   OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                              WHERE cl.ContainerId = @Id
+                                AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId AND l.QuantityBase = cl.QuantityBase))
+                   OR EXISTS (SELECT 1 FROM @Lines l
+                              WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId)));
+            IF @GrnMsg IS NOT NULL THROW 69019, @GrnMsg, 1;
+        END
+        ELSE
+        BEGIN
+            IF @PurchaseOrderId IS NULL THROW 69000, 'The purchase order is required: a container is created from a purchase order.', 1;
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                           WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
+                             AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)))
+                THROW 69000, 'The purchase order must be approved and still open.', 1;
+        END
+
+        DECLARE @Msg NVARCHAR(400);
+
+        IF EXISTS (SELECT PoLineId FROM @Lines GROUP BY PoLineId HAVING COUNT(*) > 1)
+            THROW 69000, 'The same order line appears twice in the container.', 1;
+
+        -- Lines: order line of an approved order (lines already loaded may belong to an order closed since), quantity, oil.
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN pol.Id IS NULL OR dt.Code <> N'PO' THEN N'the purchase order line no longer exists.'
+                 WHEN l.QuantityBase <= 0 THEN N'the quantity must be greater than zero.'
+                 WHEN l.OilQtyPerUnit < 0 THEN N'the oil quantity cannot be negative.'
+                 WHEN ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' is not approved or no longer open.'
+                 WHEN ex.Id IS NOT NULL AND d.Status NOT IN (2, 4) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' was cancelled.'
+                 ELSE N'item ' + i.ItemCode + N' has no base unit.' END
+        FROM @Lines l
+        LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        LEFT JOIN purchase.PurchaseDocuments d       ON d.Id = pol.DocumentId
+        LEFT JOIN inventory.DocumentTypes dt         ON dt.Id = d.DocumentTypeId
+        LEFT JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        LEFT JOIN logistics.ContainerLines ex        ON ex.ContainerId = @Id AND ex.PoLineId = l.PoLineId
+        WHERE pol.Id IS NULL OR dt.Code <> N'PO' OR l.QuantityBase <= 0 OR l.OilQtyPerUnit < 0
+           OR (ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)) OR (ex.Id IS NOT NULL AND d.Status NOT IN (2, 4))
+           OR NOT EXISTS (SELECT 1 FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
+
+        -- Quantity still loadable on the order line. (65) What the order line committed outside containers is the larger of
+        -- what is invoiced and what is received (or on draft receipts) outside containers: the same goods, matched.
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
+                              + CAST(l.QuantityBase AS NVARCHAR(20)) + N' loaded but only '
+                              + CAST(pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) AS NVARCHAR(20))
+                              + N' remain on order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N'.'
+        FROM @Lines l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        INNER JOIN purchase.PurchaseDocuments d       ON d.Id = pol.DocumentId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        OUTER APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, NULL) dir
+        OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                     INNER JOIN logistics.Containers c2 ON c2.Id = cl.ContainerId
+                     WHERE cl.PoLineId = pol.Id AND c2.Status <> 8 AND (@Id IS NULL OR cl.ContainerId <> @Id)) oth
+        WHERE l.QuantityBase > pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
+
+        IF @Id IS NOT NULL
+        BEGIN
+            -- Invoiced lines cannot be removed, nor loaded below what is invoiced.
+            SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
+                                  + CAST(q.Invoiced AS NVARCHAR(20)) + N' already invoiced (' + ISNULL(q.Numbers, N'') + N'); '
+                                  + CASE WHEN l.PoLineId IS NULL THEN N'the line cannot be removed.' ELSE N'the quantity cannot be lower.' END
+            FROM logistics.ContainerLines cl
+            INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+            CROSS APPLY (SELECT Invoiced = ISNULL(SUM(pil.QuantityBase), 0), Numbers = STRING_AGG(pd.DocumentNumber, N', ')
+                         FROM purchase.PurchaseDocumentLines pil
+                         INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                         WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+            LEFT JOIN @Lines l ON l.PoLineId = cl.PoLineId
+            WHERE cl.ContainerId = @Id AND q.Invoiced > 0 AND (l.PoLineId IS NULL OR l.QuantityBase < q.Invoiced)
+            ORDER BY cl.LineNumber;
+            IF @Msg IS NOT NULL THROW 69017, @Msg, 1;
+
+            -- A removed line cannot carry a manual share of a posted charge.
+            SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' carries a manual share of the posted charge '
+                                  + t.ChargeName + N'. Cancel that charge before removing the line.'
+            FROM logistics.ContainerLines cl
+            INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id AND a.IsManual = 1
+            INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2
+            INNER JOIN purchase.ChargeTypes t                 ON t.Id = ch.ChargeTypeId
+            WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId)
+            ORDER BY cl.LineNumber;
+            IF @Msg IS NOT NULL THROW 70014, @Msg, 1;
+        END
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Ref NVARCHAR(30), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'CNT');
+            EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Ref OUTPUT, @BranchId;
+
+            INSERT INTO logistics.Containers (DocumentTypeId, ContainerRef, PurchaseOrderId, ContainerNo, ContainerTypeId, SealNo, CustomsSealNo, Description,
+                                              OrderDate, ShippingMethod, CountryOfOrigin, ForwarderId, TransporterId,
+                                              ShippingLine, VesselName, VoyageNo, BookingNo, PortOfLoadingId, PortOfDestinationId, FinalDestinationId,
+                                              DispatchDate, Eta, FreeDays, GrossWeightKg, VolumeCbm, Packages, BlNo, BlDate, BlNotes,
+                                              MaxUnits, BranchId, WarehouseId, TruckNo, WaybillNo, DeclarationNo, FeriNo,
+                                              ActualPortArrival, BorderCrossingDate, CustomsReleaseDate, StatusNote, Notes, Status, CreatedBy)
+            VALUES (@TypeId, @Ref, @PurchaseOrderId, @ContainerNo, @ContainerTypeId, @SealNo, @CustomsSealNo, @Description,
+                    @OrderDate, @ShippingMethod, @CountryOfOrigin, @ForwarderId, @TransporterId,
+                    @ShippingLine, @VesselName, @VoyageNo, @BookingNo, @PortOfLoadingId, @PortOfDestinationId, @FinalDestinationId,
+                    @DispatchDate, @Eta, @FreeDays, @GrossWeightKg, @VolumeCbm, @Packages, @BlNo, @BlDate, @BlNotes,
+                    NULL, @BranchId, @WarehouseId, @TruckNo, @WaybillNo, @DeclarationNo, @FeriNo,
+                    @ActualPortArrival, @BorderCrossingDate, @CustomsReleaseDate, @StatusNote, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@Id, N'Created', N'Draft ' + @Ref + ISNULL(N' from order ' + (SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @PurchaseOrderId), N''), @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE logistics.Containers
+            SET ContainerNo = @ContainerNo, ContainerTypeId = @ContainerTypeId, SealNo = @SealNo, CustomsSealNo = @CustomsSealNo,
+                Description = @Description, OrderDate = @OrderDate, ShippingMethod = @ShippingMethod, CountryOfOrigin = @CountryOfOrigin,
+                ForwarderId = @ForwarderId, TransporterId = @TransporterId, ShippingLine = @ShippingLine, VesselName = @VesselName,
+                VoyageNo = @VoyageNo, BookingNo = @BookingNo, PortOfLoadingId = @PortOfLoadingId, PortOfDestinationId = @PortOfDestinationId,
+                FinalDestinationId = @FinalDestinationId, DispatchDate = @DispatchDate, Eta = @Eta, FreeDays = @FreeDays,
+                GrossWeightKg = @GrossWeightKg, VolumeCbm = @VolumeCbm, Packages = @Packages, BlNo = @BlNo, BlDate = @BlDate, BlNotes = @BlNotes,
+                BranchId = @BranchId, WarehouseId = @WarehouseId, TruckNo = @TruckNo, WaybillNo = @WaybillNo,
+                DeclarationNo = @DeclarationNo, FeriNo = @FeriNo, ActualPortArrival = @ActualPortArrival,
+                BorderCrossingDate = @BorderCrossingDate, CustomsReleaseDate = @CustomsReleaseDate, StatusNote = @StatusNote, Notes = @Notes,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        -- Lines are kept per order line: removed ones go (with their charge shares), the others are updated, new ones added.
+        -- Lines of CANCELLED invoices let go of the removed container lines.
+        UPDATE pil SET ContainerLineId = NULL
+        FROM purchase.PurchaseDocumentLines pil
+        INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId AND pd.Status = 3
+        INNER JOIN logistics.ContainerLines cl   ON cl.Id = pil.ContainerLineId
+        WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
+
+        -- (65) LINES OF CANCELLED GOODS RECEIPTS LET GO OF THE REMOVED CONTAINER LINES too (FK_GoodsReceiptLines_ContainerLine):
+        -- an open receipt refused the change above (69019); a cancelled one only keeps its history, which still reads in
+        -- full (its order line, item, quantities and reason stay on the receipt line).
+        UPDATE gl SET ContainerLineId = NULL
+        FROM purchase.GoodsReceiptLines gl
+        INNER JOIN purchase.GoodsReceipts g    ON g.Id = gl.GoodsReceiptId AND g.Status = 3
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = gl.ContainerLineId
+        WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
+
+        DELETE a FROM logistics.ContainerChargeAllocations a
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = a.ContainerLineId
+        WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
+
+        DELETE cl FROM logistics.ContainerLines cl
+        WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
+
+        UPDATE cl
+        SET LineNumber = l.LineNumber, Quantity = l.QuantityBase, OilIncluded = ISNULL(l.OilIncluded, 0),
+            OilQtyPerUnit = CASE WHEN ISNULL(l.OilIncluded, 0) = 1 THEN ISNULL(l.OilQtyPerUnit, i.OilQtyPerUnit) END,
+            Notes = NULLIF(LTRIM(RTRIM(l.Notes)), N'')
+        FROM logistics.ContainerLines cl
+        INNER JOIN @Lines l          ON l.PoLineId = cl.PoLineId
+        INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+        WHERE cl.ContainerId = @Id;
+
+        INSERT INTO logistics.ContainerLines (ContainerId, LineNumber, PurchaseOrderId, PoLineId, ItemId, ItemUnitId, PackingFormula,
+                                              Quantity, OilIncluded, OilQtyPerUnit, Notes)
+        SELECT @Id, l.LineNumber, pol.DocumentId, pol.Id, pol.ItemId, bu.Id, 1, l.QuantityBase, ISNULL(l.OilIncluded, 0),
+               CASE WHEN ISNULL(l.OilIncluded, 0) = 1 THEN ISNULL(l.OilQtyPerUnit, i.OilQtyPerUnit) END,
+               NULLIF(LTRIM(RTRIM(l.Notes)), N'')
+        FROM @Lines l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        CROSS APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
+        WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId);
+
+        -- (54) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
+        -- never a hard block; unknown (an item without a Container unit) = no warning. Checked on the lines just written,
+        -- so the refusal rolls the whole save back.
+        IF ISNULL(@AllowOverCapacity, 0) = 0 AND EXISTS (SELECT 1 FROM logistics.fn_ContainerFill(@Id) f WHERE f.IsOverCapacity = 1)
+        BEGIN
+            -- %% : THROW reads a single % as a format specification ("% f" would swallow the sign and the f).
+            SELECT @Msg = LEFT(N'This container would be ' + CAST(CAST(ROUND(f.FillPct, 0) AS INT) AS NVARCHAR(10)) + N' %% full: '
+                               + x.Parts + N'. Confirm to load it above its capacity.', 400)
+            FROM logistics.fn_ContainerFill(@Id) f
+            CROSS APPLY (SELECT Parts = STRING_AGG(CAST(q.Qty AS NVARCHAR(20)) + N' pcs of ' + q.ItemCode + N' ('
+                                                   + CAST(q.Pcs AS NVARCHAR(20)) + N' per container)', N', ')
+                                        WITHIN GROUP (ORDER BY q.ItemCode)
+                         FROM (SELECT i.ItemCode, Qty = SUM(cl.QuantityBase), Pcs = p.PcsPerContainer
+                               FROM logistics.ContainerLines cl
+                               INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                               CROSS APPLY logistics.fn_ItemPcsPerContainer(cl.ItemId) p
+                               WHERE cl.ContainerId = @Id
+                               GROUP BY i.ItemCode, p.PcsPerContainer) q) x;
+            THROW 69007, @Msg, 1;
+        END
+
+        EXEC logistics.usp_Container_ReallocateCharges @Id;
+        EXEC logistics.usp_Container_RefreshStatus @Id;
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (65) from the body of script 27: + 69019 while the container has an open goods receipt (rule 21).
+-- (65) ONE TRANSACTION, THE CONTAINER READ UNDER LOCK (UPDLOCK, HOLDLOCK) BEFORE ANY CHECK - the lock "Receive
+-- goods..." (usp_GoodsReceipt_CreateForContainer) and goods receipt Post take before they write. Checked without it
+-- (and without a transaction), a draft receipt created between the checks and the update was left on a cancelled
+-- container. The write is guarded as well (Status < 6).
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Cancel
+    @Id INT, @Reason NVARCHAR(300), @RowVersion BINARY(8) = NULL, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 69000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT;
+        SELECT @Status = Status FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+        IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+
+        -- (65) RULE 21: NOT WHILE THE CONTAINER HAS AN OPEN GOODS RECEIPT - a draft (to delete) or the posted one (to
+        -- cancel, which gives the container its movement status back)
+        DECLARE @GrnMsg NVARCHAR(400);
+        SELECT @GrnMsg = N'Container ' + c.ContainerRef + N' has ' + ISNULL(N'goods receipt ' + r.GoodsReceiptNumber, N'a draft goods receipt')
+                         + N'. Delete the draft (or cancel the receipt) first.'
+        FROM logistics.Containers c
+        CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) r
+        WHERE c.Id = @Id AND r.GoodsReceiptId IS NOT NULL;
+        IF @GrnMsg IS NOT NULL THROW 69019, @GrnMsg, 1;
+
+        IF @Status >= 6 THROW 69010, 'An offloaded, closed or cancelled container cannot be cancelled. Reverse the offload first.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        IF EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                   INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                   INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                   WHERE cl.ContainerId = @Id AND d.Status <> 3)
+        BEGIN
+            SELECT TOP (1) @Msg = N'The container is invoiced by ' + ISNULL(d.DocumentNumber, N'a draft invoice') + N'. Cancel or delete its invoices first.'
+            FROM logistics.ContainerLines cl
+            INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+            INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+            WHERE cl.ContainerId = @Id AND d.Status <> 3
+            ORDER BY d.Status DESC, d.DocumentNumber;
+            THROW 69012, @Msg, 1;
+        END
+        IF EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE ContainerId = @Id AND Status IN (1, 2))
+            THROW 70014, 'The container has charges. Delete the drafts and cancel the posted ones first.', 1;
+        SELECT TOP (1) @Msg = N'The container is part of movement ' + m.MovementNo + N'. Remove it from that movement first.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+        WHERE mc.ContainerId = @Id AND m.Status IN (1, 2)
+        ORDER BY m.MovementNo;
+        IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
+
+        UPDATE logistics.Containers
+        SET Status = 8, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id AND Status < 6;
+        IF @@ROWCOUNT = 0 THROW 69010, 'An offloaded, closed or cancelled container cannot be cancelled. Reverse the offload first.', 1;
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (65) from the body of script 27: + 69019 while the container has an open goods receipt (rule 21).
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @Status TINYINT = (SELECT Status FROM logistics.Containers WHERE Id = @Id);
+    IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+
+    -- (65) RULE 21: NOT WHILE THE CONTAINER HAS AN OPEN GOODS RECEIPT. A draft container never has one (a receipt needs
+    -- a confirmed container): the check states the rule here as Cancel and Save do, in their words.
+    DECLARE @GrnMsg NVARCHAR(400);
+    SELECT @GrnMsg = N'Container ' + c.ContainerRef + N' has ' + ISNULL(N'goods receipt ' + r.GoodsReceiptNumber, N'a draft goods receipt')
+                     + N'. Delete the draft (or cancel the receipt) first.'
+    FROM logistics.Containers c
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) r
+    WHERE c.Id = @Id AND r.GoodsReceiptId IS NOT NULL;
+    IF @GrnMsg IS NOT NULL THROW 69019, @GrnMsg, 1;
+
+    IF @Status <> 1 THROW 69005, 'Only a draft container can be deleted. Cancel the others.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+               INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+               INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+               WHERE cl.ContainerId = @Id AND d.Status <> 3)
+        THROW 69012, 'The container is invoiced. Cancel or delete its invoices first.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE ContainerId = @Id AND Status IN (2, 3))
+        THROW 70014, 'Posted or cancelled charges refer to this container. Cancel the container instead.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.MovementContainers mc INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+               WHERE mc.ContainerId = @Id AND m.Status IN (2, 3))
+        THROW 70012, 'The container already travelled with a movement. Cancel the container instead.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DECLARE @Files TABLE (FileId INT PRIMARY KEY);
+        INSERT INTO @Files (FileId) SELECT DISTINCT FileId FROM logistics.ContainerAttachments WHERE ContainerId = @Id;
+        DELETE FROM logistics.ContainerAttachments WHERE ContainerId = @Id;
+        DELETE f FROM logistics.Files f INNER JOIN @Files x ON x.FileId = f.Id
+        WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerAttachments a WHERE a.FileId = f.Id);
+
+        UPDATE pil SET ContainerLineId = NULL                  -- lines of cancelled invoices
+        FROM purchase.PurchaseDocumentLines pil
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = pil.ContainerLineId
+        WHERE cl.ContainerId = @Id;
+
+        DELETE a FROM logistics.ContainerChargeAllocations a INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId WHERE ch.ContainerId = @Id;
+        DELETE FROM logistics.ContainerCharges WHERE ContainerId = @Id;
+        DELETE FROM logistics.MovementContainers WHERE ContainerId = @Id;
+        DELETE FROM logistics.ContainerLines WHERE ContainerId = @Id;
+        DELETE FROM logistics.ContainerAudit WHERE ContainerId = @Id;
+        DELETE FROM logistics.Containers WHERE Id = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 15. What can still be loaded into containers: committed outside = invoiced or received */
+
+-- Re-created (65) from the body of script 54: what an order line has committed OUTSIDE containers is
+-- purchase.fn_PoLine_CommittedOutside - the larger of what is invoiced and what is received (or on draft goods
+-- receipts) outside containers - in place of the "dir" subquery (invoiced only). Goods received from the order without a
+-- container are no longer proposed again in containers (edge case 17). The rest is the body of script 54: pieces per
+-- container = the item's Container unit only (logistics.fn_ItemPcsPerContainer); @Capacities and the container type's
+-- MaxUnits are no longer read; an item without a Container unit stops the plan (69000).
+CREATE OR ALTER PROCEDURE logistics.usp_Container_PlanFromOrder
+    @PurchaseOrderId INT,
+    @ContainerTypeId INT,
+    @MixRemainders   BIT = 1,       -- 0 = the rest of every order line gets its own container
+    @Capacities      logistics.tvp_ItemCapacity READONLY,    -- (54) ignored: the items' Container units only
+    @ForInvoiceId    INT = NULL      -- (43) only what this invoice of the order has outside containers
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    -- (51) a proposal for an invoice: the invoice's rules 1-7 first
+    IF @ForInvoiceId IS NOT NULL EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Plan';
+
+    IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                   WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
+                     AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)))
+        THROW 69000, 'The purchase order must be approved and still open.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId AND IsActive = 1)
+        THROW 69000, 'Container type not found or inactive.', 1;
+    DECLARE @Msg NVARCHAR(400);
+
+    -- order lines: what can still be loaded (ordered - committed outside containers - loaded in other containers).
+    -- (65) Committed outside = MAX(invoiced outside containers, received + on draft receipts outside containers): an
+    -- invoiced piece and a received piece outside containers are the same goods (they are matched), never added up.
+    DECLARE @Lines TABLE
+    (
+        PoLineId      INT          NOT NULL PRIMARY KEY,
+        PoLineNumber  INT          NOT NULL,
+        ItemId        INT          NOT NULL,
+        OrderedBase   INT          NOT NULL,
+        AvailableBase INT          NOT NULL,
+        Cap           INT          NULL,
+        CapSource     NVARCHAR(20) NOT NULL,     -- (54) Item Definition | None
+        OilIncluded   BIT          NOT NULL,
+        Remaining     INT          NOT NULL
+    );
+    INSERT INTO @Lines (PoLineId, PoLineNumber, ItemId, OrderedBase, AvailableBase, Cap, CapSource, OilIncluded, Remaining)
+    SELECT l.Id, l.LineNumber, l.ItemId, l.QuantityBase,
+           CASE WHEN @ForInvoiceId IS NOT NULL AND inv.UnlinkedBase < l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
+                THEN inv.UnlinkedBase
+                ELSE l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) END,
+           cnt.PcsPerContainer,
+           CASE WHEN cnt.PcsPerContainer IS NOT NULL THEN N'Item Definition' ELSE N'None' END,
+           CASE WHEN i.OilQtyPerUnit > 0 THEN 1 ELSE 0 END,
+           0
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN inventory.Items i ON i.Id = l.ItemId
+    LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@ForInvoiceId) inv ON inv.PoLineId = l.Id
+    OUTER APPLY purchase.fn_PoLine_CommittedOutside(l.Id, NULL) dir
+    OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                 INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                 WHERE cl.PoLineId = l.Id AND c.Status <> 8) oth
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(l.ItemId) cnt
+    WHERE l.DocumentId = @PurchaseOrderId AND (@ForInvoiceId IS NULL OR inv.UnlinkedBase > 0);
+
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.PoLineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
+    FROM @Lines l INNER JOIN inventory.Items i ON i.Id = l.ItemId
+    WHERE l.AvailableBase > 0 AND l.Cap IS NULL
+    ORDER BY l.PoLineNumber;
+    IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
+
+    IF (SELECT SUM(AvailableBase / Cap) FROM @Lines WHERE AvailableBase > 0) > 200
+        THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
+
+    DECLARE @Plan TABLE (Seq INT NOT NULL, PoLineId INT NOT NULL, QuantityBase INT NOT NULL, PRIMARY KEY (Seq, PoLineId));
+    DECLARE @Seq INT = 0, @PoLineId INT, @Avail INT, @Cap INT, @Full INT, @k INT, @Rem INT;
+
+    -- a. whole containers of one item
+    DECLARE full_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+        SELECT PoLineId, AvailableBase, Cap FROM @Lines WHERE AvailableBase > 0 ORDER BY PoLineNumber;
+    OPEN full_cur;
+    FETCH NEXT FROM full_cur INTO @PoLineId, @Avail, @Cap;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        SET @Full = @Avail / @Cap;
+        SET @k = 0;
+        WHILE @k < @Full
+        BEGIN
+            SET @k = @k + 1;
+            SET @Seq = @Seq + 1;
+            INSERT INTO @Plan (Seq, PoLineId, QuantityBase) VALUES (@Seq, @PoLineId, @Cap);
+        END
+        UPDATE @Lines SET Remaining = @Avail - @Full * @Cap WHERE PoLineId = @PoLineId;
+        FETCH NEXT FROM full_cur INTO @PoLineId, @Avail, @Cap;
+    END
+    CLOSE full_cur;
+    DEALLOCATE full_cur;
+
+    -- b. the rest of every line
+    DECLARE @FirstRest INT = @Seq;
+    IF ISNULL(@MixRemainders, 1) = 0
+    BEGIN
+        INSERT INTO @Plan (Seq, PoLineId, QuantityBase)
+        SELECT @FirstRest + ROW_NUMBER() OVER (ORDER BY PoLineNumber), PoLineId, Remaining
+        FROM @Lines WHERE Remaining > 0;
+    END
+    ELSE
+    BEGIN
+        DECLARE @Bins TABLE (Seq INT NOT NULL PRIMARY KEY, Used DECIMAL(38,20) NOT NULL);
+        DECLARE @RestA TABLE (Seq INT NOT NULL, PoLineId INT NOT NULL, QuantityBase INT NOT NULL, PRIMARY KEY (Seq, PoLineId));
+        DECLARE @RestB TABLE (Seq INT NOT NULL, PoLineId INT NOT NULL, QuantityBase INT NOT NULL, PRIMARY KEY (Seq, PoLineId));
+        DECLARE @Frac DECIMAL(38,20), @Bin INT, @Need INT;
+
+        -- first fit, largest first, a line is never cut
+        DECLARE ffd_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+            SELECT PoLineId, Remaining, Cap FROM @Lines WHERE Remaining > 0
+            ORDER BY CAST(Remaining AS DECIMAL(38,20)) / Cap DESC, PoLineNumber;
+        OPEN ffd_cur;
+        FETCH NEXT FROM ffd_cur INTO @PoLineId, @Rem, @Cap;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            SET @Frac = CAST(@Rem AS DECIMAL(38,20)) / @Cap;
+            SET @Bin = NULL;
+            SELECT TOP (1) @Bin = Seq FROM @Bins WHERE Used + @Frac <= 1.000001 ORDER BY Seq;
+            IF @Bin IS NULL
+            BEGIN
+                SET @Bin = @FirstRest + 1 + (SELECT COUNT(*) FROM @Bins);
+                INSERT INTO @Bins (Seq, Used) VALUES (@Bin, 0);
+            END
+            UPDATE @Bins SET Used = Used + @Frac WHERE Seq = @Bin;
+            INSERT INTO @RestA (Seq, PoLineId, QuantityBase) VALUES (@Bin, @PoLineId, @Rem);
+            FETCH NEXT FROM ffd_cur INTO @PoLineId, @Rem, @Cap;
+        END
+        CLOSE ffd_cur;
+        DEALLOCATE ffd_cur;
+
+        SET @Need = CEILING((SELECT SUM(CAST(Remaining AS DECIMAL(38,20)) / Cap) FROM @Lines WHERE Remaining > 0) - 0.000001);
+
+        IF (SELECT COUNT(*) FROM @Bins) > @Need
+        BEGIN
+            -- cutting lines saves containers: fill every container to the brim, a line goes on in the next container
+            DECLARE @Used DECIMAL(38,20) = 0, @Open BIT = 0, @Fits INT, @Take INT, @SeqB INT = @FirstRest;
+            DECLARE nf_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+                SELECT PoLineId, Remaining, Cap FROM @Lines WHERE Remaining > 0
+                ORDER BY CAST(Remaining AS DECIMAL(38,20)) / Cap DESC, PoLineNumber;
+            OPEN nf_cur;
+            FETCH NEXT FROM nf_cur INTO @PoLineId, @Rem, @Cap;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                WHILE @Rem > 0
+                BEGIN
+                    IF @Open = 0
+                    BEGIN
+                        SET @SeqB = @SeqB + 1;
+                        SET @Used = 0;
+                        SET @Open = 1;
+                    END
+                    SET @Fits = FLOOR((1 - @Used) * @Cap + 0.000001);
+                    IF @Fits <= 0
+                        SET @Open = 0;
+                    ELSE
+                    BEGIN
+                        SET @Take = CASE WHEN @Rem < @Fits THEN @Rem ELSE @Fits END;
+                        INSERT INTO @RestB (Seq, PoLineId, QuantityBase) VALUES (@SeqB, @PoLineId, @Take);
+                        SET @Used = @Used + CAST(@Take AS DECIMAL(38,20)) / @Cap;
+                        SET @Rem = @Rem - @Take;
+                        IF @Rem > 0 OR @Used >= 0.999999 SET @Open = 0;   -- a cut line goes on in the next container
+                    END
+                END
+                FETCH NEXT FROM nf_cur INTO @PoLineId, @Rem, @Cap;
+            END
+            CLOSE nf_cur;
+            DEALLOCATE nf_cur;
+        END
+
+        IF EXISTS (SELECT 1 FROM @RestB) AND (SELECT COUNT(DISTINCT Seq) FROM @RestB) < (SELECT COUNT(*) FROM @Bins)
+            INSERT INTO @Plan (Seq, PoLineId, QuantityBase) SELECT Seq, PoLineId, QuantityBase FROM @RestB;
+        ELSE
+            INSERT INTO @Plan (Seq, PoLineId, QuantityBase) SELECT Seq, PoLineId, QuantityBase FROM @RestA;
+    END
+
+    IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
+        THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
+
+    -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 54).
+    SELECT x.Seq, x.ItemCount, x.Units,
+           FillPct  = CAST(ROUND(100 * x.Fill, 1) AS DECIMAL(9,1)),
+           ItemSummary = CASE WHEN x.ItemCount = 1 THEN x.FirstItem ELSE N'Mixed - ' + CAST(x.ItemCount AS NVARCHAR(10)) + N' items' END
+    FROM (SELECT p.Seq,
+                 ItemCount = COUNT(DISTINCT l.ItemId),
+                 Units     = SUM(p.QuantityBase),
+                 Fill      = SUM(CAST(p.QuantityBase AS DECIMAL(38,20)) / l.Cap),
+                 FirstItem = MIN(i.ItemCode)
+          FROM @Plan p
+          INNER JOIN @Lines l          ON l.PoLineId = p.PoLineId
+          INNER JOIN inventory.Items i ON i.Id = l.ItemId
+          GROUP BY p.Seq) x
+    ORDER BY x.Seq;
+
+    -- 2: lines of every container
+    SELECT p.Seq,
+           LineNumber = ROW_NUMBER() OVER (PARTITION BY p.Seq ORDER BY l.PoLineNumber),
+           p.PoLineId, l.PoLineNumber, l.ItemId, i.ItemCode, i.ItemName, i.Model, p.QuantityBase,
+           PcsPerContainer = l.Cap, l.OilIncluded, i.OilQtyPerUnit
+    FROM @Plan p
+    INNER JOIN @Lines l          ON l.PoLineId = p.PoLineId
+    INNER JOIN inventory.Items i ON i.Id = l.ItemId
+    ORDER BY p.Seq, l.PoLineNumber;
+
+    -- 3: order lines
+    SELECT l.PoLineId, l.PoLineNumber, l.ItemId, i.ItemCode, i.ItemName, i.Model,
+           l.OrderedBase,
+           AvailableBase    = CASE WHEN l.AvailableBase > 0 THEN l.AvailableBase ELSE 0 END,
+           PlannedBase      = ISNULL(pl.Qty, 0),
+           PcsPerContainer  = l.Cap,
+           CapacitySource   = l.CapSource,
+           ContainersNeeded = CAST(CASE WHEN l.AvailableBase > 0 THEN CAST(l.AvailableBase AS DECIMAL(19,4)) / NULLIF(l.Cap, 0) ELSE 0 END AS DECIMAL(9,2)),
+           l.OilIncluded
+    FROM @Lines l
+    INNER JOIN inventory.Items i ON i.Id = l.ItemId
+    OUTER APPLY (SELECT Qty = SUM(p.QuantityBase) FROM @Plan p WHERE p.PoLineId = l.PoLineId) pl
+    ORDER BY l.PoLineNumber;
+END
+GO
+
+-- Re-created (65) from the body of script 54: the whole plan must fit in what the order lines still allow, where what
+-- an order line committed outside containers is purchase.fn_PoLine_CommittedOutside (invoiced, or received / on draft
+-- goods receipts, outside containers: the larger) in place of the "dir" subquery (invoiced only) - 69008. The rest is
+-- the body of script 54: pieces per container = the item's Container unit only; an item without one stops the batch
+-- (69000); the containers get no MaxUnits; the answer gives their fill.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
+    @PurchaseOrderId     INT,
+    @ContainerTypeId     INT,
+    @OrderDate           DATE           = NULL,   -- NULL = today
+    @BranchId            INT            = NULL,   -- NULL = the order's branch
+    @WarehouseId         INT            = NULL,   -- NULL = the order's warehouse (offloading destination)
+    @ShippingMethod      NVARCHAR(10)   = N'Sea',
+    @CountryOfOrigin     NCHAR(2)       = NULL,
+    @ForwarderId         INT            = NULL,
+    @ShippingLine        NVARCHAR(100)  = NULL,
+    @PortOfLoadingId     INT            = NULL,
+    @PortOfDestinationId INT            = NULL,
+    @FinalDestinationId  INT            = NULL,
+    @Eta                 DATE           = NULL,
+    @FreeDays            INT            = NULL,
+    @Plan                logistics.tvp_ContainerPlanLine READONLY,
+    @Capacities          logistics.tvp_ItemCapacity READONLY,     -- (54) ignored: the items' Container units only
+    @AllowOverCapacity   BIT            = 0,
+    @Confirm             BIT            = 0,                      -- 1 = the new containers are confirmed at once
+    @UserId              INT            = NULL,
+    @ForInvoiceId        INT            = NULL                    -- (43) for this invoice: its pieces outside containers at most
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    IF @OrderDate IS NULL SET @OrderDate = CAST(SYSUTCDATETIME() AS DATE);
+
+    -- (51) containers created for an invoice: the invoice's rules 1-8 first, for the whole plan
+    IF @ForInvoiceId IS NOT NULL
+    BEGIN
+        DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Plan);
+        EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Add', @QuantityBase = @ForInvoiceQty;
+    END
+
+    DECLARE @OrderBranch INT, @OrderWarehouse INT, @OrderNo NVARCHAR(30);
+    SELECT @OrderBranch = d.BranchId, @OrderWarehouse = d.WarehouseId, @OrderNo = d.DocumentNumber
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+    WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO' AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1));
+    IF @OrderBranch IS NULL THROW 69000, 'The purchase order must be approved and still open.', 1;
+    SET @BranchId = ISNULL(@BranchId, @OrderBranch);
+    SET @WarehouseId = ISNULL(@WarehouseId, @OrderWarehouse);
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.ContainerTypes WHERE Id = @ContainerTypeId AND IsActive = 1)
+        THROW 69000, 'Container type not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM @Plan) THROW 69009, 'The plan has no container to create.', 1;
+    IF EXISTS (SELECT 1 FROM @Plan WHERE Seq < 1 OR QuantityBase <= 0)
+        THROW 69000, 'Every planned quantity must be greater than zero.', 1;
+    IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
+        THROW 69000, 'At most 200 containers can be created at once.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    IF EXISTS (SELECT 1 FROM @Plan p LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
+               WHERE pol.Id IS NULL OR pol.DocumentId <> @PurchaseOrderId)
+    BEGIN
+        SET @Msg = N'A planned line is not a line of order ' + ISNULL(@OrderNo, N'(draft)') + N'. Propose the plan again.';
+        THROW 69000, @Msg, 1;
+    END
+
+    -- (54) every planned item has a Container unit, as the proposal requires
+    SELECT TOP (1) @Msg = N'Line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): set its Container unit in Item Definition first.'
+    FROM @Plan p
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
+    INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(pol.ItemId) cnt
+    WHERE cnt.PcsPerContainer IS NULL
+    ORDER BY pol.LineNumber;
+    IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
+
+    -- containers in plan order
+    DECLARE @Seqs TABLE (Seq INT NOT NULL PRIMARY KEY, Ord INT NOT NULL);
+    INSERT INTO @Seqs (Seq, Ord)
+    SELECT x.Seq, ROW_NUMBER() OVER (ORDER BY x.Seq) FROM (SELECT DISTINCT Seq FROM @Plan) x;
+
+    DECLARE @Created TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
+    DECLARE @L logistics.tvp_ContainerLoadLine;
+    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @NewId INT, @Lock INT;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- one plan at a time for an order
+        SELECT @Lock = Id FROM purchase.PurchaseDocuments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @PurchaseOrderId;
+
+        -- the whole plan must fit in what the order lines still allow. (65) Committed outside containers = the larger of
+        -- invoiced and received (or on draft goods receipts) outside containers.
+        SELECT TOP (1) @Msg = N'Order line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                            + CAST(t.Planned AS NVARCHAR(20)) + N' pieces planned but only '
+                            + CAST(pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) AS NVARCHAR(20))
+                            + N' can still be loaded.'
+        FROM (SELECT PoLineId, Planned = SUM(QuantityBase) FROM @Plan GROUP BY PoLineId) t
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = t.PoLineId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        OUTER APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, NULL) dir
+        OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                     INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                     WHERE cl.PoLineId = pol.Id AND c.Status <> 8) oth
+        WHERE t.Planned > pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
+        ORDER BY pol.LineNumber;
+        IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
+
+        -- (43) for an invoice: no more than its pieces of every order line outside containers
+        IF @ForInvoiceId IS NOT NULL
+        BEGIN
+            SELECT TOP (1) @Msg = N'Order line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                + CAST(t.Planned AS NVARCHAR(20)) + N' pieces planned but the invoice has only '
+                                + CAST(ISNULL(inv.UnlinkedBase, 0) AS NVARCHAR(20)) + N' outside containers.'
+            FROM (SELECT PoLineId, Planned = SUM(QuantityBase) FROM @Plan GROUP BY PoLineId) t
+            INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = t.PoLineId
+            INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+            LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@ForInvoiceId) inv ON inv.PoLineId = t.PoLineId
+            WHERE t.Planned > ISNULL(inv.UnlinkedBase, 0)
+            ORDER BY pol.LineNumber;
+            IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
+        END
+
+        DECLARE plan_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+            SELECT Seq, Ord FROM @Seqs ORDER BY Ord;
+        OPEN plan_cur;
+        FETCH NEXT FROM plan_cur INTO @Seq, @Ord;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            DELETE FROM @L;
+            INSERT INTO @L (LineNumber, PoLineId, QuantityBase, OilIncluded, OilQtyPerUnit, Notes)
+            SELECT ROW_NUMBER() OVER (ORDER BY pol.LineNumber), p.PoLineId, p.QuantityBase,
+                   ISNULL(p.OilIncluded, CASE WHEN i.OilQtyPerUnit > 0 THEN 1 ELSE 0 END), NULL, NULL
+            FROM @Plan p
+            INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
+            INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+            WHERE p.Seq = @Seq;
+
+            SET @NewId = NULL;
+            EXEC logistics.usp_Container_Save
+                 @PurchaseOrderId     = @PurchaseOrderId,
+                 @ContainerTypeId     = @ContainerTypeId,
+                 @OrderDate           = @OrderDate,
+                 @ShippingMethod      = @ShippingMethod,
+                 @CountryOfOrigin     = @CountryOfOrigin,
+                 @ForwarderId         = @ForwarderId,
+                 @ShippingLine        = @ShippingLine,
+                 @PortOfLoadingId     = @PortOfLoadingId,
+                 @PortOfDestinationId = @PortOfDestinationId,
+                 @FinalDestinationId  = @FinalDestinationId,
+                 @Eta                 = @Eta,
+                 @FreeDays            = @FreeDays,
+                 @BranchId            = @BranchId,
+                 @WarehouseId         = @WarehouseId,
+                 @Lines               = @L,
+                 @AllowOverCapacity   = @AllowOverCapacity,
+                 @UserId              = @UserId,
+                 @ForInvoiceId        = @ForInvoiceId,
+                 @NewId               = @NewId OUTPUT;
+
+            IF ISNULL(@Confirm, 0) = 1
+                EXEC logistics.usp_Container_Confirm @Id = @NewId, @UserId = @UserId;
+
+            INSERT INTO @Created (Seq, ContainerId) VALUES (@Seq, @NewId);
+            FETCH NEXT FROM plan_cur INTO @Seq, @Ord;
+        END
+        CLOSE plan_cur;
+        DEALLOCATE plan_cur;
+        SET @Ord = NULL;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        DECLARE @ErrNo INT = ERROR_NUMBER(), @ErrMsg NVARCHAR(2048) = ERROR_MESSAGE();
+        IF @ErrNo >= 50000 AND @Ord IS NOT NULL
+        BEGIN
+            SET @ErrMsg = LEFT(N'Container ' + CAST(@Seq AS NVARCHAR(10)) + N' of ' + CAST(@Total AS NVARCHAR(10)) + N': ' + @ErrMsg, 2048);
+            THROW @ErrNo, @ErrMsg, 1;
+        END;
+        THROW;
+    END CATCH
+
+    SELECT x.Seq, c.Id AS ContainerId, c.ContainerRef, c.Status, c.TotalLines, c.TotalAllocatedBase,
+           fl.FillPct, fl.CapacityKnown, fl.IsOverCapacity,
+           c.RowVersion
+    FROM @Created x
+    INNER JOIN logistics.Containers c ON c.Id = x.ContainerId
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
+    ORDER BY x.Seq;
+END
+GO
+
+-- Re-created (65) from the body of script 54: what an order line committed outside containers is
+-- purchase.fn_PoLine_CommittedOutside (invoiced, or received / on draft goods receipts, outside containers: the larger)
+-- in place of the "dir" subquery (invoiced only). InvoicedDirectBase keeps its name and its place in the sums
+-- (Ordered - InvoicedDirect - LoadedElsewhere = MaxHere) and now holds that larger figure; its parts follow at the end:
+-- InvoicedOutsideBase (the old meaning), ReceivedOutsideBase, InDraftReceiptsOutsideBase.
+-- (54) PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
+CREATE OR ALTER PROCEDURE logistics.usp_Container_AvailablePoLines
+    @PurchaseOrderId INT           = NULL,
+    @SupplierId      INT           = NULL,
+    @Search          NVARCHAR(100) = NULL,    -- order number, item code or name
+    @ContainerId     INT           = NULL,
+    @Top             INT           = 200
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @Top IS NULL OR @Top < 1 SET @Top = 200;
+
+    SELECT TOP (@Top)
+           d.Id AS PurchaseOrderId, d.DocumentNumber AS PurchaseOrderNumber, d.DocumentDate AS OrderDate, d.Status AS OrderStatus,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, cur.CurrencyCode, d.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           l.Id AS PoLineId, l.LineNumber AS PoLineNumber, l.ItemId, i.ItemCode, i.ItemName, i.Model, br.BrandName,
+           l.ItemUnitId, ut.UnitTypeName, l.PackingFormula, l.Quantity AS OrderedQuantity,
+           OrderedBase         = l.QuantityBase,
+           InvoicedDirectBase  = ISNULL(dir.Qty, 0),
+           LoadedElsewhereBase = ISNULL(oth.Qty, 0),
+           LoadedHereBase      = ISNULL(here.Qty, 0),
+           MaxHereBase         = l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0),
+           AvailableBase       = l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) - ISNULL(here.Qty, 0),
+           l.UnitPrice, l.DiscountPercent,
+           UnitValueBase = l.LineTotal / d.ExchangeRate / NULLIF(l.QuantityBase, 0),
+           ItemOilQtyPerUnit = i.OilQtyPerUnit,
+           PcPerContainer = cnt.PcsPerContainer,
+           i.WeightKg, i.VolumeCbm,
+           -- (65) the parts of InvoicedDirectBase (= the larger of invoiced, and received + on draft receipts, outside containers)
+           InvoicedOutsideBase        = ISNULL(dir.InvoicedOutsideBase, 0),
+           ReceivedOutsideBase        = ISNULL(dir.ReceivedOutsideBase, 0),
+           InDraftReceiptsOutsideBase = ISNULL(dir.InDraftReceiptsOutsideBase, 0)
+    FROM purchase.PurchaseDocumentLines l
+    INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+    INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+    INNER JOIN masterdata.Parties sp        ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies cur    ON cur.Id = d.CurrencyId
+    INNER JOIN masterdata.Warehouses w      ON w.Id = d.WarehouseId
+    INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+    INNER JOIN masterdata.Brands br         ON br.Id = i.BrandId
+    INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
+    OUTER APPLY purchase.fn_PoLine_CommittedOutside(l.Id, NULL) dir
+    OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                 INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                 WHERE cl.PoLineId = l.Id AND c.Status <> 8 AND (@ContainerId IS NULL OR cl.ContainerId <> @ContainerId)) oth
+    OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                 WHERE cl.PoLineId = l.Id AND cl.ContainerId = @ContainerId) here
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(l.ItemId) cnt
+    WHERE dt.Code = N'PO' AND d.Status = 2
+      AND (@PurchaseOrderId IS NULL OR d.Id = @PurchaseOrderId)
+      AND (@SupplierId IS NULL OR d.SupplierId = @SupplierId)
+      AND (@Search IS NULL OR d.DocumentNumber LIKE N'%' + @Search + N'%' OR i.ItemCode LIKE N'%' + @Search + N'%'
+           OR i.ItemName LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%')
+      AND (l.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) - ISNULL(here.Qty, 0) > 0 OR ISNULL(here.Qty, 0) > 0)
+    ORDER BY d.DocumentDate DESC, d.Id DESC, l.LineNumber;
+END
+GO
+
+-- Re-created (65) from the body of script 63:
+--   - what each order line still allows: what the order line committed outside containers is
+--     purchase.fn_PoLine_CommittedOutside(order line, this invoice) - the larger of what the OTHER invoices invoiced and
+--     what is received (or on draft goods receipts) outside containers - in place of the "dir" subquery (invoiced only);
+--   - rule 4 on an invoice posted after the switch (UsesGoodsReceipts = 1) without "Shipped in containers": its goods
+--     are received with Receive goods..., not with containers (the old sentence stays for invoices posted before); the
+--     draft's hint no longer names the retired container offload, and rule 7 names the received pieces too;
+--   - rule 6 also when a GOODS RECEIPT refers to the invoice's lines outside containers (rule 28): pieces of them were
+--     received (a posted receipt matched to them - pass 2 matches an unlinked "Shipped in containers" line to the goods
+--     of the order's containers as they are received - or returned), or a draft or posted receipt was made from them.
+--     Linking would split or move such a line, which usp_PurchaseInvoice_LinkContainers refuses (65028, naming the line
+--     and its receipt, ahead of this rule): so the card disables Link / Add / Auto-plan with the reason, and
+--     usp_PurchaseInvoice_CheckContainers refuses Add and Auto-plan up front (65030). Document-wide, as the "already
+--     received" refusal of LinkContainers is.
+-- (63) rule 3 (a draft of several items is split by item first) only for an invoice whose mode is one item.
+CREATE OR ALTER FUNCTION purchase.fn_PurchaseInvoice_ContainerState (@InvoiceId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT d.Id AS InvoiceId, d.DocumentNumber, d.Status, d.ReceiptMode,
+       OrderId = o.Id, OrderNo = o.DocumentNumber, OrderStatus = o.Status,
+       ln.ItemCount, ItemId = CASE WHEN ln.ItemCount = 1 THEN ln.FirstItemId END,
+       NotInContainerQty      = ISNULL(u.NotInContainer, 0),
+       OrderLinesAvailableQty = ISNULL(u.Available, 0),
+       MaxAddQty              = ISNULL(u.MaxAdd, 0),
+       pc.PcsPerContainer,
+       LinkableQty            = ISNULL(k.Qty, 0),
+       r.FailedRule, r.Reason,
+       CanAddContainers = CAST(CASE WHEN r.FailedRule IS NULL THEN 1 ELSE 0 END AS BIT),
+       CanTurnOnShipped = CAST(CASE WHEN r.FailedRule = 4 AND d.Status = 1 THEN 1 ELSE 0 END AS BIT),
+       CanLink          = CAST(CASE WHEN ISNULL(r.FailedRule, 7) = 7 AND ISNULL(k.Qty, 0) > 0 THEN 1 ELSE 0 END AS BIT),
+       LinkReason       = CAST(CASE WHEN ISNULL(r.FailedRule, 7) <> 7 THEN r.Reason
+                                    WHEN ISNULL(k.Qty, 0) = 0
+                                        THEN N'No container of order ' + ISNULL(o.DocumentNumber, N'(draft)')
+                                             + N' has pieces left to link: add a container.' END AS NVARCHAR(400))
+FROM purchase.PurchaseDocuments d
+INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+LEFT  JOIN purchase.PurchaseDocuments o ON o.Id = d.SourceDocumentId
+LEFT  JOIN inventory.DocumentTypes ot   ON ot.Id = o.DocumentTypeId
+CROSS APPLY (SELECT Lines = COUNT(*), ItemCount = COUNT(DISTINCT l.ItemId), FirstItemId = MIN(l.ItemId),
+                    Typed = SUM(CASE WHEN l.SourceLineId IS NULL THEN 1 ELSE 0 END)
+             FROM purchase.PurchaseDocumentLines l WHERE l.DocumentId = d.Id) ln
+-- per order line the invoice has pieces of outside containers: those pieces, and what the order line still allows
+OUTER APPLY (SELECT NotInContainer = SUM(x.Unlinked), Available = SUM(x.Allowed),
+                    MaxAdd = SUM(CASE WHEN x.Unlinked < x.Allowed THEN x.Unlinked ELSE x.Allowed END)
+             FROM (SELECT Unlinked = un.UnlinkedBase,
+                          Allowed = CASE WHEN a.Qty > 0 THEN a.Qty ELSE 0 END
+                   FROM purchase.fn_PurchaseInvoice_Unlinked(d.Id) un
+                   INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = un.PoLineId
+                   OUTER APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, d.Id) dir     -- (65) invoiced by the others, or received, outside containers
+                   CROSS APPLY (SELECT Qty = pol.QuantityBase
+                                    - ISNULL(dir.Qty, 0)
+                                    - ISNULL((SELECT SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                                              INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                              WHERE cl.PoLineId = pol.Id AND c.Status <> 8), 0)) a) x) u
+OUTER APPLY (SELECT PcsPerContainer = MAX(s.PcsPerContainer) FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) pc
+-- what the order's Draft / Confirmed containers have loaded and not invoiced yet, on the order lines the invoice has outside
+OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase - ISNULL(q.Qty, 0))
+             FROM logistics.ContainerLines cl
+             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+             OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                          INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                          WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+             WHERE cl.PurchaseOrderId = o.Id AND c.Status IN (1, 2) AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0
+               AND cl.PoLineId IN (SELECT PoLineId FROM purchase.fn_PurchaseInvoice_Unlinked(d.Id))) k
+-- (63) the invoice's mode: rule 3 (split a draft of several items first) concerns a one-item invoice only
+CROSS APPLY (SELECT OneItemOnly = COALESCE(d.OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'))) oi
+-- (65) rule 28: the first goods receipt that refers to a line of the invoice outside containers (the posted one first;
+--      Found = 1 also for pieces received or returned on such a line without a receipt to name; Status 2 posted, 1 draft)
+OUTER APPLY (SELECT TOP (1) Found = 1, gr.Status, Number = gr.DocumentNumber
+             FROM purchase.PurchaseDocumentLines x
+             OUTER APPLY (SELECT TOP (1) r.Status, r.DocumentNumber, r.Id
+                          FROM (SELECT g.Id, g.Status, g.DocumentNumber          -- a receipt made from the line, draft or posted
+                                FROM purchase.GoodsReceiptLines gl
+                                INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                                WHERE gl.InvoiceLineId = x.Id AND g.Status < 3
+                                UNION ALL
+                                SELECT g.Id, g.Status, g.DocumentNumber          -- a posted receipt whose pieces are matched to it
+                                FROM purchase.GoodsReceiptInvoiceMatches m
+                                INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                                INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId
+                                WHERE m.InvoiceLineId = x.Id AND g.Status = 2) r
+                          ORDER BY r.Status DESC, r.Id) gr
+             WHERE x.DocumentId = d.Id AND x.ContainerLineId IS NULL AND x.SourceLineId IS NOT NULL
+               AND (gr.Status IS NOT NULL OR x.ReceivedQuantityBase > 0 OR x.ReturnedQuantityBase > 0)
+             ORDER BY CASE WHEN gr.Status = 2 THEN 0 WHEN gr.Status = 1 THEN 1 ELSE 2 END, x.LineNumber) grn
+CROSS APPLY (SELECT FailedRule = CAST(CASE
+                        WHEN dt.Code <> N'PINV' OR d.Status NOT IN (1, 2) THEN 1
+                        WHEN o.Id IS NULL OR ot.Code <> N'PO' OR ln.Typed > 0 THEN 2
+                        WHEN ln.ItemCount > 1 AND d.Status = 1 AND oi.OneItemOnly = 1 THEN 3
+                        WHEN d.ReceiptMode <> 2 THEN 4
+                        WHEN o.Status NOT IN (2, 4) THEN 5
+                        WHEN grn.Found = 1 THEN 6
+                        WHEN ISNULL(u.NotInContainer, 0) = 0 THEN 6
+                        WHEN ISNULL(u.Available, 0) = 0 THEN 7 END AS TINYINT),
+                    Reason = CAST(CASE
+                        WHEN dt.Code <> N'PINV' THEN N'Only a purchase invoice can take containers.'
+                        WHEN d.Status NOT IN (1, 2) THEN N'A cancelled invoice cannot be linked to containers.'
+                        WHEN o.Id IS NULL OR ot.Code <> N'PO' OR ln.Typed > 0
+                            THEN N'Only a purchase invoice created from a purchase order can be linked to containers.'
+                        WHEN ln.ItemCount > 1 AND d.Status = 1 AND oi.OneItemOnly = 1
+                            THEN N'This invoice holds ' + CAST(ln.ItemCount AS NVARCHAR(10))
+                                 + N' items and a supplier invoice holds one: split it by item first.'
+                        WHEN d.ReceiptMode <> 2 AND d.Status = 1
+                            THEN N'Turn on "Shipped in containers" first: the goods will then enter the stock when their containers are received.'
+                        WHEN d.ReceiptMode <> 2 AND d.UsesGoodsReceipts = 1
+                            THEN N'This invoice was posted without "Shipped in containers": its goods are received with Receive goods' + NCHAR(8230) + N', not with containers.'
+                        WHEN d.ReceiptMode <> 2 THEN N'This invoice was received when it was posted: it cannot be linked to containers.'
+                        WHEN o.Status NOT IN (2, 4)
+                            THEN N'Order ' + ISNULL(o.DocumentNumber, N'(draft)') + N' is '
+                                 + CASE o.Status WHEN 1 THEN N'a draft' WHEN 3 THEN N'cancelled' ELSE N'waiting for approval' END
+                                 + N': containers are made from an approved order.'
+                        WHEN ln.Lines = 0 THEN N'This invoice has no lines yet.'
+                        WHEN grn.Status = 2
+                            THEN N'Goods receipt ' + grn.Number + N' already received pieces of this invoice that are not in a container: '
+                                 + N'its lines can no longer be linked to containers. The rest is matched to the goods of the order''s '
+                                 + N'containers when they are received.'
+                        WHEN grn.Status = 1
+                            THEN N'A draft goods receipt was made from this invoice: delete it before linking the invoice to containers.'
+                        WHEN grn.Found = 1
+                            THEN N'Goods of this invoice outside containers were already received or returned: it can no longer be linked to containers.'
+                        WHEN ISNULL(u.NotInContainer, 0) = 0 THEN N'Every piece of this invoice is already in a container.'
+                        WHEN ISNULL(u.Available, 0) = 0
+                            THEN N'Order ' + o.DocumentNumber + N' allows no more pieces: its lines are already loaded in containers'
+                                 + N', or invoiced or received outside containers.' END AS NVARCHAR(400))) r
+WHERE d.Id = @InvoiceId;
+GO
+
+/* ================================================================== 16. Invoice lines a goods receipt refers to stay where they are (rule 28) */
+
+-- Re-created (65) from the body of script 43: no candidate while the invoice fails rule 6 of
+-- purchase.fn_PurchaseInvoice_ContainerState - a goods receipt refers to its lines outside containers (rule 28), or
+-- every piece is in a container already (then there is nothing to link anyway) - so the "Link containers..." dialog
+-- never offers a container that usp_PurchaseInvoice_LinkContainers would refuse.
+-- The container lines an invoice can be linked to: containers of its purchase order still Draft or Confirmed, lines of
+-- the order lines the invoice still has pieces of outside any container, with something loaded and not yet invoiced
+-- (by any invoice that is not cancelled). UnlinkedBase = what the invoice has of that order line outside containers.
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseInvoice_LinkCandidates
+    @InvoiceId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @OrderId INT = (SELECT d.SourceDocumentId FROM purchase.PurchaseDocuments d
+                            INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                            WHERE d.Id = @InvoiceId AND dt.Code = N'PINV' AND d.Status IN (1, 2));
+
+    -- (65) rule 6: a goods receipt refers to the invoice's lines outside containers
+    IF EXISTS (SELECT 1 FROM purchase.fn_PurchaseInvoice_ContainerState(@InvoiceId) s WHERE s.FailedRule = 6)
+        SET @OrderId = NULL;
+
+    SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus,
+           cl.Id AS ContainerLineId, cl.LineNumber AS ContainerLineNumber, cl.PoLineId, cl.ItemId, i.ItemCode, i.ItemName,
+           LoadedBase    = cl.QuantityBase,
+           InvoicedBase  = ISNULL(q.Qty, 0),
+           AvailableBase = cl.QuantityBase - ISNULL(q.Qty, 0),
+           u.UnlinkedBase
+    FROM logistics.ContainerLines cl
+    INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+    INNER JOIN inventory.Items i      ON i.Id = cl.ItemId
+    INNER JOIN purchase.fn_PurchaseInvoice_Unlinked(@InvoiceId) u ON u.PoLineId = cl.PoLineId
+    OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                 WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+    WHERE cl.PurchaseOrderId = @OrderId AND c.Status IN (1, 2) AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0
+    ORDER BY c.ContainerRef, cl.LineNumber;
+END
+GO
+
+-- Re-created (65) from the body of script 51: + rule 28 - an invoice line a goods receipt refers to (a draft or posted
+-- receipt made from it, or a posted receipt matched to it) is not moved into a container (65028, checked before the
+-- invoice's rule 6, which fails for the same lines with 65030); an invoice posted after the switch
+-- (UsesGoodsReceipts = 1) without "Shipped in containers" gets the sentence of goods receipts.
+-- (51) + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers); a draft is no longer switched to
+-- "shipped in containers" here: rule 4 has it turned on first.
+-- A draft, or a posted invoice shipped in containers (receipt mode 2), takes container lines of its own order. Its
+-- lines of that order line outside containers are SPLIT: the linked part becomes a line of its own (same item, unit,
+-- price, discount, warehouse), the rest stays unlinked. A part that is not a whole number of the line's unit is put in
+-- the base unit (price per base unit), as usp_PurchaseDocument_CreateFromSource does. The document total is kept: a
+-- rounding difference goes on the last line split. A draft still received on posting becomes "shipped in containers".
+-- Nothing else needs writing: the order lines count invoiced quantities by the invoice lines, and
+-- logistics.ContainerInvoices is the unused table of the old model (script 27).
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseInvoice_LinkContainers
+    @InvoiceId  INT,
+    @RowVersion BINARY(8) = NULL,
+    @Links      logistics.tvp_ContainerLineQty READONLY,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @OrderId INT, @Mode TINYINT, @Number NVARCHAR(30), @UsesGrn BIT;
+        SELECT @TypeCode = dt.Code, @Status = d.Status, @OrderId = d.SourceDocumentId, @Mode = d.ReceiptMode,
+               @Number = ISNULL(d.DocumentNumber, N'draft #' + CAST(d.Id AS NVARCHAR(10))), @UsesGrn = d.UsesGoodsReceipts
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @InvoiceId;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+
+        -- (65) RULE 28: AN INVOICE LINE A GOODS RECEIPT REFERS TO STAYS OUTSIDE CONTAINERS (65028, as Unlink answers it).
+        -- Linking moves or splits the invoice's lines outside containers: none of them may be the line a draft or posted
+        -- receipt was made from (Receive goods... on the invoice), or a line a posted receipt's pieces are matched to, or
+        -- carry pieces received or returned. Rule 6 of purchase.fn_PurchaseInvoice_ContainerState fails for the same
+        -- lines - the card's reason, and the 65030 of Add container and Auto-plan from the invoice - so this is checked
+        -- before usp_PurchaseInvoice_CheckContainers raises it: a Link refused for them names the line and its receipt
+        -- (65028). The invoice's rules 1-5 still come first, with their 65030. Document-wide, as rule 6 is: a receipt on
+        -- any line outside containers stops the link (a posted one is named first, as the card does).
+        DECLARE @Msg NVARCHAR(400), @Rule TINYINT;
+        SELECT @Rule = s.FailedRule FROM purchase.fn_PurchaseInvoice_ContainerState(@InvoiceId) s;
+        IF @Rule IS NULL OR @Rule >= 6
+        BEGIN
+            SELECT TOP (1) @Msg = N'Line ' + CAST(pil.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                  + CASE WHEN g.Status = 2 THEN N'goods receipt ' + g.DocumentNumber ELSE N'a draft goods receipt' END
+                                  + N' refers to this invoice line: delete or cancel it first.'
+            FROM purchase.PurchaseDocumentLines pil
+            INNER JOIN inventory.Items i ON i.Id = pil.ItemId
+            CROSS APPLY (SELECT TOP (1) r.Status, r.DocumentNumber
+                         FROM (SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a receipt made from the line, draft or posted
+                               FROM purchase.GoodsReceiptLines gl
+                               INNER JOIN purchase.GoodsReceipts gr ON gr.Id = gl.GoodsReceiptId
+                               WHERE gl.InvoiceLineId = pil.Id AND gr.Status < 3
+                               UNION ALL
+                               SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a posted receipt whose pieces are matched to it
+                               FROM purchase.GoodsReceiptInvoiceMatches m
+                               INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                               INNER JOIN purchase.GoodsReceipts gr     ON gr.Id = gl.GoodsReceiptId
+                               WHERE m.InvoiceLineId = pil.Id AND gr.Status = 2) r
+                         ORDER BY r.Status DESC, r.Id) g
+            WHERE pil.DocumentId = @InvoiceId AND pil.ContainerLineId IS NULL
+            ORDER BY CASE WHEN g.Status = 2 THEN 0 ELSE 1 END, pil.LineNumber;
+            IF @Msg IS NOT NULL THROW 65028, @Msg, 1;
+
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
+                       WHERE DocumentId = @InvoiceId AND ContainerLineId IS NULL AND (ReceivedQuantityBase > 0 OR ReturnedQuantityBase > 0))
+                THROW 65028, 'Goods of this invoice outside containers were already received or returned: it can no longer be linked.', 1;
+        END
+
+        -- (51) the invoice's rules 1-6: the same sentences as the state of the page
+        EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @InvoiceId, @Action = N'Link';
+        IF @TypeCode <> N'PINV' OR @OrderId IS NULL
+            THROW 65028, 'Only a purchase invoice created from a purchase order can be linked to containers.', 1;
+        IF @Status NOT IN (1, 2) THROW 65010, 'A cancelled invoice cannot be linked to containers.', 1;
+        IF @Status = 2 AND @Mode <> 2 AND @UsesGrn = 1      -- (65) posted after the switch: its goods come with goods receipts
+        BEGIN
+            SET @Msg = N'This invoice was posted without "Shipped in containers": its goods are received with Receive goods' + NCHAR(8230) + N', not with containers.';
+            THROW 65028, @Msg, 1;
+        END
+        IF @Status = 2 AND @Mode <> 2
+            THROW 65028, 'This invoice was received when it was posted: it cannot be linked to containers.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM @Links) THROW 65000, 'Choose at least one container line to link.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @InvoiceId)
+            THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @InvoiceId AND Status <> 3)
+            THROW 65028, 'This invoice has a landed cost adjustment: cancel or delete it before linking the invoice to containers.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments r WHERE r.SourceDocumentId = @InvoiceId AND r.Status <> 3)
+            THROW 65028, 'This invoice has purchase returns: it can no longer be linked to containers.', 1;
+
+        -- the containers: still Draft or Confirmed
+        SELECT TOP (1) @Msg = CASE WHEN c.Status = 8 THEN N'Container ' + c.ContainerRef + N' is cancelled.'
+                                   ELSE N'Container ' + c.ContainerRef + N' has started moving: it can no longer be linked.' END
+        FROM @Links k
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
+        INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        WHERE c.Status NOT IN (1, 2)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 65027, @Msg, 1;
+
+        -- the lines: of this order, a quantity, within what is loaded and not yet invoiced
+        SELECT TOP (1) @Msg =
+            CASE WHEN cl.Id IS NULL THEN N'A container line to link no longer exists.'
+                 WHEN cl.PurchaseOrderId <> @OrderId THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10))
+                      + N' belongs to another purchase order.'
+                 WHEN k.QuantityBase <= 0 THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10))
+                      + N': the quantity must be greater than zero.'
+                 ELSE N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                      + CAST(k.QuantityBase AS NVARCHAR(20)) + N' to link but only ' + CAST(cl.QuantityBase - ISNULL(q.Qty, 0) AS NVARCHAR(20))
+                      + N' are loaded and not yet invoiced.' END
+        FROM @Links k
+        LEFT JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
+        LEFT JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+        LEFT JOIN inventory.Items i           ON i.Id = cl.ItemId
+        OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+        WHERE cl.Id IS NULL OR cl.PurchaseOrderId <> @OrderId OR k.QuantityBase <= 0
+           OR k.QuantityBase > cl.QuantityBase - ISNULL(q.Qty, 0)
+        ORDER BY c.ContainerRef, cl.LineNumber;
+        IF @Msg IS NOT NULL THROW 65019, @Msg, 1;
+
+        -- the invoice: within its pieces of that order line outside containers
+        SELECT TOP (1) @Msg = i.ItemCode + N': ' + CAST(t.Qty AS NVARCHAR(20)) + N' pieces to link but only '
+                              + CAST(ISNULL(u.UnlinkedBase, 0) AS NVARCHAR(20)) + N' of this invoice (order line '
+                              + CAST(pol.LineNumber AS NVARCHAR(10)) + N') are not in a container yet.'
+        FROM (SELECT cl.PoLineId, Qty = SUM(k.QuantityBase) FROM @Links k
+              INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId GROUP BY cl.PoLineId) t
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = t.PoLineId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@InvoiceId) u ON u.PoLineId = t.PoLineId
+        WHERE t.Qty > ISNULL(u.UnlinkedBase, 0)
+        ORDER BY pol.LineNumber;
+        IF @Msg IS NOT NULL THROW 65019, @Msg, 1;
+
+        DECLARE @OldTotal DECIMAL(18,2) = (SELECT ISNULL(SUM(LineTotal), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
+        DECLARE @NextNo INT = (SELECT ISNULL(MAX(LineNumber), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
+        DECLARE @Cl INT, @PoLineId INT, @Need INT, @LineId INT, @Have INT, @Pf INT, @ItemId INT, @BaseUnit INT, @LastLine INT;
+
+        DECLARE links CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+            SELECT k.ContainerLineId, cl.PoLineId, k.QuantityBase
+            FROM @Links k
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
+            INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+            ORDER BY c.ContainerRef, cl.LineNumber;
+        OPEN links;
+        FETCH NEXT FROM links INTO @Cl, @PoLineId, @Need;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            WHILE @Need > 0
+            BEGIN
+                SET @LineId = NULL;
+                SELECT TOP (1) @LineId = Id, @Have = QuantityBase, @Pf = PackingFormula, @ItemId = ItemId
+                FROM purchase.PurchaseDocumentLines
+                WHERE DocumentId = @InvoiceId AND ContainerLineId IS NULL AND SourceLineId = @PoLineId AND QuantityBase > 0
+                ORDER BY LineNumber;
+                IF @LineId IS NULL THROW 65019, 'The invoice has no more pieces of that order line outside containers.', 1;
+
+                IF @Have <= @Need
+                BEGIN
+                    -- the whole line goes into the container
+                    UPDATE purchase.PurchaseDocumentLines SET ContainerLineId = @Cl WHERE Id = @LineId;
+                    SET @Need -= @Have;
+                    SET @LastLine = @LineId;
+                END
+                ELSE
+                BEGIN
+                    SET @BaseUnit = (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = @ItemId AND IsBaseUnit = 1 ORDER BY Id);
+                    IF @BaseUnit IS NULL AND (@Need % @Pf <> 0 OR (@Have - @Need) % @Pf <> 0)
+                        THROW 65028, 'The item of a line to split has no base unit.', 1;
+
+                    -- the linked part: a new line
+                    SET @NextNo += 1;
+                    INSERT INTO purchase.PurchaseDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula,
+                                                                UnitPrice, DiscountPercent, UnitCostBase, ReceivedQuantityBase, ReturnedQuantityBase,
+                                                                ImportRowNumber, Notes, SourceLineId, ShippedQuantityBase, FobCostBase, AllocatedChargesBase,
+                                                                ContainerLineId)
+                    SELECT @InvoiceId, @NextNo, l.ItemId,
+                           CASE WHEN @Need % l.PackingFormula = 0 THEN l.ItemUnitId ELSE @BaseUnit END,
+                           l.WarehouseId, l.ExpiryDate,
+                           CASE WHEN @Need % l.PackingFormula = 0 THEN @Need / l.PackingFormula ELSE @Need END,
+                           CASE WHEN @Need % l.PackingFormula = 0 THEN l.PackingFormula ELSE 1 END,
+                           CASE WHEN @Need % l.PackingFormula = 0 THEN l.UnitPrice ELSE ROUND(l.UnitPrice / l.PackingFormula, 4) END,
+                           l.DiscountPercent, l.UnitCostBase, 0, 0, l.ImportRowNumber, l.Notes, l.SourceLineId, 0, l.FobCostBase, 0, @Cl
+                    FROM purchase.PurchaseDocumentLines l
+                    WHERE l.Id = @LineId;
+
+                    -- the rest stays where it was, unlinked (it keeps its id: what refers to the line still finds it)
+                    UPDATE purchase.PurchaseDocumentLines
+                    SET ItemUnitId     = CASE WHEN (@Have - @Need) % PackingFormula = 0 THEN ItemUnitId ELSE @BaseUnit END,
+                        Quantity       = CASE WHEN (@Have - @Need) % PackingFormula = 0 THEN (@Have - @Need) / PackingFormula ELSE @Have - @Need END,
+                        UnitPrice      = CASE WHEN (@Have - @Need) % PackingFormula = 0 THEN UnitPrice ELSE ROUND(UnitPrice / PackingFormula, 4) END,
+                        PackingFormula = CASE WHEN (@Have - @Need) % PackingFormula = 0 THEN PackingFormula ELSE 1 END
+                    WHERE Id = @LineId;
+
+                    SET @Need = 0;
+                    SET @LastLine = @LineId;
+                END
+            END
+            FETCH NEXT FROM links INTO @Cl, @PoLineId, @Need;
+        END
+        CLOSE links;
+        DEALLOCATE links;
+
+        -- the lines of every container first, by container, then what is not in a container yet
+        UPDATE l SET LineNumber = x.Seq
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN (SELECT pl.Id, Seq = ROW_NUMBER() OVER (ORDER BY CASE WHEN pl.ContainerLineId IS NULL THEN 1 ELSE 0 END,
+                                                                    c.ContainerRef, cl.LineNumber, pl.LineNumber, pl.Id)
+                    FROM purchase.PurchaseDocumentLines pl
+                    LEFT JOIN logistics.ContainerLines cl ON cl.Id = pl.ContainerLineId
+                    LEFT JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+                    WHERE pl.DocumentId = @InvoiceId) x ON x.Id = l.Id
+        WHERE l.LineNumber <> x.Seq;
+
+        -- the document total does not change: a rounding difference goes on the last line split
+        DECLARE @Diff DECIMAL(18,2) = @OldTotal - (SELECT ISNULL(SUM(LineTotal), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
+        IF @Diff <> 0 AND @LastLine IS NOT NULL
+            UPDATE purchase.PurchaseDocumentLines
+            SET UnitPrice = ROUND(UnitPrice + @Diff / NULLIF(Quantity * (1 - DiscountPercent / 100.0), 0), 4)
+            WHERE Id = @LastLine;
+
+        UPDATE d
+        SET ReceiptMode = 2,
+            TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / d.ExchangeRate, 2), TotalLandedCostBase = ROUND(x.Amt / d.ExchangeRate, 2) + d.TotalChargesBase,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId) x
+        WHERE d.Id = @InvoiceId;
+
+        -- the value basis of the container charges follows the invoice, and both sides keep the history
+        DECLARE @Cid INT, @Ref NVARCHAR(30), @Qty INT;
+        DECLARE cts CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+            SELECT cl.ContainerId, c.ContainerRef, SUM(k.QuantityBase)
+            FROM @Links k
+            INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
+            INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+            GROUP BY cl.ContainerId, c.ContainerRef
+            ORDER BY c.ContainerRef;
+        OPEN cts;
+        FETCH NEXT FROM cts INTO @Cid, @Ref, @Qty;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_Container_ReallocateCharges @Cid, 1, 1;
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@Cid, N'Updated', N'Linked to purchase invoice ' + @Number + N': ' + CAST(@Qty AS NVARCHAR(20)) + N' pieces', @UserId);
+            FETCH NEXT FROM cts INTO @Cid, @Ref, @Qty;
+        END
+        CLOSE cts;
+        DEALLOCATE cts;
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        SELECT @InvoiceId, N'Updated',
+               LEFT(N'Linked to containers ' + STRING_AGG(x.Ref + N' (' + CAST(x.Qty AS NVARCHAR(20)) + N')', N', ')
+                    WITHIN GROUP (ORDER BY x.Ref), 1000), @UserId
+        FROM (SELECT Ref = c.ContainerRef, Qty = SUM(k.QuantityBase)
+              FROM @Links k
+              INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
+              INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+              GROUP BY c.ContainerRef) x;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    EXEC purchase.usp_PurchaseInvoice_ContainerSummary @InvoiceId;
+END
+GO
+
+-- Re-created (65) from the body of script 43: + rule 28 - an invoice line a goods receipt refers to (a draft or posted
+-- receipt made from it, or a posted receipt matched to it: order-line matching reaches lines in containers not received
+-- yet) is not unlinked (65028); and a freed line a cancelled receipt still refers to keeps its id (it is not merged
+-- away: the receipt line's foreign key points to it).
+-- The container must still be Draft or Confirmed (nothing received). The invoice lines on it lose their container and
+-- go back into the unlinked line of the same order line, item, unit, price, discount, warehouse and expiry when there
+-- is one (otherwise they stay as separate unlinked lines). The invoice stays "shipped in containers".
+CREATE OR ALTER PROCEDURE purchase.usp_PurchaseInvoice_UnlinkContainer
+    @InvoiceId   INT,
+    @ContainerId INT,
+    @RowVersion  BINARY(8) = NULL,
+    @UserId      INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @Number NVARCHAR(30);
+        SELECT @TypeCode = dt.Code, @Status = d.Status, @Number = ISNULL(d.DocumentNumber, N'draft #' + CAST(d.Id AS NVARCHAR(10)))
+        FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        WHERE d.Id = @InvoiceId;
+
+        IF @Status IS NULL THROW 65006, 'Document not found.', 1;
+        IF @TypeCode <> N'PINV' THROW 65028, 'Only a purchase invoice can be unlinked from a container.', 1;
+        IF @Status NOT IN (1, 2) THROW 65010, 'A cancelled invoice cannot be changed.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId AND RowVersion = @RowVersion)
+            THROW 65004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+        DECLARE @Ref NVARCHAR(30), @CStatus TINYINT, @Msg NVARCHAR(400);
+        SELECT @Ref = ContainerRef, @CStatus = Status FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @ContainerId;
+        IF @Ref IS NULL OR NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines l
+                                       INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+                                       WHERE l.DocumentId = @InvoiceId AND cl.ContainerId = @ContainerId)
+        BEGIN
+            SET @Msg = N'Container ' + ISNULL(@Ref, N'#' + CAST(@ContainerId AS NVARCHAR(10))) + N' is not linked to this invoice.';
+            THROW 65019, @Msg, 1;
+        END
+        IF @CStatus NOT IN (1, 2) OR EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE ContainerId = @ContainerId AND ISNULL(ReceivedQuantityBase, 0) > 0)
+        BEGIN
+            SET @Msg = N'Container ' + @Ref + N' has started moving: it can no longer be unlinked.';
+            THROW 65027, @Msg, 1;
+        END
+
+        -- (65) RULE 28: AN INVOICE LINE A GOODS RECEIPT REFERS TO STAYS IN ITS CONTAINER: the line a draft or posted
+        -- receipt was made from, or a line a posted receipt's pieces are matched to (an order line's receipts outside
+        -- containers are matched to its invoice lines, linked or not).
+        SET @Msg = NULL;
+        SELECT TOP (1) @Msg = N'Line ' + CAST(pil.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                              + CASE WHEN g.Status = 2 THEN N'goods receipt ' + g.DocumentNumber ELSE N'a draft goods receipt' END
+                              + N' refers to this invoice line: delete or cancel it first.'
+        FROM purchase.PurchaseDocumentLines pil
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = pil.ContainerLineId
+        INNER JOIN inventory.Items i           ON i.Id = pil.ItemId
+        CROSS APPLY (SELECT TOP (1) r.Status, r.DocumentNumber
+                     FROM (SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a receipt made from the line, draft or posted
+                           FROM purchase.GoodsReceiptLines gl
+                           INNER JOIN purchase.GoodsReceipts gr ON gr.Id = gl.GoodsReceiptId
+                           WHERE gl.InvoiceLineId = pil.Id AND gr.Status < 3
+                           UNION ALL
+                           SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a posted receipt whose pieces are matched to it
+                           FROM purchase.GoodsReceiptInvoiceMatches m
+                           INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                           INNER JOIN purchase.GoodsReceipts gr     ON gr.Id = gl.GoodsReceiptId
+                           WHERE m.InvoiceLineId = pil.Id AND gr.Status = 2) r
+                     ORDER BY r.Status DESC, r.Id) g
+        WHERE pil.DocumentId = @InvoiceId AND cl.ContainerId = @ContainerId
+        ORDER BY pil.LineNumber;
+        IF @Msg IS NOT NULL THROW 65028, @Msg, 1;
+
+        DECLARE @OldTotal DECIMAL(18,2) = (SELECT ISNULL(SUM(LineTotal), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
+        DECLARE @Pieces INT;
+
+        DECLARE @Freed TABLE (Id INT PRIMARY KEY);
+        UPDATE l SET ContainerLineId = NULL
+        OUTPUT inserted.Id INTO @Freed (Id)
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
+        WHERE l.DocumentId = @InvoiceId AND cl.ContainerId = @ContainerId;
+        SET @Pieces = (SELECT SUM(l.QuantityBase) FROM purchase.PurchaseDocumentLines l INNER JOIN @Freed f ON f.Id = l.Id);
+
+        -- back into the unlinked line of the same kind: the one that was there before, else the first freed one
+        DECLARE @Merge TABLE (Id INT PRIMARY KEY, KeeperId INT NOT NULL);
+        INSERT INTO @Merge (Id, KeeperId)
+        SELECT g.Id, g.KeeperId
+        FROM (SELECT l.Id,
+                     IsFreed  = CASE WHEN f.Id IS NOT NULL THEN 1 ELSE 0 END,
+                     KeeperId = FIRST_VALUE(l.Id) OVER (PARTITION BY l.SourceLineId, l.ItemId, l.ItemUnitId, l.UnitPrice, l.DiscountPercent,
+                                                                     l.WarehouseId, l.ExpiryDate
+                                                        ORDER BY CASE WHEN f.Id IS NULL THEN 0 ELSE 1 END, l.Id)
+              FROM purchase.PurchaseDocumentLines l
+              LEFT JOIN @Freed f ON f.Id = l.Id
+              WHERE l.DocumentId = @InvoiceId AND l.ContainerLineId IS NULL) g
+        WHERE g.IsFreed = 1 AND g.Id <> g.KeeperId
+          AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl WHERE gl.InvoiceLineId = g.Id);   -- (65) kept: a receipt line refers to it
+
+        UPDATE k SET Quantity = k.Quantity + x.Qty
+        FROM purchase.PurchaseDocumentLines k
+        INNER JOIN (SELECT m.KeeperId, Qty = SUM(l.Quantity) FROM @Merge m
+                    INNER JOIN purchase.PurchaseDocumentLines l ON l.Id = m.Id GROUP BY m.KeeperId) x ON x.KeeperId = k.Id;
+        DELETE l FROM purchase.PurchaseDocumentLines l INNER JOIN @Merge m ON m.Id = l.Id;
+
+        UPDATE l SET LineNumber = x.Seq
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN (SELECT pl.Id, Seq = ROW_NUMBER() OVER (ORDER BY CASE WHEN pl.ContainerLineId IS NULL THEN 1 ELSE 0 END,
+                                                                    c.ContainerRef, cl.LineNumber, pl.LineNumber, pl.Id)
+                    FROM purchase.PurchaseDocumentLines pl
+                    LEFT JOIN logistics.ContainerLines cl ON cl.Id = pl.ContainerLineId
+                    LEFT JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+                    WHERE pl.DocumentId = @InvoiceId) x ON x.Id = l.Id
+        WHERE l.LineNumber <> x.Seq;
+
+        -- the document total does not change: a rounding difference goes on the line the pieces went back to
+        DECLARE @LastLine INT = (SELECT TOP (1) KeeperId FROM @Merge ORDER BY KeeperId DESC);
+        DECLARE @Diff DECIMAL(18,2) = @OldTotal - (SELECT ISNULL(SUM(LineTotal), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
+        IF @Diff <> 0 AND @LastLine IS NOT NULL
+            UPDATE purchase.PurchaseDocumentLines
+            SET UnitPrice = ROUND(UnitPrice + @Diff / NULLIF(Quantity * (1 - DiscountPercent / 100.0), 0), 4)
+            WHERE Id = @LastLine;
+
+        UPDATE d
+        SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
+            TotalAmountBase = ROUND(x.Amt / d.ExchangeRate, 2), TotalLandedCostBase = ROUND(x.Amt / d.ExchangeRate, 2) + d.TotalChargesBase,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT COUNT(*) AS Items, ISNULL(SUM(QuantityBase), 0) AS Qty,
+                            ISNULL(SUM(CONVERT(DECIMAL(18,2), Quantity * UnitPrice)), 0) AS Sub, ISNULL(SUM(LineTotal), 0) AS Amt
+                     FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId) x
+        WHERE d.Id = @InvoiceId;
+
+        EXEC logistics.usp_Container_ReallocateCharges @ContainerId, 1, 1;
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        VALUES (@ContainerId, N'Updated', N'Unlinked from purchase invoice ' + @Number + N': ' + CAST(ISNULL(@Pieces, 0) AS NVARCHAR(20)) + N' pieces', @UserId);
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@InvoiceId, N'Updated', N'Unlinked from container ' + @Ref + N' (' + CAST(ISNULL(@Pieces, 0) AS NVARCHAR(20)) + N')', @UserId);
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    EXEC purchase.usp_PurchaseInvoice_ContainerSummary @InvoiceId;
+END
+GO
+
+/* ================================================================== 17. The container page and list: receipts, Delivery, Receive goods... */
+
+-- Re-created (65) from the body of script 54: goods receipts. The header + who received the container (ReceivedBy:
+-- 'GRN' a posted goods receipt, 'Offload' the offload of before, NULL not received - the only test, so Cancel Offload is
+-- offered for 'Offload' only), its open goods receipt (a draft or the posted one: GoodsReceipt*), its latest completed
+-- Delivery (DeliveredDate, DeliveryMovement*, DeliveryPlaceName) and CanReceive ("Receive goods...": Confirmed to
+-- Cleared, no open receipt); the days at the port stop at the Delivery when nothing is received yet (edge case 29).
+-- CloseBlockedReason: why an offloaded container cannot be closed yet (fn_Container_CloseBlock, the refusal of Close).
+-- The lines' FobSource 'Offload' becomes 'Received': the container line's value once the goods are received. Columns
+-- added at the end of set 1; the other sets are unchanged.
+-- (54) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
+-- MissingContainerUnitItems, RemainingPcs, IsOverCapacity) instead of MaxUnits / TypeMaxUnits / UtilizationPct /
+-- RemainingCapacityBase; the lines give each item's PcsPerContainer.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT c.Id, c.DocumentTypeId, c.ContainerRef, c.ContainerNo,
+           c.ContainerTypeId, ct.TypeCode AS ContainerTypeCode, ct.TypeName AS ContainerTypeName,
+           ct.MaxWeightKg, ct.MaxVolumeCbm,
+           c.SealNo, c.CustomsSealNo, c.Description,
+           c.OrderDate, c.OrderMonthKey, OrderMonth = FORMAT(c.OrderDate, N'MMM-yyyy', N'en-US'),
+           c.ShippingMethod, c.CountryOfOrigin,
+           c.PurchaseOrderId, mpo.DocumentNumber AS PurchaseOrderNumber, mpo.SupplierId AS PurchaseOrderSupplierId,
+           mps.PartyName AS PurchaseOrderSupplierName,
+           c.ForwarderId, fw.PartyName AS ForwarderName, c.TransporterId, tr.PartyName AS TransporterName,
+           c.ShippingLine, c.VesselName, c.VoyageNo, c.BookingNo,
+           c.PortOfLoadingId, pl.PortName AS PortOfLoadingName, pl.CountryCode AS PortOfLoadingCountry,
+           c.PortOfDestinationId, pd.PortName AS PortOfDestinationName, pd.CountryCode AS PortOfDestinationCountry,
+           c.FinalDestinationId, fd.PortName AS FinalDestinationName,
+           c.DispatchDate, c.Eta, c.FreeDays, c.LastFreeDay, c.GrossWeightKg, c.VolumeCbm, c.Packages,
+           c.BlNo, c.BlDate, c.BlNotes,
+           c.TotalLines, c.TotalAllocatedBase, c.TotalReceivedBase, c.TotalOilQty,
+           fl.FillPct, fl.CapacityKnown, fl.MissingContainerUnitItems, fl.RemainingPcs, fl.IsOverCapacity,
+           c.BranchId, b.BranchCode, b.BranchName, c.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           c.TruckNo, c.WaybillNo, c.DeclarationNo, c.FeriNo,
+           c.ActualPortArrival, c.BorderCrossingDate, c.CustomsReleaseDate,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, CAST(SYSUTCDATETIME() AS DATE))) END,
+           c.OffloadedDate, c.OffloadedAtUtc, c.OffloadedBy, ou.FullName AS OffloadedByName,
+           c.Status, c.StatusNote, c.CurrentLocation, c.Notes,
+           c.DatesFromMovements,
+           HasMovements = CAST(CASE WHEN EXISTS (SELECT 1 FROM logistics.MovementContainers mc
+                                                 INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                                                 WHERE mc.ContainerId = c.Id AND m.Status IN (2, 3)) THEN 1 ELSE 0 END AS BIT),
+           InvoicedPostedBase = ISNULL(inv.Posted, 0), InvoicedDraftBase = ISNULL(inv.Draft, 0),
+           IsFullyInvoiced = CAST(CASE WHEN c.TotalAllocatedBase > 0 AND NOT EXISTS
+                                       (SELECT 1 FROM logistics.ContainerLines cl
+                                        OUTER APPLY (SELECT Q = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                                                     INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                                                     WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (2, 4)) q
+                                        WHERE cl.ContainerId = c.Id AND ISNULL(q.Q, 0) < cl.QuantityBase) THEN 1 ELSE 0 END AS BIT),
+           ChargesPostedBase = ISNULL(chg.Posted, 0), ChargesDraftBase = ISNULL(chg.Draft, 0),
+           ChargesLandedPostedBase = ISNULL(chg.LandedPosted, 0),
+           FobTotalBase = cost.Fob, LandedTotalBase = cost.Fob + ISNULL(chg.LandedPosted, 0),
+           c.ConfirmedAtUtc, c.ConfirmedBy, fu.FullName AS ConfirmedByName,
+           c.ClosedAtUtc, c.ClosedBy, ku.FullName AS ClosedByName,
+           c.CancelledAtUtc, c.CancelledBy, xu.FullName AS CancelledByName, c.CancelReason,
+           c.CreatedAtUtc, c.CreatedBy, cu.FullName AS CreatedByName,
+           c.UpdatedAtUtc, c.UpdatedBy, uu.FullName AS UpdatedByName, c.RowVersion,
+           -- (65) goods receipts
+           rb.ReceivedBy,
+           rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
+           GoodsReceiptDate = gr.DocumentDate, GoodsReceiptIsAuto = gr.IsAuto,
+           GoodsReceiptWarehouseId = gr.WarehouseId, GoodsReceiptWarehouseCode = gw.WarehouseCode,
+           GoodsReceiptCreatedAtUtc = gr.CreatedAtUtc,
+           DeliveredDate = dl.EndDate, DeliveryMovementId = dl.MovementId, DeliveryMovementNo = dl.MovementNo,
+           DeliveryPlaceName = dl.PlaceName,
+           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT),
+           CloseBlockedReason = cb.Reason
+    FROM logistics.Containers c
+    INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
+    INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
+    LEFT  JOIN purchase.GoodsReceipts gr    ON gr.Id = rb.GoodsReceiptId
+    LEFT  JOIN masterdata.Warehouses gw     ON gw.Id = gr.WarehouseId
+    LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
+    LEFT  JOIN masterdata.Parties mps       ON mps.Id = mpo.SupplierId
+    LEFT  JOIN masterdata.Parties fw        ON fw.Id = c.ForwarderId
+    LEFT  JOIN masterdata.Parties tr        ON tr.Id = c.TransporterId
+    LEFT  JOIN masterdata.Ports pl          ON pl.Id = c.PortOfLoadingId
+    LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
+    LEFT  JOIN masterdata.Ports fd          ON fd.Id = c.FinalDestinationId
+    LEFT  JOIN security.Users ou ON ou.Id = c.OffloadedBy
+    LEFT  JOIN security.Users fu ON fu.Id = c.ConfirmedBy
+    LEFT  JOIN security.Users ku ON ku.Id = c.ClosedBy
+    LEFT  JOIN security.Users xu ON xu.Id = c.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = c.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = c.UpdatedBy
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN d.Status IN (2, 4) THEN pil.QuantityBase END),
+                        Draft  = SUM(CASE WHEN d.Status = 1 THEN pil.QuantityBase END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                 INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                 WHERE cl.ContainerId = c.Id) inv
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN ch.Status = 2 THEN ch.AmountBase END),
+                        Draft  = SUM(CASE WHEN ch.Status = 1 THEN ch.AmountBase END),
+                        LandedPosted = SUM(CASE WHEN ch.Status = 2 AND ch.IncludeInLandedCost = 1 THEN ch.AmountBase END)
+                 FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id) chg
+    OUTER APPLY (SELECT Fob = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(18,6)) * ISNULL(u.UnitFob, 0))
+                 FROM logistics.ContainerLines cl
+                 OUTER APPLY (SELECT UnitFob = COALESCE(cl.FobCostBase,
+                                                        (SELECT SUM(pil.LineTotal / pid.ExchangeRate) / NULLIF(SUM(pil.QuantityBase), 0)
+                                                         FROM purchase.PurchaseDocumentLines pil
+                                                         INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                                                         WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (1, 2, 4)),
+                                                        (SELECT pol.LineTotal / pod.ExchangeRate / NULLIF(pol.QuantityBase, 0)
+                                                         FROM purchase.PurchaseDocumentLines pol
+                                                         INNER JOIN purchase.PurchaseDocuments pod ON pod.Id = pol.DocumentId
+                                                         WHERE pol.Id = cl.PoLineId))) u
+                 WHERE cl.ContainerId = c.Id) cost
+    WHERE c.Id = @Id;
+
+    -- 2: lines. FOB per unit: once the goods are received the container line's value (frozen by an offload of before; set by
+    -- the goods receipt and moved by the invoices since), else the invoices (posted or draft), else the order price.
+    SELECT cl.Id, cl.ContainerId, cl.LineNumber,
+           cl.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber, po.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           cl.PoLineId, pol.LineNumber AS PoLineNumber,
+           cl.ItemId, i.ItemCode, i.ItemName, i.Model, br.BrandName,
+           cl.ItemUnitId, ut.UnitTypeName, cl.PackingFormula,
+           PoUnitTypeName = pt.UnitTypeName, PoPackingFormula = pol.PackingFormula,
+           PcsPerContainer = ipc.PcsPerContainer,
+           cl.Quantity, cl.QuantityBase, cl.OilIncluded, cl.OilQtyPerUnit, cl.TotalOilQty,
+           OrderedBase = pol.QuantityBase,
+           LoadedElsewhereBase = ISNULL(oth.Qty, 0),
+           InvoicedPostedBase = ISNULL(inv.Posted, 0), InvoicedDraftBase = ISNULL(inv.Draft, 0),
+           AvailableToInvoiceBase = cl.QuantityBase - ISNULL(inv.Posted, 0) - ISNULL(inv.Draft, 0),
+           InvoiceNumbers = inv.Numbers,
+           cl.ReceivedQuantityBase, cl.VarianceReason, cl.Notes,
+           UnitFobBase = COALESCE(cl.FobCostBase, inv.UnitValue, pol.LineTotal / po.ExchangeRate / NULLIF(pol.QuantityBase, 0)),
+           FobSource = CASE WHEN cl.FobCostBase IS NOT NULL THEN N'Received' WHEN inv.UnitValue IS NOT NULL THEN N'Invoice' ELSE N'Order' END,
+           cl.FobCostBase, cl.ChargesBase,
+           DraftChargesBase = ISNULL(dch.Draft, 0),
+           ChargesPerUnitBase = cl.ChargesBase / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0),
+           LandedCostBase = COALESCE(cl.LandedCostBase,
+                                     COALESCE(inv.UnitValue, pol.LineTotal / po.ExchangeRate / NULLIF(pol.QuantityBase, 0))
+                                     + cl.ChargesBase / NULLIF(cl.QuantityBase, 0)),
+           IsLandedFinal = CAST(CASE WHEN cl.LandedCostBase IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           i.WeightKg, i.VolumeCbm
+    FROM logistics.ContainerLines cl
+    INNER JOIN purchase.PurchaseDocuments po     ON po.Id = cl.PurchaseOrderId
+    INNER JOIN masterdata.Parties sp             ON sp.Id = po.SupplierId
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = cl.PoLineId
+    INNER JOIN inventory.ItemUnits piu           ON piu.Id = pol.ItemUnitId
+    INNER JOIN masterdata.UnitTypes pt           ON pt.Id = piu.UnitTypeId
+    INNER JOIN inventory.Items i                 ON i.Id = cl.ItemId
+    INNER JOIN masterdata.Brands br              ON br.Id = i.BrandId
+    INNER JOIN inventory.ItemUnits iu            ON iu.Id = cl.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut           ON ut.Id = iu.UnitTypeId
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(cl.ItemId) ipc
+    OUTER APPLY (SELECT Qty = SUM(o.QuantityBase) FROM logistics.ContainerLines o
+                 INNER JOIN logistics.Containers oc ON oc.Id = o.ContainerId
+                 WHERE o.PoLineId = cl.PoLineId AND o.ContainerId <> cl.ContainerId AND oc.Status <> 8) oth
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN d.Status IN (2, 4) THEN pil.QuantityBase END),
+                        Draft  = SUM(CASE WHEN d.Status = 1 THEN pil.QuantityBase END),
+                        UnitValue = SUM(pil.LineTotal / d.ExchangeRate) / NULLIF(SUM(pil.QuantityBase), 0),
+                        Numbers = STRING_AGG(d.DocumentNumber, N', ')
+                 FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = pil.DocumentId
+                 WHERE pil.ContainerLineId = cl.Id AND d.Status <> 3) inv
+    OUTER APPLY (SELECT Draft = SUM(a.AmountBase) FROM logistics.ContainerChargeAllocations a
+                 INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
+                 WHERE a.ContainerLineId = cl.Id AND ch.Status = 1) dch
+    WHERE cl.ContainerId = @Id
+    ORDER BY cl.LineNumber;
+
+    -- 3: invoices of the container (derived from the invoice lines)
+    SELECT d.Id AS PurchaseDocumentId, d.DocumentNumber, d.DocumentDate, d.Status AS InvoiceStatus, d.ReceiptMode,
+           d.SourceDocumentId AS PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, cur.CurrencyCode, cur.Symbol AS CurrencySymbol, d.ExchangeRate,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo,
+           QtyInContainerBase = SUM(pil.QuantityBase),
+           AmountInContainer = SUM(pil.LineTotal),
+           AmountInContainerBase = SUM(pil.LineTotal / d.ExchangeRate),
+           d.TotalAmount, d.TotalAmountBase
+    FROM logistics.ContainerLines cl
+    INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+    INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+    INNER JOIN masterdata.Parties sp               ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies cur           ON cur.Id = d.CurrencyId
+    LEFT  JOIN purchase.PurchaseDocuments po       ON po.Id = d.SourceDocumentId
+    WHERE cl.ContainerId = @Id AND d.Status <> 3
+    GROUP BY d.Id, d.DocumentNumber, d.DocumentDate, d.Status, d.ReceiptMode, d.SourceDocumentId, po.DocumentNumber,
+             d.SupplierId, sp.PartyCode, sp.PartyName, d.CurrencyId, cur.CurrencyCode, cur.Symbol, d.ExchangeRate,
+             d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.TotalAmount, d.TotalAmountBase
+    ORDER BY d.DocumentDate, d.Id;
+
+    -- 4: movements of the container (the route), oldest first
+    SELECT m.Id AS MovementId, m.MovementNo, m.MovementTypeId, mt.TypeCode, mt.TypeName, mt.Stage,
+           m.FromPlaceId, fp.PortCode AS FromCode, fp.PortName AS FromName, fp.CountryCode AS FromCountry, fp.Kind AS FromKind,
+           m.ToPlaceId, tp.PortCode AS ToCode, tp.PortName AS ToName, tp.CountryCode AS ToCountry, tp.Kind AS ToKind,
+           m.PlannedDate, m.StartDate, m.Eta, m.EndDate, m.Status,
+           m.CarrierPartyId, cp.PartyName AS CarrierName, m.VehicleOrVessel, m.VoyageNo, m.Reference, m.Notes,
+           ContainerCount = (SELECT COUNT(*) FROM logistics.MovementContainers x WHERE x.MovementId = m.Id),
+           ChargesBase = (SELECT SUM(ch.AmountBase) FROM logistics.ContainerCharges ch
+                          WHERE ch.ContainerId = @Id AND ch.MovementId = m.Id AND ch.Status = 2),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ContainerId = @Id AND a.MovementId = m.Id)
+    FROM logistics.MovementContainers mc
+    INNER JOIN logistics.Movements m       ON m.Id = mc.MovementId
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+    INNER JOIN masterdata.Ports fp         ON fp.Id = m.FromPlaceId
+    INNER JOIN masterdata.Ports tp         ON tp.Id = m.ToPlaceId
+    LEFT  JOIN masterdata.Parties cp       ON cp.Id = m.CarrierPartyId
+    WHERE mc.ContainerId = @Id
+    ORDER BY CASE m.Status WHEN 4 THEN 1 ELSE 0 END, COALESCE(m.StartDate, m.PlannedDate, CAST(m.CreatedAtUtc AS DATE)), m.Id;
+
+    -- 5: charges of the container
+    SELECT ch.Id, ch.ContainerId, ch.MovementId, m.MovementNo, ch.GroupId,
+           GroupSize = CASE WHEN ch.GroupId IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM logistics.ContainerCharges g WHERE g.GroupId = ch.GroupId) END,
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName AS ProviderName, ch.Reference,
+           ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload,
+           AllocatedBase = (SELECT SUM(a.AmountBase) FROM logistics.ContainerChargeAllocations a WHERE a.ChargeId = ch.Id),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ChargeId = ch.Id),
+           ch.Notes, ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, ch.CancelReason,
+           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.RowVersion
+    FROM logistics.ContainerCharges ch
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    LEFT  JOIN logistics.Movements m     ON m.Id = ch.MovementId
+    LEFT  JOIN security.Users pu         ON pu.Id = ch.PostedBy
+    LEFT  JOIN security.Users cu         ON cu.Id = ch.CreatedBy
+    WHERE ch.ContainerId = @Id
+    ORDER BY ch.ChargeDate, ch.Id;
+
+    -- 6: how every charge is divided over the lines (the real cost of each item)
+    SELECT a.ChargeId, a.ContainerLineId, cl.LineNumber, cl.ItemId, i.ItemCode, i.ItemName,
+           a.Basis, a.AmountBase, a.IsManual,
+           PerUnitBase = a.AmountBase / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0)
+    FROM logistics.ContainerChargeAllocations a
+    INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
+    INNER JOIN logistics.ContainerLines cl   ON cl.Id = a.ContainerLineId
+    INNER JOIN inventory.Items i             ON i.Id = cl.ItemId
+    WHERE ch.ContainerId = @Id
+    ORDER BY a.ChargeId, cl.LineNumber;
+
+    -- 7: attachments (general, per movement, per charge); SharedWith = other containers holding the same file
+    SELECT a.Id, a.ContainerId, a.MovementId, m.MovementNo, a.ChargeId, a.AttachmentTypeId, at.Category, at.SubType,
+           a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.GroupId,
+           SharedWith = (SELECT COUNT(*) FROM logistics.ContainerAttachments s WHERE s.FileId = a.FileId AND s.Id <> a.Id),
+           a.CreatedAtUtc, a.CreatedBy, u.FullName AS CreatedByName
+    FROM logistics.ContainerAttachments a
+    INNER JOIN logistics.Files f ON f.Id = a.FileId
+    LEFT  JOIN masterdata.AttachmentTypes at ON at.Id = a.AttachmentTypeId
+    LEFT  JOIN logistics.Movements m         ON m.Id = a.MovementId
+    LEFT  JOIN security.Users u              ON u.Id = a.CreatedBy
+    WHERE a.ContainerId = @Id
+    ORDER BY a.CreatedAtUtc DESC, a.Id DESC;
+
+    -- 8: audit
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM logistics.ContainerAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.ContainerId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+END
+GO
+
+-- Re-created (65) from the body of script 54: goods receipts. + the filter @DeliveredNotReceived ("Delivered, not
+-- received": Confirmed to Cleared, no posted goods receipt, and a completed Delivery-stage movement or a draft
+-- receipt); + ReceivedBy, the open goods receipt (GoodsReceiptId / Number / Status), DeliveredDate, CanReceive and
+-- CloseBlockedReason (fn_Container_CloseBlock) at the end of the row; the days at the port stop at the Delivery when
+-- nothing is received yet (edge case 29).
+-- (54) from the body of script 27: the fill from the items' Container units instead of MaxUnits / UtilizationPct.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Search
+    @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
+    @ContainerRef        NVARCHAR(30)  = NULL,
+    @ContainerNo         NVARCHAR(20)  = NULL,
+    @SupplierId          INT           = NULL,
+    @PurchaseDocumentId  INT           = NULL,   -- a purchase ORDER or a purchase INVOICE linked to the container
+    @PurchaseOrderId     INT           = NULL,   -- containers carrying lines of this order
+    @CommercialInvoiceNo NVARCHAR(50)  = NULL,
+    @ItemId              INT           = NULL,
+    @BlNo                NVARCHAR(30)  = NULL,
+    @Status              TINYINT       = NULL,
+    @PortId              INT           = NULL,
+    @WarehouseId         INT           = NULL,
+    @BranchId            INT           = NULL,
+    @MovementId          INT           = NULL,   -- containers of this movement
+    @OrderMonthKey       INT           = NULL,   -- e.g. 202601
+    @DateFrom            DATE          = NULL,   -- order date
+    @DateTo              DATE          = NULL,
+    @SortColumn          NVARCHAR(30)  = N'OrderDate',  -- ContainerRef | ContainerNo | OrderDate | DispatchDate | Eta | Status | CreatedAtUtc
+    @SortDirection       NVARCHAR(4)   = N'DESC',
+    @PageNumber          INT           = 1,
+    @PageSize            INT           = 10,
+    @DeliveredNotReceived BIT          = 0       -- (65) 1 = delivered (or with a draft receipt) and not received yet
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    IF @PageSize > 200 SET @PageSize = 200;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @ContainerRef = NULLIF(LTRIM(RTRIM(@ContainerRef)), N'');
+    SET @ContainerNo = NULLIF(LTRIM(RTRIM(@ContainerNo)), N'');
+    SET @CommercialInvoiceNo = NULLIF(LTRIM(RTRIM(@CommercialInvoiceNo)), N'');
+    SET @BlNo = NULLIF(LTRIM(RTRIM(@BlNo)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ContainerRef', N'ContainerNo', N'OrderDate', N'DispatchDate', N'Eta', N'Status', N'CreatedAtUtc')
+        SET @SortColumn = N'OrderDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    SELECT c.Id, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, ct.TypeName AS ContainerTypeName,
+           c.OrderDate, c.OrderMonthKey, OrderMonth = FORMAT(c.OrderDate, N'MMM-yyyy', N'en-US'),
+           c.BranchId, b.BranchCode, b.BranchName, c.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           c.PurchaseOrderId, mpo.DocumentNumber AS PurchaseOrderNumber,
+           OrderCount = ISNULL(po.OrderCount, 0),
+           OrderNumbers = CASE WHEN ISNULL(po.OrderCount, 0) = 0 THEN NULL
+                               WHEN po.OrderCount = 1 THEN po.FirstOrder
+                               ELSE po.FirstOrder + N' +' + CAST(po.OrderCount - 1 AS NVARCHAR(10)) END,
+           SupplierCount = ISNULL(po.SupplierCount, 0),
+           SupplierNames = CASE WHEN ISNULL(po.SupplierCount, 0) = 0 THEN NULL
+                                WHEN po.SupplierCount = 1 THEN po.FirstSupplier
+                                ELSE po.FirstSupplier + N' +' + CAST(po.SupplierCount - 1 AS NVARCHAR(10)) END,
+           InvoiceCount = ISNULL(inv.InvoiceCount, 0),
+           InvoiceNumbers = CASE WHEN ISNULL(inv.InvoiceCount, 0) = 0 THEN NULL
+                                 WHEN inv.InvoiceCount = 1 THEN inv.FirstInvoice
+                                 ELSE inv.FirstInvoice + N' +' + CAST(inv.InvoiceCount - 1 AS NVARCHAR(10)) END,
+           CommercialInvoiceNos = CASE WHEN inv.CiCount = 1 THEN inv.FirstCi
+                                       WHEN inv.CiCount > 1 THEN inv.FirstCi + N' +' + CAST(inv.CiCount - 1 AS NVARCHAR(10)) END,
+           ExporterReferences = CASE WHEN inv.ErCount = 1 THEN inv.FirstEr
+                                     WHEN inv.ErCount > 1 THEN inv.FirstEr + N' +' + CAST(inv.ErCount - 1 AS NVARCHAR(10)) END,
+           ItemCount = ISNULL(ln.ItemCount, 0),
+           ItemSummary = CASE WHEN ISNULL(ln.ItemCount, 0) = 0 THEN NULL
+                              WHEN ln.ItemCount = 1 THEN ln.FirstItem
+                              ELSE N'Mixed - ' + CAST(ln.ItemCount AS NVARCHAR(10)) + N' items' END,
+           TotalQtyBase = ISNULL(ln.Qty, 0),
+           InvoicedQtyBase = ISNULL(inv.PostedQty, 0),
+           InvoicingStatus = CASE WHEN ISNULL(inv.PostedQty, 0) = 0 THEN 0
+                                  WHEN inv.PostedQty >= ISNULL(ln.Qty, 0) THEN 2 ELSE 1 END,     -- 0 none, 1 partly, 2 fully (posted)
+           TotalReceivedBase = c.TotalReceivedBase, c.TotalOilQty,
+           fl.FillPct, fl.CapacityKnown, fl.MissingContainerUnitItems, fl.RemainingPcs, fl.IsOverCapacity,
+           c.BlNo, c.BlDate, c.DispatchDate, c.Eta, c.ActualPortArrival, c.CustomsReleaseDate, c.OffloadedDate,
+           c.FreeDays, c.LastFreeDay,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, CAST(SYSUTCDATETIME() AS DATE))) END,
+           c.CurrentLocation, c.Status, c.StatusNote,
+           CurrentMovementId = mv.Id, CurrentMovementNo = mv.MovementNo, CurrentMovementStatus = mv.Status,
+           ChargesPostedBase = ISNULL(chg.Posted, 0), ChargesDraftBase = ISNULL(chg.Draft, 0),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ContainerId = c.Id),
+           pl.PortName AS PortOfLoadingName, pd.PortName AS PortOfDestinationName,
+           c.CreatedAtUtc, c.CreatedBy, cu.FullName AS CreatedByName, c.UpdatedAtUtc, c.RowVersion,
+           COUNT(*) OVER () AS TotalCount,
+           -- (65) goods receipts
+           rb.ReceivedBy, rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
+           DeliveredDate = dl.EndDate,
+           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT),
+           CloseBlockedReason = cb.Reason
+    FROM logistics.Containers c
+    INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
+    INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    LEFT  JOIN masterdata.Ports pl          ON pl.Id = c.PortOfLoadingId
+    LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
+    LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
+    LEFT  JOIN security.Users cu            ON cu.Id = c.CreatedBy
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
+    OUTER APPLY (SELECT OrderCount = COUNT(DISTINCT cl.PurchaseOrderId), SupplierCount = COUNT(DISTINCT d.SupplierId),
+                        FirstOrder = MIN(d.DocumentNumber), FirstSupplier = MIN(sp.PartyName)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                 INNER JOIN masterdata.Parties sp        ON sp.Id = d.SupplierId
+                 WHERE cl.ContainerId = c.Id) po
+    OUTER APPLY (SELECT InvoiceCount = COUNT(DISTINCT d.Id),
+                        CiCount = COUNT(DISTINCT d.CommercialInvoiceNo), ErCount = COUNT(DISTINCT d.ExporterReference),
+                        FirstInvoice = MIN(d.DocumentNumber), FirstCi = MIN(d.CommercialInvoiceNo), FirstEr = MIN(d.ExporterReference),
+                        PostedQty = SUM(CASE WHEN d.Status IN (2, 4) THEN pil.QuantityBase ELSE 0 END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                 INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                 WHERE cl.ContainerId = c.Id AND d.Status <> 3) inv
+    OUTER APPLY (SELECT ItemCount = COUNT(DISTINCT cl.ItemId), Qty = SUM(cl.QuantityBase), FirstItem = MIN(i.ItemName)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                 WHERE cl.ContainerId = c.Id) ln
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN ch.Status = 2 THEN ch.AmountBase END),
+                        Draft  = SUM(CASE WHEN ch.Status = 1 THEN ch.AmountBase END)
+                 FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id) chg
+    OUTER APPLY (SELECT TOP (1) m.Id, m.MovementNo, m.Status
+                 FROM logistics.MovementContainers mc
+                 INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                 WHERE mc.ContainerId = c.Id AND m.Status IN (2, 3)
+                 ORDER BY CASE WHEN m.Status = 2 THEN 0 ELSE 1 END, COALESCE(m.EndDate, m.StartDate) DESC, m.Id DESC) mv
+    WHERE (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
+           OR c.BlNo LIKE N'%' + @Search + N'%' OR c.VesselName LIKE N'%' + @Search + N'%'
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                      INNER JOIN masterdata.Parties sp        ON sp.Id = d.SupplierId
+                      WHERE cl.ContainerId = c.Id AND (d.DocumentNumber LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%'))
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                      INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                      WHERE cl.ContainerId = c.Id AND d.Status <> 3
+                        AND (d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.CommercialInvoiceNo LIKE N'%' + @Search + N'%'
+                             OR d.ExporterReference LIKE N'%' + @Search + N'%')))
+      AND (@ContainerRef IS NULL OR c.ContainerRef LIKE N'%' + @ContainerRef + N'%')
+      AND (@ContainerNo IS NULL OR c.ContainerNo LIKE N'%' + @ContainerNo + N'%')
+      AND (@BlNo IS NULL OR c.BlNo LIKE N'%' + @BlNo + N'%')
+      AND (@Status IS NULL OR c.Status = @Status)
+      AND (@BranchId IS NULL OR c.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR c.WarehouseId = @WarehouseId)
+      AND (@PortId IS NULL OR c.PortOfLoadingId = @PortId OR c.PortOfDestinationId = @PortId OR c.FinalDestinationId = @PortId)
+      AND (@OrderMonthKey IS NULL OR c.OrderMonthKey = @OrderMonthKey)
+      AND (@DateFrom IS NULL OR c.OrderDate >= @DateFrom)
+      AND (@DateTo IS NULL OR c.OrderDate <= @DateTo)
+      AND (@SupplierId IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                                          INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                                          WHERE cl.ContainerId = c.Id AND d.SupplierId = @SupplierId))
+      AND (@PurchaseOrderId IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id AND cl.PurchaseOrderId = @PurchaseOrderId))
+      AND (@PurchaseDocumentId IS NULL
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id AND cl.PurchaseOrderId = @PurchaseDocumentId)
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                      WHERE cl.ContainerId = c.Id AND pil.DocumentId = @PurchaseDocumentId))
+      AND (@CommercialInvoiceNo IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                                                   INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                                                   INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                                                   WHERE cl.ContainerId = c.Id AND d.Status <> 3
+                                                     AND d.CommercialInvoiceNo LIKE N'%' + @CommercialInvoiceNo + N'%'))
+      AND (@ItemId IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id AND cl.ItemId = @ItemId))
+      AND (@MovementId IS NULL OR EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.ContainerId = c.Id AND mc.MovementId = @MovementId))
+      AND (ISNULL(@DeliveredNotReceived, 0) = 0
+           OR (c.Status BETWEEN 2 AND 5 AND ISNULL(rb.ReceivedBy, N'') <> N'GRN'
+               AND (dl.MovementId IS NOT NULL OR rb.GoodsReceiptStatus = 1)))
+    ORDER BY
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ContainerNo' THEN c.ContainerNo END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ContainerNo' THEN c.ContainerNo END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'OrderDate' THEN c.OrderDate WHEN N'DispatchDate' THEN c.DispatchDate WHEN N'Eta' THEN c.Eta END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'OrderDate' THEN c.OrderDate WHEN N'DispatchDate' THEN c.DispatchDate WHEN N'Eta' THEN c.Eta END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(c.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(c.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN c.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN c.CreatedAtUtc END DESC,
+        c.OrderDate DESC, c.Id DESC
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY;
+END
+GO
+
+/* ================================================================== 18. The tracking board: the days at the port stop at the Delivery */
+
+-- Re-created (65) from the body of script 27: the days at the port stop at the latest completed Delivery while the
+-- goods wait for their receipt (edge case 29: the free time is over once the container left the port); + DeliveredDate,
+-- ReceivedBy and the open goods receipt at the end of the containers' set. The legs are unchanged.
+-- Tracking board: open containers (and those offloaded during the last @OffloadedDays days) with their route legs.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Tracking
+    @ContainerId   INT           = NULL,
+    @Search        NVARCHAR(100) = NULL,
+    @OffloadedDays INT           = 30
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    DECLARE @Today DATE = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @Ids TABLE (Id INT PRIMARY KEY);
+    INSERT INTO @Ids (Id)
+    SELECT c.Id FROM logistics.Containers c
+    WHERE (@ContainerId IS NULL OR c.Id = @ContainerId)
+      AND (@ContainerId IS NOT NULL OR c.Status IN (2, 3, 4, 5)
+           OR (c.Status IN (6, 7) AND c.OffloadedDate >= DATEADD(DAY, -ISNULL(@OffloadedDays, 30), @Today)))
+      AND (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
+           OR c.BlNo LIKE N'%' + @Search + N'%' OR c.VesselName LIKE N'%' + @Search + N'%');
+
+    -- 1: containers
+    SELECT c.Id, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, c.Status, c.CurrentLocation,
+           c.DispatchDate, c.Eta, c.ActualPortArrival, c.CustomsReleaseDate, c.OffloadedDate, c.LastFreeDay,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, @Today)) END,
+           c.TotalAllocatedBase, c.TotalOilQty,
+           ItemSummary = CASE WHEN ln.ItemCount = 1 THEN ln.FirstItem WHEN ln.ItemCount > 1 THEN N'Mixed - ' + CAST(ln.ItemCount AS NVARCHAR(10)) + N' items' END,
+           SupplierName = ln.FirstSupplier,
+           pl.PortName AS PortOfLoadingName, pd.PortName AS PortOfDestinationName, fd.PortName AS FinalDestinationName,
+           w.WarehouseName,
+           DeliveredDate = dl.EndDate,                                  -- (65) goods receipts
+           rb.ReceivedBy, rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus
+    FROM @Ids x
+    INNER JOIN logistics.Containers c       ON c.Id = x.Id
+    INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
+    LEFT  JOIN masterdata.Ports pl          ON pl.Id = c.PortOfLoadingId
+    LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
+    LEFT  JOIN masterdata.Ports fd          ON fd.Id = c.FinalDestinationId
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT ItemCount = COUNT(DISTINCT cl.ItemId), FirstItem = MIN(i.ItemName), FirstSupplier = MIN(sp.PartyName)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                 INNER JOIN masterdata.Parties sp ON sp.Id = d.SupplierId
+                 WHERE cl.ContainerId = c.Id) ln
+    ORDER BY c.Status, c.Eta, c.ContainerRef;
+
+    -- 2: legs in route order; ProgressPct places the container on an in-progress leg (elapsed / planned duration)
+    SELECT mc.ContainerId, m.Id AS MovementId, m.MovementNo,
+           Seq = ROW_NUMBER() OVER (PARTITION BY mc.ContainerId ORDER BY COALESCE(m.StartDate, m.PlannedDate, CAST(m.CreatedAtUtc AS DATE)), m.Id),
+           mt.TypeCode, mt.TypeName, mt.Stage,
+           m.FromPlaceId, fp.PortCode AS FromCode, fp.PortName AS FromName, fp.Kind AS FromKind, fp.CountryCode AS FromCountry,
+           m.ToPlaceId, tp.PortCode AS ToCode, tp.PortName AS ToName, tp.Kind AS ToKind, tp.CountryCode AS ToCountry,
+           m.PlannedDate, m.StartDate, m.Eta, m.EndDate, m.Status,
+           cp.PartyName AS CarrierName, m.VehicleOrVessel, m.VoyageNo,
+           ProgressPct = CASE WHEN m.Status = 3 THEN 100
+                              WHEN m.Status = 1 THEN 0
+                              WHEN m.Eta IS NOT NULL AND m.StartDate IS NOT NULL AND m.Eta > m.StartDate
+                                   THEN CASE WHEN DATEDIFF(DAY, m.StartDate, @Today) <= 0 THEN 0
+                                             WHEN DATEDIFF(DAY, m.StartDate, @Today) * 100 / DATEDIFF(DAY, m.StartDate, m.Eta) > 95 THEN 95
+                                             ELSE DATEDIFF(DAY, m.StartDate, @Today) * 100 / DATEDIFF(DAY, m.StartDate, m.Eta) END
+                              ELSE 50 END,
+           IsLate = CAST(CASE WHEN m.Status IN (1, 2) AND m.Eta < @Today THEN 1 ELSE 0 END AS BIT)
+    FROM @Ids x
+    INNER JOIN logistics.MovementContainers mc ON mc.ContainerId = x.Id
+    INNER JOIN logistics.Movements m           ON m.Id = mc.MovementId AND m.Status <> 4
+    INNER JOIN masterdata.MovementTypes mt     ON mt.Id = m.MovementTypeId
+    INNER JOIN masterdata.Ports fp             ON fp.Id = m.FromPlaceId
+    INNER JOIN masterdata.Ports tp             ON tp.Id = m.ToPlaceId
+    LEFT  JOIN masterdata.Parties cp           ON cp.Id = m.CarrierPartyId
+    ORDER BY mc.ContainerId, Seq;
+END
+GO
+
+/* ================================================================== 19. Movement Get: the containers' goods receipts */
+
+-- Re-created (65) from the body of script 27: the container set + the open goods receipt, the warehouse its Delivery
+-- draft would take, and the automatic draft this movement's cancel would delete (rules 5 and 22).
+-- Four result sets: 1 header, 2 containers, 3 charges linked to the movement, 4 attachments linked to the movement.
+CREATE OR ALTER PROCEDURE logistics.usp_Movement_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT m.Id, m.DocumentTypeId, m.MovementNo, m.MovementTypeId, mt.TypeCode, mt.TypeName, mt.Stage,
+           m.FromPlaceId, fp.PortCode AS FromCode, fp.PortName AS FromName, fp.CountryCode AS FromCountry, fp.Kind AS FromKind,
+           m.ToPlaceId, tp.PortCode AS ToCode, tp.PortName AS ToName, tp.CountryCode AS ToCountry, tp.Kind AS ToKind,
+           m.PlannedDate, m.StartDate, m.Eta, m.EndDate, m.Status, m.CancelReason,
+           m.CarrierPartyId, cp.PartyName AS CarrierName, m.VehicleOrVessel, m.VoyageNo, m.Reference, m.Notes,
+           m.StartedAtUtc, su.FullName AS StartedByName, m.CompletedAtUtc, ku.FullName AS CompletedByName,
+           m.CancelledAtUtc, xu.FullName AS CancelledByName,
+           m.CreatedAtUtc, m.CreatedBy, cu.FullName AS CreatedByName, m.UpdatedAtUtc, m.UpdatedBy, uu.FullName AS UpdatedByName,
+           m.RowVersion
+    FROM logistics.Movements m
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+    INNER JOIN masterdata.Ports fp         ON fp.Id = m.FromPlaceId
+    INNER JOIN masterdata.Ports tp         ON tp.Id = m.ToPlaceId
+    LEFT  JOIN masterdata.Parties cp       ON cp.Id = m.CarrierPartyId
+    LEFT  JOIN security.Users su ON su.Id = m.StartedBy
+    LEFT  JOIN security.Users ku ON ku.Id = m.CompletedBy
+    LEFT  JOIN security.Users xu ON xu.Id = m.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = m.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = m.UpdatedBy
+    WHERE m.Id = @Id;
+
+    SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, c.Status AS ContainerStatus,
+           c.CurrentLocation, c.TotalAllocatedBase, c.TotalOilQty,
+           ItemSummary = CASE WHEN ln.ItemCount = 1 THEN ln.FirstItem WHEN ln.ItemCount > 1 THEN N'Mixed - ' + CAST(ln.ItemCount AS NVARCHAR(10)) + N' items' END,
+           SupplierName = ln.FirstSupplier,
+           ChargesBase = (SELECT SUM(ch.AmountBase) FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id AND ch.MovementId = @Id AND ch.Status = 2),
+           DraftChargesBase = (SELECT SUM(ch.AmountBase) FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id AND ch.MovementId = @Id AND ch.Status = 1),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ContainerId = c.Id AND a.MovementId = @Id),
+           c.RowVersion AS ContainerRowVersion,
+           -- (65) the container's open goods receipt (a draft or the posted one) and the warehouse its draft would take:
+           -- the Complete dialog of a Delivery says what will be created ("draft goods receipt into LUB-WH", "warehouse to
+           -- choose", "already has GRN-..."). WarehouseInBranch = the container's warehouse is active and of its branch,
+           -- the rule of usp_GoodsReceipt_CreateForContainer. AutoDraftOfThisMovement = the receipt is a draft made by
+           -- this movement's completion: cancelling the movement deletes it (usp_Movement_SetStatus); the Cancel dialog
+           -- names those edited since (GoodsReceiptUpdatedAtUtc / ByName, NULL when never edited).
+           GoodsReceiptId = gr.GoodsReceiptId, GoodsReceiptNumber = gr.GoodsReceiptNumber, GoodsReceiptStatus = gr.GoodsReceiptStatus,
+           WarehouseCode = w.WarehouseCode,
+           WarehouseInBranch = CAST(CASE WHEN w.IsActive = 1 AND w.BranchId = c.BranchId THEN 1 ELSE 0 END AS BIT),
+           AutoDraftOfThisMovement = CAST(CASE WHEN g.Status = 1 AND g.IsAuto = 1 AND g.MovementId = @Id THEN 1 ELSE 0 END AS BIT),
+           GoodsReceiptUpdatedAtUtc = g.UpdatedAtUtc, GoodsReceiptUpdatedByName = gu.FullName
+    FROM logistics.MovementContainers mc
+    INNER JOIN logistics.Containers c       ON c.Id = mc.ContainerId
+    INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) gr
+    LEFT  JOIN purchase.GoodsReceipts g     ON g.Id = gr.GoodsReceiptId
+    LEFT  JOIN security.Users gu            ON gu.Id = g.UpdatedBy
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    OUTER APPLY (SELECT ItemCount = COUNT(DISTINCT cl.ItemId), FirstItem = MIN(i.ItemName), FirstSupplier = MIN(sp.PartyName)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                 INNER JOIN masterdata.Parties sp ON sp.Id = d.SupplierId
+                 WHERE cl.ContainerId = c.Id) ln
+    WHERE mc.MovementId = @Id
+    ORDER BY c.ContainerRef;
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, ch.GroupId, ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description,
+           pp.PartyName AS ProviderName, ch.Reference, ch.ChargeDate, cur.CurrencyCode, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.RowVersion
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    WHERE ch.MovementId = @Id
+    ORDER BY ch.ChargeDate, c.ContainerRef, ch.Id;
+
+    SELECT a.Id, a.ContainerId, c.ContainerRef, a.ChargeId, a.AttachmentTypeId, at.Category, at.SubType,
+           a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.GroupId,
+           a.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM logistics.ContainerAttachments a
+    INNER JOIN logistics.Containers c        ON c.Id = a.ContainerId
+    INNER JOIN logistics.Files f             ON f.Id = a.FileId
+    LEFT  JOIN masterdata.AttachmentTypes at ON at.Id = a.AttachmentTypeId
+    LEFT  JOIN security.Users u              ON u.Id = a.CreatedBy
+    WHERE a.MovementId = @Id
+    ORDER BY a.CreatedAtUtc DESC, c.ContainerRef;
+END
+GO
+
+/* ================================================================== 20. Item costs: the last receipt is a goods receipt */
+
+-- Re-created (65) from the body of script 27: LastCost / FobCost / LastSupplierId / LastPurchaseAtUtc come from the
+-- latest of (a) a local invoice posted before goods receipts (ReceiptMode 1, UsesGoodsReceipts 0: it received its goods
+-- when posted), (b) a container offloaded the old way (fn_Container_ReceivedBy = 'Offload'), (c) a posted goods receipt
+-- line with pieces - a container line's cost is the container line's (cl.LandedCostBase / FobCostBase, after its late
+-- charges), another line's its own current cost (after its true-ups); its supplier is the line's (a container of
+-- several suppliers), its date the receipt's posting. A line received without an order or an invoice (manual) counts
+-- only once matched to an invoice: its typed cost is not a purchase price. An invoice posted after the switch receives
+-- nothing, so it is not a source any more. The replay of the average is unchanged.
+-- Replays the ledger (documents without reversal, matched by family + TYPE + id) + inventory cost
+-- adjustments in date order -> exact moving average; LastCost / FobCost / last supplier from the latest RECEIPT.
+-- @ItemId NULL = every item (maintenance).
+CREATE OR ALTER PROCEDURE inventory.usp_Item_RebuildCosts
+    @ItemId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Events TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT, Qty INT, Cost DECIMAL(18,6), Amount DECIMAL(18,2));
+    INSERT INTO @Events (ItemId, Qty, Cost, Amount)
+    SELECT x.ItemId, x.Qty, x.Cost, x.Amount
+    FROM
+    (
+        SELECT m.ItemId, EventDate = m.MovementDate, Src = 1, SrcId = m.Id, Qty = m.QuantityBase, Cost = m.UnitCostBase, Amount = CAST(NULL AS DECIMAL(18,2))
+        FROM inventory.StockMovements m
+        WHERE (@ItemId IS NULL OR m.ItemId = @ItemId)
+          AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                                                                     AND r.DocumentId = m.DocumentId AND r.IsReversal = 1
+                                                                     AND (m.DocumentTypeCode <> N'CNT' OR r.DocumentNumber = m.DocumentNumber))
+        UNION ALL
+        SELECT c.ItemId, c.AdjustmentDate, 2, CAST(c.Id AS INT), 0, NULL, c.AmountBase
+        FROM inventory.CostAdjustments c
+        WHERE c.Kind = N'Inventory' AND (@ItemId IS NULL OR c.ItemId = @ItemId)
+    ) x
+    ORDER BY x.ItemId, x.EventDate, x.Src, x.SrcId;
+
+    DECLARE @Result TABLE (ItemId INT PRIMARY KEY, AverageCost DECIMAL(18,6));
+    DECLARE @CurItem INT = NULL, @OnHand DECIMAL(18,6) = 0, @Avg DECIMAL(18,6) = 0;
+    DECLARE @EItem INT, @EQty INT, @ECost DECIMAL(18,6), @EAmount DECIMAL(18,2);
+
+    DECLARE cur CURSOR LOCAL FAST_FORWARD FOR SELECT ItemId, Qty, Cost, Amount FROM @Events ORDER BY Seq;
+    OPEN cur;
+    FETCH NEXT FROM cur INTO @EItem, @EQty, @ECost, @EAmount;
+    WHILE @@FETCH_STATUS = 0
+    BEGIN
+        IF @CurItem IS NULL OR @CurItem <> @EItem
+        BEGIN
+            IF @CurItem IS NOT NULL INSERT INTO @Result (ItemId, AverageCost) VALUES (@CurItem, @Avg);
+            SELECT @CurItem = @EItem, @OnHand = 0, @Avg = 0;
+        END
+
+        IF @EAmount IS NOT NULL                                   -- inventory value adjustment (LCA)
+            SET @Avg = CASE WHEN @OnHand > 0 THEN @Avg + @EAmount / @OnHand ELSE @Avg END;
+        ELSE IF @EQty > 0                                         -- receipt
+        BEGIN
+            SET @Avg = CASE WHEN @OnHand + @EQty > 0 THEN ((CASE WHEN @OnHand > 0 THEN @OnHand ELSE 0 END) * @Avg + @EQty * ISNULL(@ECost, @Avg)) / ((CASE WHEN @OnHand > 0 THEN @OnHand ELSE 0 END) + @EQty) ELSE @Avg END;
+            SET @OnHand = @OnHand + @EQty;
+        END
+        ELSE                                                      -- issue: average unchanged
+            SET @OnHand = @OnHand + @EQty;
+
+        FETCH NEXT FROM cur INTO @EItem, @EQty, @ECost, @EAmount;
+    END
+    CLOSE cur; DEALLOCATE cur;
+    IF @CurItem IS NOT NULL INSERT INTO @Result (ItemId, AverageCost) VALUES (@CurItem, @Avg);
+
+    -- Items with no remaining events (everything cancelled) fall back to 0.
+    UPDATE i SET AverageCost = ISNULL(r.AverageCost, 0)
+    FROM inventory.Items i
+    LEFT JOIN @Result r ON r.ItemId = i.Id
+    WHERE (@ItemId IS NULL OR i.Id = @ItemId);
+
+    UPDATE i
+    SET LastCost = x.Landed, FobCost = x.Fob, LastSupplierId = x.SupplierId, LastPurchaseAtUtc = x.ReceivedAtUtc
+    FROM inventory.Items i
+    OUTER APPLY (SELECT TOP (1) r.Landed, r.Fob, r.SupplierId, r.ReceivedAtUtc
+                 FROM (-- (65) (a) a local invoice posted before goods receipts (it received its goods when posted)
+                       SELECT Landed = l.UnitCostBase, Fob = l.FobCostBase, d.SupplierId, ReceivedAtUtc = d.PostedAtUtc, Tie = l.Id
+                       FROM purchase.PurchaseDocumentLines l
+                       INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+                       INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                       WHERE dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 1 AND d.UsesGoodsReceipts = 0 AND l.ItemId = i.Id
+                       UNION ALL
+                       -- (65) (b) a container offloaded before goods receipts (a container received with one is (c))
+                       SELECT cl.LandedCostBase, cl.FobCostBase, po.SupplierId, c.OffloadedAtUtc, cl.Id
+                       FROM logistics.ContainerLines cl
+                       INNER JOIN logistics.Containers c        ON c.Id = cl.ContainerId
+                       INNER JOIN purchase.PurchaseDocuments po ON po.Id = cl.PurchaseOrderId
+                       CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+                       WHERE rb.ReceivedBy = N'Offload' AND cl.ItemId = i.Id AND cl.ReceivedQuantityBase > 0
+                       UNION ALL
+                       -- (65) (c) a posted goods receipt line with pieces; a manual line only once matched to an invoice
+                       SELECT CASE WHEN gl.ContainerLineId IS NOT NULL THEN gcl.LandedCostBase ELSE gl.UnitCostBase END,
+                              CASE WHEN gl.ContainerLineId IS NOT NULL THEN gcl.FobCostBase ELSE gl.FobCostBase END,
+                              gl.SupplierId, g.PostedAtUtc, gl.Id
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                       LEFT  JOIN logistics.ContainerLines gcl  ON gcl.Id = gl.ContainerLineId
+                       WHERE gl.ItemId = i.Id AND gl.QuantityBase > 0
+                         AND NOT (gl.PoLineId IS NULL AND gl.InvoiceLineId IS NULL AND gl.InvoicedBase = 0)) r
+                 ORDER BY r.ReceivedAtUtc DESC, r.Tie DESC) x
+    WHERE (@ItemId IS NULL OR i.Id = @ItemId);
+END
+GO
+
+/* ================================================================== 21. Item stock statement: goods receipt rows */
+
+-- Re-created (65) from the body of script 58: a goods receipt (type GRN) is not a purchase document, so the
+-- purchase-document join leaves it out (its id is a goods receipt id, not a document id). Its counterparty is the
+-- supplier of the receipt line (a container of several suppliers has one per line), else of the receipt; and the new
+-- column SourceReference names where the goods came from: the container, else the order, else the invoice (a receipt
+-- made from an invoice without an order). NULL on every other row.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_StockStatement
+    @ItemId      INT,
+    @DateFrom    DATE = NULL,
+    @DateTo      DATE = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @Opening INT =
+        CASE WHEN @DateFrom IS NULL THEN 0 ELSE
+            (SELECT ISNULL(SUM(m.QuantityBase), 0) FROM inventory.StockMovements m
+             WHERE m.ItemId = @ItemId AND m.MovementDate < @DateFrom) END;
+
+    SELECT OpeningBase = @Opening;
+
+    SELECT m.Id, m.MovementDate, m.DocumentFamily, m.DocumentTypeCode, DocumentTypeName = dt.Name,
+           m.DocumentId, m.DocumentNumber, m.IsReversal, m.ReasonCode, m.ExpiryDate,
+           m.WarehouseId, w.WarehouseCode, w.WarehouseName, br.BranchName,
+           QuantityIn  = CASE WHEN m.QuantityBase > 0 THEN m.QuantityBase ELSE 0 END,
+           QuantityOut = CASE WHEN m.QuantityBase < 0 THEN -m.QuantityBase ELSE 0 END,
+           Balance     = @Opening + SUM(m.QuantityBase) OVER (ORDER BY m.MovementDate, m.Id ROWS UNBOUNDED PRECEDING),
+           m.UnitCostBase,
+           -- who the stock went to or came from: the client of a sale, the supplier of a purchase
+           Counterparty = COALESCE(cl.PartyName, sp.PartyName),
+           -- (65) a goods receipt's source: its container, else its order, else its invoice
+           SourceReference = CASE WHEN gr.Id IS NOT NULL THEN COALESCE(gc.ContainerRef, gpo.DocumentNumber, gpi.DocumentNumber) END,
+           CreatedByName = u.FullName
+    FROM inventory.StockMovements m
+    INNER JOIN masterdata.Warehouses w ON w.Id = m.WarehouseId
+    INNER JOIN masterdata.Branches br  ON br.Id = w.BranchId
+    LEFT JOIN inventory.DocumentTypes dt ON dt.Code = m.DocumentTypeCode
+    LEFT JOIN sales.SalesDocuments sd ON m.DocumentFamily = N'Sales' AND sd.Id = m.DocumentId
+    LEFT JOIN masterdata.Parties cl ON cl.Id = sd.ClientId
+    LEFT JOIN purchase.PurchaseDocuments pd ON m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode NOT IN (N'CNT', N'GRN') AND pd.Id = m.DocumentId
+    -- (65) a goods receipt row: the receipt, its line (the stock row's line), its container, order and invoice
+    LEFT JOIN purchase.GoodsReceipts gr ON m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'GRN' AND gr.Id = m.DocumentId
+    LEFT JOIN purchase.GoodsReceiptLines grl ON grl.Id = m.DocumentLineId AND grl.GoodsReceiptId = gr.Id
+    LEFT JOIN logistics.Containers gc ON gc.Id = gr.ContainerId
+    LEFT JOIN purchase.PurchaseDocuments gpo ON gpo.Id = COALESCE(grl.PurchaseOrderId, gr.PurchaseOrderId)
+    LEFT JOIN purchase.PurchaseDocuments gpi ON gpi.Id = gr.PurchaseInvoiceId
+    LEFT JOIN masterdata.Parties sp ON sp.Id = COALESCE(pd.SupplierId, grl.SupplierId, gr.SupplierId)
+    LEFT JOIN security.Users u ON u.Id = m.CreatedBy
+    WHERE m.ItemId = @ItemId
+      AND (@DateFrom IS NULL OR m.MovementDate >= @DateFrom)
+      AND (@DateTo IS NULL OR m.MovementDate < DATEADD(DAY, 1, @DateTo))
+    ORDER BY m.MovementDate, m.Id;
+END
+GO
+
+/* ================================================================== 22. What is still to come: Shortages and the item's orders */
+
+-- Re-created (65) from the body of script 62: what the orders and invoices still bring is rule 25 - the outstanding
+-- of the order lines of open and closed orders (purchase.fn_PoLine_Progress.OutstandingBase: ordered, or invoiced once
+-- the order is closed, less received and settled short; never below 0), plus the posted invoices WITHOUT an order
+-- whose goods come with goods receipts (UsesGoodsReceipts = 1), invoiced - received. An invoice of an order is
+-- counted on its order (the "pending" shipped-in-containers invoice of before is replaced by the order's outstanding,
+-- which already held it). Transit, the stock, the sales and the units are unchanged.
+CREATE OR ALTER FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    /* (62) THE WAREHOUSE AND EVERY WAREHOUSE UNDER IT. A plan for a parent counts the stock, sales,
+       orders and containers of its whole tree; a warehouse with nothing under it is just itself.
+       The depth guard stops a cycle left by older data instead of recursing for ever. */
+    WITH tree AS
+    (
+        SELECT w.Id, 0 AS Depth FROM masterdata.Warehouses w WHERE w.Id = @WarehouseId
+        UNION ALL
+        SELECT w.Id, t.Depth + 1 FROM masterdata.Warehouses w INNER JOIN tree t ON w.ParentId = t.Id WHERE t.Depth < 20
+    )
+    SELECT i.Id AS ItemId, i.ItemCode, i.ItemName, i.BrandId, i.ItemFamilyId, i.IsBivac,
+           i.DefaultSupplierId, i.LastSupplierId, i.MinQuantity, i.MaxQuantity, i.LastCost, i.AverageCost, i.LeadTimeDays,
+           ItemPcPerContainer = cnt.PackingFormula,                         -- the item's Container unit, NULL when none
+           PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           CurrentInventoryBase     = ISNULL((SELECT SUM(m.QuantityBase) FROM inventory.StockMovements m
+                                              WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)), 0),
+           TransitBase              = ISNULL(tr.Transit, 0),
+           OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
+                                           THEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) ELSE 0 END,
+           ExpectedMonthlySalesBase = CONVERT(DECIMAL(18,2), CAST(ISNULL(s.Sold, 0) AS DECIMAL(18,4)) / NULLIF(@MonthsOfHistory, 0)),
+           SoldInPeriodBase         = ISNULL(s.Sold, 0),
+           PurchaseItemUnitId       = pu.ItemUnitId,
+           PurchaseUnitName         = pu.UnitTypeName,
+           PurchasePackingFormula   = pu.PackingFormula
+    FROM inventory.Items i
+    OUTER APPLY
+    (
+        -- (65) rule 25: open and closed orders still to receive + invoices without an order not received yet
+        SELECT PoOpen     = SUM(CASE WHEN dt.Code = N'PO'   THEN ISNULL(pp.OutstandingBase, 0) ELSE 0 END),
+               InvPending = SUM(CASE WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReceivedQuantityBase ELSE 0 END)
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+        INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+        OUTER APPLY (SELECT p.OutstandingBase FROM purchase.fn_PoLine_Progress(d.Id) p WHERE p.PoLineId = l.Id) pp
+        WHERE l.ItemId = i.Id AND l.WarehouseId IN (SELECT t.Id FROM tree t)
+          AND ((dt.Code = N'PO'   AND d.Status IN (2, 4))
+            OR (dt.Code = N'PINV' AND d.Status IN (2, 4) AND d.UsesGoodsReceipts = 1 AND l.SourceLineId IS NULL
+                AND l.QuantityBase > l.ReceivedQuantityBase))
+    ) po
+    OUTER APPLY
+    (
+        -- loaded into a container that has left the supplier and is not offloaded yet
+        SELECT Transit = SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0))
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+        INNER JOIN purchase.PurchaseDocumentLines pl  ON pl.Id = cl.PoLineId
+        WHERE cl.ItemId = i.Id AND c.Status IN (3, 4, 5)
+          AND pl.WarehouseId IN (SELECT t.Id FROM tree t)                  -- the order's warehouse, like the open order / invoice quantities
+          AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
+    ) tr
+    OUTER APPLY
+    (
+        SELECT Sold = SUM(-m.QuantityBase)
+        FROM inventory.StockMovements m
+        WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t) AND m.DocumentFamily = N'Sales'
+          AND m.MovementDate >= DATEADD(MONTH, -@MonthsOfHistory, CAST(SYSUTCDATETIME() AS DATE))
+    ) s
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.Id AS ItemUnitId, u.PackingFormula, t.UnitTypeName
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id ORDER BY u.IsPurchaseUnit DESC, u.IsBaseUnit DESC
+    ) pu
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.PackingFormula
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id AND t.IsContainer = 1
+    ) cnt
+    WHERE i.IsActive = 1
+);
+GO
+
+-- Re-created (65) from the body of script 59: RECEIVED is now what goods receipts (and the receipts made before them)
+-- brought in, GoodsReceivedBase; INVOICED (ReceivedQuantityBase, the old "received") and SHORT (settled short, nothing
+-- more will come) are new columns. STILL TO COME is rule 25, the same number Shortages counts: the order lines'
+-- fn_PoLine_Progress.OutstandingBase on an open (Posted) or Closed order - a closed order may still bring what was
+-- invoiced and not received; a draft, waiting or cancelled order brings nothing.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_PurchaseOrders
+    @ItemId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT d.Id AS DocumentId, d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.Status AS StatusCode,
+           s.PartyCode AS SupplierCode, s.PartyName AS SupplierName, br.BranchName,
+           c.CurrencyCode, c.DecimalPlaces,
+           x.OrderedBase, x.ReceivedBase, x.InvoicedBase, x.ShortBase,                       -- (65) received = goods received
+           OutstandingBase = CASE WHEN d.Status IN (2, 4) THEN x.OutstandingBase ELSE 0 END, -- (65) rule 25
+           x.Amount
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PO'
+    CROSS APPLY (SELECT OrderedBase = SUM(l.QuantityBase), ReceivedBase = SUM(l.GoodsReceivedBase),
+                        InvoicedBase = SUM(l.ReceivedQuantityBase), ShortBase = SUM(l.GoodsShortBase),
+                        OutstandingBase = SUM(p.OutstandingBase), Amount = SUM(l.LineTotal)
+                 FROM purchase.PurchaseDocumentLines l
+                 CROSS APPLY purchase.fn_PoLine_Progress(l.DocumentId) p
+                 WHERE l.DocumentId = d.Id AND l.ItemId = @ItemId AND p.PoLineId = l.Id) x
+    INNER JOIN masterdata.Parties s    ON s.Id = d.SupplierId
+    INNER JOIN masterdata.Branches br  ON br.Id = d.BranchId
+    INNER JOIN masterdata.Currencies c ON c.Id = d.CurrencyId
+    WHERE x.OrderedBase IS NOT NULL
+    ORDER BY d.DocumentDate DESC, d.Id DESC;
+END
+GO
+
+/* ================================================================== 23. Landed cost adjustments on an invoice that uses goods receipts */
+
+-- Re-created (65) from the body of script 27: an IMPORTED invoice takes no landed cost adjustment (67012) - one with a
+-- line linked to a container, as before, and now also one "Shipped in containers" (ReceiptMode 2) whose lines are not
+-- linked yet. Its goods are received through containers and goods receipts: an old one (posted before the switch)
+-- would put the charge in the average at once on unrelated stock, then again in the cost of its goods when they are
+-- received at the invoice's landed cost; a new one would have its unlinked lines matched to container receipt lines,
+-- whose cost takes container charges only, so the charge would enter no cost. Late charges of an import go on its
+-- containers (Container Charges). The text is the one the API repeats (LateChargeService).
+CREATE OR ALTER PROCEDURE purchase.usp_LandedCostAdjustment_Save
+    @Id                INT            = NULL,
+    @SourceInvoiceId   INT,
+    @DocumentDate      DATE,
+    @Notes             NVARCHAR(1000) = NULL,
+    @Charges           purchase.tvp_PurchaseCharge READONLY,
+    @ManualAllocations purchase.tvp_ManualAllocation READONLY,
+    @RowVersion        BINARY(8)      = NULL,
+    @UserId            INT            = NULL,
+    @NewId             INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    IF @DocumentDate IS NULL THROW 67000, 'Date is required.', 1;
+    IF @DocumentDate > CAST(SYSUTCDATETIME() AS DATE) THROW 67000, 'Date cannot be in the future.', 1;
+
+    DECLARE @InvStatus TINYINT, @InvType NVARCHAR(20), @BranchId INT, @BaseCurrency INT = (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1);
+    SELECT @InvStatus = d.Status, @InvType = dt.Code, @BranchId = d.BranchId
+    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceInvoiceId;
+    IF @InvStatus IS NULL THROW 67011, 'Purchase invoice not found.', 1;
+    IF @InvType <> N'PINV' OR @InvStatus <> 2 THROW 67011, 'Landed cost adjustments apply to POSTED purchase invoices only.', 1;
+    -- (65) + "Shipped in containers" (ReceiptMode 2), linked or not
+    IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceInvoiceId AND ReceiptMode = 2)
+       OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceInvoiceId AND ContainerLineId IS NOT NULL)
+        THROW 67012, 'This invoice comes from containers: late charges are entered on the containers (Container Charges), not as a landed cost adjustment.', 1;
+    IF NOT EXISTS (SELECT 1 FROM @Charges) THROW 67000, 'At least one charge is required.', 1;
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM purchase.LandedCostAdjustments WHERE Id = @Id);
+        IF @Status IS NULL THROW 67006, 'Adjustment not found.', 1;
+        IF @Status <> 1 THROW 67005, 'Only draft adjustments can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 67004, 'This adjustment was modified by another user. Reload the page and try again.', 1;
+        IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE Id = @Id AND SourceInvoiceId <> @SourceInvoiceId)
+            THROW 67000, 'The invoice of an adjustment cannot be changed.', 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'LCA');
+            EXEC inventory.usp_DocumentType_NextNumber N'LCA', @Number OUTPUT, @BranchId;
+            INSERT INTO purchase.LandedCostAdjustments (DocumentTypeId, DocumentNumber, DocumentDate, BranchId, SourceInvoiceId, Notes, Status, CreatedBy)
+            VALUES (@TypeId, @Number, @DocumentDate, @BranchId, @SourceInvoiceId, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+        END
+        ELSE
+            UPDATE purchase.LandedCostAdjustments SET DocumentDate = @DocumentDate, Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
+
+        EXEC purchase.usp_PurchaseCharges_Write N'LCA', @Id, @DocumentDate, @BaseCurrency, @SourceInvoiceId, @Charges, @ManualAllocations, @UserId;
+
+        UPDATE a SET TotalChargesBase = ISNULL((SELECT SUM(AmountBase) FROM purchase.PurchaseCharges WHERE DocumentKind = N'LCA' AND DocumentId = @Id AND IncludeInLandedCost = 1), 0)
+        FROM purchase.LandedCostAdjustments a WHERE a.Id = @Id;
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (65) from the body of script 23. An invoice posted after the switch (UsesGoodsReceipts = 1) moved no
+-- stock: its goods came, or will come, with goods receipts, whose cost is the invoice cost (rule 9). So an adjustment
+-- on it changes the invoice lines' landed cost FIRST (allocated charges, landed cost: as before), then brings the
+-- receipt lines matched to those invoice lines to their new cost (usp_GoodsReceipt_TrueUpCost, cause LCA): the part
+-- still in company stock to the stock value, the rest to cost of sales, as GRNCOST rows - the average and the last
+-- cost follow the receipts (usp_Item_RebuildCosts). It does NOT change the average directly, write LCA rows or set the
+-- last cost: that would count the charges twice. Pieces not received yet take the charges when they are received.
+-- The adjustment's lines keep what this did: received = the pieces of the line matched to receipts, net of returns,
+-- the part in stock, and the stock / cost-of-sales portions of the true-up, shared over the lines by their matched
+-- pieces. Invoices posted before the switch keep the current logic, but for their item costs: replayed
+-- (usp_Item_RebuildCosts, as Cancel does) instead of "the last cost follows when this invoice is the item's latest
+-- posted purchase" - since the switch the last cost, FOB cost and last supplier come from the latest RECEIPT (a goods
+-- receipt included), and setting the last cost from an older invoice would overwrite the cost of goods received later.
+-- Also (65): the matching lock first (usp_GoodsReceipt_LockMatching), and an imported invoice (linked to containers or
+-- "Shipped in containers") refused again at posting (67012), for a draft saved before Save refused it.
+-- Posting: allocate over the invoice lines, split between stock still on hand (inventory value, average recalculated)
+-- and quantity already sold (COGS adjustment), update the invoice lines' landed cost, then the item costs.
+CREATE OR ALTER PROCEDURE purchase.usp_LandedCostAdjustment_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) lock order: the goods receipt matcher first, then rows - the true-up below reads the receipts of the
+        --      invoice's groups, which a goods receipt or an invoice being posted writes
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @InvoiceId INT, @Number NVARCHAR(30), @Date DATE, @BranchId INT;
+        SELECT @Status = Status, @InvoiceId = SourceInvoiceId, @Number = DocumentNumber, @Date = DocumentDate, @BranchId = BranchId
+        FROM purchase.LandedCostAdjustments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+        IF @Status IS NULL THROW 67006, 'Adjustment not found.', 1;
+        IF @Status <> 1 THROW 67010, 'Only draft adjustments can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 67004, 'This adjustment was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId AND Status = 2)
+            THROW 67011, 'The purchase invoice is no longer posted.', 1;
+        -- (65) an imported invoice, linked to containers or "Shipped in containers" (ReceiptMode 2): as Save refuses it
+        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId AND ReceiptMode = 2)
+           OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId AND ContainerLineId IS NOT NULL)
+            THROW 67012, 'This invoice comes from containers: late charges are entered on the containers (Container Charges), not as a landed cost adjustment.', 1;
+
+        -- (65) an invoice whose goods come with goods receipts: the cost moves through the receipts
+        DECLARE @UsesGoodsReceipts BIT =
+            ISNULL((SELECT CAST(CASE WHEN dt.Code = N'PINV' AND d.UsesGoodsReceipts = 1 THEN 1 ELSE 0 END AS BIT)
+                    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                    WHERE d.Id = @InvoiceId), 0);
+
+        EXEC purchase.usp_PurchaseCharges_Allocate N'LCA', @Id, @InvoiceId;
+
+        DECLARE @Rate DECIMAL(18,6) = (SELECT ExchangeRate FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId);
+
+        DELETE FROM purchase.LandedCostAdjustmentLines WHERE AdjustmentId = @Id;
+        INSERT INTO purchase.LandedCostAdjustmentLines (AdjustmentId, PurchaseLineId, ItemId, WarehouseId, ReceivedBase, NetReceivedBase, RemainingBase,
+                                                        AllocatedBase, ExtraPerBaseUnit, InventoryPortionBase, CogsPortionBase, LandedCostBefore, LandedCostAfter)
+        SELECT @Id, l.Id, l.ItemId, l.WarehouseId, l.QuantityBase, n.NetReceived, r.Remaining,
+               a.Allocated, a.Allocated / l.QuantityBase,
+               InvPortion = ROUND(a.Allocated / l.QuantityBase * r.Remaining, 2),
+               CogsPortion = a.Allocated - ROUND(a.Allocated / l.QuantityBase * r.Remaining, 2),
+               l.UnitCostBase,
+               ((l.LineTotal / @Rate) + l.AllocatedChargesBase + a.Allocated) / l.QuantityBase
+        FROM purchase.PurchaseDocumentLines l
+        CROSS APPLY (SELECT Allocated = ISNULL((SELECT SUM(x.AmountBase) FROM purchase.PurchaseChargeAllocations x
+                                                 INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                                                 WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'LCA' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1), 0)) a
+        CROSS APPLY (SELECT NetReceived = l.QuantityBase - l.ReturnedQuantityBase) n
+        CROSS APPLY (SELECT Remaining = CASE WHEN inventory.fn_StockOnHand(l.ItemId, l.WarehouseId) < n.NetReceived
+                                             THEN CASE WHEN inventory.fn_StockOnHand(l.ItemId, l.WarehouseId) > 0 THEN inventory.fn_StockOnHand(l.ItemId, l.WarehouseId) ELSE 0 END
+                                             ELSE n.NetReceived END) r
+        WHERE l.DocumentId = @InvoiceId AND a.Allocated <> 0;
+
+        -- Items with no stock at all: everything goes to COGS. (65) Older invoices only.
+        UPDATE x SET CogsPortionBase = x.CogsPortionBase + x.InventoryPortionBase, InventoryPortionBase = 0
+        FROM purchase.LandedCostAdjustmentLines x
+        WHERE x.AdjustmentId = @Id AND inventory.fn_StockOnHand(x.ItemId, NULL) <= 0 AND @UsesGoodsReceipts = 0;
+
+        -- Inventory value -> moving average (company-wide: value added / total on hand of the item). (65) Older invoices only.
+        UPDATE i SET AverageCost = i.AverageCost + p.Inv / inventory.fn_StockOnHand(i.Id, NULL)
+        FROM inventory.Items i
+        INNER JOIN (SELECT ItemId, Inv = SUM(InventoryPortionBase) FROM purchase.LandedCostAdjustmentLines WHERE AdjustmentId = @Id GROUP BY ItemId) p ON p.ItemId = i.Id
+        WHERE p.Inv <> 0 AND inventory.fn_StockOnHand(i.Id, NULL) > 0 AND @UsesGoodsReceipts = 0;
+
+        -- Invoice lines / header carry the new landed cost.
+        UPDATE l SET AllocatedChargesBase = l.AllocatedChargesBase + x.AllocatedBase, UnitCostBase = x.LandedCostAfter
+        FROM purchase.PurchaseDocumentLines l INNER JOIN purchase.LandedCostAdjustmentLines x ON x.PurchaseLineId = l.Id
+        WHERE x.AdjustmentId = @Id;
+        UPDATE d SET TotalChargesBase = ISNULL(x.Charges, 0), TotalLandedCostBase = d.TotalAmountBase + ISNULL(x.Charges, 0)
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT SUM(AllocatedChargesBase) AS Charges FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId) x
+        WHERE d.Id = @InvoiceId;
+
+        -- Value ledger. (65) Older invoices only.
+        INSERT INTO inventory.CostAdjustments (AdjustmentDate, ItemId, WarehouseId, BranchId, Kind, AmountBase, SourceKind, SourceId, SourceNumber, PurchaseLineId, CreatedBy)
+        SELECT DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@Date AS DATETIME2(3))),
+               x.ItemId, x.WarehouseId, @BranchId, k.Kind, k.Amount, N'LCA', @Id, @Number, x.PurchaseLineId, @UserId
+        FROM purchase.LandedCostAdjustmentLines x
+        CROSS APPLY (VALUES (N'Inventory', x.InventoryPortionBase), (N'COGS', x.CogsPortionBase)) k (Kind, Amount)
+        WHERE x.AdjustmentId = @Id AND k.Amount <> 0 AND @UsesGoodsReceipts = 0;
+
+        -- (65) Older invoices: the ITEM COSTS REPLAYED from the ledger (usp_Item_RebuildCosts, as Cancel does) - the
+        --      average with the rows just written, and the last cost, FOB cost and last supplier by the switch's rule: the
+        --      latest RECEIPT, a goods receipt included. (Was: the last cost set to this invoice's when it is the item's
+        --      latest posted invoice - since the switch that overwrote the cost of goods received later and left the FOB
+        --      cost of another purchase beside it, or kept a stale one.) An invoice that uses goods receipts: the true-up
+        --      below replays the items it adjusts.
+        IF @UsesGoodsReceipts = 0
+        BEGIN
+            DECLARE @ItemId INT;
+            DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM purchase.LandedCostAdjustmentLines WHERE AdjustmentId = @Id;
+            OPEN items; FETCH NEXT FROM items INTO @ItemId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC inventory.usp_Item_RebuildCosts @ItemId;
+                FETCH NEXT FROM items INTO @ItemId;
+            END
+            CLOSE items; DEALLOCATE items;
+        END
+
+        -- (65) AN INVOICE THAT USES GOODS RECEIPTS: the goods received against its adjusted lines are brought to their new
+        --      cost (the invoice lines carry it now), and what that did is kept on the adjustment's lines.
+        DECLARE @AdjAmount DECIMAL(18,2) = 0, @AdjInventory DECIMAL(18,2) = 0, @AdjCogs DECIMAL(18,2) = 0, @AdjLines INT = 0;
+        IF @UsesGoodsReceipts = 1
+        BEGIN
+            DECLARE @ReceiptLines logistics.tvp_IdList;
+            INSERT INTO @ReceiptLines (Id)
+            SELECT DISTINCT m.GoodsReceiptLineId
+            FROM purchase.GoodsReceiptInvoiceMatches m
+            INNER JOIN purchase.LandedCostAdjustmentLines x ON x.PurchaseLineId = m.InvoiceLineId AND x.AdjustmentId = @Id;
+
+            EXEC purchase.usp_GoodsReceipt_TrueUpCost @ReceiptLines, N'LCA', @Id, @Number, @UserId,
+                 @AdjAmount OUTPUT, @AdjInventory OUTPUT, @AdjCogs OUTPUT, @AdjLines OUTPUT;
+
+            -- Each receipt line's change is shared over the adjustment lines it is matched to, by matched pieces x what the
+            -- adjustment adds per piece of each line (one invoice line per receipt line in practice); its in-stock pieces
+            -- by matched pieces. The cents lost by rounding go to the line with the largest allocation.
+            DECLARE @Share TABLE (PurchaseLineId INT NOT NULL PRIMARY KEY, Matched INT NOT NULL, InStock DECIMAL(18,6) NOT NULL,
+                                  Inv DECIMAL(18,2) NOT NULL, Cogs DECIMAL(18,2) NOT NULL);
+            WITH w AS (SELECT x.PurchaseLineId, m.GoodsReceiptLineId, Qty = m.QuantityBase,
+                              Wt = CAST(m.QuantityBase AS DECIMAL(38,10)) * ABS(x.ExtraPerBaseUnit)
+                       FROM purchase.LandedCostAdjustmentLines x
+                       INNER JOIN purchase.GoodsReceiptInvoiceMatches m ON m.InvoiceLineId = x.PurchaseLineId
+                       WHERE x.AdjustmentId = @Id),
+                 t AS (SELECT GoodsReceiptLineId, WSum = SUM(Wt), QSum = SUM(Qty) FROM w GROUP BY GoodsReceiptLineId),
+                 c AS (SELECT GoodsReceiptLineId, InStock = SUM(InStockBase), Inv = SUM(InventoryBase), Cogs = SUM(CogsBase)
+                       FROM purchase.GoodsReceiptCostChanges
+                       WHERE CauseKind = N'LCA' AND CauseId = @Id
+                       GROUP BY GoodsReceiptLineId)
+            INSERT INTO @Share (PurchaseLineId, Matched, InStock, Inv, Cogs)
+            SELECT w.PurchaseLineId, SUM(w.Qty),
+                   ISNULL(SUM(c.InStock * w.Qty / t.QSum), 0),
+                   ROUND(ISNULL(SUM(c.Inv * f.F), 0), 2),
+                   ROUND(ISNULL(SUM(c.Cogs * f.F), 0), 2)
+            FROM w
+            INNER JOIN t ON t.GoodsReceiptLineId = w.GoodsReceiptLineId
+            LEFT  JOIN c ON c.GoodsReceiptLineId = w.GoodsReceiptLineId
+            CROSS APPLY (SELECT F = CASE WHEN t.WSum > 0 THEN w.Wt / t.WSum ELSE CAST(w.Qty AS DECIMAL(38,10)) / t.QSum END) f
+            GROUP BY w.PurchaseLineId;
+
+            UPDATE x
+            SET ReceivedBase         = ISNULL(s.Matched, 0),
+                NetReceivedBase      = ISNULL(s.Matched, 0) - CASE WHEN l.ReturnedQuantityBase < ISNULL(s.Matched, 0) THEN l.ReturnedQuantityBase ELSE ISNULL(s.Matched, 0) END,
+                RemainingBase        = CAST(ROUND(ISNULL(s.InStock, 0), 0) AS INT),
+                InventoryPortionBase = ISNULL(s.Inv, 0),
+                CogsPortionBase      = ISNULL(s.Cogs, 0)
+            FROM purchase.LandedCostAdjustmentLines x
+            INNER JOIN purchase.PurchaseDocumentLines l ON l.Id = x.PurchaseLineId
+            LEFT  JOIN @Share s ON s.PurchaseLineId = x.PurchaseLineId
+            WHERE x.AdjustmentId = @Id;
+
+            WITH d AS (SELECT x.Id,
+                              InvDiff  = @AdjInventory - SUM(x.InventoryPortionBase) OVER (),
+                              CogsDiff = @AdjCogs - SUM(x.CogsPortionBase) OVER (),
+                              Rn = ROW_NUMBER() OVER (ORDER BY ABS(x.AllocatedBase) DESC, x.Id)
+                       FROM purchase.LandedCostAdjustmentLines x
+                       WHERE x.AdjustmentId = @Id)
+            UPDATE x
+            SET InventoryPortionBase = x.InventoryPortionBase + d.InvDiff, CogsPortionBase = x.CogsPortionBase + d.CogsDiff
+            FROM purchase.LandedCostAdjustmentLines x INNER JOIN d ON d.Id = x.Id
+            WHERE d.Rn = 1 AND (d.InvDiff <> 0 OR d.CogsDiff <> 0);
+        END
+
+        UPDATE a
+        SET Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId,
+            InventoryPortionBase = ISNULL(t.Inv, 0), CogsPortionBase = ISNULL(t.Cogs, 0)
+        FROM purchase.LandedCostAdjustments a
+        CROSS APPLY (SELECT SUM(InventoryPortionBase) AS Inv, SUM(CogsPortionBase) AS Cogs FROM purchase.LandedCostAdjustmentLines WHERE AdjustmentId = @Id) t
+        WHERE a.Id = @Id;
+
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@InvoiceId, N'Updated', LEFT(N'Landed cost adjustment ' + @Number + N' posted: ' + CAST((SELECT TotalChargesBase FROM purchase.LandedCostAdjustments WHERE Id = @Id) AS NVARCHAR(30)) + N' added to the landed cost'
+                                             -- (65) what it did to the goods already received
+                                             + CASE WHEN @UsesGoodsReceipts = 1 AND @AdjAmount <> 0
+                                                    THEN N'; cost of received goods adjusted by ' + CAST(@AdjAmount AS NVARCHAR(30)) + N' (stock '
+                                                         + CAST(@AdjInventory AS NVARCHAR(30)) + N', cost of sales ' + CAST(@AdjCogs AS NVARCHAR(30)) + N')'
+                                                    ELSE N'' END, 500), @UserId);
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (65) from the body of script 23. On an invoice that uses goods receipts (UsesGoodsReceipts = 1), the
+-- invoice lines get their landed cost back FIRST (as before), then the goods received against them are brought to
+-- that cost (usp_GoodsReceipt_TrueUpCost, cause LCACANCEL: compensating GRNCOST rows, the average and last cost
+-- replayed). Its posting wrote no LCA rows, so there are none to reverse. Invoices posted before the switch keep the
+-- current logic unchanged. The matching lock first (usp_GoodsReceipt_LockMatching), whatever the invoice: the item
+-- costs are replayed from the goods receipts, which a posting may be writing.
+CREATE OR ALTER PROCEDURE purchase.usp_LandedCostAdjustment_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 67000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        -- (65) lock order: the goods receipt matcher first, then rows
+        EXEC purchase.usp_GoodsReceipt_LockMatching;
+
+        DECLARE @Status TINYINT, @InvoiceId INT, @Number NVARCHAR(30), @BranchId INT;
+        SELECT @Status = Status, @InvoiceId = SourceInvoiceId, @Number = DocumentNumber, @BranchId = BranchId
+        FROM purchase.LandedCostAdjustments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+        IF @Status IS NULL THROW 67006, 'Adjustment not found.', 1;
+        IF @Status <> 2 THROW 67010, 'Only posted adjustments can be cancelled.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 67004, 'This adjustment was modified by another user. Reload the page and try again.', 1;
+
+        -- (65) an invoice whose goods come with goods receipts: the cost moves back through the receipts
+        DECLARE @UsesGoodsReceipts BIT =
+            ISNULL((SELECT CAST(CASE WHEN dt.Code = N'PINV' AND d.UsesGoodsReceipts = 1 THEN 1 ELSE 0 END AS BIT)
+                    FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                    WHERE d.Id = @InvoiceId), 0);
+
+        -- Reverse the value ledger and the invoice landed cost. (65) An invoice that uses goods receipts has no LCA rows.
+        INSERT INTO inventory.CostAdjustments (AdjustmentDate, ItemId, WarehouseId, BranchId, Kind, AmountBase, SourceKind, SourceId, SourceNumber, PurchaseLineId, CreatedBy)
+        SELECT SYSUTCDATETIME(), c.ItemId, c.WarehouseId, c.BranchId, c.Kind, -c.AmountBase, c.SourceKind, c.SourceId, c.SourceNumber, c.PurchaseLineId, @UserId
+        FROM inventory.CostAdjustments c WHERE c.SourceKind = N'LCA' AND c.SourceId = @Id AND c.AmountBase > 0;
+
+        UPDATE l SET AllocatedChargesBase = l.AllocatedChargesBase - x.AllocatedBase, UnitCostBase = x.LandedCostBefore
+        FROM purchase.PurchaseDocumentLines l INNER JOIN purchase.LandedCostAdjustmentLines x ON x.PurchaseLineId = l.Id
+        WHERE x.AdjustmentId = @Id;
+        UPDATE d SET TotalChargesBase = ISNULL(x.Charges, 0), TotalLandedCostBase = d.TotalAmountBase + ISNULL(x.Charges, 0)
+        FROM purchase.PurchaseDocuments d
+        CROSS APPLY (SELECT SUM(AllocatedChargesBase) AS Charges FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId) x
+        WHERE d.Id = @InvoiceId;
+
+        -- (65) AN INVOICE THAT USES GOODS RECEIPTS: the goods received against the adjusted lines go back to the cost the
+        --      invoice lines carry again.
+        DECLARE @AdjAmount DECIMAL(18,2) = 0, @AdjInventory DECIMAL(18,2) = 0, @AdjCogs DECIMAL(18,2) = 0, @AdjLines INT = 0;
+        IF @UsesGoodsReceipts = 1
+        BEGIN
+            DECLARE @ReceiptLines logistics.tvp_IdList;
+            INSERT INTO @ReceiptLines (Id)
+            SELECT DISTINCT m.GoodsReceiptLineId
+            FROM purchase.GoodsReceiptInvoiceMatches m
+            INNER JOIN purchase.LandedCostAdjustmentLines x ON x.PurchaseLineId = m.InvoiceLineId AND x.AdjustmentId = @Id;
+
+            EXEC purchase.usp_GoodsReceipt_TrueUpCost @ReceiptLines, N'LCACANCEL', @Id, @Number, @UserId,
+                 @AdjAmount OUTPUT, @AdjInventory OUTPUT, @AdjCogs OUTPUT, @AdjLines OUTPUT;
+        END
+
+        UPDATE purchase.LandedCostAdjustments
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+        INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@InvoiceId, N'Updated', LEFT(N'Landed cost adjustment ' + @Number + N' cancelled: ' + @Reason
+                                             -- (65) what it did to the goods already received
+                                             + CASE WHEN @UsesGoodsReceipts = 1 AND @AdjAmount <> 0
+                                                    THEN N'; cost of received goods adjusted by ' + CAST(@AdjAmount AS NVARCHAR(30)) + N' (stock '
+                                                         + CAST(@AdjInventory AS NVARCHAR(30)) + N', cost of sales ' + CAST(@AdjCogs AS NVARCHAR(30)) + N')'
+                                                    ELSE N'' END, 500), @UserId);
+
+        -- Average / last cost recomputed from the ledger (the reversal rows net the adjustment out).
+        DECLARE @ItemId INT;
+        DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM purchase.LandedCostAdjustmentLines WHERE AdjustmentId = @Id;
+        OPEN items; FETCH NEXT FROM items INTO @ItemId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC inventory.usp_Item_RebuildCosts @ItemId;
+            FETCH NEXT FROM items INTO @ItemId;
+        END
+        CLOSE items; DEALLOCATE items;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 24. Container charges: the container's status read under lock */
+
+-- Re-created (65) from the body of script 27. A charge posted while its container is being received: goods receipt Post
+-- holds the container (UPDLOCK) and re-spreads and freezes the posted charges, then sets the container Offloaded; an
+-- update lock does not stop a plain read, so this procedure read "Cleared" and posted the charge as one before the
+-- receipt - after the receipt had frozen the others - leaving it neither frozen in the goods' cost nor adjusted after
+-- (no CNTCHARGE rows): it entered no cost at all. Now the containers of the charges are read WITH (UPDLOCK, HOLDLOCK),
+-- all of them first and in Id order (two postings never cross, and no charge is written before every container is
+-- held): during a receipt this posting waits, then sees Offloaded and posts a late charge (usp_ContainerCharge_ApplyCost);
+-- the other way round the receipt waits and freezes the posted charge itself. Nothing else changes.
+-- Posts one draft (@Id) or several (@Ids, e.g. a whole group) in one transaction.
+-- Before the offload: the charge joins the provisional cost of the lines. After the offload: cost adjustment
+-- (the part still in stock -> average cost, the part already sold -> COGS).
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Post
+    @Id         INT       = NULL,
+    @Ids        logistics.tvp_IdList READONLY,
+    @RowVersion BINARY(8) = NULL,     -- checked with @Id only
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @List TABLE (Id INT PRIMARY KEY);
+    INSERT INTO @List (Id) SELECT Id FROM @Ids;
+    IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM @List WHERE Id = @Id) INSERT INTO @List (Id) VALUES (@Id);
+    IF NOT EXISTS (SELECT 1 FROM @List) THROW 70000, 'Select at least one charge.', 1;
+    IF @Id IS NOT NULL AND @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = CASE WHEN ch.Id IS NULL THEN N'A selected charge no longer exists.'
+                               WHEN ch.Status <> 1 THEN N'A charge of container ' + c.ContainerRef + N' is not a draft.'
+                               ELSE N'Container ' + c.ContainerRef + N' is closed or cancelled.' END
+    FROM @List x
+    LEFT JOIN logistics.ContainerCharges ch ON ch.Id = x.Id
+    LEFT JOIN logistics.Containers c        ON c.Id = ch.ContainerId
+    WHERE ch.Id IS NULL OR ch.Status <> 1 OR c.Status IN (7, 8);
+    IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) the containers of the charges, held until the commit, before anything is written (see above)
+        DECLARE @HeldContainers INT = (SELECT COUNT(*) FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK)
+                                       WHERE c.Id IN (SELECT ch.ContainerId FROM @List x INNER JOIN logistics.ContainerCharges ch ON ch.Id = x.Id));
+
+        DECLARE @ChargeId INT, @ContainerId INT, @CtStatus TINYINT, @Method NVARCHAR(10), @InLanded BIT,
+                @AmountBase DECIMAL(18,2), @Ref NVARCHAR(30), @Label NVARCHAR(200), @After BIT;
+        DECLARE posts CURSOR LOCAL FAST_FORWARD FOR
+            SELECT ch.Id FROM @List x INNER JOIN logistics.ContainerCharges ch ON ch.Id = x.Id ORDER BY ch.ContainerId, ch.Id;
+        OPEN posts;
+        FETCH NEXT FROM posts INTO @ChargeId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- (65) the container's status as committed: a goods receipt of it has finished (or not begun)
+            SELECT @ContainerId = ch.ContainerId, @CtStatus = c.Status, @Method = ch.AllocationMethod, @InLanded = ch.IncludeInLandedCost,
+                   @AmountBase = ch.AmountBase, @Ref = c.ContainerRef,
+                   @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
+            FROM logistics.ContainerCharges ch
+            INNER JOIN logistics.Containers c WITH (UPDLOCK, HOLDLOCK) ON c.Id = ch.ContainerId
+            INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+            INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+            WHERE ch.Id = @ChargeId;
+
+            SET @After = CASE WHEN @CtStatus = 6 AND @InLanded = 1 THEN 1 ELSE 0 END;
+
+            IF @InLanded = 1 AND @Method <> N'Manual'
+                EXEC logistics.usp_ContainerCharge_Allocate @ChargeId, 0;
+            IF @InLanded = 1 AND @Method = N'Manual'
+               AND ABS(ISNULL((SELECT SUM(AmountBase) FROM logistics.ContainerChargeAllocations WHERE ChargeId = @ChargeId), 0) - @AmountBase) > 0.01
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N': the manual shares of ' + @Label + N' must add up to '
+                         + CAST(@AmountBase AS NVARCHAR(30)) + N' (base currency). Edit the charge first.';
+                THROW 70013, @Msg, 1;
+            END
+
+            UPDATE logistics.ContainerCharges
+            SET Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId, AdjustedAfterOffload = @After,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @ChargeId;
+
+            EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+            IF @After = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @ChargeId, 1, @UserId;
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@ContainerId, N'Updated', LEFT(N'Charge posted: ' + @Label
+                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END, 500), @UserId);
+
+            FETCH NEXT FROM posts INTO @ChargeId;
+        END
+        CLOSE posts;
+        DEALLOCATE posts;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (65) from the body of script 47. The same race on cancel: the charge and its container were read before
+-- the transaction, without a lock, so a cancel decided "not in the goods' cost" while a goods receipt was freezing the
+-- charge (AppliedAtOffload) - the cost stayed in the received goods with the charge cancelled. Now, inside the
+-- transaction, the container is read WITH (UPDLOCK, HOLDLOCK) first (the order goods receipt Post and Cancel lock in),
+-- then the charge: the cancel waits for a receipt in progress and decides on what it committed. The refusals are
+-- unchanged (same numbers and words), only made inside the transaction.
+-- Cancels a POSTED charge. When it is already in the cost of offloaded goods, the cost is reversed the same way.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 70000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) under lock: the container first, then the charge (a charge never changes container)
+        DECLARE @ContainerId INT = (SELECT ContainerId FROM logistics.ContainerCharges WHERE Id = @Id);
+        DECLARE @Status TINYINT, @CtStatus TINYINT, @InCost BIT, @Label NVARCHAR(200);
+        SELECT @CtStatus = c.Status FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK) WHERE c.Id = @ContainerId;
+        SELECT @Status = ch.Status,
+               @InCost = CASE WHEN @CtStatus = 6 AND ch.IncludeInLandedCost = 1 AND (ch.AppliedAtOffload = 1 OR ch.AdjustedAfterOffload = 1) THEN 1 ELSE 0 END,
+               @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
+        FROM logistics.ContainerCharges ch WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+        INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+        WHERE ch.Id = @Id AND ch.ContainerId = @ContainerId;
+
+        IF @Status IS NULL THROW 70006, 'Charge not found.', 1;
+        IF @Status <> 2 THROW 70010, 'Only a posted charge can be cancelled (delete a draft instead).', 1;
+        -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+        IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+                   WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+            THROW 70010, 'This charge cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
+        IF @CtStatus = 7 THROW 70010, 'The container is closed. Reopen it first.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+        UPDATE logistics.ContainerCharges
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+        IF @InCost = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @Id, -1, @UserId;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        VALUES (@ContainerId, N'Updated', LEFT(N'Charge cancelled: ' + @Label + N' - ' + @Reason
+                                               + CASE WHEN @InCost = 1 THEN N' (item costs adjusted back)' ELSE N'' END, 500), @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 99. Check */
+
+-- REPORT ONLY: nothing here changes data. The API discards PRINT and SELECT output at start-up; these lists are for
+-- sqlcmd runs (the in-app filters serve users: Containers "Delivered, not received", invoices "Not fully received",
+-- orders "To receive").
+
+SELECT o.ObjectName, ObjectType = ISNULL(so.type_desc, N'MISSING')
+FROM (VALUES (N'purchase.usp_PurchaseDocument_ValidateInput'), (N'purchase.usp_PurchaseDocument_Save'),
+             (N'purchase.usp_PurchaseDocument_Post'), (N'purchase.usp_PurchaseDocument_Cancel'),
+             (N'purchase.usp_PurchaseDocument_CreateFromSource'), (N'purchase.usp_PurchaseDocument_CreateFromContainers'),
+             (N'purchase.usp_PurchaseDocument_Get'), (N'purchase.usp_PurchaseDocument_Search'),
+             (N'purchase.usp_PurchaseDocument_Close'),
+             (N'purchase.usp_PurchaseInvoice_LinkContainers'), (N'purchase.usp_PurchaseInvoice_UnlinkContainer'),
+             (N'purchase.usp_PurchaseInvoice_LinkCandidates'), (N'purchase.fn_PurchaseInvoice_ContainerState'),
+             (N'purchase.usp_LandedCostAdjustment_Save'),
+             (N'purchase.usp_LandedCostAdjustment_Post'), (N'purchase.usp_LandedCostAdjustment_Cancel'),
+             (N'logistics.usp_ContainerCharge_Post'), (N'logistics.usp_ContainerCharge_Cancel'),
+             (N'logistics.usp_Movement_SetStatus'), (N'logistics.usp_Movement_Get'),
+             (N'logistics.usp_Container_Offload'), (N'logistics.usp_Container_CancelOffload'),
+             (N'logistics.usp_Container_Close'), (N'logistics.usp_Container_Reopen'), (N'logistics.fn_Container_CloseBlock'),
+             (N'logistics.usp_Container_Save'), (N'logistics.usp_Container_Cancel'), (N'logistics.usp_Container_Delete'),
+             (N'logistics.usp_Container_PlanFromOrder'), (N'logistics.usp_Container_CreateBatch'),
+             (N'logistics.usp_Container_AvailablePoLines'), (N'logistics.usp_Container_InvoiceCandidates'),
+             (N'logistics.usp_Container_Get'), (N'logistics.usp_Container_Search'), (N'logistics.usp_Container_Tracking'),
+             (N'inventory.usp_Item_RebuildCosts'), (N'inventory.usp_Item_StockStatement'),
+             (N'inventory.fn_Shortage_Live'), (N'inventory.usp_Item_PurchaseOrders')) o (ObjectName)
+LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
+ORDER BY ObjectType, o.ObjectName;                                    -- expected 39: 3 functions, 36 procedures, none MISSING
+
+-- The switch: one row, written once.
+SELECT SwitchedAtUtc FROM purchase.GoodsReceiptSwitch;               -- expected 1 row
+
+-- DRIFT: order lines whose received / settled-short counters differ from what the documents say - the formula of the
+-- switch, which every event since keeps true: (a) the non-reversed stock rows of old local invoices, (b) containers
+-- offloaded the old way (received; loaded - received), (c) posted goods receipt lines (received; settled short).
+-- Expected: none. Never corrected here: an administrator decides.
+WITH inv AS
+(
+    SELECT PoLineId = il.SourceLineId, Qty = SUM(m.QuantityBase)
+    FROM inventory.StockMovements m
+    INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = m.DocumentLineId AND il.DocumentId = m.DocumentId
+    WHERE m.DocumentFamily = N'Purchase' AND m.DocumentTypeCode = N'PINV' AND m.IsReversal = 0
+      AND il.SourceLineId IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r
+                      WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                        AND r.DocumentId = m.DocumentId AND r.IsReversal = 1)
+    GROUP BY il.SourceLineId
+),
+olo AS
+(
+    SELECT cl.PoLineId, Qty = SUM(ISNULL(cl.ReceivedQuantityBase, 0)),
+           Short = SUM(CASE WHEN cl.ReceivedQuantityBase IS NOT NULL AND cl.QuantityBase > cl.ReceivedQuantityBase
+                            THEN cl.QuantityBase - cl.ReceivedQuantityBase ELSE 0 END)
+    FROM logistics.ContainerLines cl
+    CROSS APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+    WHERE cl.PoLineId IS NOT NULL AND rb.ReceivedBy = N'Offload'
+    GROUP BY cl.PoLineId
+),
+grn AS
+(
+    SELECT gl.PoLineId, Qty = SUM(gl.QuantityBase), Short = SUM(gl.SettledShortBase)
+    FROM purchase.GoodsReceiptLines gl
+    INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+    WHERE gl.PoLineId IS NOT NULL
+    GROUP BY gl.PoLineId
+)
+SELECT Drift = N'DRIFT', d.Id AS OrderId, d.DocumentNumber, pol.LineNumber, i.ItemCode,
+       pol.GoodsReceivedBase, ExpectedReceivedBase = x.Qty, pol.GoodsShortBase, ExpectedShortBase = x.Short
+FROM purchase.PurchaseDocumentLines pol
+INNER JOIN purchase.PurchaseDocuments d ON d.Id = pol.DocumentId
+INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+INNER JOIN inventory.Items i            ON i.Id = pol.ItemId
+LEFT  JOIN inv ON inv.PoLineId = pol.Id
+LEFT  JOIN olo ON olo.PoLineId = pol.Id
+LEFT  JOIN grn ON grn.PoLineId = pol.Id
+CROSS APPLY (SELECT Qty   = ISNULL(inv.Qty, 0) + ISNULL(olo.Qty, 0) + ISNULL(grn.Qty, 0),
+                    Short = ISNULL(olo.Short, 0) + ISNULL(grn.Short, 0)) x
+WHERE pol.GoodsReceivedBase <> x.Qty OR pol.GoodsShortBase <> x.Short
+ORDER BY d.Id, pol.LineNumber;                                        -- expected none
+
+-- Containers delivered but not received (confirmed to cleared, their latest Delivery completed, no goods receipt):
+-- they need "Receive goods..." on the container (a Delivery completed before the switch made no draft).
+SELECT c.ContainerRef, c.ContainerNo, c.Status, ld.MovementNo, ld.EndDate, Place = ld.PlaceName
+FROM logistics.Containers c
+CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+CROSS APPLY logistics.fn_Container_LastDelivery(c.Id) ld
+WHERE c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL
+ORDER BY ld.EndDate, c.ContainerRef;
+
+-- Lines of posted "Shipped in containers" invoices not linked to a container and not fully received: matched to their
+-- container's goods when it is received (same order line), else received with "Receive goods..." on the invoice.
+SELECT d.DocumentNumber, l.LineNumber, i.ItemCode, InvoicedBase = l.QuantityBase, ReceivedBase = l.ReceivedQuantityBase
+FROM purchase.PurchaseDocumentLines l
+INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+INNER JOIN inventory.Items i            ON i.Id = l.ItemId
+WHERE d.Status IN (2, 4) AND d.ReceiptMode = 2 AND l.ContainerLineId IS NULL AND l.ReceivedQuantityBase < l.QuantityBase
+ORDER BY d.DocumentNumber, l.LineNumber;
+
+-- Orders closed "Fully received" (fully invoiced, before goods receipts) with goods still to come: they stay closed and
+-- can still be received.
+SELECT d.DocumentNumber, d.ClosedAtUtc, OutstandingBase = SUM(p.OutstandingBase)
+FROM purchase.PurchaseDocuments d
+INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+CROSS APPLY purchase.fn_PoLine_Progress(d.Id) p
+WHERE d.Status = 4 AND d.CloseReason = N'Fully received'
+GROUP BY d.Id, d.DocumentNumber, d.ClosedAtUtc
+HAVING SUM(p.OutstandingBase) > 0
+ORDER BY d.DocumentNumber;
+
+-- Posted landed cost adjustments on "Shipped in containers" invoices (ReceiptMode 2), from before 67012 refused them:
+-- they raised the invoice lines' charges, which goods received outside containers would count again at the invoice's
+-- landed cost. Expected: none. An administrator decides (cancel the adjustment, enter the charge on the containers).
+SELECT a.DocumentNumber, Invoice = d.DocumentNumber, a.PostedAtUtc, a.TotalChargesBase, d.UsesGoodsReceipts
+FROM purchase.LandedCostAdjustments a
+INNER JOIN purchase.PurchaseDocuments d ON d.Id = a.SourceInvoiceId
+WHERE a.Status = 2 AND d.ReceiptMode = 2
+ORDER BY a.PostedAtUtc;
+
+-- Containers offloaded the old way that Cancel Offload can still reverse (Offloaded, not closed).
+SELECT c.ContainerRef, c.OffloadedDate
+FROM logistics.Containers c
+CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+WHERE rb.ReceivedBy = N'Offload' AND c.Status = 6
+ORDER BY c.ContainerRef;
+
+PRINT 'Script 65 applied: goods receipts switched on - supplier invoices move no stock, containers and local purchases are received with goods receipts, invoice and receipt costs follow each other.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 66: Inventory - BIVAC Out =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 66: BIVAC OUT - A STOCK DOCUMENT THAT HOLDS BIVAC ITEMS ONLY
+
+   The business owner: "BIVAC must be created as inventory out, must let me choose which BIVAC item to choose in
+   order to make the inventory out for it." BIVAC Out is a third stock document next to Inventory In and Inventory
+   Out, with its own menu entry, list, numbers and permissions. It takes units OUT of stock exactly as an Inventory
+   Out does (company-wide average cost, fixed at posting, never typed; refused when stock is short, 62007; a cancel
+   writes the reverse movements); the only difference is that every line must be an item flagged "BIVAC Item"
+   (inventory.Items.IsBivac, script 11). It is not linked to a shipment: the BIVAC certificate or the container
+   number goes in Reference No., and the certificate can be attached as a document.
+
+   Rule
+     - THE RULE LIVES ON THE DOCUMENT TYPE: inventory.DocumentTypes.BivacItemsOnly (BIT NOT NULL, default 0). 1 = every
+       line of a document of this type must be a BIVAC item. Only BIV_OUT has 1; Configuration > Document Types shows
+       it read-only (usp_DocumentType_Update does not change it). Nothing reads the code BIV_OUT: a later type with
+       BivacItemsOnly = 1 behaves the same.
+     - DOCUMENT TYPE BIV_OUT "BIVAC Out" (inserted once, never overwritten): family Inventory, stock direction -1, prefix
+       BIV-, numbered per branch at the FIRST SAVE (NumberOnPost 0) - BIV-BR-002-000001 -, no reason required, cost
+       pricing that cannot be typed (DefaultPricing Cost, PriceEditable 0); number length and year as INV_OUT has them.
+       The procedures of Inventory In / Out (Save, Post, Cancel, Delete, Search, Get, files) already work for any
+       active type of family Inventory: they look at the stock direction, never at the codes.
+     - SAVE (usp_StockDocument_ValidateInput) AND POST (usp_StockDocument_Post) refuse a line whose item is not BIVAC
+       when the type is BivacItemsOnly: 62000 'Line {n}: {item code} is not a BIVAC item. A BIVAC Out holds BIVAC items
+       only.' (the type's name). Post checks again because an item can be un-flagged after the draft was saved.
+     - THE ITEM PICKER (usp_Item_Lookup): new @BivacOnly (default 0): 1 = only items flagged BIVAC (plus @IncludeId, so
+       a saved line still resolves); the rows say IsBivac. The pages load the list ONCE and filter it in the browser,
+       and the API never sent @Top, so the default of 20 rows silently hid every item after the 20th from every line
+       dropdown: @Top now defaults to NULL = every matching item (a caller that sends @Top still gets at most that).
+     - THE EXCEL IMPORT CHECK (sales.usp_InvoiceImport_Validate): a row of a BivacItemsOnly type (the row's own type,
+       else the page's) whose item is not BIVAC is an Error row: '{item code} is not a BIVAC item.'
+     - ATTACHMENTS: BIV_OUT is a document kind (masterdata.fn_AttachmentDocumentKinds, "BIVAC Out"); when BIV_OUT is
+       first inserted it is used for the attachment types Inventory Out is used for (copied once: a kind an
+       administrator takes off a type later stays off). An administrator can add a "BIVAC certificate" type in
+       Master Data > Attachment Types.
+     - PERMISSIONS inventory.bivacout.view / create / post / cancel / delete (module Inventory, SortOrder 810-850, next
+       to Inventory Out's 760-800), with PermissionCatalog.cs's texts; granted to the system roles only, as the
+       start-up catalog sync does - other roles get them through Users & Permissions > Role Permissions.
+     - UNCHANGED: Inventory In / Out (behaviour, OUT- / IN- numbering, reasons, existing documents), the average cost
+       method, the BIV charge type, what IsBivac means.
+
+   Objects
+     inventory.DocumentTypes.BivacItemsOnly (new column)
+     inventory.DocumentTypes: BIV_OUT (new row; on its first insert only, its "Used for" rows)
+     security.Permissions: inventory.bivacout.* (new rows)
+     masterdata.fn_AttachmentDocumentKinds (re-created from its current body, script 64: + BIV_OUT)
+     inventory.usp_DocumentType_List (re-created from its current body, script 22: + BivacItemsOnly)
+     inventory.usp_Item_Lookup (re-created from its current body, script 30: + @BivacOnly, + IsBivac, @Top NULL = all)
+     inventory.usp_StockDocument_ValidateInput (re-created from its current body, script 31: + the BIVAC line check)
+     inventory.usp_StockDocument_Post (re-created from its current body, script 23: + the BIVAC line check)
+     sales.usp_InvoiceImport_Validate (re-created from its current body, script 48: + the BIVAC row check)
+
+   Errors: no new number. 62000 (inventory validation) carries the BIVAC line message.
+
+   Requires scripts 11, 15, 22, 23, 30, 31, 48, 52, 55 and 64. Idempotent, additive: re-applied at every API start-up
+   through Schema.sql, and builds a brand-new empty database (the column before any procedure that reads it).
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF COL_LENGTH(N'inventory.Items', N'IsBivac') IS NULL
+   OR COL_LENGTH(N'inventory.DocumentTypes', N'YearInNumber') IS NULL
+   OR OBJECT_ID(N'inventory.StockDocuments', N'U') IS NULL
+   OR OBJECT_ID(N'inventory.usp_StockDocument_ValidateInput', N'P') IS NULL
+   OR OBJECT_ID(N'sales.usp_InvoiceImport_Validate', N'P') IS NULL
+   OR OBJECT_ID(N'masterdata.AttachmentTypeUsages', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.usp_AttachmentType_CheckForKind', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.GoodsReceiptFiles', N'U') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 11, 15, 22, 23, 30, 31, 48, 52, 55 and 64 before this script.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. The rule's home: BivacItemsOnly on the document type */
+
+-- Before any procedure below reads it. Every existing type gets 0: nothing changes for them.
+IF COL_LENGTH(N'inventory.DocumentTypes', N'BivacItemsOnly') IS NULL
+BEGIN
+    ALTER TABLE inventory.DocumentTypes ADD
+        BivacItemsOnly BIT NOT NULL CONSTRAINT DF_DocumentTypes_BivacItemsOnly DEFAULT (0);   -- 1 = every line must be a BIVAC item (BIV_OUT)
+    PRINT 'DocumentTypes: added BivacItemsOnly';
+END
+GO
+
+/* ================================================================== 2. Attachments: the document kind BIV_OUT */
+
+-- Re-created (66) from the body of script 64: + BIV_OUT (BIVAC Out), after Inventory Out.
+CREATE OR ALTER FUNCTION masterdata.fn_AttachmentDocumentKinds ()
+RETURNS TABLE
+AS
+RETURN
+SELECT k.Code, k.Name, k.Noun, k.SortOrder
+FROM (VALUES (N'CONTAINER', N'Containers',        N'containers',              10),
+             (N'PO',        N'Purchase orders',   N'purchase orders',         20),
+             (N'PINV',      N'Purchase invoices', N'purchase invoices',       30),
+             (N'PRET',      N'Purchase returns',  N'purchase returns',        40),
+             (N'GRN',       N'Goods receipts',    N'goods receipts',          45),   -- (64)
+             (N'SO',        N'Sales orders',      N'sales orders',            50),
+             (N'SINV',      N'Sales invoices',    N'sales invoices',          60),
+             (N'SRET',      N'Sales returns',     N'sales returns',           70),
+             (N'RCPT',      N'Customer receipts', N'customer receipts',       80),
+             (N'PAY',       N'Supplier payments', N'supplier payments',       85),
+             (N'INV_IN',    N'Inventory In',      N'Inventory In documents',  90),
+             (N'INV_OUT',   N'Inventory Out',     N'Inventory Out documents', 100),
+             (N'BIV_OUT',   N'BIVAC Out',         N'BIVAC Out documents',     105)) k (Code, Name, Noun, SortOrder);   -- (66)
+GO
+
+/* ================================================================== 3. Document type BIV_OUT */
+
+-- INSERTED ONCE, NEVER OVERWRITTEN: whatever an administrator changes later on Configuration > Document Types (name,
+-- prefix, length, active) stays. Numbered per branch at the first save, like Inventory Out: BIV-BR-002-000001. The
+-- number length and the year segment are Inventory Out's.
+-- THE FIRST INSERT ONLY (the OUTPUT of the MERGE) copies Inventory Out's "Used for" rows to BIV_OUT, so its upload
+-- dialog offers what Inventory Out's offers ("Other", "Delivery Note", ...). Never again: a kind an administrator
+-- takes off a type stays off.
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;   -- the row and its "Used for" rows together, or neither
+
+    DECLARE @BivInserted TABLE (Id INT NOT NULL);
+
+    MERGE inventory.DocumentTypes AS t
+    USING (SELECT Code = N'BIV_OUT', Name = N'BIVAC Out', Family = N'Inventory', StockDirection = CAST(-1 AS SMALLINT),
+                  NumberPrefix = N'BIV-', NumberOnPost = CAST(0 AS BIT), RequiresReason = CAST(0 AS BIT),
+                  DefaultPricing = N'Cost', PriceEditable = CAST(0 AS BIT), NumberPerBranch = CAST(1 AS BIT),
+                  YearInNumber = ISNULL((SELECT YearInNumber FROM inventory.DocumentTypes WHERE Code = N'INV_OUT'), CAST(0 AS BIT)),
+                  NumberLength = ISNULL((SELECT NumberLength FROM inventory.DocumentTypes WHERE Code = N'INV_OUT'), CAST(6 AS TINYINT)),
+                  IsActive = CAST(1 AS BIT), BivacItemsOnly = CAST(1 AS BIT)) AS s
+    ON t.Code = s.Code
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, RequiresReason,
+                DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength, IsActive, BivacItemsOnly)
+        VALUES (s.Code, s.Name, s.Family, s.StockDirection, s.NumberPrefix, s.NumberOnPost, s.RequiresReason,
+                s.DefaultPricing, s.PriceEditable, s.NumberPerBranch, s.YearInNumber, s.NumberLength, s.IsActive, s.BivacItemsOnly)
+    OUTPUT inserted.Id INTO @BivInserted (Id);
+
+    IF EXISTS (SELECT 1 FROM @BivInserted)
+    BEGIN
+        INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
+        SELECT u.AttachmentTypeId, N'BIV_OUT'
+        FROM masterdata.AttachmentTypeUsages u
+        WHERE u.DocumentKind = N'INV_OUT'
+          AND NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages x WHERE x.AttachmentTypeId = u.AttachmentTypeId AND x.DocumentKind = N'BIV_OUT');
+        DECLARE @Copied INT = @@ROWCOUNT;
+
+        PRINT 'Document type BIV_OUT (BIVAC Out) created; it uses the attachment types of Inventory Out ('
+              + CAST(@Copied AS NVARCHAR(10)) + ' type(s)).';
+    END
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 4. Permissions */
+
+-- The texts are PermissionCatalog.cs's (the start-up sync copies them over). Granted to the SYSTEM ROLES only, as the
+-- start-up sync grants every permission (it would do it at the next start anyway): the other roles get BIVAC Out
+-- through Users & Permissions > Role Permissions, never by default.
+SET XACT_ABORT ON;
+BEGIN TRY
+    BEGIN TRANSACTION;
+
+    MERGE security.Permissions AS target
+    USING
+    (
+        VALUES
+            (N'inventory.bivacout.view',   N'View BIVAC Out',   N'Inventory', N'See BIVAC Out documents.',                       810),
+            (N'inventory.bivacout.create', N'Create BIVAC Out', N'Inventory', N'Create and edit draft BIVAC Out documents.',     820),
+            (N'inventory.bivacout.post',   N'Post BIVAC Out',   N'Inventory', N'Post BIVAC Out documents (removes stock).',      830),
+            (N'inventory.bivacout.cancel', N'Cancel BIVAC Out', N'Inventory', N'Cancel posted BIVAC Out documents (reversal).',  840),
+            (N'inventory.bivacout.delete', N'Delete BIVAC Out', N'Inventory', N'Delete draft BIVAC Out documents.',              850)
+    ) AS source (Code, Name, Module, Description, SortOrder)
+    ON target.Code = source.Code
+    WHEN MATCHED AND (target.Name <> source.Name OR target.Module <> source.Module
+                      OR ISNULL(target.Description, N'') <> source.Description OR target.SortOrder <> source.SortOrder) THEN
+        UPDATE SET Name = source.Name, Module = source.Module, Description = source.Description, SortOrder = source.SortOrder
+    WHEN NOT MATCHED BY TARGET THEN
+        INSERT (Code, Name, Module, Description, SortOrder)
+        VALUES (source.Code, source.Name, source.Module, source.Description, source.SortOrder);
+
+    INSERT INTO security.RolePermissions (RoleId, PermissionId)
+    SELECT r.Id, p.Id
+    FROM security.Roles r
+    CROSS JOIN security.Permissions p
+    WHERE r.IsSystem = 1
+      AND p.Code LIKE N'inventory.bivacout.%'
+      AND NOT EXISTS (SELECT 1 FROM security.RolePermissions rp WHERE rp.RoleId = r.Id AND rp.PermissionId = p.Id);
+
+    COMMIT TRANSACTION;
+END TRY
+BEGIN CATCH
+    IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+    THROW;
+END CATCH;
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 5. Document types: + BivacItemsOnly */
+
+-- Re-created (66) from the body of script 22: + BivacItemsOnly (the pages read the rule from here).
+CREATE OR ALTER PROCEDURE inventory.usp_DocumentType_List
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT Id, Code, Name, Family, StockDirection, NumberPrefix, NextNumber, NumberLength, NumberOnPost,
+           RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, IsActive, UpdatedAtUtc, UpdatedBy, RowVersion,
+           BivacItemsOnly   -- (66) 1 = every line must be a BIVAC item
+    FROM inventory.DocumentTypes
+    ORDER BY Family, Code;
+END
+GO
+
+/* ================================================================== 6. The item picker: BIVAC items only, and no 20-row cut */
+
+-- Re-created (66) from the body of script 30: + @BivacOnly, + IsBivac in the rows, @Top NULL = every item.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Lookup
+    @Search     NVARCHAR(200) = NULL,
+    @ActiveOnly BIT           = 1,
+    @IncludeId  INT           = NULL,
+    @Top        INT           = NULL,   -- (66) NULL = every matching item (it was 20: see below)
+    /* 1 = only items with a unit that may be sold. The sales invoice passes it; everything else
+       leaves it 0 and sees every item, because an inventory count or a purchase is not a sale. */
+    @SalesOnly  BIT           = 0,
+    /* (66) 1 = only items flagged "BIVAC Item" (inventory.Items.IsBivac): the lines of a document type whose
+       BivacItemsOnly is 1 (BIVAC Out). 0 = every item, as before. */
+    @BivacOnly  BIT           = 0
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @SalesOnly = ISNULL(@SalesOnly, 0);
+    SET @BivacOnly = ISNULL(@BivacOnly, 0);
+    /* (66) NO CUT BY DEFAULT. The pages load this list ONCE, without a search, and filter it in the browser; the
+       API never sends @Top. The old default of 20 (at most 200) therefore hid every item after the 20th from
+       every line dropdown. NULL now means every matching item; a caller that sends @Top gets at most that. */
+    IF @Top IS NULL OR @Top < 1 SET @Top = 2147483647;
+
+    /* THE REPORTED UNIT FOLLOWS THE FILTER. With @SalesOnly the picker should land on a unit it is
+       allowed to sell, so the sales unit is preferred over the base one; the base unit is still the
+       fallback, and is what every other caller gets. */
+    SELECT TOP (@Top) i.Id, i.ItemCode, i.ItemName, i.IsActive,
+           ut.UnitTypeName AS BaseUnitName, bu.Id AS BaseUnitId,
+           i.IsBivac   -- (66)
+    FROM inventory.Items i
+    OUTER APPLY (
+        SELECT TOP (1) u.Id, u.UnitTypeId
+        FROM inventory.ItemUnits u
+        WHERE u.ItemId = i.Id
+          AND (@SalesOnly = 0 OR u.IsSalesUnit = 1)
+        ORDER BY CASE WHEN @SalesOnly = 1 AND u.IsSalesUnit = 1 THEN 0
+                      WHEN u.IsBaseUnit = 1 THEN 1
+                      ELSE 2 END, u.Id
+    ) bu
+    LEFT JOIN masterdata.UnitTypes ut ON ut.Id = bu.UnitTypeId
+    WHERE (@ActiveOnly = 0 OR i.IsActive = 1 OR i.Id = @IncludeId)
+      AND (@Search IS NULL OR i.ItemCode LIKE N'%' + @Search + N'%' OR i.ItemName LIKE N'%' + @Search + N'%')
+      /* AN ITEM WITH NO SELLABLE UNIT IS NOT OFFERED - except the one the caller names with
+         @IncludeId, so a saved line whose item was since taken off sale still resolves. */
+      AND (@SalesOnly = 0 OR i.Id = @IncludeId
+           OR EXISTS (SELECT 1 FROM inventory.ItemUnits su WHERE su.ItemId = i.Id AND su.IsSalesUnit = 1))
+      /* (66) BIVAC ITEMS ONLY when asked - again except the one named by @IncludeId, so a saved line whose item
+         was since un-flagged still resolves (Save and Post refuse it with 62000). */
+      AND (@BivacOnly = 0 OR i.IsBivac = 1 OR i.Id = @IncludeId)
+    ORDER BY CASE WHEN i.ItemCode LIKE @Search + N'%' THEN 0 ELSE 1 END, i.ItemCode;
+END
+GO
+
+/* ================================================================== 7. Save: a BIVAC-only type takes BIVAC items only */
+
+-- Re-created (66) from the body of script 31: + the BIVAC line check of a BivacItemsOnly type.
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocument_ValidateInput
+    @DocumentTypeCode NVARCHAR(20),
+    @DocumentDate     DATE,
+    @BranchId         INT,
+    @WarehouseId      INT = NULL,
+    @ReasonId         INT,
+    @Lines            inventory.tvp_StockDocumentLine READONLY,
+    @DocumentTypeId   INT OUTPUT,
+    @StockDirection   SMALLINT OUTPUT,
+    @CurrencyId       INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    DECLARE @RequiresReason BIT, @BivacOnly BIT, @TypeName NVARCHAR(100);
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection, @RequiresReason = RequiresReason,
+           @BivacOnly = BivacItemsOnly, @TypeName = Name   -- (66)
+    FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Inventory' AND IsActive = 1;
+    IF @DocumentTypeId IS NULL
+        THROW 62008, 'Document type not found, inactive, or not an inventory document.', 1;
+
+    IF @DocumentDate IS NULL THROW 62000, 'Document Date is required.', 1;
+    /* ONE DAY OF TOLERANCE, because this compares a LOCAL date against a UTC one. The date on the
+       document is the one the reader sees on their own clock; SYSUTCDATETIME() is the server's in
+       UTC. East of Greenwich the two disagree for the first hours after midnight - at 00:20 in
+       Beirut (UTC+3) it is still yesterday in UTC, so a document dated today was refused as being
+       in the future. A day covers every offset without letting a genuinely future date through by
+       more than one. */
+    IF @DocumentDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 62000, 'Document Date cannot be in the future.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 62008, 'Branch not found or inactive.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 62008, 'The default warehouse must be an active warehouse of the selected branch.', 1;
+    IF @RequiresReason = 1 AND @ReasonId IS NULL THROW 62000, 'Reason is required.', 1;
+    IF @ReasonId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockReasons
+                                             WHERE Id = @ReasonId AND IsActive = 1
+                                               AND (AppliesTo = N'Both' OR (AppliesTo = N'In' AND @StockDirection = 1) OR (AppliesTo = N'Out' AND @StockDirection = -1)))
+        THROW 62008, 'Reason not found, inactive, or not applicable to this document type.', 1;
+
+    SELECT @CurrencyId = Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1;
+    IF @CurrencyId IS NULL THROW 62008, 'No active base currency is configured.', 1;
+
+    -- Per-line checks: the first failing line produces the message.
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg =
+        CASE WHEN i.Id IS NULL THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item not found.'
+             WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+             -- (66) a BIVAC-only type (BIVAC Out) takes BIVAC items only
+             WHEN @BivacOnly = 1 AND i.IsBivac = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode
+                  + N' is not a BIVAC item. A ' + @TypeName + N' holds BIVAC items only.'
+             WHEN iu.Id IS NULL THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the unit does not belong to item ' + i.ItemCode + N'.'
+             WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse not found or inactive.'
+             WHEN w.BranchId <> @BranchId THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is not available for the selected branch.'
+             WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': quantity must be greater than zero.'
+             WHEN l.UnitCost IS NOT NULL AND l.UnitCost < 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': unit cost cannot be negative.'
+        END
+    FROM @Lines l
+    LEFT JOIN inventory.Items i       ON i.Id = l.ItemId
+    LEFT JOIN inventory.ItemUnits iu  ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
+    LEFT JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR (@BivacOnly = 1 AND i.IsBivac = 0) OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0 OR w.BranchId <> @BranchId
+       OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitCost IS NOT NULL AND l.UnitCost < 0)
+    ORDER BY l.LineNumber;
+
+    IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
+END
+GO
+
+/* ================================================================== 8. Post: the same check (the item may have changed since the save) */
+
+-- Re-created (66) from the body of script 23: + the BIVAC line check of a BivacItemsOnly type.
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocument_Post
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT, @ReasonCode NVARCHAR(20);
+        DECLARE @BivacOnly BIT, @TypeName NVARCHAR(100);   -- (66)
+
+        SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @ReasonCode = r.ReasonCode,
+               @BivacOnly = dt.BivacItemsOnly, @TypeName = dt.Name   -- (66)
+        FROM inventory.StockDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        LEFT  JOIN inventory.StockReasons r ON r.Id = d.ReasonId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 62006, 'Document not found.', 1;
+        IF @Status <> 1 THROW 62010, 'Only draft documents can be posted.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 62004, 'This document was modified by another user. Reload the page and try again.', 1;
+        IF NOT EXISTS (SELECT 1 FROM inventory.StockDocumentLines WHERE DocumentId = @Id)
+            THROW 62009, 'The document has no lines. Add at least one item before posting.', 1;
+
+        DECLARE @Msg NVARCHAR(400);
+        SELECT TOP (1) @Msg =
+            CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 -- (66) again at posting: the item may have been un-flagged since the draft was saved
+                 WHEN @BivacOnly = 1 AND i.IsBivac = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode
+                      + N' is not a BIVAC item. A ' + @TypeName + N' holds BIVAC items only.'
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.'
+                 WHEN w.BranchId <> @BranchId THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is not in the document branch.' END
+        FROM inventory.StockDocumentLines l
+        INNER JOIN inventory.Items i ON i.Id = l.ItemId
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR (@BivacOnly = 1 AND i.IsBivac = 0) OR w.IsActive = 0 OR w.BranchId <> @BranchId)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
+
+        IF @Direction = -1
+        BEGIN
+            UPDATE l SET UnitCost = ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * l.PackingFormula
+            FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
+
+            SELECT TOP (1) @Msg = N'Insufficient stock for ' + i.ItemCode + N' in ' + w.WarehouseCode + N': available '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N', required ' + CAST(x.Qty AS NVARCHAR(20)) + N' (base units).'
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM inventory.StockDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 62007, @Msg, 1;
+
+            UPDATE d SET TotalCost = x.Cost
+            FROM inventory.StockDocuments d
+            CROSS APPLY (SELECT ISNULL(SUM(LineTotal), 0) AS Cost FROM inventory.StockDocumentLines WHERE DocumentId = @Id) x
+            WHERE d.Id = @Id;
+        END
+
+        IF @Number IS NULL
+            EXEC inventory.usp_DocumentType_NextNumber @TypeCode, @Number OUTPUT, @BranchId;
+
+        IF @Direction = 1
+        BEGIN
+            DECLARE @R inventory.tvp_ItemReceipt;
+            INSERT INTO @R (ItemId, QuantityBase, UnitCostBase, FobCostBase)
+            SELECT l.ItemId, l.QuantityBase, CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula ELSE l.UnitCost END, NULL
+            FROM inventory.StockDocumentLines l WHERE l.DocumentId = @Id;
+            EXEC inventory.usp_Item_ApplyReceipts @R, NULL, @UserId, 0;      -- average yes, last / FOB cost no
+        END
+
+        DECLARE @MovementDate DATETIME2(3) =
+            DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@DocumentDate AS DATETIME2(3)));
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
+        SELECT @MovementDate, l.ItemId, l.WarehouseId, @BranchId, @Direction * l.QuantityBase,
+               CASE WHEN l.PackingFormula > 0 THEN l.UnitCost / l.PackingFormula END,
+               N'Inventory', @TypeCode, @Id, l.Id, @Number, @ReasonCode, l.ExpiryDate, @UserId
+        FROM inventory.StockDocumentLines l
+        WHERE l.DocumentId = @Id;
+
+        UPDATE inventory.StockDocuments
+        SET DocumentNumber = @Number, Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        DECLARE @LineCount INT = (SELECT COUNT(*) FROM inventory.StockDocumentLines WHERE DocumentId = @Id);
+        INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId)
+        VALUES (@Id, N'Posted', N'Posted as ' + @Number + N' - ' + CAST(@LineCount AS NVARCHAR(10)) + N' line(s) written to the stock ledger', @UserId);
+
+        COMMIT TRANSACTION;
+        SELECT @Number AS DocumentNumber;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 9. Excel import: a BIVAC-only type refuses other items */
+
+-- Re-created (66) from the body of script 48: + ErrB, the BIVAC row check of a BivacItemsOnly type (the row's own
+-- type, else the page's). The rows returned keep their columns.
+CREATE OR ALTER PROCEDURE sales.usp_InvoiceImport_Validate
+    @BranchId            INT,
+    @DefaultWarehouseId  INT,
+    @PriceListId         INT           = NULL,  -- NULL = cost mode (inventory / purchase): Unit Price column = cost, no price list checks
+    @AllowPriceOverride  BIT           = 0,
+    @MaxDiscountPercent  DECIMAL(9,4)  = 100,
+    @Rows                sales.tvp_InvoiceImportRow READONLY,
+    @CheckStock          BIT           = 0,     -- 1 = cumulative stock check per item + warehouse (outgoing documents)
+    @DocumentTypeCode    NVARCHAR(20)  = NULL   -- the page's document type; rows for another type become Errors
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
+        THROW 61008, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1 AND BranchId = @BranchId)
+        THROW 61008, 'The default warehouse is not an active warehouse of the selected branch.', 1;
+    IF @PriceListId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.PriceLists WHERE Id = @PriceListId AND IsActive = 1)
+        THROW 61008, 'Price list not found or inactive.', 1;
+    IF @MaxDiscountPercent IS NULL OR @MaxDiscountPercent < 0 SET @MaxDiscountPercent = 0;
+    SET @CheckStock = ISNULL(@CheckStock, 0);
+    SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
+
+    DECLARE @PageTypeName NVARCHAR(100), @Family NVARCHAR(20), @PageBivacOnly BIT = 0;
+    IF @DocumentTypeCode IS NOT NULL
+    BEGIN
+        SELECT @PageTypeName = Name, @Family = Family, @PageBivacOnly = BivacItemsOnly FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode;
+        IF @PageTypeName IS NULL THROW 61008, 'Document type not found.', 1;
+    END
+    -- Unit preference: 1 = sales unit first, 2 = purchase unit first, 0 = base unit first.
+    DECLARE @UnitPref TINYINT = CASE WHEN @Family = N'Sales' OR (@Family IS NULL AND @PriceListId IS NOT NULL) THEN 1
+                                     WHEN @Family = N'Purchase' THEN 2 ELSE 0 END;
+
+    DECLARE @Today DATE = CAST(SYSUTCDATETIME() AS DATE);
+
+    ;WITH resolved AS
+    (
+        SELECT r.RowNumber,
+               ItemRef      = NULLIF(LTRIM(RTRIM(r.ItemRef)), N''),
+               UnitName     = NULLIF(LTRIM(RTRIM(r.UnitName)), N''),
+               WarehouseRef = NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N''),
+               r.Quantity, r.RawQuantity, ManualPrice = r.UnitPrice, r.DiscountPercent, r.ExpiryDate, r.RawExpiryDate,
+               Notes        = NULLIF(LTRIM(RTRIM(r.Notes)), N''),
+               RowTypeRef   = NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N''),
+               rt.RowTypeCode, rt.RowTypeName, rt.RowTypeBivacOnly,
+               it.ItemId, it.ItemCode, it.ItemName, it.ItemActive, it.BarcodeUnitId, it.ItemIsBivac,
+               u.ItemUnitId, u.UnitTypeName, u.PackingFormula,
+               w.WarehouseId, w.WarehouseCode, w.WarehouseName, w.WarehouseActive, w.WarehouseBranchId,
+               pr.BranchPrice, pr.AllBranchesPrice
+        FROM @Rows r
+        OUTER APPLY
+        (
+            SELECT TOP (1) dt.Code AS RowTypeCode, dt.Name AS RowTypeName, dt.BivacItemsOnly AS RowTypeBivacOnly
+            FROM inventory.DocumentTypes dt
+            WHERE NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N'') IS NOT NULL
+              AND (dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) OR dt.Name = LTRIM(RTRIM(r.DocumentTypeCode)))
+            ORDER BY CASE WHEN dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) THEN 0 ELSE 1 END
+        ) rt
+        OUTER APPLY
+        (
+            SELECT TOP (1) i.Id AS ItemId, i.ItemCode, i.ItemName, i.IsActive AS ItemActive, bu.Id AS BarcodeUnitId, i.IsBivac AS ItemIsBivac
+            FROM inventory.Items i
+            LEFT JOIN inventory.ItemUnits bu ON bu.ItemId = i.Id AND bu.Barcode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'')
+            WHERE i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') OR bu.Id IS NOT NULL
+            ORDER BY CASE WHEN i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') THEN 0 ELSE 1 END
+        ) it
+        OUTER APPLY
+        (
+            SELECT TOP (1) iu.Id AS ItemUnitId, t.UnitTypeName, iu.PackingFormula
+            FROM inventory.ItemUnits iu
+            INNER JOIN masterdata.UnitTypes t ON t.Id = iu.UnitTypeId
+            WHERE iu.ItemId = it.ItemId
+              AND (   (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NOT NULL
+                       AND (t.UnitTypeName = LTRIM(RTRIM(r.UnitName)) OR iu.SkuCode = LTRIM(RTRIM(r.UnitName))))
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NOT NULL AND iu.Id = it.BarcodeUnitId)
+                   OR (NULLIF(LTRIM(RTRIM(r.UnitName)), N'') IS NULL AND it.BarcodeUnitId IS NULL))
+            ORDER BY CASE @UnitPref WHEN 1 THEN CASE WHEN iu.IsSalesUnit = 1 THEN 0 ELSE 1 END
+                                    WHEN 2 THEN CASE WHEN iu.IsPurchaseUnit = 1 THEN 0 ELSE 1 END
+                                    ELSE CASE WHEN iu.IsBaseUnit = 1 THEN 0 ELSE 1 END END,
+                     iu.IsBaseUnit DESC, iu.PackingFormula
+        ) u
+        OUTER APPLY
+        (
+            SELECT TOP (1) wh.Id AS WarehouseId, wh.WarehouseCode, wh.WarehouseName, wh.IsActive AS WarehouseActive, wh.BranchId AS WarehouseBranchId
+            FROM masterdata.Warehouses wh
+            WHERE (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NOT NULL
+                   AND (wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) OR wh.WarehouseName = LTRIM(RTRIM(r.WarehouseRef))))
+               OR (NULLIF(LTRIM(RTRIM(r.WarehouseRef)), N'') IS NULL AND wh.Id = @DefaultWarehouseId)
+            ORDER BY CASE WHEN wh.WarehouseCode = LTRIM(RTRIM(r.WarehouseRef)) THEN 0 ELSE 1 END
+        ) w
+        OUTER APPLY
+        (
+            SELECT BranchPrice      = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId = @BranchId AND IsActive = 1),
+                   AllBranchesPrice = (SELECT TOP (1) Price FROM masterdata.UnitPrices
+                                       WHERE ItemUnitId = u.ItemUnitId AND PriceListId = @PriceListId AND BranchId IS NULL AND IsActive = 1)
+        ) pr
+    ),
+    stocked AS
+    (
+        SELECT x.*,
+               QtyBase    = CASE WHEN x.ItemUnitId IS NOT NULL AND x.Quantity IS NOT NULL AND x.Quantity > 0 AND x.Quantity = FLOOR(x.Quantity)
+                                 THEN CAST(x.Quantity AS INT) * x.PackingFormula ELSE 0 END,
+               OnHandBase = CASE WHEN x.ItemId IS NOT NULL AND x.WarehouseId IS NOT NULL THEN inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) END,
+               AllowOos   = CASE WHEN x.WarehouseId IS NOT NULL THEN (SELECT p.Allowed FROM sales.fn_OutOfStockPolicy(x.WarehouseId) p) END
+        FROM resolved x
+    ),
+    running AS
+    (
+        SELECT s.*,
+               RequiredBase = SUM(s.QtyBase) OVER (PARTITION BY s.ItemId, s.WarehouseId ORDER BY s.RowNumber ROWS UNBOUNDED PRECEDING),
+               EarlierRows  = STUFF((SELECT N', ' + CAST(s2.RowNumber AS NVARCHAR(10))
+                                     FROM stocked s2
+                                     WHERE s2.ItemId = s.ItemId AND s2.WarehouseId = s.WarehouseId AND s2.QtyBase > 0 AND s2.RowNumber < s.RowNumber
+                                     ORDER BY s2.RowNumber FOR XML PATH(N''), TYPE).value(N'.', N'NVARCHAR(MAX)'), 1, 2, N'')
+        FROM stocked s
+    ),
+    judged AS
+    (
+        SELECT x.*,
+               SystemPrice = COALESCE(x.BranchPrice, x.AllBranchesPrice),
+               EffectiveDiscount = ISNULL(x.DiscountPercent, 0),
+               Err0 = CASE WHEN x.RowTypeRef IS NOT NULL AND x.RowTypeCode IS NULL THEN N'Document Type ''' + x.RowTypeRef + N''' does not exist.'
+                           WHEN x.RowTypeCode IS NOT NULL AND @DocumentTypeCode IS NOT NULL AND x.RowTypeCode <> @DocumentTypeCode
+                                THEN N'This row is for ' + x.RowTypeName + N' (' + x.RowTypeCode + N'), not for ' + @PageTypeName + N'.' END,
+               Err1 = CASE WHEN x.ItemRef IS NULL THEN N'Item Code / Barcode is required.'
+                           WHEN x.ItemId IS NULL THEN N'Item Code ' + x.ItemRef + N' does not exist.'
+                           WHEN x.ItemActive = 0 THEN N'Item ' + x.ItemCode + N' is inactive.' END,
+               -- (66) a BIVAC-only type (the row's own, else the page's) takes BIVAC items only
+               ErrB = CASE WHEN x.ItemId IS NOT NULL AND x.ItemIsBivac = 0
+                            AND CASE WHEN x.RowTypeCode IS NOT NULL THEN x.RowTypeBivacOnly ELSE @PageBivacOnly END = 1
+                                THEN x.ItemCode + N' is not a BIVAC item.' END,
+               Err2 = CASE WHEN x.Quantity IS NULL AND x.RawQuantity IS NOT NULL THEN N'Quantity ''' + x.RawQuantity + N''' is not a number.'
+                           WHEN x.Quantity IS NULL OR x.Quantity <= 0 THEN N'Quantity must be greater than zero.'
+                           WHEN x.Quantity <> FLOOR(x.Quantity) THEN N'Quantity must be a whole number of pieces.' END,
+               Err3 = CASE WHEN x.ItemId IS NOT NULL AND x.UnitName IS NOT NULL AND x.ItemUnitId IS NULL
+                                THEN N'Unit ''' + x.UnitName + N''' is not configured for Item ' + x.ItemCode + N'.'
+                           WHEN x.ItemId IS NOT NULL AND x.ItemUnitId IS NULL THEN N'Item ' + x.ItemCode + N' has no units configured.' END,
+               Err4 = CASE WHEN x.WarehouseRef IS NOT NULL AND x.WarehouseId IS NULL THEN N'Warehouse ' + x.WarehouseRef + N' does not exist.'
+                           WHEN x.WarehouseActive = 0 THEN N'Warehouse ' + x.WarehouseCode + N' is inactive.' END,
+               Err5 = CASE WHEN @PriceListId IS NOT NULL AND x.ItemUnitId IS NOT NULL
+                            AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NULL
+                            AND NOT (x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1)
+                                THEN N'No selling price was found for Item ' + x.ItemCode + N', Unit ' + x.UnitTypeName + N', and the selected Price List.'
+                           WHEN x.ManualPrice IS NOT NULL AND x.ManualPrice < 0 THEN N'Unit Price cannot be negative.' END,
+               Err6 = CASE WHEN ISNULL(x.DiscountPercent, 0) < 0 OR ISNULL(x.DiscountPercent, 0) > @MaxDiscountPercent
+                                THEN N'Discount % must be between 0 and ' + CAST(CAST(@MaxDiscountPercent AS DECIMAL(9,2)) AS NVARCHAR(20)) + N'.' END,
+               Err7 = CASE WHEN x.ExpiryDate IS NULL AND x.RawExpiryDate IS NOT NULL THEN N'Expiry Date ''' + x.RawExpiryDate + N''' is not a valid date.' END,
+               Err8 = CASE WHEN @CheckStock = 1 AND NOT (@DocumentTypeCode = N'SINV' AND ISNULL(x.AllowOos, 0) = 1) AND x.QtyBase > 0 AND x.WarehouseId IS NOT NULL AND x.RequiredBase > ISNULL(x.OnHandBase, 0)
+                                THEN N'Insufficient stock for ' + x.ItemCode + N' in ' + x.WarehouseCode + N': available ' + CAST(ISNULL(x.OnHandBase, 0) AS NVARCHAR(20))
+                                     + N', required ' + CAST(x.RequiredBase AS NVARCHAR(20))
+                                     + CASE WHEN x.EarlierRows IS NULL THEN N'' ELSE N' (with rows ' + x.EarlierRows + N')' END + N'.' END,
+               Warn4 = CASE WHEN @CheckStock = 1 AND @DocumentTypeCode = N'SINV' AND ISNULL(x.AllowOos, 0) = 1 AND x.QtyBase > 0 AND x.WarehouseId IS NOT NULL
+                             AND x.RequiredBase > ISNULL(x.OnHandBase, 0)
+                                THEN N'Out of stock: ' + x.ItemCode + N' in ' + x.WarehouseCode + N' - available ' + CAST(ISNULL(x.OnHandBase, 0) AS NVARCHAR(20))
+                                     + N', selling ' + CAST(x.RequiredBase AS NVARCHAR(20)) + N'. Posting will ask you to confirm.' END,
+               Warn1 = CASE WHEN @PriceListId IS NOT NULL AND x.ManualPrice IS NOT NULL AND @AllowPriceOverride = 0 AND COALESCE(x.BranchPrice, x.AllBranchesPrice) IS NOT NULL
+                                THEN N'Manual price ignored - system price ' + CAST(COALESCE(x.BranchPrice, x.AllBranchesPrice) AS NVARCHAR(30)) + N' used (no price override permission).' END,
+               Warn2 = CASE WHEN x.ExpiryDate IS NOT NULL AND x.ExpiryDate < @Today THEN N'Expiry date is in the past.' END,
+               Warn3 = CASE WHEN @UnitPref = 1 AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsSalesUnit = 1)
+                                THEN N'No sales unit is flagged for this item - the base unit was used.'
+                            WHEN @UnitPref = 2 AND x.UnitName IS NULL AND x.BarcodeUnitId IS NULL AND x.ItemUnitId IS NOT NULL
+                             AND NOT EXISTS (SELECT 1 FROM inventory.ItemUnits s WHERE s.ItemId = x.ItemId AND s.IsPurchaseUnit = 1)
+                                THEN N'No purchase unit is flagged for this item - the base unit was used.' END
+        FROM running x
+    )
+    SELECT j.RowNumber,
+           Status  = CASE WHEN COALESCE(j.Err0, j.Err1, j.ErrB, j.Err2, j.Err3, j.Err4, j.Err5, j.Err6, j.Err7, j.Err8) IS NOT NULL THEN N'Error'
+                          WHEN COALESCE(j.Warn1, j.Warn2, j.Warn3, j.Warn4) IS NOT NULL THEN N'Warning'
+                          ELSE N'Valid' END,
+           Message = NULLIF(LTRIM(CONCAT(ISNULL(j.Err0 + N' ', N''), ISNULL(j.Err1 + N' ', N''), ISNULL(j.ErrB + N' ', N''), ISNULL(j.Err2 + N' ', N''), ISNULL(j.Err3 + N' ', N''), ISNULL(j.Err4 + N' ', N''),
+                                         ISNULL(j.Err5 + N' ', N''), ISNULL(j.Err6 + N' ', N''), ISNULL(j.Err7 + N' ', N''), ISNULL(j.Err8 + N' ', N''),
+                                         ISNULL(j.Warn1 + N' ', N''), ISNULL(j.Warn2 + N' ', N''), ISNULL(j.Warn3 + N' ', N''), ISNULL(j.Warn4, N''))), N''),
+           RowDocumentTypeCode = ISNULL(j.RowTypeCode, @DocumentTypeCode),
+           j.ItemRef, j.ItemId, j.ItemCode, j.ItemName,
+           j.ItemUnitId, j.UnitTypeName, j.PackingFormula,
+           j.WarehouseId, j.WarehouseCode, j.WarehouseName,
+           Quantity    = CASE WHEN j.Quantity IS NOT NULL AND j.Quantity > 0 AND j.Quantity = FLOOR(j.Quantity) THEN CAST(j.Quantity AS INT) END,
+           UnitPrice   = CASE WHEN @PriceListId IS NULL THEN j.ManualPrice
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN j.ManualPrice
+                              ELSE j.SystemPrice END,
+           PriceSource = CASE WHEN @PriceListId IS NULL THEN CASE WHEN j.ManualPrice IS NOT NULL THEN N'Manual' END
+                              WHEN j.ManualPrice IS NOT NULL AND @AllowPriceOverride = 1 THEN N'Manual'
+                              WHEN j.BranchPrice IS NOT NULL THEN N'Branch'
+                              WHEN j.AllBranchesPrice IS NOT NULL THEN N'AllBranches' END,
+           ManualPrice = j.ManualPrice,
+           DiscountPercent = j.EffectiveDiscount,
+           j.ExpiryDate, j.Notes,
+           j.OnHandBase, j.RequiredBase
+    FROM judged j
+    ORDER BY j.RowNumber;
+END
+GO
+
+/* ================================================================== 99. Check */
+
+SELECT o.ObjectName, ObjectType = ISNULL(so.type_desc, N'MISSING')
+FROM (VALUES (N'masterdata.fn_AttachmentDocumentKinds'), (N'inventory.usp_DocumentType_List'), (N'inventory.usp_Item_Lookup'),
+             (N'inventory.usp_StockDocument_ValidateInput'), (N'inventory.usp_StockDocument_Post'),
+             (N'sales.usp_InvoiceImport_Validate')) o (ObjectName)
+LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
+ORDER BY ObjectType, o.ObjectName;                                    -- expected 6: 1 function, 5 procedures, none MISSING
+
+-- The rule per type: only BIV_OUT is BIVAC-only.
+SELECT Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, NumberPerBranch, YearInNumber, NumberLength,
+       RequiresReason, DefaultPricing, PriceEditable, IsActive, BivacItemsOnly
+FROM inventory.DocumentTypes WHERE Code IN (N'INV_IN', N'INV_OUT', N'BIV_OUT') ORDER BY Code;   -- expected 3 rows, BivacItemsOnly 1 on BIV_OUT only
+
+SELECT p.Code, p.Name, p.SortOrder, Roles = (SELECT COUNT(*) FROM security.RolePermissions rp WHERE rp.PermissionId = p.Id)
+FROM security.Permissions p WHERE p.Code LIKE N'inventory.bivacout.%' ORDER BY p.SortOrder;   -- expected 5
+
+-- The attachment types used for BIVAC Out (as an administrator left them).
+SELECT a.Category, a.SubType, a.IsActive
+FROM masterdata.AttachmentTypes a
+WHERE EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = a.Id AND u.DocumentKind = N'BIV_OUT')
+ORDER BY a.SortOrder;
+
+-- The BIVAC items, and the BIVAC Out documents by status.
+SELECT BivacItems = COUNT(*) FROM inventory.Items WHERE IsBivac = 1 AND IsActive = 1;
+SELECT d.Status, Documents = COUNT(*)
+FROM inventory.StockDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+WHERE dt.BivacItemsOnly = 1
+GROUP BY d.Status ORDER BY d.Status;
+
+PRINT 'Script 66 applied: BIVAC Out (BIV_OUT) - a stock document of BIVAC items only, out at average cost; item picker without the 20-row cut.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 67: Attachments - items and links =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 67: ATTACHMENTS - ITEMS AND LINKS (prompt 40, documents on every page like Containers)
+
+   The business owner: "check the documents for the pages in the system. it must be as the same way in the
+   containers in all the system have a type and popup to specify the properties of this document". Scripts 52 and
+   55 gave every document's files a type (used for the document's kind), a document date and a note, with one
+   check (masterdata.usp_AttachmentType_CheckForKind) and one edit. What was left, and is done here:
+
+   Rules
+     - ITEMS GET DOCUMENTS LIKE EVERY DOCUMENT (the owner's answer: yes). The files of Item Definition are a new
+       kind ITEM ("Items"): a type is required, active and used for ITEM ("Choose the attachment type." / "The
+       attachment type {name} is not used for items."), plus a document date and a note, checked with the item
+       block's error 56009. Script 52 had left items out ("an item is not a document").
+         - Used for, on the first run only (the run that adds the column inventory.ItemFiles.AttachmentTypeId): the
+           type "Other" (the one the purchase invoices use, else any Other / Other or General / Other, created when
+           there is none) is used for ITEM, and these types, category Item, are added where missing and used for
+           ITEM: Data Sheet, Specification, Certificate / Homologation, User Manual, Picture. Never again: a kind an
+           administrator takes off a type later stays off.
+         - The item files from before get "Other" (the one used for items), so the pages ask "Choose a type"; then
+           CK_ItemFiles_Type: every row but the item's picture has a type.
+         - THE ITEM PICTURE IS UNCHANGED: the row with IsItemImage = 1 has no type, date or note; Add replaces it as
+           before without any type check; the list of the item's documents never shows it.
+     - A CONTAINER FILE CAN BE RE-LINKED TO A MOVEMENT from its edit: usp_ContainerAttachment_Update takes @MovementId
+       with @SetMovement = 1 (NULL = General, not tied to a movement), for this record or, with @AllShared = 1, for
+       every container holding the upload; refused with the upload's check and message when a container of those
+       records is not on that movement (70000 'Container KTG-... is not part of this movement.'). The charge link
+       does not change: a charge's file stays with its charge.
+     - A CHARGE'S FILES SAY WHEN THEY ARE STILL TYPED "Other" (logistics.usp_ContainerCharge_Get: + IsOther), so the
+       charge drawer can ask for a real type like every other list.
+     - UNCHANGED: who may add or delete per family (receipts and payments refuse once reversed, the others in any
+       status), the containers' filing (movement / also attach to / charge), nothing requires a file to post, the
+       20 MB rule (the API's), Landed Cost Adjustments have no attachments (the owner's answer).
+
+   Objects
+     masterdata.fn_AttachmentDocumentKinds (re-created from its current body, script 66: + ITEM)
+     masterdata.AttachmentTypes / AttachmentTypeUsages (first run only: "Other" and five Item types used for ITEM)
+     inventory.ItemFiles: + AttachmentTypeId (FK_ItemFiles_Type), DocumentDate, Note; CK_ItemFiles_Type
+     inventory.usp_ItemFile_Add (re-created from its current body, script 11: + @AttachmentTypeId, @DocumentDate, @Note)
+     inventory.usp_ItemFile_Update (re-created from its current body, script 49: + type / date / note, the script 55
+       rules; answers the file's row)
+     inventory.usp_ItemFile_List (new: an item's documents, the shape of every family's *File_List)
+     masterdata.usp_AttachmentType_Delete (re-created from its current body, script 64: + the item files)
+     logistics.usp_ContainerAttachment_Update (re-created from its current body, script 55: + @MovementId, @SetMovement)
+     logistics.usp_ContainerCharge_Get (re-created from its current body, script 47: + IsOther on its files)
+
+   Errors: 56009 (new, inventory - item definition): the attachment type of an item file is missing, unknown,
+   inactive or not used for items. Containers: 70000 / 70006 as the upload's.
+
+   Requires scripts 11, 27, 47, 49, 52, 55, 64 and 66. Idempotent, additive: re-applied at every API start-up through
+   Schema.sql, and builds a brand-new empty database (the columns before any procedure that reads them).
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'inventory.ItemFiles', N'U') IS NULL
+   OR OBJECT_ID(N'logistics.ContainerAttachments', N'U') IS NULL
+   OR OBJECT_ID(N'logistics.fn_ContainerChargeSettlement') IS NULL
+   OR OBJECT_ID(N'masterdata.AttachmentTypeUsages', N'U') IS NULL
+   OR OBJECT_ID(N'masterdata.usp_AttachmentType_CheckForKind', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.usp_PaymentFile_List', N'P') IS NULL
+   OR OBJECT_ID(N'purchase.GoodsReceiptFiles', N'U') IS NULL
+   OR COL_LENGTH(N'inventory.DocumentTypes', N'BivacItemsOnly') IS NULL
+BEGIN
+    RAISERROR ('Run scripts 11, 27, 47, 49, 52, 55, 64 and 66 before this script.', 16, 1);
+    SET NOEXEC ON;
+END
+GO
+
+/* ================================================================== 1. The document kinds: + ITEM */
+
+-- Re-created (67) from the body of script 66: + ITEM (Item Definition's documents), after the stock documents.
+CREATE OR ALTER FUNCTION masterdata.fn_AttachmentDocumentKinds ()
+RETURNS TABLE
+AS
+RETURN
+SELECT k.Code, k.Name, k.Noun, k.SortOrder
+FROM (VALUES (N'CONTAINER', N'Containers',        N'containers',              10),
+             (N'PO',        N'Purchase orders',   N'purchase orders',         20),
+             (N'PINV',      N'Purchase invoices', N'purchase invoices',       30),
+             (N'PRET',      N'Purchase returns',  N'purchase returns',        40),
+             (N'GRN',       N'Goods receipts',    N'goods receipts',          45),   -- (64)
+             (N'SO',        N'Sales orders',      N'sales orders',            50),
+             (N'SINV',      N'Sales invoices',    N'sales invoices',          60),
+             (N'SRET',      N'Sales returns',     N'sales returns',           70),
+             (N'RCPT',      N'Customer receipts', N'customer receipts',       80),
+             (N'PAY',       N'Supplier payments', N'supplier payments',       85),
+             (N'INV_IN',    N'Inventory In',      N'Inventory In documents',  90),
+             (N'INV_OUT',   N'Inventory Out',     N'Inventory Out documents', 100),
+             (N'BIV_OUT',   N'BIVAC Out',         N'BIVAC Out documents',     105),   -- (66)
+             (N'ITEM',      N'Items',             N'items',                   120)) k (Code, Name, Noun, SortOrder);   -- (67)
+GO
+
+/* ================================================================== 2. Item files: the type, and the first run's "Used for" */
+
+-- THE FIRST RUN IS THE ONE THAT ADDS THE TYPE COLUMN: in the same transaction, the types the item pages offer are
+-- used for ITEM - "Other" (the one the purchase invoices use, as script 64 picks it; created when there is none at
+-- all) and the Item types below, created where missing (an existing type of the same name keeps its kinds and gains
+-- ITEM). Never again: a kind an administrator takes off a type later stays off. Both or neither: a failed run
+-- leaves no column, and the next start-up tries again.
+IF COL_LENGTH(N'inventory.ItemFiles', N'AttachmentTypeId') IS NULL
+BEGIN
+    SET XACT_ABORT ON;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        ALTER TABLE inventory.ItemFiles ADD AttachmentTypeId INT NULL   -- NULL only on the item's picture (CK_ItemFiles_Type)
+            CONSTRAINT FK_ItemFiles_Type FOREIGN KEY REFERENCES masterdata.AttachmentTypes (Id);
+
+        DECLARE @Other INT = (SELECT TOP (1) t.Id FROM masterdata.AttachmentTypes t
+                              WHERE t.SubType = N'Other' AND t.Category IN (N'Other', N'General')
+                              ORDER BY CASE WHEN EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u
+                                                         WHERE u.AttachmentTypeId = t.Id AND u.DocumentKind = N'PINV') THEN 0 ELSE 1 END,
+                                       CASE t.AppliesTo WHEN N'Logistics' THEN 0 ELSE 1 END,
+                                       CASE t.Category WHEN N'Other' THEN 0 ELSE 1 END, t.Id);
+        IF @Other IS NULL
+        BEGIN
+            INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, AppliesTo) VALUES (N'General', N'Other', 999, N'Logistics');
+            SET @Other = SCOPE_IDENTITY();
+        END
+        INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
+        SELECT @Other, N'ITEM'
+        WHERE NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = @Other AND u.DocumentKind = N'ITEM');
+
+        DECLARE @Seed TABLE (Category NVARCHAR(30), SubType NVARCHAR(60), SortOrder INT);
+        INSERT INTO @Seed (Category, SubType, SortOrder) VALUES
+            (N'Item', N'Data Sheet',                 400),
+            (N'Item', N'Specification',              410),
+            (N'Item', N'Certificate / Homologation', 420),
+            (N'Item', N'User Manual',                430),
+            (N'Item', N'Picture',                    440);
+        INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, AppliesTo)
+        SELECT s.Category, s.SubType, s.SortOrder, N'Logistics' FROM @Seed s
+        WHERE NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes t WHERE t.Category = s.Category AND t.SubType = s.SubType);
+        INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind)
+        SELECT DISTINCT t.Id, N'ITEM'
+        FROM @Seed s
+        INNER JOIN masterdata.AttachmentTypes t ON t.Category = s.Category AND t.SubType = s.SubType
+        WHERE NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = t.Id AND u.DocumentKind = N'ITEM');
+
+        COMMIT TRANSACTION;
+        PRINT 'Item files: added AttachmentTypeId; attachment types used for items: Other, Data Sheet, Specification, '
+              + 'Certificate / Homologation, User Manual, Picture.';
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH;
+    SET XACT_ABORT OFF;
+END
+GO
+
+IF COL_LENGTH(N'inventory.ItemFiles', N'DocumentDate') IS NULL ALTER TABLE inventory.ItemFiles ADD DocumentDate DATE NULL;           -- the date on the document
+IF COL_LENGTH(N'inventory.ItemFiles', N'Note') IS NULL ALTER TABLE inventory.ItemFiles ADD Note NVARCHAR(500) NULL;                 -- every family's note length
+GO
+
+/* ================================================================== 3. The item files from before: "Other", then the type is required */
+
+-- The documents uploaded before types existed for items are "Other": the one used for items, else script 52's pick
+-- (Other / Other before General / Other), created and used for items when there is none at all. The picture keeps
+-- no type. A later run finds nothing to do.
+IF EXISTS (SELECT 1 FROM inventory.ItemFiles WHERE IsItemImage = 0 AND AttachmentTypeId IS NULL)
+BEGIN
+    DECLARE @Other INT = (SELECT TOP (1) t.Id FROM masterdata.AttachmentTypes t
+                          WHERE t.SubType = N'Other' AND t.Category IN (N'Other', N'General')
+                          ORDER BY CASE WHEN EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u
+                                                     WHERE u.AttachmentTypeId = t.Id AND u.DocumentKind = N'ITEM') THEN 0 ELSE 1 END,
+                                   CASE t.Category WHEN N'Other' THEN 0 ELSE 1 END, t.Id);
+    IF @Other IS NULL
+    BEGIN
+        INSERT INTO masterdata.AttachmentTypes (Category, SubType, SortOrder, AppliesTo) VALUES (N'General', N'Other', 999, N'Logistics');
+        SET @Other = SCOPE_IDENTITY();
+        INSERT INTO masterdata.AttachmentTypeUsages (AttachmentTypeId, DocumentKind) VALUES (@Other, N'ITEM');
+    END
+
+    UPDATE inventory.ItemFiles SET AttachmentTypeId = @Other WHERE IsItemImage = 0 AND AttachmentTypeId IS NULL;
+    PRINT 'Item files: ' + CAST(@@ROWCOUNT AS NVARCHAR(10)) + N' file(s) from before typed "Other".';
+END
+GO
+
+-- Every row but the item's picture has a type (the column stays nullable for the picture).
+IF NOT EXISTS (SELECT 1 FROM sys.check_constraints WHERE name = N'CK_ItemFiles_Type' AND parent_object_id = OBJECT_ID(N'inventory.ItemFiles'))
+BEGIN
+    ALTER TABLE inventory.ItemFiles WITH CHECK ADD CONSTRAINT CK_ItemFiles_Type CHECK (IsItemImage = 1 OR AttachmentTypeId IS NOT NULL);
+    PRINT 'Item files: CK_ItemFiles_Type added (a type on every file but the picture).';
+END
+GO
+
+/* ================================================================== 4. Item file procedures */
+
+-- Re-created (67) from the body of script 11: a document (@IsItemImage 0) needs a type used for items, and takes a
+-- document date and a note (56009 'Choose the attachment type.' / 'The attachment type {name} is not used for
+-- items.'). THE PICTURE (@IsItemImage 1) IS UNCHANGED: no type check, it replaces the item's picture, and it keeps no
+-- type, date or note.
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_Add
+    @ItemId      INT,
+    @FileName    NVARCHAR(255),
+    @ContentType NVARCHAR(100),
+    @SizeBytes   INT,
+    @IsItemImage BIT,
+    @Content     VARBINARY(MAX),
+    @UserId      INT = NULL,
+    @NewId       INT OUTPUT,
+    @AttachmentTypeId INT           = NULL,   -- (67) required for a document, ignored for the picture
+    @DocumentDate     DATE          = NULL,   -- (67)
+    @Note             NVARCHAR(500) = NULL    -- (67)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @IsItemImage = ISNULL(@IsItemImage, 0);
+
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @ItemId)
+        THROW 56006, 'Item not found.', 1;
+    IF @FileName IS NULL OR LTRIM(RTRIM(@FileName)) = N'' THROW 56000, 'File name is required.', 1;
+    IF @Content IS NULL OR @SizeBytes IS NULL OR @SizeBytes <= 0 THROW 56000, 'The file is empty.', 1;
+    IF @IsItemImage = 0
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'ITEM', 56009;   -- (67)
+    ELSE
+        SELECT @AttachmentTypeId = NULL, @DocumentDate = NULL, @Note = NULL;                -- (67) the picture has none
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @IsItemImage = 1
+            DELETE FROM inventory.ItemFiles WHERE ItemId = @ItemId AND IsItemImage = 1;  -- replace the image
+
+        INSERT INTO inventory.ItemFiles (ItemId, FileName, ContentType, SizeBytes, IsItemImage, Content, CreatedBy,
+                                         AttachmentTypeId, DocumentDate, Note)
+        VALUES (@ItemId, LTRIM(RTRIM(@FileName)), @ContentType, @SizeBytes, @IsItemImage, @Content, @UserId,
+                @AttachmentTypeId, @DocumentDate, NULLIF(LTRIM(RTRIM(@Note)), N''));
+
+        SET @NewId = SCOPE_IDENTITY();
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- New (67): an item's documents (one with @FileId), newest first, in the shape of every family's *File_List
+-- (DocumentId = the item); IsOther = still typed "Other". Never the item's picture.
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_List
+    @ItemId INT, @AttachmentTypeId INT = NULL, @FileId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT f.Id, f.ItemId AS DocumentId, f.FileName, f.ContentType, f.SizeBytes, f.AttachmentTypeId, t.Category, t.SubType,
+           IsOther = CAST(CASE WHEN t.SubType = N'Other' AND t.Category IN (N'Other', N'General') THEN 1 ELSE 0 END AS BIT),
+           f.DocumentDate, f.Note, f.CreatedAtUtc, f.CreatedBy, u.FullName AS CreatedByName
+    FROM inventory.ItemFiles f
+    LEFT JOIN masterdata.AttachmentTypes t ON t.Id = f.AttachmentTypeId
+    LEFT JOIN security.Users u ON u.Id = f.CreatedBy
+    WHERE f.ItemId = @ItemId AND f.IsItemImage = 0
+      AND (@AttachmentTypeId IS NULL OR f.AttachmentTypeId = @AttachmentTypeId) AND (@FileId IS NULL OR f.Id = @FileId)
+    ORDER BY f.CreatedAtUtc DESC, f.Id DESC;
+END
+GO
+
+-- Re-created (67) from the body of script 49: one edit as script 55 made it for every family - the type, date and
+-- note (a type is required, active and used for items, except that a file may keep the type it has though it was
+-- deactivated since), @FileName (NULL or blank keeps it) and optionally a new version of the file (NULL keeps the
+-- stored one). Answers the file's row (usp_ItemFile_List's). The picture: its name and file only, as before (no row
+-- answered: the list never shows it). @UserId is taken for the callers' shape; an item keeps no audit of its files.
+CREATE OR ALTER PROCEDURE inventory.usp_ItemFile_Update
+    @Id          INT,
+    @FileName    NVARCHAR(255)  = NULL,   -- (67) NULL / blank keeps the name
+    @ContentType NVARCHAR(100)  = NULL,   -- with @Content: a new version of the file
+    @SizeBytes   INT            = NULL,
+    @Content     VARBINARY(MAX) = NULL,
+    @AttachmentTypeId INT           = NULL,   -- (67)
+    @DocumentDate     DATE          = NULL,   -- (67)
+    @Note             NVARCHAR(500) = NULL,   -- (67)
+    @UserId           INT           = NULL    -- (67)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @ItemId INT, @Old NVARCHAR(255), @OldType INT, @IsImage BIT;
+    SELECT @ItemId = ItemId, @Old = FileName, @OldType = AttachmentTypeId, @IsImage = IsItemImage
+    FROM inventory.ItemFiles WHERE Id = @Id;
+    IF @ItemId IS NULL THROW 56006, 'File not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    -- the type the file has may stay though deactivated since; a new choice is checked as the upload's
+    IF @IsImage = 0 AND (@AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1))
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'ITEM', 56009;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 56000, 'The file is empty.', 1;
+
+    UPDATE inventory.ItemFiles
+    SET FileName         = @FileName,
+        ContentType      = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+        SizeBytes        = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+        Content          = ISNULL(@Content, Content),
+        AttachmentTypeId = CASE WHEN IsItemImage = 1 THEN NULL ELSE @AttachmentTypeId END,
+        DocumentDate     = CASE WHEN IsItemImage = 1 THEN NULL ELSE @DocumentDate END,
+        Note             = CASE WHEN IsItemImage = 1 THEN NULL ELSE NULLIF(LTRIM(RTRIM(@Note)), N'') END
+    WHERE Id = @Id;
+
+    EXEC inventory.usp_ItemFile_List @ItemId = @ItemId, @FileId = @Id;
+END
+GO
+
+/* ================================================================== 5. Attachment types: + the item files in "used" */
+
+-- Re-created (67) from the body of script 64: + the item files.
+CREATE OR ALTER PROCEDURE masterdata.usp_AttachmentType_Delete
+    @Id INT, @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Id = @Id) THROW 69006, 'Attachment type not found.', 1;
+    IF EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM logistics.ContainerFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.ReceiptFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM sales.SalesDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptFiles WHERE AttachmentTypeId = @Id)   -- (64)
+       OR EXISTS (SELECT 1 FROM inventory.StockDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM inventory.ItemFiles WHERE AttachmentTypeId = @Id)          -- (67)
+        THROW 69014, 'This attachment type is used by documents and cannot be deleted. Deactivate it instead.', 1;
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE FROM masterdata.AttachmentTypeUsages WHERE AttachmentTypeId = @Id;
+        DELETE FROM masterdata.AttachmentTypes WHERE Id = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. Container documents: re-link to a movement */
+
+/* Re-created (67) from the body of script 55: + @MovementId / @SetMovement. One upload may be shared by several
+   containers (attached to them together). @AllShared = 1 edits the upload and the type / date / note of every one of
+   them, like deleting it everywhere; 0 edits this container's record only - and a new name or file then becomes this
+   container's own copy, leaving the others on the upload as it was. (67) @SetMovement = 1 files the records edited
+   (this one, or every one of the upload with @AllShared = 1) under @MovementId - NULL = General, not tied to a
+   movement -, with the upload's check: every container of those records must be on that movement (70000). 0 (the
+   default) leaves the link as it is. The charge link never changes here. Answers the record. */
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerAttachment_Update
+    @Id               INT,
+    @AllShared        BIT            = 0,
+    @AttachmentTypeId INT            = NULL,
+    @DocumentDate     DATE           = NULL,
+    @Note             NVARCHAR(500)  = NULL,
+    @FileName         NVARCHAR(255)  = NULL,
+    @ContentType      NVARCHAR(100)  = NULL,
+    @SizeBytes        INT            = NULL,
+    @Content          VARBINARY(MAX) = NULL,
+    @UserId           INT            = NULL,
+    @MovementId       INT            = NULL,   -- (67) with @SetMovement = 1: the movement, NULL = General
+    @SetMovement      BIT            = 0       -- (67) 1 = change the movement link
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
+    SET @AllShared = ISNULL(@AllShared, 0);
+    SET @SetMovement = ISNULL(@SetMovement, 0);
+
+    DECLARE @FileId INT, @Old NVARCHAR(255), @OldType INT;
+    SELECT @FileId = a.FileId, @Old = f.FileName, @OldType = a.AttachmentTypeId
+    FROM logistics.ContainerAttachments a INNER JOIN logistics.Files f ON f.Id = a.FileId
+    WHERE a.Id = @Id;
+    IF @FileId IS NULL THROW 70006, 'Attachment not found.', 1;
+    SET @FileName = ISNULL(NULLIF(LTRIM(RTRIM(@FileName)), N''), @Old);
+    IF @AttachmentTypeId IS NULL OR @AttachmentTypeId <> ISNULL(@OldType, -1)
+        EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'CONTAINER', 70017;
+    IF @Content IS NOT NULL AND (@SizeBytes IS NULL OR @SizeBytes <= 0) THROW 70000, 'The file is empty.', 1;
+
+    DECLARE @Shared BIT = CASE WHEN EXISTS (SELECT 1 FROM logistics.ContainerAttachments WHERE FileId = @FileId AND Id <> @Id) THEN 1 ELSE 0 END;
+    DECLARE @Rows TABLE (Id INT PRIMARY KEY, ContainerId INT NOT NULL);
+    INSERT INTO @Rows (Id, ContainerId)
+    SELECT Id, ContainerId FROM logistics.ContainerAttachments WHERE Id = @Id OR (@AllShared = 1 AND FileId = @FileId);
+
+    -- (67) the movement link: the upload's checks and message (usp_ContainerAttachment_Add)
+    DECLARE @Msg NVARCHAR(400), @Moved BIT = 0, @MovementText NVARCHAR(60) = NULL;
+    IF @SetMovement = 1
+    BEGIN
+        IF @MovementId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @MovementId) THROW 70006, 'Movement not found.', 1;
+            SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is not part of this movement.'
+            FROM @Rows r INNER JOIN logistics.Containers c ON c.Id = r.ContainerId
+            WHERE NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @MovementId AND mc.ContainerId = r.ContainerId)
+            ORDER BY c.ContainerRef;
+            IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+        END
+        IF EXISTS (SELECT 1 FROM logistics.ContainerAttachments a INNER JOIN @Rows r ON r.Id = a.Id
+                   WHERE ISNULL(a.MovementId, -1) <> ISNULL(@MovementId, -1))
+        BEGIN
+            SET @Moved = 1;
+            SET @MovementText = ISNULL(N' (movement ' + (SELECT MovementNo FROM logistics.Movements WHERE Id = @MovementId) + N')', N' (General)');
+        END
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Shared = 1 AND @AllShared = 0 AND (@Content IS NOT NULL OR @FileName <> @Old)
+        BEGIN
+            -- this container's own copy: the others keep the upload as it was
+            INSERT INTO logistics.Files (FileName, ContentType, SizeBytes, Content, CreatedBy)
+            SELECT @FileName,
+                   CASE WHEN @Content IS NULL THEN f.ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+                   CASE WHEN @Content IS NULL THEN f.SizeBytes ELSE @SizeBytes END,
+                   ISNULL(@Content, f.Content), @UserId
+            FROM logistics.Files f WHERE f.Id = @FileId;
+            UPDATE logistics.ContainerAttachments SET FileId = SCOPE_IDENTITY(), GroupId = NULL WHERE Id = @Id;
+        END
+        ELSE
+            UPDATE logistics.Files
+            SET FileName    = @FileName,
+                ContentType = CASE WHEN @Content IS NULL THEN ContentType ELSE ISNULL(NULLIF(LTRIM(RTRIM(@ContentType)), N''), N'application/octet-stream') END,
+                SizeBytes   = CASE WHEN @Content IS NULL THEN SizeBytes ELSE @SizeBytes END,
+                Content     = ISNULL(@Content, Content)
+            WHERE Id = @FileId;
+
+        UPDATE a SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, DocumentDate = @DocumentDate,
+                     MovementId = CASE WHEN @SetMovement = 1 THEN @MovementId ELSE a.MovementId END   -- (67)
+        FROM logistics.ContainerAttachments a INNER JOIN @Rows r ON r.Id = a.Id;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT DISTINCT r.ContainerId, N'Updated',
+               LEFT(N'Attachment edited: ' + CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
+                    + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END
+                    + CASE WHEN @Moved = 1 THEN @MovementText ELSE N'' END, 500), @UserId   -- (67)
+        FROM @Rows r;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    EXEC logistics.usp_ContainerAttachment_List @Id = @Id;
+END
+GO
+
+/* ================================================================== 7. Container charges: their files say "Other" */
+
+-- Re-created (67) from the body of script 47: + IsOther on the charge's files (the container list's expression: no
+-- type, or Other / Other, General / Other).
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus,
+           ch.MovementId, m.MovementNo, ch.GroupId,
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName AS ProviderName, ch.Reference,
+           ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload, ch.Notes,
+           ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, xu.FullName AS CancelledByName, ch.CancelReason,
+           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion,
+           -- (47) supplier payments: posted charges only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
+    FROM logistics.ContainerCharges ch
+    OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
+    INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    LEFT  JOIN logistics.Movements m     ON m.Id = ch.MovementId
+    LEFT  JOIN security.Users pu ON pu.Id = ch.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = ch.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = ch.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = ch.UpdatedBy
+    WHERE ch.Id = @Id;
+
+    SELECT cl.Id AS ContainerLineId, cl.LineNumber, cl.ItemId, i.ItemCode, i.ItemName,
+           QuantityBase = ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase),
+           a.Basis, AmountBase = ISNULL(a.AmountBase, 0), IsManual = ISNULL(a.IsManual, 0),
+           PerUnitBase = ISNULL(a.AmountBase, 0) / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0)
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.ContainerLines cl ON cl.ContainerId = ch.ContainerId
+    INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+    LEFT  JOIN logistics.ContainerChargeAllocations a ON a.ChargeId = ch.Id AND a.ContainerLineId = cl.Id
+    WHERE ch.Id = @Id
+    ORDER BY cl.LineNumber;
+
+    SELECT a.Id, a.ContainerId, a.MovementId, a.AttachmentTypeId, at.Category, at.SubType,
+           IsOther = CAST(CASE WHEN at.Id IS NULL OR (at.SubType = N'Other' AND at.Category IN (N'Other', N'General')) THEN 1 ELSE 0 END AS BIT),   -- (67)
+           a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM logistics.ContainerAttachments a
+    INNER JOIN logistics.Files f ON f.Id = a.FileId
+    LEFT  JOIN masterdata.AttachmentTypes at ON at.Id = a.AttachmentTypeId
+    LEFT  JOIN security.Users u ON u.Id = a.CreatedBy
+    WHERE a.ChargeId = @Id
+    ORDER BY a.CreatedAtUtc DESC;
+
+    SELECT g.Id, g.ContainerId, c.ContainerRef, c.ContainerNo, g.Amount, g.AmountBase, g.Status, g.RowVersion
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.ContainerCharges g ON g.GroupId = ch.GroupId AND g.Id <> ch.Id
+    INNER JOIN logistics.Containers c       ON c.Id = g.ContainerId
+    WHERE ch.Id = @Id AND ch.GroupId IS NOT NULL
+    ORDER BY c.ContainerRef;
+END
+GO
+
+/* ================================================================== 99. Check */
+
+SELECT o.ObjectName, ObjectType = ISNULL(so.type_desc, N'MISSING')
+FROM (VALUES (N'masterdata.fn_AttachmentDocumentKinds'), (N'inventory.usp_ItemFile_Add'), (N'inventory.usp_ItemFile_List'),
+             (N'inventory.usp_ItemFile_Update'), (N'masterdata.usp_AttachmentType_Delete'),
+             (N'logistics.usp_ContainerAttachment_Update'), (N'logistics.usp_ContainerCharge_Get'),
+             (N'FK_ItemFiles_Type'), (N'CK_ItemFiles_Type')) o (ObjectName)
+LEFT JOIN sys.objects so ON so.object_id = ISNULL(OBJECT_ID(o.ObjectName),
+                                                  (SELECT TOP (1) x.object_id FROM sys.objects x
+                                                   WHERE x.name = o.ObjectName AND x.parent_object_id = OBJECT_ID(N'inventory.ItemFiles')))
+ORDER BY ObjectType, o.ObjectName;   -- expected 9: 1 function, 5 procedures, the foreign key and the check, none MISSING
+
+-- The types used for items (as an administrator left them).
+SELECT a.Id, a.Category, a.SubType, a.AppliesTo, a.IsActive
+FROM masterdata.AttachmentTypes a
+WHERE EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u WHERE u.AttachmentTypeId = a.Id AND u.DocumentKind = N'ITEM')
+ORDER BY a.SortOrder, a.Category, a.SubType;
+
+-- The files still typed "Other" in each family: the pages ask "Choose a type" on each of them.
+SELECT x.Family, Files = COUNT(x.FileId),
+       TypedOther = ISNULL(SUM(CASE WHEN x.FileId IS NOT NULL
+                                     AND (t.Id IS NULL OR (t.SubType = N'Other' AND t.Category IN (N'Other', N'General'))) THEN 1 ELSE 0 END), 0)
+FROM (SELECT N'1 Purchase documents', Id, AttachmentTypeId FROM purchase.PurchaseDocumentFiles
+      UNION ALL SELECT N'2 Goods receipts', Id, AttachmentTypeId FROM purchase.GoodsReceiptFiles
+      UNION ALL SELECT N'3 Supplier payments', Id, AttachmentTypeId FROM purchase.PaymentFiles
+      UNION ALL SELECT N'4 Sales documents', Id, AttachmentTypeId FROM sales.SalesDocumentFiles
+      UNION ALL SELECT N'5 Customer receipts', Id, AttachmentTypeId FROM sales.ReceiptFiles
+      UNION ALL SELECT N'6 Stock documents', Id, AttachmentTypeId FROM inventory.StockDocumentFiles
+      UNION ALL SELECT N'7 Containers', Id, AttachmentTypeId FROM logistics.ContainerAttachments
+      UNION ALL SELECT N'8 Items', Id, AttachmentTypeId FROM inventory.ItemFiles WHERE IsItemImage = 0
+      UNION ALL SELECT f.Family, NULL, NULL
+      FROM (VALUES (N'1 Purchase documents'), (N'2 Goods receipts'), (N'3 Supplier payments'), (N'4 Sales documents'),
+                   (N'5 Customer receipts'), (N'6 Stock documents'), (N'7 Containers'), (N'8 Items')) f (Family)) x (Family, FileId, AttachmentTypeId)
+LEFT JOIN masterdata.AttachmentTypes t ON t.Id = x.AttachmentTypeId
+GROUP BY x.Family
+ORDER BY x.Family;
+
+-- A kind no active type is used for cannot take a file: expected no row.
+SELECT KindWithoutActiveType = k.Code, k.Name
+FROM masterdata.fn_AttachmentDocumentKinds() k
+WHERE NOT EXISTS (SELECT 1 FROM masterdata.AttachmentTypeUsages u
+                  INNER JOIN masterdata.AttachmentTypes t ON t.Id = u.AttachmentTypeId AND t.IsActive = 1
+                  WHERE u.DocumentKind = k.Code)
+ORDER BY k.SortOrder;
+
+PRINT 'Script 67 applied: item documents (kind ITEM: type, date, note; old files "Other"; the picture unchanged), '
+      + 'container files re-linked to a movement, charge files flag "Other".';
 GO
 
 SET NOEXEC OFF;

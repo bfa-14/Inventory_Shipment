@@ -156,6 +156,14 @@ public static class Permissions
         public const string StockOutCancel = "inventory.stockout.cancel";
         public const string StockOutDelete = "inventory.stockout.delete";
 
+        /* BIVAC Out (script 66): an Inventory Out of BIVAC items only, with its own five verbs so the
+           people who take units out for the BIVAC inspection need not be the ones who issue stock. */
+        public const string BivacOutView = "inventory.bivacout.view";
+        public const string BivacOutCreate = "inventory.bivacout.create";
+        public const string BivacOutPost = "inventory.bivacout.post";
+        public const string BivacOutCancel = "inventory.bivacout.cancel";
+        public const string BivacOutDelete = "inventory.bivacout.delete";
+
         /* Shortage plans: saved planning documents. A draft is a working sheet; posting freezes it
            into a historical snapshot. Creating the purchase order from a posted plan is NOT one of
            these — it is creating a purchase order, and needs purchase.orders.create. */
@@ -166,11 +174,17 @@ public static class Permissions
     }
 
     /// <summary>
-    /// Buying: the three documents of the Purchase family, each with the same five verbs.
+    /// Buying: the three documents of the Purchase family, each with the same five verbs, and the goods
+    /// receipts that bring their goods into stock.
     ///
-    /// THREE SETS FOR ONE ENGINE. An order commits nothing but a promise; an invoice moves stock in and
-    /// sets the cost every later sale is valued at; a return moves stock out. Different people sign
-    /// each, so each is its own permission even though one page serves all three.
+    /// THREE SETS FOR ONE ENGINE. An order commits nothing but a promise; an invoice makes the amount
+    /// payable and sets the invoice cost the received goods are valued at (posted after script 65 it moves
+    /// no stock: it adjusts the cost of goods already received); a return moves stock out. Different people
+    /// sign each, so each is its own permission even though one page serves all three.
+    ///
+    /// GOODS RECEIPTS ARE THEIR OWN FIVE VERBS (scripts 64 and 65): the only way goods enter stock, from a
+    /// container, an order, an invoice or without an order. The person who counts the goods at the gate is
+    /// rarely the one who posts the supplier's bill.
     /// </summary>
     public static class Purchase
     {
@@ -185,6 +199,15 @@ public static class Permissions
         public const string InvoicesPost = "purchase.invoices.post";
         public const string InvoicesCancel = "purchase.invoices.cancel";
         public const string InvoicesDelete = "purchase.invoices.delete";
+
+        /* Goods receipts (scripts 64 and 65): the goods enter stock when a receipt is posted, at the invoice cost
+           or the order price until the invoice comes. View sees them; Create covers drafts from any source and
+           their files; Post moves the stock in and sets the costs; Cancel reverses it; Delete removes a draft. */
+        public const string GoodsReceiptsView = "purchase.goodsreceipts.view";
+        public const string GoodsReceiptsCreate = "purchase.goodsreceipts.create";
+        public const string GoodsReceiptsPost = "purchase.goodsreceipts.post";
+        public const string GoodsReceiptsCancel = "purchase.goodsreceipts.cancel";
+        public const string GoodsReceiptsDelete = "purchase.goodsreceipts.delete";
 
         public const string ReturnsView = "purchase.returns.view";
         public const string ReturnsCreate = "purchase.returns.create";
@@ -220,18 +243,25 @@ public static class Permissions
     }
 
     /// <summary>
-    /// Import shipments between the purchase invoice and the warehouse.
+    /// Import shipments between the purchase order and the warehouse.
     ///
-    /// OFFLOAD IS ITS OWN PERMISSION because it is the moment stock enters, at landed cost; the
-    /// person who types a loading plan is rarely the one who signs for the goods at the gate. Cancel
-    /// covers both cancelling a container and reversing its offload. OVERCAPACITY is the right to
-    /// confirm the capacity warning: without it, a load above the container's units is refused.
+    /// THE GOODS OF A CONTAINER ENTER STOCK WITH A GOODS RECEIPT (scripts 64 and 65), under
+    /// purchase.goodsreceipts.*: the person who types a loading plan is rarely the one who signs for the
+    /// goods at the gate. Completing its Delivery movement makes the draft receipt with
+    /// <see cref="MovementsManage"/> alone. <see cref="Offload"/> is kept "(not used)" so roles still show
+    /// it; Cancel covers cancelling a container and reversing an offload made before goods receipts.
+    /// OVERCAPACITY is the right to confirm the capacity warning: without it, a load above the container's
+    /// units is refused.
     /// </summary>
     public static class Containers
     {
         public const string View = "containers.view";
         public const string Create = "containers.create";
         public const string Confirm = "containers.confirm";
+        /// <summary>
+        /// NOT USED since script 65: containers are received with goods receipts (purchase.goodsreceipts.*). Kept in
+        /// the catalog only so that roles holding it show it as "(not used)" instead of a permission that seems to matter.
+        /// </summary>
         public const string Offload = "containers.offload";
         public const string Cancel = "containers.cancel";
         public const string Close = "containers.close";
@@ -385,6 +415,17 @@ public static class Permissions
         new(Inventory.StockOutDelete, "Delete Inventory Out", InventoryModule,
             "Delete draft Inventory Out documents.", 800),
 
+        new(Inventory.BivacOutView, "View BIVAC Out", InventoryModule,
+            "See BIVAC Out documents.", 810),
+        new(Inventory.BivacOutCreate, "Create BIVAC Out", InventoryModule,
+            "Create and edit draft BIVAC Out documents.", 820),
+        new(Inventory.BivacOutPost, "Post BIVAC Out", InventoryModule,
+            "Post BIVAC Out documents (removes stock).", 830),
+        new(Inventory.BivacOutCancel, "Cancel BIVAC Out", InventoryModule,
+            "Cancel posted BIVAC Out documents (reversal).", 840),
+        new(Inventory.BivacOutDelete, "Delete BIVAC Out", InventoryModule,
+            "Delete draft BIVAC Out documents.", 850),
+
         new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
             "Change numbering and behaviour of document types.", 900),
         new(Configuration.ChargeTypesManage, "Manage purchase charge types", ConfigurationModule,
@@ -426,12 +467,25 @@ public static class Permissions
             "See purchase invoices.", 1060),
         new(Purchase.InvoicesCreate, "Create Purchase Invoices", PurchaseModule,
             "Create and edit draft purchase invoices.", 1070),
+        // Since script 65 an invoice moves no stock: its goods enter with goods receipts.
         new(Purchase.InvoicesPost, "Post Purchase Invoices", PurchaseModule,
-            "Post purchase invoices (adds stock, sets costs).", 1080),
+            "Post purchase invoices (payable; adjusts the cost of goods already received).", 1080),
         new(Purchase.InvoicesCancel, "Cancel Purchase Invoices", PurchaseModule,
-            "Cancel posted purchase invoices (stock reversal).", 1090),
+            "Cancel posted purchase invoices.", 1090),
         new(Purchase.InvoicesDelete, "Delete Purchase Invoices", PurchaseModule,
             "Delete draft purchase invoices.", 1100),
+
+        // Names, descriptions and sort orders exactly as script 64's MERGE writes them: the sync copies these over.
+        new(Purchase.GoodsReceiptsView, "View Goods Receipts", PurchaseModule,
+            "See goods receipts.", 1102),
+        new(Purchase.GoodsReceiptsCreate, "Create Goods Receipts", PurchaseModule,
+            "Create and edit draft goods receipts, from containers, orders, invoices or by hand.", 1104),
+        new(Purchase.GoodsReceiptsPost, "Post Goods Receipts", PurchaseModule,
+            "Post goods receipts: the goods enter stock and the item costs are set.", 1106),
+        new(Purchase.GoodsReceiptsCancel, "Cancel Goods Receipts", PurchaseModule,
+            "Cancel posted goods receipts (stock reversal).", 1108),
+        new(Purchase.GoodsReceiptsDelete, "Delete Goods Receipts", PurchaseModule,
+            "Delete draft goods receipts.", 1110),
 
         new(Purchase.ReturnsView, "View Purchase Returns", PurchaseModule,
             "See purchase returns.", 1120),
@@ -475,8 +529,9 @@ public static class Permissions
             "Create and edit containers and their loading plan.", 1310),
         new(Containers.Confirm, "Confirm Containers", ContainersModule,
             "Confirm the loading plan of a container.", 1320),
-        new(Containers.Offload, "Offload Containers", ContainersModule,
-            "Offload a container: the goods enter stock.", 1330),
+        // Not used since script 65 (containers are received with goods receipts): kept so roles still show it.
+        new(Containers.Offload, "Offload Containers (not used)", ContainersModule,
+            "No effect since script 65: containers are received with goods receipts.", 1330),
         new(Containers.Cancel, "Cancel Containers", ContainersModule,
             "Cancel a container or reverse an offload.", 1340),
         new(Containers.Close, "Close Containers", ContainersModule,

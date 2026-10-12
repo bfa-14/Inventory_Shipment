@@ -403,6 +403,125 @@ public sealed class MovementService : IMovementService
         }
 
         _logger.LogInformation("Movement {MovementId}: {Action} by user {UserId}", id, action, userId);
-        return await ReadAsync(id, cancellationToken);
+
+        // A COMPLETION IS COMMITTED: what follows it is finished even if the client has gone (tab closed, page reloaded,
+        // connection lost). Cut short by the request's token, the Delivery hook would leave some containers without
+        // their draft goods receipt and nobody told. Start and Cancel only re-read: the request's token is fine.
+        var afterCommit = action == "Complete" ? CancellationToken.None : cancellationToken;
+
+        var read = await ReadAsync(id, afterCommit);
+        if (action != "Complete"
+            || read.Value is not { Status: MovementStatus.Completed } movement
+            || MovementStages.Normalize(movement.Stage) != MovementStages.Delivery)
+        {
+            return read;
+        }
+
+        return Result<MovementDto>.Success(await CreateGoodsReceiptsAsync(movement, userId));
     }
+
+    /* ── the draft goods receipts of a completed Delivery (script 65) ─────────────────────────── */
+
+    /// <summary>
+    /// AFTER THE COMMIT, NEVER INSIDE IT: completing a Delivery-stage movement (whatever its type code) creates a draft
+    /// goods receipt for each eligible container, but the completion is already committed by usp_Movement_SetStatus and
+    /// stays so whatever happens here. Each container has its own transaction in the procedure: one refused container
+    /// is its row ('Error', with the database's message), and a failure of the whole call is a warning on the answer.
+    /// The movement's own right (containers.movements.manage) is enough: no goods receipt permission is needed for the
+    /// drafts, as the person who completes the delivery is rarely the one who receives the goods.
+    /// NO CANCELLATION TOKEN: it runs after the commit and on CancellationToken.None (see SetStatusAsync), so only a real
+    /// database failure or a command timeout stops it - and either is logged and said on the answer.
+    /// </summary>
+    private async Task<MovementDto> CreateGoodsReceiptsAsync(MovementDto movement, int userId)
+    {
+        IReadOnlyList<MovementReceiptResultDto> rows;
+        try
+        {
+            rows = await _movements.CreateGoodsReceiptsAsync(movement.Id, userId, CancellationToken.None);
+        }
+        catch (OperationCanceledException ex)
+        {
+            // A guard: nothing here follows the request any more. Never silent if a token is passed in one day.
+            _logger.LogWarning(ex, "Movement {MovementNo} completed, but creating its draft goods receipts was cancelled", movement.MovementNo);
+            return movement with
+            {
+                GoodsReceipts = [],
+                Warnings =
+                [
+                    "The movement is completed, but creating its draft goods receipts was interrupted. "
+                    + "Use Receive goods… on each container without one.",
+                ],
+            };
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Movement {MovementNo} completed, but its draft goods receipts were not created", movement.MovementNo);
+
+            // A business refusal says why in plain words; anything else stays in the log, not on the screen.
+            var reason = ex is BusinessRuleException rule ? WithoutFinalPeriod(rule.Message) : "the database refused them (see the API log)";
+            return movement with
+            {
+                GoodsReceipts = [],
+                Warnings =
+                [
+                    $"The movement is completed, but its draft goods receipts were not created: {reason}. "
+                    + "Use Receive goods… on each container.",
+                ],
+            };
+        }
+
+        var created = rows.Count(r => r.Created);
+        _logger.LogInformation("Movement {MovementNo} completed: {Created} draft goods receipt(s) created, {Skipped} container(s) skipped",
+            movement.MovementNo, created, rows.Count - created);
+
+        // Read again: the containers' set now shows the drafts (number, status), as the database has them.
+        var current = await _movements.GetAsync(movement.Id, CancellationToken.None) ?? movement;
+        return current with
+        {
+            GoodsReceipts = rows,
+            GoodsReceiptsMessage = ReceiptsSummary(rows),
+            Warnings = rows.Where(r => r.SkipReason == MovementReceiptSkipReasons.Error)
+                .Select(r => $"{r.ContainerRef}: the draft goods receipt was not created: {WithoutFinalPeriod(r.Message ?? "refused")}. "
+                             + "Use Receive goods… on the container.")
+                .ToList(),
+        };
+    }
+
+    /// <summary>
+    /// The notification of rule 5: "Draft goods receipts created: KTG-2026-0031, KTG-2026-0032 (warehouse to choose).
+    /// Not created: KTG-2026-0033 already has GRN-BR-002-000004." Null when the movement had no container.
+    /// </summary>
+    internal static string? ReceiptsSummary(IReadOnlyList<MovementReceiptResultDto> rows)
+    {
+        var created = rows.Where(r => r.Created)
+            .Select(r => r.WarehouseCode is null ? $"{r.ContainerRef} (warehouse to choose)" : r.ContainerRef)
+            .ToList();
+        var skipped = rows.Where(r => !r.Created).Select(r => $"{r.ContainerRef} {SkipPhrase(r)}").ToList();
+
+        var parts = new List<string>(2);
+        if (created.Count > 0)
+        {
+            parts.Add($"{(created.Count == 1 ? "Draft goods receipt created" : "Draft goods receipts created")}: {string.Join(", ", created)}.");
+        }
+
+        if (skipped.Count > 0)
+        {
+            parts.Add($"Not created: {string.Join("; ", skipped)}.");
+        }
+
+        return parts.Count > 0 ? string.Join(' ', parts) : null;
+    }
+
+    private static string SkipPhrase(MovementReceiptResultDto row) => row.SkipReason switch
+    {
+        MovementReceiptSkipReasons.Received when row.GoodsReceiptNumber is { } number => $"already has {number}",
+        MovementReceiptSkipReasons.Received => "is already offloaded",
+        MovementReceiptSkipReasons.HasDraft => "already has a draft goods receipt",
+        MovementReceiptSkipReasons.NotConfirmed => "is not confirmed",
+        MovementReceiptSkipReasons.Cancelled => "is cancelled",
+        MovementReceiptSkipReasons.NoLines => "has no lines",
+        _ => $"was refused: {WithoutFinalPeriod(row.Message ?? "unknown reason")}",
+    };
+
+    private static string WithoutFinalPeriod(string text) => text.Trim().TrimEnd('.');
 }

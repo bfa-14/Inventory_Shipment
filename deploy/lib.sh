@@ -83,8 +83,8 @@ take_env_lock() {
     [ "${INVENTORY_LOCK_HELD:-}" = "$env" ] && return 0
     exec 9>"/run/lock/inventory-update-$env.lock"
     if ! flock -n 9; then
-        say "Another update, restore or copy of $env is running: waiting for it to finish..."
-        flock -w 1800 9 || die "The other update, restore or copy of $env has not finished after 30 minutes."
+        say "Another update, restore, copy or reset of $env is running: waiting for it to finish..."
+        flock -w 1800 9 || die "The other update, restore, copy or reset of $env has not finished after 30 minutes."
     fi
     export INVENTORY_LOCK_HELD=$env
 }
@@ -110,10 +110,12 @@ open_web_ports() {
 }
 
 # sql_exec ARGS... - sqlcmd as sa inside the db container. The password stays inside the container
-# (SQLCMDPASSWORD from its own environment), so it is never on a command line.
+# (SQLCMDPASSWORD from its own environment), so it is never on a command line. -I (QUOTED_IDENTIFIER ON), as
+# Schema.sql is applied: writes to tables with filtered indexes or computed columns need it. Its input is /dev/null:
+# "exec -T" would otherwise read the terminal and swallow what someone types ahead of a question.
 sql_exec() {
     docker compose exec -T db bash -c \
-        'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" exec /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b "$@"' sqlcmd "$@"
+        'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" exec /opt/mssql-tools18/bin/sqlcmd -C -I -S localhost -U sa -b "$@"' sqlcmd "$@" </dev/null
 }
 
 ensure_backup_dir() {

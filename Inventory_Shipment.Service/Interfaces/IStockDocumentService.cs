@@ -5,11 +5,11 @@ using Inventory_Shipment.Model.DTOs.Inventory;
 namespace Inventory_Shipment.Service.Interfaces;
 
 /// <summary>
-/// Inventory In / Out documents.
+/// Inventory In / Out and BIVAC Out documents.
 ///
 /// THE PERMISSION CHECK LIVES HERE, NOT ON THE CONTROLLER, and that is the one departure from the
-/// house pattern. One controller serves both document kinds, and which permission applies depends on
-/// the document's TYPE — inventory.stockin.* or inventory.stockout.* — which for an existing document
+/// house pattern. One controller serves every inventory document kind, and which permission applies depends
+/// on the document's TYPE — inventory.stockin.*, inventory.stockout.* or inventory.bivacout.* — which for an existing document
 /// is only known after reading it. [HasPermission] is evaluated before the action runs and cannot ask
 /// that question, so the check is made where the answer exists, and returns Forbidden the same way.
 /// </summary>
@@ -29,7 +29,10 @@ public interface IStockDocumentService
     Task<BulkActionResult> BulkDeleteAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    /// <summary>ONE document holding every imported line, each in the warehouse it names; posted at once when asked.</summary>
+    /// <summary>
+    /// ONE document holding every imported line, each in the warehouse it names, or one document per warehouse when
+    /// the request asks to split; each posted at once when asked, on its own.
+    /// </summary>
     Task<Result<ImportCreateResult>> ImportCreateAsync(
         ImportCreateStockDocumentsRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);

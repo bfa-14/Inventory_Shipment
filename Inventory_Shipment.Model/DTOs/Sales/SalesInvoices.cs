@@ -578,9 +578,11 @@ public sealed class SaveSalesInvoiceRequest
 }
 
 /// <summary>
-/// An imported file becoming ONE invoice: the header it takes, and the lines — each keeping the
-/// warehouse the file named on it, so the invoice may span several. The draft reference goes on that
-/// invoice, so the import logs written before it existed are attached to it as its "Imported" row.
+/// An imported file becoming invoices: the header they take, and the lines — each keeping the
+/// warehouse the file named on it. By default ONE invoice, which may span several warehouses; with
+/// <see cref="SplitByWarehouse"/>, one invoice per warehouse, all with this same header. The draft
+/// reference goes on every save, so the import logs written before any invoice existed are attached,
+/// as its "Imported" row, to the first invoice actually created.
 /// </summary>
 public sealed class ImportCreateSalesInvoicesRequest
 {
@@ -627,6 +629,14 @@ public sealed class ImportCreateSalesInvoicesRequest
 
     /// <summary>True posts each created invoice at once; a refused posting leaves that one as a draft.</summary>
     public bool PostImmediately { get; init; }
+
+    /// <summary>
+    /// The user's choice, made at each import: false (the default) makes ONE invoice whose lines keep
+    /// their own warehouses; true makes one invoice per warehouse of the file, in the order of each
+    /// warehouse's first line, with that warehouse as its header warehouse. A file naming one
+    /// warehouse gives the same single invoice either way.
+    /// </summary>
+    public bool SplitByWarehouse { get; init; }
 
     /// <summary>1 Cash, 2 On Account, as on the invoice. Posting immediately needs one.</summary>
     [Range(1, 2)]
