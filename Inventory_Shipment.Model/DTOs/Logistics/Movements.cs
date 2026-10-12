@@ -251,10 +251,17 @@ public sealed class MovementContainerDto
     public string? WarehouseCode { get; init; }
 
     /// <summary>
-    /// The container's warehouse is active and belongs to the container's branch: the draft made by the Delivery takes
-    /// it. False (or no warehouse) = the draft is created without one ("warehouse to choose").
+    /// The container's warehouse is active, belongs to the container's branch and has no warehouse under it (script 72):
+    /// the draft made by the Delivery takes it. False (or no warehouse) = the draft is created without one ("warehouse
+    /// to choose").
     /// </summary>
     public bool WarehouseInBranch { get; init; }
+
+    /// <summary>
+    /// Why the container's warehouse will not be taken ("LUB, the container's, has warehouses under it"; script 72), null
+    /// when it will be or the container has none. The Complete dialog shows it as it comes.
+    /// </summary>
+    public string? WarehouseNote { get; init; }
 
     /// <summary>
     /// The open receipt is a draft made automatically by THIS movement's completion: cancelling the movement deletes it.

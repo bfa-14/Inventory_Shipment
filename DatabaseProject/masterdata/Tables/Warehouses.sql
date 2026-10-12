@@ -30,8 +30,8 @@ CREATE TABLE [masterdata].[Warehouses] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_BranchId]
-    ON [masterdata].[Warehouses]([BranchId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
+    ON [masterdata].[Warehouses]([ParentId] ASC);
 
 
 GO
@@ -42,14 +42,14 @@ CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_ActiveMainWarehouse]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
-    ON [masterdata].[Warehouses]([WarehouseName] ASC);
+CREATE NONCLUSTERED INDEX [IX_Warehouses_BranchId]
+    ON [masterdata].[Warehouses]([BranchId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
-    ON [masterdata].[Warehouses]([ParentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
+    ON [masterdata].[Warehouses]([WarehouseName] ASC);
 
 
 GO

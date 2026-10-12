@@ -1,4 +1,3 @@
--- containers' charges of the same group.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
     @Id INT
 AS
@@ -11,8 +10,11 @@ BEGIN
            ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
            ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload, ch.Notes,
            ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, xu.FullName AS CancelledByName, ch.CancelReason,
-           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion
+           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion,
+           -- (47) supplier payments: posted charges only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
     FROM logistics.ContainerCharges ch
+    OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
     INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
     INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
     INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId

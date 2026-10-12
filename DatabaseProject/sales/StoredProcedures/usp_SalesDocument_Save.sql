@@ -27,7 +27,10 @@ CREATE   PROCEDURE sales.usp_SalesDocument_Save
     @PaymentReference   NVARCHAR(100)  = NULL,
     @RowVersion         BINARY(8)      = NULL,
     @UserId             INT            = NULL,
-    @NewId              INT OUTPUT
+    @NewId              INT OUTPUT,
+    /* (56) The rate of the price list's currency when the invoice is billed in another; NULL = the
+       published one. Kept on the invoice, so a reopened draft converts its lines the same way. */
+    @PriceListRate      DECIMAL(18,6)  = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -53,10 +56,13 @@ BEGIN
          @MaxDiscountPercent = @MaxDiscountPercent, @Lines = @Lines,
          @InvoiceCurrencyId = @CurrencyId,
          @DocumentTypeId = @TypeId OUTPUT, @StockDirection = @Direction OUTPUT,
-         @CurrencyId = @ResolvedCurrencyId OUTPUT, @ResolvedRate = @Rate OUTPUT, @PriceRate = @PriceRate OUTPUT;
+         @CurrencyId = @ResolvedCurrencyId OUTPUT, @ResolvedRate = @Rate OUTPUT, @PriceRate = @PriceRate OUTPUT, @PriceListRate = @PriceListRate;
 
     -- From here on the invoice's currency is the resolved one.
     SET @CurrencyId = @ResolvedCurrencyId;
+    -- (56) the price list's rate is only worth keeping when the two currencies differ
+    DECLARE @StoredPriceRate DECIMAL(18,6) =
+        CASE WHEN (SELECT CurrencyId FROM masterdata.PriceLists WHERE Id = @PriceListId) <> @CurrencyId THEN @PriceRate END;
 
     /* PAYMENT TYPE. Only a sales invoice has one - a return is not paid for. Saving a draft only keeps
        what was chosen (and refuses nonsense); whether the choice is COMPLETE is judged on posting, so
@@ -135,10 +141,10 @@ BEGIN
                 EXEC inventory.usp_DocumentType_NextNumber @DocumentTypeCode, @Number OUTPUT, @BranchId;
 
             INSERT INTO sales.SalesDocuments (DocumentTypeId, DocumentNumber, DocumentDate, DueDate, BranchId, WarehouseId, ClientId, SalesmanId,
-                                              PriceListId, CurrencyId, RateType, ExchangeRate, ReferenceNo, Notes, Status, CreatedBy,
+                                              PriceListId, CurrencyId, RateType, ExchangeRate, PriceListRate, ReferenceNo, Notes, Status, CreatedBy,
                                               PaymentType, ReceiptMethodId, ReceiptAccountId, PaymentReference)
             VALUES (@TypeId, @Number, @DocumentDate, @DueDate, @BranchId, @WarehouseId, @ClientId, @SalesmanId,
-                    @PriceListId, @CurrencyId, @RateType, @Rate, @ReferenceNo, @Notes, 1, @UserId,
+                    @PriceListId, @CurrencyId, @RateType, @Rate, @StoredPriceRate, @ReferenceNo, @Notes, 1, @UserId,
                     @PaymentType, @ReceiptMethodId, @ReceiptAccountId, @PaymentReference);
             SET @Id = SCOPE_IDENTITY();
 
@@ -150,7 +156,7 @@ BEGIN
             UPDATE sales.SalesDocuments
             SET DocumentDate = @DocumentDate, DueDate = @DueDate, BranchId = @BranchId, WarehouseId = @WarehouseId,
                 ClientId = @ClientId, SalesmanId = @SalesmanId, PriceListId = @PriceListId, CurrencyId = @CurrencyId,
-                RateType = @RateType, ExchangeRate = @Rate, ReferenceNo = @ReferenceNo, Notes = @Notes,
+                RateType = @RateType, ExchangeRate = @Rate, PriceListRate = @StoredPriceRate, ReferenceNo = @ReferenceNo, Notes = @Notes,
                 PaymentType = @PaymentType, ReceiptMethodId = @ReceiptMethodId, ReceiptAccountId = @ReceiptAccountId, PaymentReference = @PaymentReference,
                 UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
             WHERE Id = @Id;

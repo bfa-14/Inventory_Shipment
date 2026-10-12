@@ -1,6 +1,3 @@
-/* ================================================================== 3. Item details show the container unit */
-
--- Re-created: PcPerContainer comes from the container unit; the units result set flags it.
 CREATE   PROCEDURE inventory.usp_Item_Get
     @Id INT
 AS
@@ -41,7 +38,8 @@ BEGIN
     WHERE i.Id = @Id;
 
     SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,
-           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, IsContainerUnit = ut.IsContainer, u.RowVersion
+           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, IsContainerUnit = ut.IsContainer,
+           u.LengthCm, u.WidthCm, u.HeightCm, u.WeightKg, u.RowVersion
     FROM inventory.ItemUnits u
     INNER JOIN masterdata.UnitTypes ut ON ut.Id = u.UnitTypeId
     WHERE u.ItemId = @Id

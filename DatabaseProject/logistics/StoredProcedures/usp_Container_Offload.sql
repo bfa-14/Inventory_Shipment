@@ -1,9 +1,3 @@
-/* ================================================================== 15. Offload = stock in at the real cost */
-
--- Needs every line fully invoiced by POSTED invoices and no movement in progress.
--- FOB per unit = the posted invoice lines; the posted charges are spread again over what really arrived and frozen;
--- landed per unit = FOB + charges / quantity received. Stock movements at the landed cost, moving average updated,
--- the invoice lines are received (in posting order) for what arrived.
 CREATE   PROCEDURE logistics.usp_Container_Offload
     @Id            INT,
     @Lines         logistics.tvp_ContainerReceipt READONLY,   -- empty = everything received as loaded
@@ -33,6 +27,8 @@ BEGIN
     IF @WarehouseId IS NULL THROW 69000, 'The offloading warehouse is required.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
         THROW 69000, 'The offloading warehouse is inactive or does not belong to the container branch.', 1;
+    IF masterdata.fn_Warehouse_IsLeaf(@WarehouseId) = 0
+        THROW 69000, 'The offloading warehouse has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.', 1;
     IF NOT EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE ContainerId = @Id)
         THROW 69009, 'The container has no items.', 1;
 

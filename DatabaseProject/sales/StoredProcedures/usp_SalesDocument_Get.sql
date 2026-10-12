@@ -11,7 +11,7 @@ BEGIN
            d.SalesmanId, sm.PartyCode AS SalesmanCode, sm.PartyName AS SalesmanName,
            d.PriceListId, pl.PriceListCode, pl.PriceListName,
            d.CurrencyId, c.CurrencyCode, c.CurrencyName, c.Symbol AS CurrencySymbol, c.DecimalPlaces, c.IsBaseCurrency,
-           d.RateType, d.ExchangeRate, bc.CurrencyCode AS BaseCurrencyCode,
+           d.RateType, d.ExchangeRate, d.PriceListRate, bc.CurrencyCode AS BaseCurrencyCode,
            d.ReferenceNo, d.Notes, d.Status,
            d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase, d.TotalCostBase, d.TotalGrossProfitBase,
            st.PaidAmount, st.OutstandingAmount, st.PaymentStatus,

@@ -1,6 +1,6 @@
 /* ================================================================== 2. The checks of a movement's Save, per container */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId, the place rules of
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, the place rules of
 -- fn_ContainerFitForMovement (PlaceName is the port of loading of a container that never moved).
 -- Every container with the columns of the picker and the checks of usp_Movement_Save for @MovementId (NULL = a new,
 -- planned movement) leaving from @FromPlaceId for @ToPlaceId with the type @MovementTypeId. For a container not on the movement: offloaded / closed / cancelled,

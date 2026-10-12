@@ -1,4 +1,3 @@
--- A cancelled invoice releases its own received quantities and its container lines.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
@@ -30,6 +29,10 @@ BEGIN
             THROW 65011, 'This document cannot be cancelled: posted documents were created from it. Cancel those first.', 1;
         IF EXISTS (SELECT 1 FROM purchase.LandedCostAdjustments WHERE SourceInvoiceId = @Id AND Status = 2)
             THROW 65011, 'This invoice cannot be cancelled: posted landed cost adjustments refer to it. Cancel those first.', 1;
+        -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+        IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+                   WHERE a.PurchaseDocumentId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+            THROW 65011, 'This invoice cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
 
         DECLARE @Ct NVARCHAR(400);
         IF @TypeCode = N'PO' AND EXISTS (SELECT 1 FROM logistics.ContainerLines cl INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId

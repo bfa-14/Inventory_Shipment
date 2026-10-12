@@ -20,7 +20,10 @@ CREATE   PROCEDURE sales.usp_SalesDocument_ValidateInput
     @InvoiceCurrencyId  INT = NULL,
     /* The rate of the PRICE LIST's currency, so the caller can convert a list price into the
        invoice currency. Equal to @ResolvedRate whenever the two currencies are the same. */
-    @PriceRate          DECIMAL(18,6) OUTPUT
+    @PriceRate          DECIMAL(18,6) OUTPUT,
+    /* (56) The rate typed for the PRICE LIST's currency, when it is not the invoice's; NULL = the
+       published one. It is what converts a list price into the invoice currency. */
+    @PriceListRate      DECIMAL(18,6) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -41,8 +44,8 @@ BEGIN
     IF @DueDate IS NOT NULL AND @DueDate < @DocumentDate THROW 64000, 'Due Date cannot be before the Document Date.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 64008, 'Branch not found or inactive.', 1;
-    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
-        THROW 64008, 'The default warehouse must be an active warehouse of the selected branch.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+        THROW 64008, 'The header warehouse must be an active warehouse.', 1;
     IF @ClientId IS NULL THROW 64000, 'Client is required.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ClientId AND IsClient = 1 AND IsActive = 1)
         THROW 64008, 'Client not found, inactive, or not flagged as a client.', 1;
@@ -66,14 +69,19 @@ BEGIN
 
     IF @RateType IS NULL OR @RateType NOT IN (1, 2, 3) THROW 64000, 'Rate type must be Official, Non-official or Market.', 1;
     IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 64000, 'Exchange rate must be greater than zero.', 1;
+    IF @PriceListRate IS NOT NULL AND @PriceListRate <= 0 THROW 64000, 'The price list rate must be greater than zero.', 1;
 
     /* The price list's rate is never the typed one: @ExchangeRate is the rate the header states for
        the INVOICE currency, and using it to undo the list currency would price the lines twice. */
-    SET @PriceRate = masterdata.fn_GetRate(@PriceCurrencyId, @RateType, @DocumentDate);
+    SET @PriceRate = CASE WHEN @PriceListRate IS NOT NULL AND @PriceCurrencyId <> @CurrencyId THEN @PriceListRate
+                          ELSE masterdata.fn_GetRate(@PriceCurrencyId, @RateType, @DocumentDate) END;
     IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @PriceCurrencyId AND IsBaseCurrency = 1) SET @PriceRate = 1;
 
     SET @ResolvedRate = COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @DocumentDate));
     IF EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsBaseCurrency = 1) SET @ResolvedRate = 1;
+    /* (56) ONE CURRENCY, NO CONVERSION. Billed in the list's own currency, a list price is the price:
+       dividing by the published rate and multiplying by a typed one scaled every line by the gap. */
+    IF @PriceCurrencyId = @CurrencyId SET @PriceRate = @ResolvedRate;
 
     IF @PriceRate IS NULL
     BEGIN
@@ -103,7 +111,6 @@ BEGIN
              WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
              WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
              WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
-             WHEN w.BranchId <> @BranchId THEN N'warehouse ' + w.WarehouseCode + N' is not available for the selected branch.'
              WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
              WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
              WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
@@ -113,10 +120,18 @@ BEGIN
     LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
     LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
     LEFT JOIN masterdata.Warehouses w  ON w.Id = l.WarehouseId
-    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0 OR w.BranchId <> @BranchId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
        OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
        OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
     ORDER BY l.LineNumber;
+
+    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+    IF @Msg IS NULL
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
+        FROM @Lines l
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE masterdata.fn_Warehouse_IsLeaf(w.Id) = 0
+        ORDER BY l.LineNumber;
 
     IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
 END

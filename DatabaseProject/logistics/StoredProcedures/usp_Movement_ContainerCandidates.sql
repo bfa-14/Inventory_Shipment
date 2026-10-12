@@ -1,6 +1,6 @@
 /* ================================================================== 5. Candidates of a movement */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
 -- saved movement's) for the place rules of an Origin-stage movement.
 -- The containers that can join a movement (@MovementId NULL = a new one) leaving from @FromPlaceId (the From on the
 -- page, saved or not): not on the movement, not offloaded / closed / cancelled. @IncludeBlocked = 1 also lists the
@@ -15,8 +15,8 @@ CREATE   PROCEDURE logistics.usp_Movement_ContainerCandidates
     @IncludeBlocked  BIT           = 0,
     @PageNumber      INT           = 1,
     @PageSize        INT           = 200,
-    @ToPlaceId       INT           = NULL,   -- (49) the To on the page
-    @MovementTypeId  INT           = NULL    -- (49) the type on the page
+    @ToPlaceId       INT           = NULL,   -- (53) the To on the page
+    @MovementTypeId  INT           = NULL    -- (53) the type on the page
 AS
 BEGIN
     SET NOCOUNT ON;

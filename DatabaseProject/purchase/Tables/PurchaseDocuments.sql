@@ -78,14 +78,14 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
-    ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
+    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
-    ON [purchase].[PurchaseDocuments]([SupplierId] ASC, [DocumentDate] DESC);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
+    ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
 
 
 GO

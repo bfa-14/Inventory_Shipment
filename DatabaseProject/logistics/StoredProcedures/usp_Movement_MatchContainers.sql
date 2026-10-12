@@ -1,14 +1,14 @@
 /* ================================================================== 6. Container numbers matched for a movement */
 
--- Re-created (49) from the body of script 46: + @ToPlaceId and @MovementTypeId, as the candidates.
+-- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, as the candidates.
 -- One row per number (empty ones ignored), in the input order. Result: Ready | AlreadyOnMovement | NotFound |
 -- Ambiguous | Blocked | Duplicate; Reason and Note are the texts of the candidates (fn_Movement_ContainerCheck).
 CREATE   PROCEDURE logistics.usp_Movement_MatchContainers
     @MovementId  INT = NULL,
     @FromPlaceId INT,
     @Numbers     logistics.tvp_TextList READONLY,
-    @ToPlaceId      INT = NULL,   -- (49) the To on the page
-    @MovementTypeId INT = NULL    -- (49) the type on the page
+    @ToPlaceId      INT = NULL,   -- (53) the To on the page
+    @MovementTypeId INT = NULL    -- (53) the type on the page
 AS
 BEGIN
     SET NOCOUNT ON;

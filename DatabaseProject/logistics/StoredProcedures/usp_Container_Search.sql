@@ -1,6 +1,6 @@
 /* ================================================================== 7. The containers: search */
 
--- Re-created (50) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
+-- Re-created (54) from the body of script 27: the fill from the items' Container units instead of MaxUnits /
 -- UtilizationPct.
 CREATE   PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
