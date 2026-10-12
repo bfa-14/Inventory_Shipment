@@ -2204,7 +2204,8 @@ GO
 -- invoice's UsesGoodsReceipts, and QuantityBase / ReceivedBase for the lists' "Received" progress (an order: ordered /
 -- received; an invoice: invoiced / received). Two filters: @ToReceive (posted or closed orders with goods still to
 -- come, the outstanding of rule 17) and @NotFullyReceived (posted or closed supplier invoices not fully received; one
--- posted with its stock before goods receipts is). Every other column, filter and sort is unchanged.
+-- posted with its stock before goods receipts is). ReceivedPercent and InvoicedPercent are NULL on a draft order. Every
+-- other column, filter and sort is unchanged.
 CREATE OR ALTER PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
     @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
@@ -2247,9 +2248,10 @@ BEGIN
            d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode,
            d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
-           -- (65) received = goods receipts (GoodsReceivedBase); invoiced stays below
-           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.GoodsReceived / prog.Ordered AS DECIMAL(5,1)) END,
-           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           -- (65) received = goods receipts (GoodsReceivedBase); invoiced stays below. Both NULL on a draft order: nothing
+           --      is received or invoiced against a draft, so the list shows a dash and its export writes nothing, not 0%
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND d.Status <> 1 AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.GoodsReceived / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND d.Status <> 1 AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
            InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
                                   WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,
            DraftInvoiceCount = CASE WHEN dt.Code = N'PO' THEN (SELECT COUNT(*) FROM purchase.PurchaseDocuments x WHERE x.SourceDocumentId = d.Id AND x.Status = 1) END,
@@ -5705,7 +5707,7 @@ BEGIN
 
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@ContainerId, N'Updated', LEFT(N'Charge posted: ' + @Label
-                                                   + CASE WHEN @After = 1 THEN N' (after the offload: item costs adjusted)' ELSE N'' END, 500), @UserId);
+                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END, 500), @UserId);
 
             FETCH NEXT FROM posts INTO @ChargeId;
         END

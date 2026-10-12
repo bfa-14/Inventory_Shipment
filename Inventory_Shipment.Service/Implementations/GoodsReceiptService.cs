@@ -696,11 +696,10 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             sheet.Cell(row, 6).Value = LineSource(receipt, line);
             sheet.Cell(row, 7).Value = line.ExpectedQuantityBase is { } expected ? expected : Blank.Value;
             sheet.Cell(row, 8).Value = line.QuantityBase;
-            // A difference is a container line counted otherwise, or the rest of an order line settled short; a partial
-            // receipt of an order line is not one - the rest is still to come.
-            sheet.Cell(row, 9).Value = line.ExpectedQuantityBase is { } loaded && (line.ContainerLineId is not null || line.CloseShort)
-                ? line.QuantityBase - loaded
-                : Blank.Value;
+            // Received - expected on every line that expects something, as the receipt page and the print page show it
+            // (a partial receipt of an order line too: 60 of 100 is -40). Whether the missing pieces are settled short
+            // is the "Settled Short (pcs)" column's business, not this one's. A line without an order expects nothing.
+            sheet.Cell(row, 9).Value = line.ExpectedQuantityBase is { } expectedPieces ? line.QuantityBase - expectedPieces : Blank.Value;
             sheet.Cell(row, 10).Value = LineReason(line);
             sheet.Cell(row, 11).Value = line.SettledShortBase;
             sheet.Cell(row, 12).Value = line.UnitCostBase is { } cost ? cost : Blank.Value;
