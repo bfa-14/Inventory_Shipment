@@ -1152,6 +1152,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `73_Payment_Allocation_By_Container.sql` | Supplier payments: a purchase invoice linked to two containers or more (or a container and unlinked items) is paid container by container ("Unlinked items" names its items); posting refused until the split adds up; one container alone is recorded by itself |
 | `74_Dashboard_Permission.sql` | The Dashboard gets its own permission `dashboard.view` (granted once to every role) |
 | `75_Screen_Permissions.sql` | Stock Valuation, Customer Statement, Movements and Tracking get their own view permissions (granted once to the roles holding what each screen borrowed); a container's page keeps its movements and route with View Containers |
+| `76_CashBankAccount_No_Branch.sql` | Cash / bank accounts belong to no branch: the Branch is gone from the account, and sales invoices, receipts and supplier payments no longer refuse an account of another branch |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

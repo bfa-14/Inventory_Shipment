@@ -1,3 +1,4 @@
+
 CREATE   PROCEDURE sales.usp_SalesDocument_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -41,7 +42,7 @@ BEGIN
         ORDER BY l.LineNumber;
         IF @Msg IS NOT NULL THROW 64000, @Msg, 1;
 
-        -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+        -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 70).
         SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
         FROM sales.SalesDocumentLines l
         INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
@@ -67,8 +68,7 @@ BEGIN
                     THROW 64000, 'The receipt method is no longer active.', 1;
                 SELECT @Msg = CASE WHEN a.IsActive = 0 THEN N'The account ' + a.AccountCode + N' is no longer active.'
                                    WHEN a.CurrencyId <> @CurId THEN N'The account ' + a.AccountCode + N' holds ' + ac.CurrencyCode
-                                        + N', but this invoice is in ' + ic.CurrencyCode + N'. Choose an account in ' + ic.CurrencyCode + N'.'
-                                   WHEN a.BranchId IS NOT NULL AND a.BranchId <> @BranchId THEN N'The account ' + a.AccountCode + N' is not available for this invoice''s branch.' END
+                                        + N', but this invoice is in ' + ic.CurrencyCode + N'. Choose an account in ' + ic.CurrencyCode + N'.' END
                 FROM masterdata.CashBankAccounts a
                 INNER JOIN masterdata.Currencies ac ON ac.Id = a.CurrencyId
                 INNER JOIN masterdata.Currencies ic ON ic.Id = @CurId

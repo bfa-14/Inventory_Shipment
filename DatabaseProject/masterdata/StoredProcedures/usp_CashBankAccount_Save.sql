@@ -1,10 +1,11 @@
+
 CREATE   PROCEDURE masterdata.usp_CashBankAccount_Save
     @Id          INT           = NULL,
     @AccountCode NVARCHAR(20),
     @AccountName NVARCHAR(100),
     @AccountType NVARCHAR(10),
     @CurrencyId  INT,
-    @BranchId    INT           = NULL,
+    @BranchId    INT           = NULL,          -- ignored since script 76: an account belongs to no branch
     @Description NVARCHAR(500) = NULL,
     @IsActive    BIT           = 1,
     @RowVersion  BINARY(8)     = NULL,
@@ -22,8 +23,7 @@ BEGIN
     IF @AccountType IS NULL OR @AccountType NOT IN (N'Cash', N'Bank') THROW 71000, 'Account type must be Cash or Bank.', 1;
     IF @CurrencyId IS NULL OR NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
         THROW 71000, 'Currency not found or inactive.', 1;
-    IF @BranchId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
-        THROW 71000, 'Branch not found or inactive.', 1;
+    SET @BranchId = NULL;   -- script 76: a cash / bank account belongs to no branch
     IF EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE AccountCode = @AccountCode AND (@Id IS NULL OR Id <> @Id))
         THROW 71013, 'This account code already exists.', 1;
 
