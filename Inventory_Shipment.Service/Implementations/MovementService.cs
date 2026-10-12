@@ -39,9 +39,9 @@ public sealed class MovementService : IMovementService
     public async Task<Result<PagedResult<MovementListDto>>> SearchAsync(
         MovementQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        if (!permissions.Contains(Permissions.Containers.MovementsView))
         {
-            return Forbidden<PagedResult<MovementListDto>>(Permissions.Containers.View);
+            return Forbidden<PagedResult<MovementListDto>>(Permissions.Containers.MovementsView);
         }
 
         if (InvalidStatus(query) is { } invalid)
@@ -63,9 +63,10 @@ public sealed class MovementService : IMovementService
     public async Task<Result<MovementDto>> GetAsync(
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        // The Movements screen, or a container's page showing the movements it travels with (script 75).
+        if (!permissions.Contains(Permissions.Containers.MovementsView) && !permissions.Contains(Permissions.Containers.View))
         {
-            return Forbidden<MovementDto>(Permissions.Containers.View);
+            return Forbidden<MovementDto>(Permissions.Containers.MovementsView);
         }
 
         return await ReadAsync(id, cancellationToken);
@@ -280,9 +281,9 @@ public sealed class MovementService : IMovementService
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         MovementQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        if (!permissions.Contains(Permissions.Containers.MovementsView))
         {
-            return Forbidden<(byte[], string)>(Permissions.Containers.View);
+            return Forbidden<(byte[], string)>(Permissions.Containers.MovementsView);
         }
 
         if (InvalidStatus(query) is { } invalid)

@@ -249,9 +249,11 @@ public sealed class ContainerService : IContainerService
     public async Task<Result<TrackingDto>> GetTrackingAsync(
         TrackingQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        // The Tracking board needs View Tracking; a container's page shows its own route with View Containers (script 75).
+        var ownRoute = query.ContainerId is not null && permissions.Contains(Permissions.Containers.View);
+        if (!ownRoute && !permissions.Contains(Permissions.Containers.TrackingView))
         {
-            return Forbidden<TrackingDto>(Permissions.Containers.View);
+            return Forbidden<TrackingDto>(Permissions.Containers.TrackingView);
         }
 
         return Result<TrackingDto>.Success(await _containers.GetTrackingAsync(query, cancellationToken));

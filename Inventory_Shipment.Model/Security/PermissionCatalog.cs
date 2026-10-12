@@ -14,6 +14,15 @@ public static class Permissions
     /// <summary>JWT claim type carrying one permission code per claim.</summary>
     public const string ClaimType = "permission";
 
+    /// <summary>
+    /// The Dashboard (script 74): opening it at all. Each figure on it still shows only to a reader who
+    /// may open the screen it comes from.
+    /// </summary>
+    public static class Dashboard
+    {
+        public const string View = "dashboard.view";
+    }
+
     public static class Security
     {
         public const string UsersView = "security.users.view";
@@ -68,6 +77,9 @@ public static class Permissions
         /* Customer receipts: money coming in. View sees them; Create covers drafts and their files; the
            rest are separate rights because they are the ones that move a customer's balance. */
         public const string ReceiptsView = "sales.receipts.view";
+
+        /// <summary>Sales › Customer Statement (script 75): its own screen, no longer View Receipts.</summary>
+        public const string StatementView = "sales.statement.view";
         public const string ReceiptsCreate = "sales.receipts.create";
         public const string ReceiptsPost = "sales.receipts.post";
         public const string ReceiptsReverse = "sales.receipts.reverse";
@@ -136,6 +148,9 @@ public static class Permissions
     public static class Inventory
     {
         public const string ItemsView = "inventory.items.view";
+
+        /// <summary>Inventory › Stock Valuation (script 75): its own screen, no longer View Items.</summary>
+        public const string ValuationView = "inventory.valuation.view";
         public const string ItemsCreate = "inventory.items.create";
         public const string ItemsEdit = "inventory.items.edit";
         public const string ItemsDelete = "inventory.items.delete";
@@ -271,6 +286,13 @@ public static class Permissions
         /* Script 27: the route, the costs and the documents of containers. Charges have their own
            view / create / post / cancel, because posting one moves the cost of the items. */
         public const string MovementsManage = "containers.movements.manage";
+
+        /// <summary>
+        /// Logistics › Movements and Tracking (script 75): their own screens, no longer View Containers. A
+        /// container's own page still shows its movements and route with View Containers.
+        /// </summary>
+        public const string MovementsView = "containers.movements.view";
+        public const string TrackingView = "containers.tracking.view";
         public const string ChargesView = "containers.charges.view";
         public const string ChargesCreate = "containers.charges.create";
         public const string ChargesPost = "containers.charges.post";
@@ -278,6 +300,7 @@ public static class Permissions
         public const string AttachmentsManage = "containers.attachments.manage";
     }
 
+    private const string DashboardModule = "Dashboard";
     private const string SecurityModule = "Security";
     private const string SalesModule = "Sales";
     private const string ConfigurationModule = "Configuration";
@@ -288,6 +311,8 @@ public static class Permissions
 
     public static IReadOnlyList<PermissionDefinition> All { get; } =
     [
+        new(Dashboard.View, "View Dashboard", DashboardModule,
+            "Open the Dashboard. Each figure on it still shows only to who may open the screen it comes from.", 5),
         new(Security.UsersView, "View users", SecurityModule,
             "See the list of user accounts and their details.", 10),
         new(Security.UsersCreate, "Create users", SecurityModule,
@@ -386,6 +411,8 @@ public static class Permissions
 
         new(Inventory.ItemsView, "View items", InventoryModule,
             "See the Item Definition list and item details.", 400),
+        new(Inventory.ValuationView, "View Stock Valuation", InventoryModule,
+            "Open Stock Valuation: the stock of every item and warehouse at its average cost.", 405),
         new(Inventory.ItemsCreate, "Create items", InventoryModule,
             "Add new items with units and attachments.", 410),
         new(Inventory.ItemsEdit, "Edit items", InventoryModule,
@@ -548,6 +575,10 @@ public static class Permissions
             "Define the document types used by attachments.", 1400),
 
         // Names, descriptions and sort orders match script 27's MERGE, so the start-up sync changes nothing.
+        new(Containers.MovementsView, "View Movements", ContainersModule,
+            "Open the Movements list and a movement's page (a container's own page shows its movements with View Containers).", 1405),
+        new(Containers.TrackingView, "View Tracking", ContainersModule,
+            "Open the Tracking board (a container's own page shows its route with View Containers).", 1407),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,
@@ -588,6 +619,8 @@ public static class Permissions
             "Delete draft sales invoices.", 660),
         new(Sales.ReceiptsView, "View Receipts", SalesModule,
             "See customer receipts and the invoices they paid.", 700),
+        new(Sales.StatementView, "View Customer Statement", SalesModule,
+            "Open the Customer Statement: a customer's invoices, receipts and balance.", 705),
         new(Sales.ReceiptsCreate, "Create Receipts", SalesModule,
             "Create and edit draft customer receipts, and attach files to them.", 710),
         new(Sales.ReceiptsPost, "Post Receipts", SalesModule,

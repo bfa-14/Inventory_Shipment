@@ -4,6 +4,7 @@ using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Logistics;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Inventory_Shipment.API.Controllers.Logistics;
@@ -28,7 +29,7 @@ public sealed class MovementsController : ControllerBase
     }
 
     [HttpGet]
-    [HasPermission(Permissions.Containers.View)]
+    [HasPermission(Permissions.Containers.MovementsView)]
     [ProducesResponseType<PagedResult<MovementListDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<PagedResult<MovementListDto>>> Search(
         [FromQuery] MovementQuery query, CancellationToken cancellationToken)
@@ -39,7 +40,7 @@ public sealed class MovementsController : ControllerBase
 
     /// <summary>The filtered list, every page, as a workbook.</summary>
     [HttpGet("export")]
-    [HasPermission(Permissions.Containers.View)]
+    [HasPermission(Permissions.Containers.MovementsView)]
     [Produces(SpreadsheetContentType)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<IActionResult> Export([FromQuery] MovementQuery query, CancellationToken cancellationToken)
@@ -87,8 +88,9 @@ public sealed class MovementsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    // View Movements OR View Containers: a container's page reads the movements it travels with.
     [HttpGet("{id:int}")]
-    [HasPermission(Permissions.Containers.View)]
+    [Authorize]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<MovementDto>> GetById(int id, CancellationToken cancellationToken)

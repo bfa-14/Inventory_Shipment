@@ -5,6 +5,7 @@ using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Logistics;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
+using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 
 namespace Inventory_Shipment.API.Controllers.Logistics;
@@ -281,8 +282,9 @@ public sealed class ContainersController : ControllerBase
     /* ── tracking ─────────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>The tracking board: { containers, legs } — open containers and those offloaded during the last offloadedDays days.</summary>
+    // View Tracking for the board; one container's route (containerId) with View Containers too.
     [HttpGet("tracking")]
-    [HasPermission(Permissions.Containers.View)]
+    [Authorize]
     [ProducesResponseType<TrackingDto>(StatusCodes.Status200OK)]
     public async Task<ActionResult<TrackingDto>> Tracking([FromQuery] TrackingQuery query, CancellationToken cancellationToken)
     {

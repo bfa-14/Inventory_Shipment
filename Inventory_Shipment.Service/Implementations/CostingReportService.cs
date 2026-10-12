@@ -32,9 +32,9 @@ public sealed class CostingReportService : ICostingReportService
     public async Task<Result<InventoryValuationResult>> ValuationAsync(
         int? warehouseId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Inventory.ItemsView))
+        if (!permissions.Contains(Permissions.Inventory.ValuationView))
         {
-            return Forbidden<InventoryValuationResult>(Permissions.Inventory.ItemsView);
+            return Forbidden<InventoryValuationResult>(Permissions.Inventory.ValuationView);
         }
 
         var rows = await _reports.ValuationAsync(warehouseId, cancellationToken);

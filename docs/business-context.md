@@ -1150,6 +1150,8 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `71_Warehouse_Used_Not_Parent.sql` | Ali: a warehouse already used in transactions cannot become a parent |
 | `72_Merge_GoodsReceipts_LeafWarehouses.sql` | The merge of the two lines of work: the procedures both changed hold both changes; goods receipts take the leaf-warehouse rule; the dashboard counts what is still to receive |
 | `73_Payment_Allocation_By_Container.sql` | Supplier payments: a purchase invoice linked to two containers or more (or a container and unlinked items) is paid container by container ("Unlinked items" names its items); posting refused until the split adds up; one container alone is recorded by itself |
+| `74_Dashboard_Permission.sql` | The Dashboard gets its own permission `dashboard.view` (granted once to every role) |
+| `75_Screen_Permissions.sql` | Stock Valuation, Customer Statement, Movements and Tracking get their own view permissions (granted once to the roles holding what each screen borrowed); a container's page keeps its movements and route with View Containers |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
