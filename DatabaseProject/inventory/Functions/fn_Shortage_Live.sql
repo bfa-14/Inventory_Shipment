@@ -1,14 +1,23 @@
--- "pending" once its container is offloaded (short-shipped quantities do not stay expected forever).
 CREATE   FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
 RETURNS TABLE
 AS
 RETURN
 (
+    /* (62) THE WAREHOUSE AND EVERY WAREHOUSE UNDER IT. A plan for a parent counts the stock, sales,
+       orders and containers of its whole tree; a warehouse with nothing under it is just itself.
+       The depth guard stops a cycle left by older data instead of recursing for ever. */
+    WITH tree AS
+    (
+        SELECT w.Id, 0 AS Depth FROM masterdata.Warehouses w WHERE w.Id = @WarehouseId
+        UNION ALL
+        SELECT w.Id, t.Depth + 1 FROM masterdata.Warehouses w INNER JOIN tree t ON w.ParentId = t.Id WHERE t.Depth < 20
+    )
     SELECT i.Id AS ItemId, i.ItemCode, i.ItemName, i.BrandId, i.ItemFamilyId, i.IsBivac,
            i.DefaultSupplierId, i.LastSupplierId, i.MinQuantity, i.MaxQuantity, i.LastCost, i.AverageCost, i.LeadTimeDays,
            ItemPcPerContainer = cnt.PackingFormula,                         -- the item's Container unit, NULL when none
            PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
-           CurrentInventoryBase     = inventory.fn_StockOnHand(i.Id, @WarehouseId),
+           CurrentInventoryBase     = ISNULL((SELECT SUM(m.QuantityBase) FROM inventory.StockMovements m
+                                              WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)), 0),
            TransitBase              = ISNULL(tr.Transit, 0),
            OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
                                            THEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) ELSE 0 END,
@@ -26,7 +35,7 @@ RETURN
         FROM purchase.PurchaseDocumentLines l
         INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
         INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
-        WHERE l.ItemId = i.Id AND l.WarehouseId = @WarehouseId AND l.QuantityBase > l.ReceivedQuantityBase
+        WHERE l.ItemId = i.Id AND l.WarehouseId IN (SELECT t.Id FROM tree t) AND l.QuantityBase > l.ReceivedQuantityBase
           AND ((dt.Code = N'PO'   AND d.Status = 2)
             OR (dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 2
                 AND NOT EXISTS (SELECT 1 FROM logistics.ContainerLines xcl INNER JOIN logistics.Containers xc ON xc.Id = xcl.ContainerId
@@ -40,14 +49,14 @@ RETURN
         INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
         INNER JOIN purchase.PurchaseDocumentLines pl  ON pl.Id = cl.PoLineId
         WHERE cl.ItemId = i.Id AND c.Status IN (3, 4, 5)
-          AND pl.WarehouseId = @WarehouseId                  -- the order's warehouse, like the open order / invoice quantities
+          AND pl.WarehouseId IN (SELECT t.Id FROM tree t)                  -- the order's warehouse, like the open order / invoice quantities
           AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
     ) tr
     OUTER APPLY
     (
         SELECT Sold = SUM(-m.QuantityBase)
         FROM inventory.StockMovements m
-        WHERE m.ItemId = i.Id AND m.WarehouseId = @WarehouseId AND m.DocumentFamily = N'Sales'
+        WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t) AND m.DocumentFamily = N'Sales'
           AND m.MovementDate >= DATEADD(MONTH, -@MonthsOfHistory, CAST(SYSUTCDATETIME() AS DATE))
     ) s
     OUTER APPLY

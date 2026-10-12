@@ -3,6 +3,9 @@
 **Status: approved and built (October 2026).** Database scripts 64 (new objects) and 65 (the switch), then the API
 and the web. The business owner chose the recommended (A) option for every decision listed under "Decisions still
 needed" below. This file is the design the code was built from; the code is the truth where they differ.
+Since script 72 (the merge with Ali's work) every goods-receipt warehouse must also be at the bottom of the tree (no
+warehouses under it): an automatic draft takes the container's warehouse only when it is such a leaf, the Delivery's
+dialog and notification say why it did not, and the draft's orange alert says so; see business-context 4.12 "Warehouses".
 - Posting a supplier invoice no longer moves stock: goods enter only through a goods receipt (GRN).
 - A draft receipt is created for each container when its Delivery movement is completed; local goods are received
   with "Receive goods…".
@@ -120,7 +123,8 @@ Error block **63xxx** is for goods receipts. It is unused today and below the `L
        loading, Other) plus a free note. 63000: "Line {n} ({item}): choose a reason when the received quantity differs
        from the loaded quantity."
      - **The difference is settled** (rule 17): nothing more is expected for those pieces.
-   - **Warehouse:** one for the whole container, which must belong to the container's branch (as the offload today).
+   - **Warehouse:** one for the whole container, which must belong to the container's branch (as the offload today)
+     and, since script 72, have no warehouses under it.
      - Missing (63000): "Choose the warehouse the goods are received into."
      - Wrong (63000): "The warehouse {code} is inactive or does not belong to the branch of container KTG-…."
    - **Date received:**
@@ -1526,8 +1530,9 @@ LastCost sources.
     - one receipt, with the supplier per line;
     - `ApplyReceipts` per supplier, giving the last supplier per item, as the offload did;
     - the header shows "Several suppliers".
-11. **Container without warehouse, or with one of another branch:** the auto draft has no warehouse; posting is refused
-    until one of the container's branch is chosen.
+11. **Container without warehouse, or with one of another branch** (since script 72 also: one with warehouses under
+    it): the auto draft has no warehouse; posting is refused until one of the container's branch, at the bottom of the
+    tree, is chosen.
 12. **Container with two Delivery-stage movements:**
     - the second completion finds an open receipt; it is reported "already has a receipt";
     - after a receipt is cancelled, the next Delivery completion (or "Receive goods…") creates a new draft.

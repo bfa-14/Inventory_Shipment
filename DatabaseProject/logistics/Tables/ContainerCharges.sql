@@ -48,12 +48,6 @@ CREATE TABLE [logistics].[ContainerCharges] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Container]
-    ON [logistics].[ContainerCharges]([ContainerId] ASC, [Status] ASC);
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Movement]
     ON [logistics].[ContainerCharges]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
 
@@ -62,6 +56,12 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Group]
     ON [logistics].[ContainerCharges]([GroupId] ASC) WHERE ([GroupId] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Container]
+    ON [logistics].[ContainerCharges]([ContainerId] ASC, [Status] ASC);
 
 
 GO

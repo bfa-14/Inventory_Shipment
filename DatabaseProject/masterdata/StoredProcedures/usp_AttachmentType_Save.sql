@@ -1,4 +1,6 @@
--- least one; NULL = unchanged on an update, and on an insert the kind of @AppliesTo (Receipt = RCPT, else CONTAINER).
+-- unchanged on an update, and on an insert the kind of @AppliesTo: Receipt = RCPT, Payment = PAY, else CONTAINER);
+-- AppliesTo may be Payment; a name is unique within its list (receipts and payments may both have "Cheque / Cheque
+-- Copy").
 CREATE   PROCEDURE masterdata.usp_AttachmentType_Save
     @Id         INT          = NULL,
     @Category   NVARCHAR(30),
@@ -21,8 +23,9 @@ BEGIN
     SET @AppliesTo = NULLIF(LTRIM(RTRIM(@AppliesTo)), N'');
     IF @Category IS NULL THROW 69000, 'Category is required.', 1;
     IF @SubType IS NULL THROW 69000, 'Sub type is required.', 1;
-    IF @AppliesTo IS NOT NULL AND @AppliesTo NOT IN (N'Logistics', N'Receipt') THROW 69000, 'Applies to must be Logistics or Receipt.', 1;
-    IF EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Category = @Category AND SubType = @SubType AND (@Id IS NULL OR Id <> @Id))
+    IF @AppliesTo IS NOT NULL AND @AppliesTo NOT IN (N'Logistics', N'Receipt', N'Payment') THROW 69000, 'Applies to must be Logistics, Receipt or Payment.', 1;
+    DECLARE @List NVARCHAR(12) = COALESCE(@AppliesTo, (SELECT AppliesTo FROM masterdata.AttachmentTypes WHERE Id = @Id), N'Logistics');
+    IF EXISTS (SELECT 1 FROM masterdata.AttachmentTypes WHERE Category = @Category AND SubType = @SubType AND AppliesTo = @List AND (@Id IS NULL OR Id <> @Id))
         THROW 69013, 'This category and sub type already exist.', 1;
 
     DECLARE @Kinds TABLE (Code NVARCHAR(20) PRIMARY KEY);
@@ -40,7 +43,7 @@ BEGIN
         END
     END
     ELSE IF @Id IS NULL
-        INSERT INTO @Kinds (Code) VALUES (CASE WHEN @AppliesTo = N'Receipt' THEN N'RCPT' ELSE N'CONTAINER' END);
+        INSERT INTO @Kinds (Code) VALUES (CASE @AppliesTo WHEN N'Receipt' THEN N'RCPT' WHEN N'Payment' THEN N'PAY' ELSE N'CONTAINER' END);
 
     BEGIN TRY
         BEGIN TRANSACTION;

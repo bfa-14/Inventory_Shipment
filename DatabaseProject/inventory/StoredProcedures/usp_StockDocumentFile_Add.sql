@@ -1,6 +1,6 @@
 /* ================================================================== 7. Inventory In / Out (INV_IN, INV_OUT) */
 
--- Re-created (48) from the body of script 15: + the type (required, used for the document's kind), date and note.
+-- Re-created (52) from the body of script 15: + the type (required, used for the document's kind), date and note.
 CREATE   PROCEDURE inventory.usp_StockDocumentFile_Add
     @DocumentId INT, @FileName NVARCHAR(255), @ContentType NVARCHAR(100), @SizeBytes INT, @Content VARBINARY(MAX),
     @UserId INT = NULL, @NewId INT OUTPUT,

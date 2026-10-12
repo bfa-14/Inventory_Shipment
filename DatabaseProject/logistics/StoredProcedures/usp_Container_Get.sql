@@ -1,6 +1,6 @@
 /* ================================================================== 6. The container: get */
 
--- Re-created (50) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
+-- Re-created (54) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
 -- MissingContainerUnitItems, RemainingPcs, IsOverCapacity) instead of MaxUnits / TypeMaxUnits / UtilizationPct /
 -- RemainingCapacityBase; the lines give each item's PcsPerContainer.
 CREATE   PROCEDURE logistics.usp_Container_Get

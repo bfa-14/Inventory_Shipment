@@ -42,8 +42,9 @@ BEGIN
         /* A used account keeps its currency. Receipt lines were checked against it when they were
            saved, and changing it afterwards would leave posted money sitting in the wrong one. */
         IF EXISTS (SELECT 1 FROM masterdata.CashBankAccounts WHERE Id = @Id AND CurrencyId <> @CurrencyId)
-           AND EXISTS (SELECT 1 FROM sales.ReceiptLines WHERE CashBankAccountId = @Id)
-            THROW 71000, 'The currency of an account that receipts already use cannot be changed.', 1;
+           AND (EXISTS (SELECT 1 FROM sales.ReceiptLines WHERE CashBankAccountId = @Id)
+                OR EXISTS (SELECT 1 FROM purchase.PaymentLines WHERE CashBankAccountId = @Id))
+            THROW 71000, 'The currency of an account that receipts or supplier payments already use cannot be changed.', 1;
 
         UPDATE masterdata.CashBankAccounts
         SET AccountCode = @AccountCode, AccountName = @AccountName, AccountType = @AccountType, CurrencyId = @CurrencyId,

@@ -22,6 +22,10 @@ BEGIN
 
     IF @ContainerId IS NULL THROW 70006, 'Charge not found.', 1;
     IF @Status <> 2 THROW 70010, 'Only a posted charge can be cancelled (delete a draft instead).', 1;
+    -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+    IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+               WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+        THROW 70010, 'This charge cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
     IF @CtStatus = 7 THROW 70010, 'The container is closed. Reopen it first.', 1;
     IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
         THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;

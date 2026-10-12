@@ -1,6 +1,3 @@
-/* ================================================================== 5. Get: containers needed */
-
--- Re-created (43) from the body of script 27: header ContainersNeeded; an invoice shipped in containers is not "invoiced directly".
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Get
     @Id INT
 AS
@@ -42,8 +39,11 @@ BEGIN
            d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
            d.ClosedAtUtc, d.ClosedBy, ku.FullName AS ClosedByName, d.CloseReason,
            d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
-           d.RowVersion
+           d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
     FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
     INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
     INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
     INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId

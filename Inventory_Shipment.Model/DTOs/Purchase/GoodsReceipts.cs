@@ -1048,7 +1048,10 @@ public sealed class ReceivableContainerDto
     public string? WarehouseCode { get; init; }
     public string? WarehouseName { get; init; }
 
-    /// <summary>The warehouse is active and of the container's branch: the draft takes it as "Receive into".</summary>
+    /// <summary>
+    /// The warehouse is active, of the container's branch and at the bottom of the tree (script 72): the draft takes it
+    /// as "Receive into".
+    /// </summary>
     public bool? WarehouseInBranch { get; init; }
 
     /// <summary>The single supplier of its orders; null with "Several suppliers".</summary>

@@ -7,6 +7,9 @@ conversations, the prompt files 32–46, scripts 27–29 and the Containers User
 *Updated on 11 October 2026 for **goods receipts** (scripts 64 and 65): goods now enter the stock only through a goods
 receipt, and a supplier invoice no longer moves stock (glossary, 3.3–3.10, 4.12).*
 
+*Updated on 12 October 2026 for the merge with Ali's GitLab work (scripts 68–72): the new Dashboard, lines in a
+warehouse at the bottom of the tree of any branch, goods receipts included (1.4, 3.1, 4.9, 4.12, 5.4).*
+
 *How sure I am:*
 - *Where I am not sure, I say so with **(unsure)** or **(check the code)**.*
 - *Prompts 1–31 and Ali's scripts 29–41 were written before this session or by someone else. I only know them
@@ -79,7 +82,15 @@ after them it charges **demurrage**.
   - **BR-002** is another branch, probably Lubumbashi **(unsure)**.
   - Whether a BR-001 / head office exists is **(unsure)**.
 - **Warehouses** belong to a branch. A warehouse can stand under another warehouse (a hierarchy, added by Ali).
-- The warehouse a container's goods are received into **must belong to the container's branch**.
+- **Stock is kept only at the bottom of the tree** (Ali, scripts 69–71, and 72 for goods receipts): a warehouse with
+  warehouses under it is a group, not a place. Every line that moves stock (sales, purchase and stock documents, the
+  Excel imports, goods receipts) takes a warehouse **without warehouses under it, of any branch**: the header's branch
+  numbers the document, it does not limit its lines; each stock movement is counted in the branch of its own warehouse.
+  A parent is refused on save and again at posting: "Line 2: warehouse LUB has warehouses under it. Choose one of
+  those: stock is kept only in the warehouses at the bottom of the tree." A warehouse already used (stock moved, or
+  named by a document or a goods receipt, a draft too) cannot become a parent.
+- The warehouse a container's goods are received into **must belong to the container's branch** (and be at the bottom
+  of the tree).
 
 ### 1.5 Currencies
 - **Base currency: USD.** A USD document shows "Exchange Rate 1 (base currency)".
@@ -181,7 +192,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Transshipment** | Moving a container to another vessel at an intermediate port. |
 | **FERI** | Electronic cargo tracking note required for DRC imports (a container field). |
 | **BIVAC Out** | Inventory › BIVAC Out (script 66, document type `BIV_OUT`, numbers like `BIV-BR-002-000001`): units of **BIVAC items** (items with "BIVAC Item" ticked in Item Definition) taken out of stock at average cost, like an Inventory Out, with its own list and permissions. The user chooses the item (model) and a quantity; other items are refused. No link to a shipment: the BIVAC certificate or container number goes in Reference No. Not the BIVAC fee, which is the charge type `BIV` "BIVAC / Inspection". |
-| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 65): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (open: ordered − received − settled short; closed: invoiced − received − settled short), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order" uses the same number. |
+| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 65): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (open: ordered − received − settled short; closed: invoiced − received − settled short), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order (still to come)" (Item Definition › Purchase orders) counts the orders' part only, before Transit is taken off: the invoices without an order are not on its list. The Dashboard's "On the way" adds the three parts (script 72). |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
 | **Payment type** | On sales invoices (Ali: "Payment Type and auto…"), probably cash / credit **(unsure)**. |
@@ -201,7 +212,8 @@ per user in Settings › Purchase approval (see 4.3).
 ## 3. Modules and workflows
 
 ### 3.1 Menu map (as seen on Bilal's screen)
-- **Dashboard**
+- **Home** (the first landing page, renamed when Ali's new Dashboard came) and **Dashboard** (Ali, script 68: key
+  figures, "needs attention" lists and charts per branch and period; each part shown only to who may open its screen)
 - **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, BIVAC Out, Stock Valuation, Shortages
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
@@ -304,7 +316,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
    - Completing a **Delivery** movement creates a **draft goods receipt** per container; "Receive goods…" on the
      container does it by hand (any container from Confirmed to Cleared).
    - The warehouse counts: received 0 to loaded per line, a reason when it differs, one warehouse of the container's
-     branch. The goods need not be invoiced yet.
+     branch at the bottom of the tree (script 72). The goods need not be invoiced yet.
    - Posting it: the goods enter stock at landed cost (the invoice FOB, or the order price for pieces not invoiced
      yet, + the charges re-divided over what arrived, then frozen); average, last and FOB costs are updated; the
      container becomes **Offloaded**. Refused while a movement of the container is in progress.
@@ -395,8 +407,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
    - Exporter's Ref. required. **Post: no stock.** It may also be posted after the goods arrive (step 8).
 5. **Shipment:** Start shipment (SEA Chennai → Dar es Salaam), then INLAND → Kasumbalesa, CUSTOMS, DELIVERY →
    Lubumbashi. Each movement is started and completed. **Completing the DELIVERY creates a draft goods receipt for
-   each container**, into the container's warehouse when it belongs to the container's branch (else "warehouse to
-   choose"). The notification names the drafts made and the containers left out, with the reason.
+   each container**, into the container's warehouse when it is active, belongs to the container's branch and has no
+   warehouses under it (else "warehouse to choose", and the notification says why). The notification names the drafts
+   made and the containers left out, with the reason.
 6. **Charges** (freight, clearing, transport, port fees, demurrage) entered on containers, split and allocated,
    **posted**. Documents attached (B/L, packing list, FERI).
 7. **Goods receipt** at the warehouse: open the draft (Purchase › Goods Receipts; the menu counts the drafts), check
@@ -819,6 +832,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   **[Ali – details unknown]**
 - **Customer receipts** with payment methods and cash / bank accounts. **[Ali – details unknown]**
 - **Warehouses** can stand under another warehouse. **[Ali]**
+  - **Lines take a warehouse at the bottom of the tree, of any branch** (Ali, scripts 69–70; goods receipts too,
+    script 72; see 1.4). A warehouse already used cannot become a parent (script 71; goods receipts count, 72).
+    **[Implemented]**
 - **Document import:** one document whatever the warehouse; no Expiry Date in the import template. **[Ali]**
   - On Sales Invoice and Inventory In, a file naming several warehouses can instead become **one document per
     warehouse**: the import's switch "One invoice per warehouse" (Sales Invoice page) / "One document per
@@ -882,8 +898,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
 **Containers**
 5. **Completing a Delivery-stage movement** creates a draft for each container in status 2–5 with no draft or posted
    receipt: lines = the container lines (expected = received = loaded), date = the movement's end date, warehouse =
-   the container's when it is active and of its branch, else to choose. The completion never fails because of them
-   (4.6).
+   the container's when it is active, of its branch and at the bottom of the tree (script 72), else to choose. The
+   completion never fails because of them (4.6).
 6. **"Receive goods…" on the container** makes the same draft by hand: containers followed without movements, those
    whose last leg is not a Delivery, those delivered before the switch. Status 2–5 only; refused when a receipt exists
    (63013: "Container KTG-2026-0031 already has {goods receipt GRN-… | a draft goods receipt}. Open it instead."). A
@@ -892,7 +908,7 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
 7. **A container's receipt:** its lines only (none added or removed); received 0 to loaded ("Line {n} ({item}):
    received {r} but only {l} were loaded."); a reason code (Short-shipped, Damaged, Missing, Wrongly counted at loading,
    Other) and a note when received ≠ loaded, and the difference is **settled short**; one warehouse of the container's
-   branch ("Choose the warehouse the goods are received into."); dated not in the future and not before the Delivery
+   branch, at the bottom of the tree (script 72) ("Choose the warehouse the goods are received into."); dated not in the future and not before the Delivery
    ("The goods cannot be received before MOV-… reached {place} on {date}."). Posting is refused while a movement of
    the container is in progress (63010). The goods need not be invoiced.
 8. **Posting it does what the offload did:** stock in at landed cost; the posted charges re-spread over what arrived,
@@ -906,7 +922,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
    - It proposes every line with **To receive** = ordered − received − settled short − in containers − in draft
      receipts. On an order that has containers, **Receive now starts at 0**, with an orange alert: goods in containers
      are received with their containers.
-   - Partial receipts, into any active warehouse (default: the order line's). Per line, **"Nothing more will come"**
+   - Partial receipts, into any active warehouse of any branch at the bottom of the tree (default: the order line's).
+     Per line, **"Nothing more will come"**
      (reason required) settles the rest.
    - Posting refuses more than what remains outside containers (63011: "Line {n}: {item} - {r} pcs received but only
      {x} remain to receive on the order line outside containers.").
@@ -924,6 +941,17 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     without an order is refused at posting when the supplier has the item to receive on an order or an invoice
     (63011: "SUP-0001 has PO-BR-002-000042 with 100 pcs of {item} still to receive: receive them from the order.");
     its lines change the item's last cost only once matched to an invoice.
+
+**Warehouses** (script 72: Ali's rule of 1.4 applied to goods receipts) **[Implemented]**
+- Every warehouse a goods receipt puts stock into is **at the bottom of the tree**: "Receive into" and each line, on
+  save and again at posting (63000: "The warehouse LUB has warehouses under it. Choose one of those: stock is kept only
+  in the warehouses at the bottom of the tree."). An order's, an invoice's or a receipt without an order: any branch. A
+  container's: the container's branch as well.
+- A container whose own warehouse has warehouses under it (or is inactive, or of another branch) gets its draft with
+  the warehouse to choose. The Complete dialog of the Delivery says it first ("KTG-2026-0031 → draft, warehouse to
+  choose (LUB, the container's, has warehouses under it)"), and the notification after it says why, once per reason:
+  "KTG-2026-0031: choose the warehouse (LUB, the container's, has warehouses under it: …)."
+- A warehouse named by a goods receipt (a draft too) counts as used: it cannot become a parent.
 
 **Cost** (the details and examples: `docs/notes/costing-rules.md`)
 13. **At receipt** the pieces are matched to posted invoice pieces: the receipt's own invoice, then the container
@@ -961,6 +989,12 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     "Invoiced" progress; filters "To receive" (orders), "Not fully received" (invoices); the Goods Receipts list has
     "With differences" and "Received not invoiced", with a line "Received not invoiced: {n} pcs, {value} at the order
     price." for month-end.
+    - **The Dashboard's "On the way"** (script 72) is what Shortages count, company-wide or per branch: the orders'
+      outstanding less the pieces in containers that left the supplier (shown to who may see orders), the posted
+      invoices without an order not received yet (who may see invoices), and those containers' pieces (who may see
+      containers; a reader who may not gets them in the orders' figure). Its free-time alarms stop at the end of the
+      Delivery, as on the container's page and the Tracking board: a delivered container waits Cleared for its goods
+      receipt and is "Free time over" only if the free days ran out before it left. **[Implemented]**
 20. **Closing:** automatically "Fully invoiced and received"; it reopens when an invoice or goods receipt that closed
     it is cancelled. Cancelling an order is refused while it has goods receipts (65011: "This purchase order has posted
     goods receipts. Cancel those first." / "…draft goods receipts. Delete them first."); closing it by hand is refused
@@ -1110,6 +1144,21 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `65_Purchase_GoodsReceiptsSwitch.sql` | Goods receipts: the switch (invoices, containers, movements, costs; one-way) |
 | `66_Inventory_BivacOut.sql` | BIVAC Out |
 | `67_Attachments_ItemsAndLinks.sql` | Attachments: items and links (prompt 40) |
+| `68_Dashboard_Summary.sql` | Ali: the new Dashboard (key figures, "needs attention", charts; schema `reporting`) |
+| `69_Stock_Document_Any_Branch_Warehouse.sql` | Ali: Inventory In / Out lines may take a warehouse of any branch |
+| `70_Line_Warehouse_Leaf_Any_Branch.sql` | Ali: document lines take a warehouse at the bottom of the tree, of any branch |
+| `71_Warehouse_Used_Not_Parent.sql` | Ali: a warehouse already used in transactions cannot become a parent |
+| `72_Merge_GoodsReceipts_LeafWarehouses.sql` | The merge of the two lines of work: the procedures both changed hold both changes; goods receipts take the leaf-warehouse rule; the dashboard counts what is still to receive |
+
+**Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
+GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
+give themselves changed (they had already run on his database), and run after 63–67. Scripts 69 and 70 re-create six
+procedures from bodies written before 63–67 (`inventory.usp_StockDocument_ValidateInput` / `_Post`,
+`purchase.usp_PurchaseDocument_ValidateInput` / `_Post`, `sales.usp_InvoiceImport_Validate`,
+`logistics.usp_Container_Offload`); **script 72** re-creates each from Ali's body plus our change (BIVAC check, goods
+receipts, the retired offload), so every start-up ends with both. Ali's database had run his 63–66 under those numbers:
+at its next start Schema.sql runs 63–67 (ours, the switch included), then 68–71 again (idempotent) and 72.
+`DatabaseProject` is Ali's refresh (scripts 46–66 in his numbering); it is refreshed on Bilal's PC after the merge.
 
 Scripts 44, 50, 51, 53 and 54 show that prompts 42, 43, 44, 45 and 46 ran at least their A1 step: check the code
 before trusting the statuses of 5.2. The next script takes the next free number after a pull (Ali writes scripts too).

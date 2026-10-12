@@ -4,7 +4,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,
-           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit
+           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, u.LengthCm, u.WidthCm, u.HeightCm, u.WeightKg
     FROM inventory.ItemUnits u
     INNER JOIN masterdata.UnitTypes ut ON ut.Id = u.UnitTypeId
     WHERE u.ItemId = @ItemId

@@ -1,6 +1,6 @@
 /* ================================================================== 9. Containers (CONTAINER) */
 
--- Re-created (48) from the body of script 27: the type required and used for containers (it was optional); the note
+-- Re-created (52) from the body of script 27: the type required and used for containers (it was optional); the note
 -- takes 500 characters.
 CREATE   PROCEDURE logistics.usp_ContainerAttachment_Add
     @ContainerIds     logistics.tvp_IdList READONLY,
@@ -30,7 +30,7 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
     IF @FileName IS NULL THROW 70000, 'The file name is required.', 1;
     IF @SizeBytes IS NULL OR @SizeBytes <= 0 OR @Content IS NULL THROW 70000, 'The file is empty.', 1;
-    -- (48) the type is required, active and used for containers
+    -- (52) the type is required, active and used for containers
     EXEC masterdata.usp_AttachmentType_CheckForKind @AttachmentTypeId, N'CONTAINER', 70017;
     IF EXISTS (SELECT 1 FROM @Ids x WHERE NOT EXISTS (SELECT 1 FROM logistics.Containers c WHERE c.Id = x.Id))
         THROW 70006, 'A selected container no longer exists.', 1;

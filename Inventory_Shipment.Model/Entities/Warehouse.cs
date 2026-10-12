@@ -34,6 +34,9 @@ public class Warehouse
     /// <summary>Warehouses standing directly under this one; 0 means a leaf, which is where stock lives.</summary>
     public int ChildCount { get; set; }
 
+    /// <summary>Named by a stock movement or a document (lookup only): such a warehouse cannot become a parent.</summary>
+    public bool IsUsed { get; set; }
+
     public bool IsMainWarehouse { get; set; }
 
     /// <summary>Out-of-stock sales: true allows, false disallows, null follows the global setting.</summary>

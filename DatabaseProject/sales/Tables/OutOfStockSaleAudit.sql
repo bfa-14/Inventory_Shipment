@@ -22,14 +22,14 @@ CREATE TABLE [sales].[OutOfStockSaleAudit] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_OutOfStockSaleAudit_Warehouse]
-    ON [sales].[OutOfStockSaleAudit]([WarehouseId] ASC, [SoldAtUtc] DESC);
+CREATE NONCLUSTERED INDEX [IX_OutOfStockSaleAudit_Document]
+    ON [sales].[OutOfStockSaleAudit]([SalesDocumentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_OutOfStockSaleAudit_Document]
-    ON [sales].[OutOfStockSaleAudit]([SalesDocumentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_OutOfStockSaleAudit_Warehouse]
+    ON [sales].[OutOfStockSaleAudit]([WarehouseId] ASC, [SoldAtUtc] DESC);
 
 
 GO
