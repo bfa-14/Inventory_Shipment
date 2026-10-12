@@ -8,7 +8,12 @@ CREATE   PROCEDURE inventory.usp_ItemUnit_Update
     @IsPurchaseUnit BIT          = 0,
     @IsBaseUnit     BIT          = 0,
     @RowVersion     BINARY(8)    = NULL,
-    @UserId         INT          = NULL
+    @UserId         INT          = NULL,
+    /* (61) The unit's size and weight - one box, one pallet; NULL = not recorded. */
+    @LengthCm       DECIMAL(10,2) = NULL,
+    @WidthCm        DECIMAL(10,2) = NULL,
+    @HeightCm       DECIMAL(10,2) = NULL,
+    @WeightKg       DECIMAL(12,3) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -30,6 +35,9 @@ BEGIN
     IF @SkuCode IS NULL OR @SkuCode = N'' THROW 56000, 'SKU Code is required.', 1;
     IF @PackingFormula IS NULL OR @PackingFormula < 1
         THROW 56000, 'Packing Formula must be a whole number of at least 1.', 1;
+    IF (@LengthCm IS NOT NULL AND @LengthCm <= 0) OR (@WidthCm IS NOT NULL AND @WidthCm <= 0) OR (@HeightCm IS NOT NULL AND @HeightCm <= 0)
+        THROW 56000, 'Length, width and height must be greater than zero.', 1;
+    IF @WeightKg IS NOT NULL AND @WeightKg <= 0 THROW 56000, 'Weight must be greater than zero.', 1;
     IF @WasBase = 1 AND @IsBaseUnit = 0
         THROW 56005, 'Every item needs a Base Unit. Mark another unit as the base instead (that switches automatically).', 1;
     IF @IsBaseUnit = 1 AND @PackingFormula <> 1
@@ -59,6 +67,7 @@ BEGIN
         UPDATE inventory.ItemUnits
         SET UnitTypeId = @UnitTypeId, PackingFormula = @PackingFormula, SkuCode = @SkuCode, Barcode = @Barcode,
             IsSalesUnit = @IsSalesUnit, IsPurchaseUnit = @IsPurchaseUnit, IsBaseUnit = @IsBaseUnit,
+            LengthCm = @LengthCm, WidthCm = @WidthCm, HeightCm = @HeightCm, WeightKg = @WeightKg,
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
         WHERE Id = @Id;
 

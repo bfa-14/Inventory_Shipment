@@ -35,8 +35,8 @@ BEGIN
     IF @ExpectedDate IS NOT NULL AND @ExpectedDate < @DocumentDate THROW 65000, 'Expected / due date cannot be before the Document Date.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 65008, 'Branch not found or inactive.', 1;
-    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1 AND BranchId = @BranchId)
-        THROW 65008, 'The default warehouse must be an active warehouse of the selected branch.', 1;
+    IF @WarehouseId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1)
+        THROW 65008, 'The header warehouse must be an active warehouse.', 1;
     IF @SupplierId IS NULL THROW 65000, 'Supplier is required.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1)
         THROW 65008, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
@@ -87,7 +87,6 @@ BEGIN
              WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
              WHEN iu.Id IS NULL THEN N'the unit does not belong to item ' + i.ItemCode + N'.'
              WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'warehouse not found or inactive.'
-             WHEN w.BranchId <> @BranchId THEN N'warehouse ' + w.WarehouseCode + N' is not available for the selected branch.'
              WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'quantity must be greater than zero.'
              WHEN l.UnitPrice IS NOT NULL AND l.UnitPrice < 0 THEN N'unit price cannot be negative.'
              WHEN l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent)
@@ -97,10 +96,18 @@ BEGIN
     LEFT JOIN inventory.Items i      ON i.Id = l.ItemId
     LEFT JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
     LEFT JOIN masterdata.Warehouses w  ON w.Id = l.WarehouseId
-    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0 OR w.BranchId <> @BranchId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
        OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
        OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
     ORDER BY l.LineNumber;
+    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+    IF @Msg IS NULL
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
+        FROM @Lines l
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE masterdata.fn_Warehouse_IsLeaf(w.Id) = 0
+        ORDER BY l.LineNumber;
+
     IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
 END
 

@@ -31,8 +31,11 @@ BEGIN
            AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ChargeId = ch.Id),
            ch.PostedAtUtc, ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.RowVersion,
            TotalAmountBase = SUM(ch.AmountBase) OVER (),
+           -- (47) supplier payments: posted charges only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
            COUNT(*) OVER () AS TotalCount
     FROM logistics.ContainerCharges ch
+    OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
     INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
     INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
     INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId

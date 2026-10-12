@@ -1,6 +1,5 @@
-/* ================================================================== 7. Search: the item of a supplier invoice */
+/* ================================================================== 13. Purchase invoices and container charges learn what they were paid */
 
--- Re-created (45) from its current body (status 5, invoicing): the item of a supplier invoice, and its code in the search.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
     @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
@@ -46,8 +45,11 @@ BEGIN
            d.ApprovalRequestedAtUtc, d.ApprovedAtUtc, apu.FullName AS ApprovedByName,
            d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
            d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
+           -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
            COUNT(*) OVER () AS TotalCount
     FROM purchase.PurchaseDocuments d
+    OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
     INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
     INNER JOIN masterdata.Branches b      ON b.Id = d.BranchId
     INNER JOIN masterdata.Warehouses w    ON w.Id = d.WarehouseId

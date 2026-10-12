@@ -251,8 +251,9 @@ public sealed class MovementContainerDto
     public string? WarehouseCode { get; init; }
 
     /// <summary>
-    /// The container's warehouse is active and belongs to the container's branch: the draft made by the Delivery takes
-    /// it. False (or no warehouse) = the draft is created without one ("warehouse to choose").
+    /// The container's warehouse is active, belongs to the container's branch and has no warehouse under it (script 72):
+    /// the draft made by the Delivery takes it. False (or no warehouse) = the draft is created without one ("warehouse
+    /// to choose").
     /// </summary>
     public bool WarehouseInBranch { get; init; }
 

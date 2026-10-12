@@ -6,7 +6,7 @@ CREATE   PROCEDURE masterdata.usp_AttachmentType_Search
     @SortDirection NVARCHAR(4)   = N'ASC',
     @PageNumber    INT           = 1,
     @PageSize      INT           = 10,
-    @DocumentKind  NVARCHAR(20)  = NULL            -- (48) the types used for this kind
+    @DocumentKind  NVARCHAR(20)  = NULL            -- (52) the types used for this kind
 AS
 BEGIN
     SET NOCOUNT ON;

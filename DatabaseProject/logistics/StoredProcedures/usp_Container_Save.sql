@@ -1,6 +1,6 @@
 /* ================================================================== 3. Save: the fill check */
 
--- Re-created (50) from the body of script 47: the capacity is the fill from the items' Container units, checked on the
+-- Re-created (54) from the body of script 51: the capacity is the fill from the items' Container units, checked on the
 -- lines written (69007, overridable); @MaxUnits is kept and ignored, a new container gets no MaxUnits.
 CREATE   PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
@@ -31,7 +31,7 @@ CREATE   PROCEDURE logistics.usp_Container_Save
     @BlNo                NVARCHAR(30)   = NULL,
     @BlDate              DATE           = NULL,
     @BlNotes             NVARCHAR(500)  = NULL,
-    @MaxUnits            INT            = NULL,   -- (50) ignored: the capacity is the items' Container units
+    @MaxUnits            INT            = NULL,   -- (54) ignored: the capacity is the items' Container units
     @BranchId            INT,
     @WarehouseId         INT            = NULL,
     @TruckNo             NVARCHAR(30)   = NULL,
@@ -64,7 +64,7 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
-    -- (47) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
     IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
@@ -254,7 +254,7 @@ BEGIN
         CROSS APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
         WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId);
 
-        -- (50) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
+        -- (54) Capacity from the items' Container units (logistics.fn_ContainerFill): a warning the caller can override,
         -- never a hard block; unknown (an item without a Container unit) = no warning. Checked on the lines just written,
         -- so the refusal rolls the whole save back.
         IF ISNULL(@AllowOverCapacity, 0) = 0 AND EXISTS (SELECT 1 FROM logistics.fn_ContainerFill(@Id) f WHERE f.IsOverCapacity = 1)

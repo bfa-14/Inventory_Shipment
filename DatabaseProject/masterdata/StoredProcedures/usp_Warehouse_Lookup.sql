@@ -1,3 +1,4 @@
+
 CREATE   PROCEDURE masterdata.usp_Warehouse_Lookup
     @ActiveOnly BIT = 1,
     @BranchId   INT = NULL,
@@ -7,7 +8,8 @@ BEGIN
     SET NOCOUNT ON;
     SELECT w.Id, w.WarehouseCode, w.WarehouseName, w.BranchId, b.BranchCode, b.BranchName,
            w.IsMainWarehouse, w.IsActive, w.ParentId, w.[Level], w.AllowOutOfStockOverride,
-           ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id)
+           ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id),
+           IsUsed     = masterdata.fn_Warehouse_IsUsed(w.Id)
     FROM masterdata.Warehouses w
     INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
     WHERE (@ActiveOnly = 0 OR w.IsActive = 1 OR w.Id = @IncludeId)

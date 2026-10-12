@@ -1,6 +1,3 @@
-/* ================================================================== 3. Post: the same rule */
-
--- Re-created (45) from the body of script 43 (approval of 42 kept): a draft invoice saved with several items before this script.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Post
     @Id         INT,
     @RowVersion   BINARY(8) = NULL,
@@ -96,12 +93,19 @@ BEGIN
         DECLARE @Msg NVARCHAR(400);
         SELECT TOP (1) @Msg =
             CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
-                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.'
-                 WHEN w.BranchId <> @BranchId THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is not in the document branch.' END
+                 WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.' END
         FROM purchase.PurchaseDocumentLines l
         INNER JOIN inventory.Items i ON i.Id = l.ItemId
         INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
-        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0 OR w.BranchId <> @BranchId)
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
+
+        -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
+        WHERE l.DocumentId = @Id AND masterdata.fn_Warehouse_IsLeaf(w.Id) = 0
         ORDER BY l.LineNumber;
         IF @Msg IS NOT NULL THROW 65000, @Msg, 1;
 
@@ -190,9 +194,11 @@ BEGIN
 
             INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
                                                   DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, CreatedBy)
-            SELECT @MovementDate, l.ItemId, l.WarehouseId, @BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
+            -- (48) the branch of the line's warehouse, which need not be the document's branch
+            SELECT @MovementDate, l.ItemId, l.WarehouseId, w.BranchId, @Direction * l.QuantityBase, l.UnitCostBase,
                    N'Purchase', @TypeCode, @Id, l.Id, @Number, NULL, l.ExpiryDate, @UserId
             FROM purchase.PurchaseDocumentLines l
+            INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
             WHERE l.DocumentId = @Id;
 
             IF @Direction = 1

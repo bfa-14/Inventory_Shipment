@@ -7,8 +7,8 @@ BEGIN
 
     DECLARE @Status TINYINT = (SELECT Status FROM sales.Receipts WHERE Id = @ReceiptId);
     IF @Status IS NULL THROW 71006, 'Receipt not found.', 1;
-    -- Evidence of a posted payment is not removable: that is what it is evidence of.
-    IF @Status <> 1 THROW 71005, 'Files can only be removed from a draft receipt.', 1;
+    -- (49) a draft or a posted receipt; a reversed one is closed. Every removal is in the receipt's audit.
+    IF @Status = 3 THROW 71005, 'A reversed receipt is closed; its files can no longer be removed.', 1;
 
     DECLARE @Name NVARCHAR(255) = (SELECT FileName FROM sales.ReceiptFiles WHERE Id = @FileId AND ReceiptId = @ReceiptId);
     IF @Name IS NULL THROW 71006, 'File not found.', 1;

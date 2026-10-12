@@ -532,8 +532,10 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
     private const string ContainerSelect = """
         SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, c.Status, c.BranchId, b.BranchCode, b.BranchName,
                c.WarehouseId, w.WarehouseCode, w.WarehouseName,
+               -- active, of the container's branch and at the bottom of the tree (script 72): what CreateForContainer takes
                WarehouseInBranch = CAST(CASE WHEN w.Id IS NULL THEN NULL
-                                             WHEN w.IsActive = 1 AND w.BranchId = c.BranchId THEN 1 ELSE 0 END AS BIT),
+                                             WHEN w.IsActive = 1 AND w.BranchId = c.BranchId
+                                                  AND masterdata.fn_Warehouse_IsLeaf(w.Id) = 1 THEN 1 ELSE 0 END AS BIT),
                SupplierId = CASE WHEN s.Suppliers = 1 THEN s.SupplierId END,
                SupplierName = CASE WHEN s.Suppliers = 1 THEN sp.PartyName WHEN s.Suppliers > 1 THEN N'Several suppliers' END,
                OrderNumbers = (SELECT STRING_AGG(x.DocumentNumber, N', ') WITHIN GROUP (ORDER BY x.DocumentNumber)

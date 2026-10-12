@@ -1,11 +1,11 @@
 /* ================================================================== 10. Container types: MaxUnits ignored */
 
--- Re-created (50) from the body of script 24: @MaxUnits is kept and ignored (neither required nor written).
+-- Re-created (54) from the body of script 24: @MaxUnits is kept and ignored (neither required nor written).
 CREATE   PROCEDURE masterdata.usp_ContainerType_Save
     @Id           INT           = NULL,
     @TypeCode     NVARCHAR(10),
     @TypeName     NVARCHAR(100),
-    @MaxUnits     INT           = NULL,   -- (50) ignored: a container's capacity is its items' Container units
+    @MaxUnits     INT           = NULL,   -- (54) ignored: a container's capacity is its items' Container units
     @MaxWeightKg  DECIMAL(18,3) = NULL,
     @MaxVolumeCbm DECIMAL(18,3) = NULL,
     @Description  NVARCHAR(500) = NULL,

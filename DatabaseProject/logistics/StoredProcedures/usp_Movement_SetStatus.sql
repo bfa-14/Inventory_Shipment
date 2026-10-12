@@ -1,6 +1,6 @@
 /* ================================================================== 4. Start: previous movements completed, every container fits */
 
--- Re-created (49) from the body of script 46: Start checks the place rules of fn_ContainerFitForMovement (70015) after
+-- Re-created (53) from the body of script 50: Start checks the place rules of fn_ContainerFitForMovement (70015) after
 -- the previous movements (70016), and refuses a movement without containers in the words of the page.
 -- Status changes of a movement. @Action: Start | Complete | Cancel. The containers' status and dates follow.
 CREATE   PROCEDURE logistics.usp_Movement_SetStatus
@@ -63,7 +63,7 @@ BEGIN
         ORDER BY c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
 
-        -- the place rules (script 49): the previous movement of every container is completed (70016), then every
+        -- the place rules (script 53): the previous movement of every container is completed (70016), then every
         -- container fits the movement's From, To and stage (70015) - the rules of Save, fn_ContainerFitForMovement
         SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N': the previous movement ' + p.PreviousMovementNo + N' (' + pf.PortName
                               + N' ' + NCHAR(8594) + N' ' + p.PlaceName + N') is not completed yet.'

@@ -65,4 +65,7 @@ public sealed class WarehouseLookupDto
     public int? ParentId { get; init; }
     public int Level { get; init; } = 1;
     public int ChildCount { get; init; }
+
+    /// <summary>Already used in transactions: it cannot be chosen as a parent (script 71).</summary>
+    public bool IsUsed { get; init; }
 }

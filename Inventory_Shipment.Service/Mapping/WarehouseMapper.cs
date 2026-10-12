@@ -41,7 +41,8 @@ public static class WarehouseMapper
         // The tree, so a picker can draw it and offer only the leaves that may hold stock.
         ParentId = warehouse.ParentId,
         Level = warehouse.Level,
-        ChildCount = warehouse.ChildCount
+        ChildCount = warehouse.ChildCount,
+        IsUsed = warehouse.IsUsed
     };
 
     public static BranchLookupDto ToDto(this BranchLookup branch) => new()

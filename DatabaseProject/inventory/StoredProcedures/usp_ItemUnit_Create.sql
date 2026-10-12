@@ -1,5 +1,3 @@
-/* ------------------------------------------------------------------ Item unit procedures */
-
 CREATE   PROCEDURE inventory.usp_ItemUnit_Create
     @ItemId         INT,
     @UnitTypeId     INT,
@@ -10,7 +8,12 @@ CREATE   PROCEDURE inventory.usp_ItemUnit_Create
     @IsPurchaseUnit BIT          = 0,
     @IsBaseUnit     BIT          = 0,
     @UserId         INT          = NULL,
-    @NewId          INT OUTPUT
+    @NewId          INT OUTPUT,
+    /* (61) The unit's size and weight - one box, one pallet; NULL = not recorded. */
+    @LengthCm       DECIMAL(10,2) = NULL,
+    @WidthCm        DECIMAL(10,2) = NULL,
+    @HeightCm       DECIMAL(10,2) = NULL,
+    @WeightKg       DECIMAL(12,3) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -29,6 +32,9 @@ BEGIN
     IF @SkuCode IS NULL OR @SkuCode = N'' THROW 56000, 'SKU Code is required.', 1;
     IF @PackingFormula IS NULL OR @PackingFormula < 1
         THROW 56000, 'Packing Formula must be a whole number of at least 1.', 1;
+    IF (@LengthCm IS NOT NULL AND @LengthCm <= 0) OR (@WidthCm IS NOT NULL AND @WidthCm <= 0) OR (@HeightCm IS NOT NULL AND @HeightCm <= 0)
+        THROW 56000, 'Length, width and height must be greater than zero.', 1;
+    IF @WeightKg IS NOT NULL AND @WeightKg <= 0 THROW 56000, 'Weight must be greater than zero.', 1;
 
     DECLARE @HasBase BIT = CASE WHEN EXISTS (SELECT 1 FROM inventory.ItemUnits WHERE ItemId = @ItemId AND IsBaseUnit = 1) THEN 1 ELSE 0 END;
 
@@ -47,9 +53,9 @@ BEGIN
         THROW 56002, 'This Barcode is already used by another unit in the system.', 1;
 
     INSERT INTO inventory.ItemUnits (ItemId, UnitTypeId, PackingFormula, SkuCode, Barcode,
-                                     IsSalesUnit, IsPurchaseUnit, IsBaseUnit, CreatedBy)
+                                     IsSalesUnit, IsPurchaseUnit, IsBaseUnit, LengthCm, WidthCm, HeightCm, WeightKg, CreatedBy)
     VALUES (@ItemId, @UnitTypeId, @PackingFormula, @SkuCode, @Barcode,
-            @IsSalesUnit, @IsPurchaseUnit, @IsBaseUnit, @UserId);
+            @IsSalesUnit, @IsPurchaseUnit, @IsBaseUnit, @LengthCm, @WidthCm, @HeightCm, @WeightKg, @UserId);
 
     SET @NewId = SCOPE_IDENTITY();
 END
