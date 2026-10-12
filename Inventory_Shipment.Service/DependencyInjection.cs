@@ -46,6 +46,8 @@ public static class DependencyInjection
         services.TryAddScoped<IStockDocumentService, StockDocumentService>();
         services.TryAddScoped<ISalesInvoiceService, SalesInvoiceService>();
         services.TryAddScoped<IPurchaseDocumentService, PurchaseDocumentService>();
+        // Goods receipts (scripts 64 and 65): the only way goods enter stock.
+        services.TryAddScoped<IGoodsReceiptService, GoodsReceiptService>();
         services.TryAddScoped<IShortageDocumentService, ShortageDocumentService>();
         services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
         services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();

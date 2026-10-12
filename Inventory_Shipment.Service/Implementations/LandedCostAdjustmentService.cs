@@ -358,8 +358,18 @@ public sealed class LandedCostAdjustmentService : ILandedCostAdjustmentService
         SqlErrors.PurchaseChargesOnContainer => new RuleFailure(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
         SqlErrors.PurchaseChargeAllocation => new RuleFailure(ErrorType.Validation, exception.Message, "CHARGE_ALLOCATION"),
         SqlErrors.PurchaseDocumentMasterInactive => new RuleFailure(ErrorType.Validation, exception.Message, "MASTER_INACTIVE"),
+
+        // Script 65: posting and cancelling take the goods receipts' matching lock and true up the cost of the goods
+        // received; their 63xxx refusals are classified as the goods receipts' (63010, the lock not obtained, is a 409).
+        >= SqlErrors.GoodsReceiptValidation and <= SqlErrors.GoodsReceiptValidation + 999 => FromGoodsReceipts(exception),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
+
+    private static RuleFailure FromGoodsReceipts(BusinessRuleException exception)
+    {
+        var failure = GoodsReceiptService.Describe(exception);
+        return new RuleFailure(failure.Type, failure.Message, failure.Code);
+    }
 
     private static byte[]? ToRowVersion(string? value)
     {

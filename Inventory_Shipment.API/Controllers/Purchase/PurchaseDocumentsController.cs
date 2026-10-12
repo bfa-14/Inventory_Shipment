@@ -79,6 +79,11 @@ public sealed class PurchaseDocumentsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// Posts the document. Since script 65 a supplier invoice moves no stock: the answer's postResult says what the posting
+    /// did to the cost of goods already received, and, with receiveNow (a supplier invoice; needs the goods receipt create
+    /// and post rights too), the goods receipt made at once - or the warning saying why it was not, the invoice posted.
+    /// </summary>
     [HttpPost("{id:int}/post")]
     [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
@@ -86,9 +91,24 @@ public sealed class PurchaseDocumentsController : ControllerBase
     public async Task<ActionResult<PurchaseDocumentDto>> Post(
         int id, [FromBody] PostPurchaseDocumentRequest? request, CancellationToken cancellationToken)
     {
-        var result = await _documents.PostAsync(
-            id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        var result = await _documents.PostWithOptionsAsync(
+            id, request ?? new PostPurchaseDocumentRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
 
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The post confirmation of a DRAFT supplier invoice: what posting it would do to the cost of the goods already
+    /// received (an estimate on today's stock) - "60 pcs already received will have their cost adjusted by +60.00 USD
+    /// (estimate: stock 40.00, cost of sales 20.00)." Needs purchase.invoices.post.
+    /// </summary>
+    [HttpGet("{id:int}/receipt-cost-preview")]
+    [ProducesResponseType<ReceiptCostPreviewDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ReceiptCostPreviewDto>> ReceiptCostPreview(int id, CancellationToken cancellationToken)
+    {
+        var result = await _documents.ReceiptCostPreviewAsync(id, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

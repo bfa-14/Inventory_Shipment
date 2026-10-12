@@ -19,10 +19,6 @@ cd "$(dirname "$0")"
 require_root
 [ "$(environment)" = "testing" ] \
     || die "This replaces the TESTING database: run it in the testing checkout (/opt/inventory-test/Inventory_Shipment/deploy)."
-# Testing's lock: no deployment of testing starts while its database is being replaced (restore.sh below
-# runs under the same lock).
-take_env_lock
-
 assume_yes=0
 for arg in "$@"; do
     case "$arg" in
@@ -34,11 +30,41 @@ done
 production=$(env_get PRODUCTION_DIR /opt/inventory/Inventory_Shipment)
 [ -x "$production/deploy/backup.sh" ] || die "No production checkout at $production (PRODUCTION_DIR in deploy/.env)."
 
+# ASKED BEFORE ANY LOCK IS TAKEN, with five minutes to answer: a forgotten question never holds up a deployment.
 if [ "$assume_yes" -ne 1 ]; then
     echo "This REPLACES the testing database with a copy of production. Everything entered in testing is lost."
-    read -rp "Type YES to continue: " answer </dev/tty
+    read -t 300 -rp "Type YES to continue: " answer </dev/tty || die "Cancelled (no answer)."
     [ "$answer" = "YES" ] || die "Cancelled."
 fi
+
+# Testing's lock: no deployment of testing starts while its database is being replaced (restore.sh below runs under
+# the same lock). PRODUCTION'S LOCK TOO, held to the end: production is not copied in the middle of an update, a
+# restore or a reset. Always testing first, then production: no other script takes both.
+take_env_lock
+exec 8>"/run/lock/inventory-update-production.lock"
+if ! flock -n 8; then
+    say "Production is being updated, restored or reset: waiting for it to finish..."
+    flock -w 1800 8 || die "Production is still busy after 30 minutes. Testing was not changed."
+fi
+
+# A RESET OF PRODUCTION THAT STOPPED HALFWAY (its side database is still there): refused only when production's data
+# is really gone - its database deleted, or replaced by the new one not yet finished (newer than the side database and
+# not restored since). A reset that stopped before deleting anything, or data restored since, is copied with a warning.
+production_db=$(cd "$production/deploy" && db_name)
+half_reset=$(cd "$production/deploy" && sql_exec -h -1 -W -Q "SET NOCOUNT ON;
+    IF DB_ID(N'${production_db}_reset_keep') IS NULL SELECT 0;
+    ELSE IF DB_ID(N'$production_db') IS NULL SELECT 1;
+    ELSE IF EXISTS (SELECT 1 FROM msdb.dbo.restorehistory
+                    WHERE destination_database_name = N'$production_db'
+                      AND restore_date >= (SELECT create_date FROM sys.databases WHERE name = N'${production_db}_reset_keep')) SELECT 2;
+    ELSE IF (SELECT create_date FROM sys.databases WHERE name = N'$production_db')
+          > (SELECT create_date FROM sys.databases WHERE name = N'${production_db}_reset_keep') SELECT 1;
+    ELSE SELECT 2;" | tr -d '[:space:]')
+case "$half_reset" in
+    0) ;;
+    2) warn "Production has a reset that stopped before deleting anything (or its data was restored since): its data is intact and is copied. Production's API may still be stopped: sudo docker compose up -d in $production/deploy. (Running reset-database.sh again starts that reset over.)" ;;
+    *) die "Production's reset did not finish: run sudo ./reset-database.sh in $production/deploy again first. Testing was not changed." ;;
+esac
 
 say "Backing up production"
 "$production/deploy/backup.sh"
@@ -54,6 +80,10 @@ testing_domain=$(env_get DOMAIN)
 #    They are pointed at testing, and those still waiting to be sent are closed (Failed, with the reason in
 #    the Email log), so a tester never acts on production from a testing email;
 #  - production's sign-ins (refresh tokens): only someone who knows a current password signs in to testing.
+# A NEW SIGNING KEY FOR TESTING: a sign-in made in testing before the copy carries a user id that now means someone
+# else, or nobody. restore.sh starts the API with it ("up", not "start").
+env_set JWT_SECRET_KEY "$(head -c 2000 /dev/urandom | LC_ALL=C tr -dc 'A-Za-z0-9' | head -c 64)"
+
 RESTORE_THEN_SQL="SET NOCOUNT ON;
 IF COL_LENGTH(N'messaging.EmailSettings', N'PublicBaseUrl') IS NOT NULL
     UPDATE messaging.EmailSettings SET PublicBaseUrl = N'https://$testing_domain' WHERE PublicBaseUrl IS NOT NULL;

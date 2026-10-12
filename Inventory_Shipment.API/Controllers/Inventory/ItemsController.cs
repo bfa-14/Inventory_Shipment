@@ -1,6 +1,7 @@
 using Inventory_Shipment.API.Authorization;
 using Inventory_Shipment.API.Extensions;
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Service.Interfaces;
@@ -9,7 +10,7 @@ using Microsoft.AspNetCore.Mvc;
 
 namespace Inventory_Shipment.API.Controllers.Inventory;
 
-/// <summary>Item definitions with their packing units, image and attachments.</summary>
+/// <summary>Item definitions with their packing units, picture and documents.</summary>
 [ApiController]
 [Route("api/inventory/items")]
 [Produces("application/json")]
@@ -39,15 +40,22 @@ public sealed class ItemsController : ControllerBase
     /// <summary>
     /// Items for a dropdown, each with the SKU of its base unit. Any signed-in user may read it:
     /// the pages that pick an item are not the pages that maintain items.
+    ///
+    /// bivacOnly=true keeps only the items with "BIVAC Item" ticked (the lines of a BIVAC Out), plus
+    /// includeId. search narrows by code or name and top caps the rows; both omitted, the procedure's
+    /// own defaults apply.
     /// </summary>
     [HttpGet("lookup")]
     [Authorize]
     [ProducesResponseType<IReadOnlyList<ItemLookupDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<ItemLookupDto>>> Lookup(
         [FromQuery] bool activeOnly = true, [FromQuery] int? includeId = null,
-        [FromQuery] bool salesOnly = false, CancellationToken cancellationToken = default)
+        [FromQuery] bool salesOnly = false, [FromQuery] bool bivacOnly = false,
+        [FromQuery] string? search = null, [FromQuery] int? top = null,
+        CancellationToken cancellationToken = default)
     {
-        var result = await _itemService.LookupAsync(activeOnly, includeId, salesOnly, cancellationToken);
+        var result = await _itemService.LookupAsync(
+            activeOnly, includeId, salesOnly, bivacOnly, search, top, cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -225,42 +233,63 @@ public sealed class ItemsController : ControllerBase
         return result.ToNoContentResult(this);
     }
 
-    // ----- files -----
+    // ----- files: the picture and the documents -----
+    //
+    // THE SAME ROUTES, FORMS AND SHAPES AS EVERY DOCUMENT'S FILES (GET / POST {id}/files, GET / PUT / DELETE
+    // {id}/files/{fileId}; the web's documentFilesApi), kind ITEM since script 67: a document has a type (used for
+    // items), a date and a note, PDF, image or Office file up to 20 MB. The item's PICTURE shares the table and the
+    // POST (isItemImage=true, a JPEG, PNG or WebP of up to 5 MB, no type); it is never listed with the documents.
 
     /// <summary>
-    /// Uploads a file against the item (multipart/form-data). With isItemImage=true it becomes the
-    /// item's picture and replaces the previous one; max 5 MB.
+    /// Multipart: file, attachmentTypeId (required: a type used for items), and optionally documentDate (yyyy-MM-dd)
+    /// and note. PDF, image or Office file, up to 20 MB; answers { id }. With isItemImage=true the file becomes the
+    /// item's picture instead and replaces the previous one: a JPEG, PNG or WebP of up to 5 MB, no type; answers the
+    /// file's metadata.
     /// </summary>
     [HttpPost("{id:int}/files")]
     [HasPermission(Permissions.Inventory.ItemsEdit)]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(6 * 1024 * 1024)]
-    [ProducesResponseType<ItemFileDto>(StatusCodes.Status201Created)]
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
+    [ProducesResponseType(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult<ItemFileDto>> AddFile(
-        int id, IFormFile file, [FromQuery] bool isItemImage = false, CancellationToken cancellationToken = default)
+    public async Task<IActionResult> AddFile(
+        int id, IFormFile file, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate,
+        [FromForm] string? note, [FromQuery] bool isItemImage = false, CancellationToken cancellationToken = default)
     {
-        if (file is null)
+        if (isItemImage)
         {
-            return BadRequest(new ProblemDetails
-            {
-                Status = StatusCodes.Status400BadRequest,
-                Title = "Validation failed",
-                Detail = "No file was uploaded.",
-                Instance = HttpContext.Request.Path,
-                Extensions = { ["code"] = "VALIDATION" }
-            });
+            return await AddImageAsync(id, file, cancellationToken);
         }
 
-        await using var stream = file.OpenReadStream();
-        var upload = new ItemFileUpload(file.FileName, file.ContentType, file.Length, stream);
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        if (this.RefuseUpload(file, fields) is { } refusal)
+        {
+            return refusal;
+        }
 
-        var result = await _itemService.AddFileAsync(id, upload, isItemImage, User.GetUserId(), cancellationToken);
+        using var buffer = new MemoryStream();
+        await file.CopyToAsync(buffer, cancellationToken);
+
+        var result = await _itemService.AddDocumentFileAsync(
+            id, file.FileName, file.ContentType, buffer.ToArray(), fields, User.GetUserId(), cancellationToken);
 
         return result.IsSuccess
-            ? Created($"/api/inventory/items/{id}/files/{result.Value!.Id}", result.Value)
+            ? StatusCode(StatusCodes.Status201Created, new { id = result.Value })
             : this.ToProblem(result);
+    }
+
+    /// <summary>The item's documents with their type, date and note, newest first; attachmentTypeId = one type only. Never the picture.</summary>
+    [HttpGet("{id:int}/files")]
+    [HasPermission(Permissions.Inventory.ItemsView)]
+    [ProducesResponseType<IReadOnlyList<DocumentFileDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<DocumentFileDto>>> ListFiles(
+        int id, [FromQuery] int? attachmentTypeId, CancellationToken cancellationToken)
+    {
+        var result = await _itemService.ListFilesAsync(id, attachmentTypeId, cancellationToken);
+        return result.ToActionResult(this);
     }
 
     /// <summary>Downloads one of the item's files - images render inline, everything else downloads.</summary>
@@ -287,27 +316,34 @@ public sealed class ItemsController : ControllerBase
     }
 
     /// <summary>
-    /// Edits one of the item's files (multipart/form-data): fileName renames it, and an optional file
-    /// replaces its content under the upload's checks. Without a file the stored one is kept.
+    /// Multipart: fileName (required), attachmentTypeId (required, as for the upload), and optionally documentDate
+    /// (yyyy-MM-dd), note and a file that replaces the stored one in the same place in the list (none keeps it). The
+    /// upload's checks; answers the file's row. Documents only: a new picture is uploaded with isItemImage=true.
     /// </summary>
     [HttpPut("{id:int}/files/{fileId:int}")]
     [HasPermission(Permissions.Inventory.ItemsEdit)]
     [Consumes("multipart/form-data")]
-    [RequestSizeLimit(6 * 1024 * 1024)]
-    [ProducesResponseType(StatusCodes.Status204NoContent)]
+    [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
+    [ProducesResponseType<DocumentFileDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
-    public async Task<ActionResult> UpdateFile(
-        int id, int fileId, [FromForm] string? fileName, IFormFile? file, CancellationToken cancellationToken = default)
+    public async Task<ActionResult<DocumentFileDto>> UpdateFile(
+        int id, int fileId, [FromForm] string? fileName, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate,
+        [FromForm] string? note, IFormFile? file, CancellationToken cancellationToken = default)
     {
-        await using var stream = file?.OpenReadStream();
-        var upload = file is null ? null : new ItemFileUpload(file.FileName, file.ContentType, file.Length, stream!);
+        var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
+        var (edit, refusal) = await this.ReadEditAsync(fileName, fields, file, cancellationToken);
+        if (refusal is not null)
+        {
+            return refusal;
+        }
 
-        var result = await _itemService.UpdateFileAsync(id, fileId, fileName, upload, cancellationToken);
-        return result.ToNoContentResult(this);
+        var result = await _itemService.UpdateFileAsync(id, fileId, edit!, User.GetUserId(), cancellationToken);
+        return result.ToActionResult(this);
     }
 
-    /// <summary>Deletes one of the item's files.</summary>
+    /// <summary>Deletes one of the item's files: a document or the picture.</summary>
     [HttpDelete("{id:int}/files/{fileId:int}")]
     [HasPermission(Permissions.Inventory.ItemsEdit)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]
@@ -316,5 +352,30 @@ public sealed class ItemsController : ControllerBase
     {
         var result = await _itemService.DeleteFileAsync(id, fileId, cancellationToken);
         return result.ToNoContentResult(this);
+    }
+
+    /// <summary>The picture's upload, as it always was: its own 5 MB JPEG / PNG / WebP rule, no type; 201 with its metadata.</summary>
+    private async Task<IActionResult> AddImageAsync(int id, IFormFile? file, CancellationToken cancellationToken)
+    {
+        if (file is null)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Validation failed",
+                Detail = "No file was uploaded.",
+                Instance = HttpContext.Request.Path,
+                Extensions = { ["code"] = "VALIDATION" }
+            });
+        }
+
+        await using var stream = file.OpenReadStream();
+        var upload = new ItemFileUpload(file.FileName, file.ContentType, file.Length, stream);
+
+        var result = await _itemService.AddImageAsync(id, upload, User.GetUserId(), cancellationToken);
+
+        return result.IsSuccess
+            ? Created($"/api/inventory/items/{id}/files/{result.Value!.Id}", result.Value)
+            : this.ToProblem(result);
     }
 }

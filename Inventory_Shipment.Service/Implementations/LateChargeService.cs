@@ -294,8 +294,10 @@ public sealed class LateChargeService : ILateChargeService
             return Result.Failure(ErrorType.NotFound, "Purchase invoice not found.", "NOT_FOUND");
         }
 
-        // Imported first: on a draft from containers the answer is "the containers", not "post it first".
-        if (invoice.IsContainerBound)
+        // Imported first: on a draft from containers the answer is "the containers", not "post it first". (65) "Shipped
+        // in containers" (receipt mode 2) counts as imported even before a line is linked: usp_LandedCostAdjustment_Save
+        // refuses it with the same 67012, so the late charges are never offered only to be refused.
+        if (invoice.IsContainerBound || invoice.ShippedInContainers)
         {
             return Result.Failure(ErrorType.Conflict, ImportedInvoiceMessage, "IMPORTED_INVOICE");
         }

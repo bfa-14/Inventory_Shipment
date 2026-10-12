@@ -86,11 +86,12 @@ public interface IContainerService
 
     /// <summary>
     /// The name, type, date and note of one record and, when content is given, its bytes; allShared = of every container
-    /// holding the file. Needs containers.attachments.manage.
+    /// holding the file. <paramref name="movement"/> (null = unchanged) moves the record(s) to another movement or to
+    /// General; every container of the edit must be on that movement (70000). Needs containers.attachments.manage.
     /// </summary>
     Task<Result<ContainerAttachmentDto>> UpdateAttachmentAsync(
-        int id, bool allShared, DocumentFileEdit edit, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default);
+        int id, bool allShared, DocumentFileEdit edit, ContainerAttachmentMovementLink? movement, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /* ── many containers per order ── */
 

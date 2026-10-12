@@ -372,7 +372,9 @@ public sealed class ContainersController : ControllerBase
     /// Multipart: fileName (required), attachmentTypeId (required: a type used for containers), and optionally
     /// documentDate (yyyy-MM-dd), note and a file that replaces the stored one (none keeps it). allShared = true edits
     /// every container holding the file; false this record only - a new name or file then becomes its own copy, the
-    /// others keep the upload as it was. Answers the record.
+    /// others keep the upload as it was. setMovement = "true" also moves the record(s) to movementId (empty = General,
+    /// tied to no movement; script 67): every container of the edit must be on that movement (70000). Without
+    /// setMovement the movement link stays as it is. The charge link is never changed here. Answers the record.
     /// </summary>
     [HttpPut("attachments/{id:int}")]
     [HasPermission(Permissions.Containers.AttachmentsManage)]
@@ -384,7 +386,8 @@ public sealed class ContainersController : ControllerBase
     [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
     public async Task<ActionResult<ContainerAttachmentDto>> UpdateAttachment(
         int id, [FromForm] string? fileName, [FromForm] int? attachmentTypeId, [FromForm] DateOnly? documentDate,
-        [FromForm] string? note, IFormFile? file, [FromQuery] bool allShared = false, CancellationToken cancellationToken = default)
+        [FromForm] string? note, IFormFile? file, [FromForm] int? movementId, [FromForm] bool setMovement = false,
+        [FromQuery] bool allShared = false, CancellationToken cancellationToken = default)
     {
         var fields = new DocumentFileFields { AttachmentTypeId = attachmentTypeId, DocumentDate = documentDate, Note = note };
         var (edit, refusal) = await this.ReadEditAsync(fileName, fields, file, cancellationToken);
@@ -393,8 +396,9 @@ public sealed class ContainersController : ControllerBase
             return refusal;
         }
 
+        var link = setMovement ? new ContainerAttachmentMovementLink(movementId) : null;
         var result = await _containers.UpdateAttachmentAsync(
-            id, allShared, edit!, User.GetUserId(), User.GetPermissions(), cancellationToken);
+            id, allShared, edit!, link, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

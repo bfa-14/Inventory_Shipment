@@ -29,4 +29,17 @@ public sealed class DatabaseOptions
     /// problem, and the error log names which batch it was.
     /// </summary>
     public int SchemaCommandTimeoutSeconds { get; set; } = 300;
+
+    /// <summary>
+    /// How long one ordinary database call may take, in seconds, when the connection string does not say
+    /// ("Command Timeout=..." in it always wins, 0 included).
+    ///
+    /// NINETY RATHER THAN ADO.NET'S THIRTY, BECAUSE OF THE MATCHING LOCK. Posting or cancelling a goods receipt, a
+    /// supplier invoice or return, or a landed cost adjustment takes purchase.GoodsReceiptMatching
+    /// (purchase.usp_GoodsReceipt_LockMatching), and waits up to SIXTY seconds for it before refusing with 63010 "Goods
+    /// receipts and invoices are being matched for another user. Try again in a moment." With thirty seconds the
+    /// client gave up first: "Execution Timeout Expired", a 500, and the sentence never shown. So this must stay ABOVE
+    /// the lock's wait: lowering it below sixty brings the 500 back. 0 or less leaves SqlClient's own thirty seconds.
+    /// </summary>
+    public int CommandTimeoutSeconds { get; set; } = 90;
 }

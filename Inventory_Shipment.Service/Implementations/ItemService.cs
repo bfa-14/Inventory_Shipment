@@ -1,4 +1,5 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.DTOs.Purchase;
 using Inventory_Shipment.Model.Entities;
@@ -16,25 +17,16 @@ public sealed class ItemService : IItemService
     private const string NotFoundMessage = "Item not found.";
     private const string FileNotFoundMessage = "File not found.";
 
-    /// <summary>Largest upload the database column and the UI both promise to handle.</summary>
-    private const int MaxFileBytes = 5 * 1024 * 1024;
+    /// <summary>
+    /// Largest item picture. THE PICTURE ONLY: the item's documents follow the rules of every attachment
+    /// (<see cref="AttachmentRules"/>, 20 MB), checked by the controller as for every other page.
+    /// </summary>
+    private const int MaxImageBytes = 5 * 1024 * 1024;
 
     /// <summary>What the item image may be - the picture is rendered straight into an img tag.</summary>
     private static readonly HashSet<string> ImageContentTypes = new(StringComparer.OrdinalIgnoreCase)
     {
         "image/jpeg", "image/png", "image/webp"
-    };
-
-    /// <summary>What an attachment may be: the image types plus the usual documents.</summary>
-    private static readonly HashSet<string> AttachmentContentTypes = new(StringComparer.OrdinalIgnoreCase)
-    {
-        "image/jpeg", "image/png", "image/webp",
-        "application/pdf",
-        "application/msword",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        "application/vnd.ms-excel",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        "text/plain"
     };
 
     private readonly IItemRepository _items;
@@ -106,6 +98,8 @@ public sealed class ItemService : IItemService
             OutstandingBase = orders.Sum(o => o.OutstandingBase),
             OrderedBase = live.Sum(o => o.OrderedBase),
             ReceivedBase = live.Sum(o => o.ReceivedBase),
+            InvoicedBase = live.Sum(o => o.InvoicedBase),
+            ShortBase = live.Sum(o => o.ShortBase),
             Orders = orders,
         });
     }
@@ -257,9 +251,10 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<IReadOnlyList<ItemLookupDto>>> LookupAsync(
-        bool activeOnly, int? includeId, bool salesOnly = false, CancellationToken cancellationToken = default)
+        bool activeOnly, int? includeId, bool salesOnly = false, bool bivacOnly = false,
+        string? search = null, int? top = null, CancellationToken cancellationToken = default)
     {
-        var items = await _items.LookupAsync(activeOnly, includeId, salesOnly, cancellationToken);
+        var items = await _items.LookupAsync(activeOnly, includeId, salesOnly, bivacOnly, search, top, cancellationToken);
         return Result<IReadOnlyList<ItemLookupDto>>.Success(items.Select(i => i.ToDto()).ToList());
     }
 
@@ -342,31 +337,25 @@ public sealed class ItemService : IItemService
 
     // ----- files -----
 
-    public async Task<Result<ItemFileDto>> AddFileAsync(
-        int itemId, ItemFileUpload upload, bool isItemImage, int userId, CancellationToken cancellationToken = default)
+    public async Task<Result<ItemFileDto>> AddImageAsync(
+        int itemId, ItemFileUpload upload, int userId, CancellationToken cancellationToken = default)
     {
         if (upload.SizeBytes <= 0)
         {
             return Result<ItemFileDto>.Failure(ErrorType.Validation, "The file is empty.", "VALIDATION");
         }
 
-        if (upload.SizeBytes > MaxFileBytes)
+        if (upload.SizeBytes > MaxImageBytes)
         {
             return Result<ItemFileDto>.Failure(
                 ErrorType.Validation, "The file is larger than the 5 MB limit.", "VALIDATION");
         }
 
         var contentType = upload.ContentType?.Trim() ?? string.Empty;
-        var allowed = isItemImage ? ImageContentTypes : AttachmentContentTypes;
-
-        if (!allowed.Contains(contentType))
+        if (!ImageContentTypes.Contains(contentType))
         {
             return Result<ItemFileDto>.Failure(
-                ErrorType.Validation,
-                isItemImage
-                    ? "The item image must be a JPEG, PNG or WebP file."
-                    : "Allowed attachments are images (JPEG, PNG, WebP), PDF, Word, Excel and plain text files.",
-                "VALIDATION");
+                ErrorType.Validation, "The item image must be a JPEG, PNG or WebP file.", "VALIDATION");
         }
 
         // Only the name matters - a browser may send a full path on some platforms.
@@ -386,7 +375,7 @@ public sealed class ItemService : IItemService
             return Result<ItemFileDto>.Failure(ErrorType.Validation, "The file is empty.", "VALIDATION");
         }
 
-        if (content.Length > MaxFileBytes)
+        if (content.Length > MaxImageBytes)
         {
             return Result<ItemFileDto>.Failure(
                 ErrorType.Validation, "The file is larger than the 5 MB limit.", "VALIDATION");
@@ -398,23 +387,72 @@ public sealed class ItemService : IItemService
             FileName = fileName,
             ContentType = contentType,
             SizeBytes = content.Length,
-            IsItemImage = isItemImage,
+            IsItemImage = true,
             Content = content
         };
 
         try
         {
-            await _items.AddFileAsync(file, userId, cancellationToken);
+            // No fields: the picture has no type, date or note.
+            await _items.AddFileAsync(file, fields: null, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
             return Failure<ItemFileDto>(ex);
         }
 
-        _logger.LogInformation("File {FileId} ({FileName}, {SizeBytes} bytes) added to item {ItemId} by user {UserId}",
+        _logger.LogInformation("Picture {FileId} ({FileName}, {SizeBytes} bytes) added to item {ItemId} by user {UserId}",
             file.Id, file.FileName, file.SizeBytes, itemId, userId);
 
         return Result<ItemFileDto>.Success(file.ToDto());
+    }
+
+    public async Task<Result<int>> AddDocumentFileAsync(
+        int itemId, string fileName, string contentType, byte[] content, DocumentFileFields fields, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var name = Path.GetFileName(fileName.Trim());
+        if (name.Length == 0)
+        {
+            return Result<int>.Failure(ErrorType.Validation, "The file name is required.", "VALIDATION");
+        }
+
+        var file = new ItemFile
+        {
+            ItemId = itemId,
+            FileName = name,
+            ContentType = string.IsNullOrWhiteSpace(contentType) ? "application/octet-stream" : contentType.Trim(),
+            SizeBytes = content.Length,
+            IsItemImage = false,
+            Content = content
+        };
+
+        try
+        {
+            await _items.AddFileAsync(file, fields, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<int>(ex);
+        }
+
+        _logger.LogInformation(
+            "Document {FileId} ({FileName}, {SizeBytes} bytes, type {AttachmentTypeId}) added to item {ItemId} by user {UserId}",
+            file.Id, file.FileName, file.SizeBytes, fields.AttachmentTypeId, itemId, userId);
+
+        return Result<int>.Success(file.Id);
+    }
+
+    public async Task<Result<IReadOnlyList<DocumentFileDto>>> ListFilesAsync(
+        int itemId, int? attachmentTypeId, CancellationToken cancellationToken = default)
+    {
+        if (await _items.GetAsync(itemId, cancellationToken) is null)
+        {
+            return Result<IReadOnlyList<DocumentFileDto>>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        return Result<IReadOnlyList<DocumentFileDto>>.Success(
+            await _items.ListFilesAsync(itemId, attachmentTypeId, cancellationToken: cancellationToken));
     }
 
     public async Task<Result<ItemFile>> GetFileAsync(
@@ -428,80 +466,33 @@ public sealed class ItemService : IItemService
             : Result<ItemFile>.Success(file);
     }
 
-    public async Task<Result> UpdateFileAsync(
-        int itemId, int fileId, string? fileName, ItemFileUpload? upload, CancellationToken cancellationToken = default)
+    public async Task<Result<DocumentFileDto>> UpdateFileAsync(
+        int itemId, int fileId, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
     {
-        var file = await _items.GetFileAsync(fileId, cancellationToken);
-
-        if (file is null || file.ItemId != itemId)
+        // CHECKED AGAINST THE ITEM IN THE ROUTE through the documents' list, which never holds the picture: a
+        // file of another item, or the picture, is not a document of this item.
+        if ((await _items.ListFilesAsync(itemId, fileId: fileId, cancellationToken: cancellationToken)).Count == 0)
         {
-            return Result.Failure(ErrorType.NotFound, FileNotFoundMessage, "NOT_FOUND");
+            return Result<DocumentFileDto>.Failure(ErrorType.NotFound, FileNotFoundMessage, "NOT_FOUND");
         }
 
-        var name = Path.GetFileName(fileName?.Trim() ?? string.Empty);
-        if (string.IsNullOrEmpty(name))
-        {
-            return Result.Failure(ErrorType.Validation, "The file name is required.", "VALIDATION");
-        }
-
-        string? contentType = null;
-        byte[]? content = null;
-
-        // No upload keeps the stored bytes; only the name changes.
-        if (upload is not null)
-        {
-            if (upload.SizeBytes <= 0)
-            {
-                return Result.Failure(ErrorType.Validation, "The file is empty.", "VALIDATION");
-            }
-
-            if (upload.SizeBytes > MaxFileBytes)
-            {
-                return Result.Failure(ErrorType.Validation, "The file is larger than the 5 MB limit.", "VALIDATION");
-            }
-
-            // The item image stays an image: the allow-list follows the file being replaced.
-            contentType = upload.ContentType?.Trim() ?? string.Empty;
-            var allowed = file.IsItemImage ? ImageContentTypes : AttachmentContentTypes;
-
-            if (!allowed.Contains(contentType))
-            {
-                return Result.Failure(
-                    ErrorType.Validation,
-                    file.IsItemImage
-                        ? "The item image must be a JPEG, PNG or WebP file."
-                        : "Allowed attachments are images (JPEG, PNG, WebP), PDF, Word, Excel and plain text files.",
-                    "VALIDATION");
-            }
-
-            using var buffer = new MemoryStream();
-            await upload.Content.CopyToAsync(buffer, cancellationToken);
-            content = buffer.ToArray();
-
-            if (content.Length == 0)
-            {
-                return Result.Failure(ErrorType.Validation, "The file is empty.", "VALIDATION");
-            }
-
-            if (content.Length > MaxFileBytes)
-            {
-                return Result.Failure(ErrorType.Validation, "The file is larger than the 5 MB limit.", "VALIDATION");
-            }
-        }
-
+        DocumentFileDto? row;
         try
         {
-            await _items.UpdateFileAsync(fileId, name, contentType, content, cancellationToken);
+            row = await _items.UpdateFileAsync(
+                fileId, edit.FileName, edit.ContentType, edit.Content, edit.Fields, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
-            var failure = Describe(ex);
-            return Result.Failure(failure.Type, failure.Message, failure.Code);
+            return Failure<DocumentFileDto>(ex);
         }
 
-        _logger.LogInformation("File {FileId} of item {ItemId} updated{Replaced}",
-            fileId, itemId, content is null ? string.Empty : " with new content");
-        return Result.Success();
+        _logger.LogInformation("Document {FileId} of item {ItemId} updated{Replaced} by user {UserId}",
+            fileId, itemId, edit.Content is null ? string.Empty : " with new content", userId);
+
+        return row is null
+            ? Result<DocumentFileDto>.Failure(ErrorType.NotFound, FileNotFoundMessage, "NOT_FOUND")
+            : Result<DocumentFileDto>.Success(row);
     }
 
     public async Task<Result> DeleteFileAsync(int itemId, int fileId, CancellationToken cancellationToken = default)
@@ -647,6 +638,9 @@ public sealed class ItemService : IItemService
         SqlErrors.ItemBaseUnitRule => new RuleFailure(ErrorType.Conflict, exception.Message, "BASE_UNIT_RULE"),
 
         SqlErrors.ItemMasterInactive => new RuleFailure(ErrorType.Validation, exception.Message, "MASTER_INACTIVE"),
+
+        // Script 67: "Choose the attachment type." / "The attachment type ... is not used for items." - as it comes.
+        SqlErrors.ItemAttachmentType => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
 
         SqlErrors.ItemNotFound => new RuleFailure(ErrorType.NotFound, exception.Message, "NOT_FOUND"),
 

@@ -64,10 +64,13 @@ public interface IContainerRepository
 
     /// <summary>
     /// The name, type, date and note of one record (the upload's checks) and, when content is given, its bytes - or
-    /// (allShared) of every container holding the file; the record as it now stands.
+    /// (allShared) of every container holding the file; <paramref name="movement"/> (script 67, null = unchanged) also
+    /// moves them to that movement or to General (@SetMovement), refused with 70000 when a container is not on it.
+    /// The record as it now stands.
     /// </summary>
     Task<ContainerAttachmentDto?> UpdateAttachmentAsync(
-        int id, bool allShared, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default);
+        int id, bool allShared, DocumentFileEdit edit, ContainerAttachmentMovementLink? movement, int userId,
+        CancellationToken cancellationToken = default);
 
     /* ── many containers per order (script 28) ── */
 

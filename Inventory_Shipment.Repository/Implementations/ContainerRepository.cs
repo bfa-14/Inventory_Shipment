@@ -63,6 +63,7 @@ public sealed class ContainerRepository : IContainerRepository
             SortDirection = string.Equals(query.SortDir, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = query.Page,
             query.PageSize,
+            query.DeliveredNotReceived,
         };
 
         await using var connection = _connectionFactory.Create();
@@ -339,7 +340,8 @@ public sealed class ContainerRepository : IContainerRepository
     }
 
     public async Task<ContainerAttachmentDto?> UpdateAttachmentAsync(
-        int id, bool allShared, DocumentFileEdit edit, int userId, CancellationToken cancellationToken = default)
+        int id, bool allShared, DocumentFileEdit edit, ContainerAttachmentMovementLink? movement, int userId,
+        CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
@@ -352,6 +354,13 @@ public sealed class ContainerRepository : IContainerRepository
         parameters.Add("@SizeBytes", edit.Content?.Length, DbType.Int32);
         parameters.Add("@Content", edit.Content, DbType.Binary, size: -1);
         parameters.Add("@UserId", userId, DbType.Int32);
+
+        // Script 67. Only sent for a re-link, so an edit that keeps the movement is the call it always was.
+        if (movement is not null)
+        {
+            parameters.Add("@MovementId", movement.MovementId, DbType.Int32);
+            parameters.Add("@SetMovement", true, DbType.Boolean);
+        }
 
         await using var connection = _connectionFactory.Create();
         try
