@@ -48,7 +48,8 @@ GO
      logistics.usp_Container_InvoiceCandidates (script 27)
      logistics.usp_Movement_SetStatus (script 53), usp_Movement_Get (script 27)
      logistics.usp_Container_Offload, _CancelOffload, _Close, _Reopen, _Cancel, _Delete, _Tracking (script 27); _Save,
-       _PlanFromOrder, _CreateBatch, _AvailablePoLines, _Get, _Search (script 54)
+       _PlanFromOrder, _CreateBatch, _AvailablePoLines, _Get, _Search (script 54); logistics.fn_Container_CloseBlock (new:
+       why an offloaded container cannot be closed yet - Close refuses with it, Get and Search show it)
      purchase.fn_PurchaseInvoice_ContainerState (script 63), usp_PurchaseInvoice_LinkContainers (script 51),
        usp_PurchaseInvoice_UnlinkContainer, usp_PurchaseInvoice_LinkCandidates (script 43)
      inventory.usp_Item_RebuildCosts (script 27), usp_Item_StockStatement (script 58), fn_Shortage_Live (script 62),
@@ -1925,7 +1926,9 @@ BEGIN
     -- (65) what "Receive goods..." would find: an order's lines (rule 14), an invoice's lines not in a container (rule 15)
     OUTER APPLY (SELECT ToReceive = SUM(p.ToReceiveBase), MaxOutside = SUM(p.MaxOutsideBase), InContainers = SUM(p.InContainersBase),
                         NotReceived = SUM(CASE WHEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase > 0
-                                               THEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase ELSE 0 END)
+                                               THEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase ELSE 0 END),
+                        InDrafts = SUM(p.InDraftReceiptsBase),
+                        Room = SUM(CASE WHEN p.MaxOutsideBase > p.InDraftReceiptsBase THEN p.MaxOutsideBase - p.InDraftReceiptsBase ELSE 0 END)
                  FROM purchase.fn_PoLine_Progress(d.Id) p
                  WHERE dt.Code = N'PO') pr
     OUTER APPLY (SELECT Lines = COUNT(*), ToReceive = SUM(t.ToReceiveBase), InDrafts = SUM(t.InDraftReceiptsBase),
@@ -1933,13 +1936,16 @@ BEGIN
                  FROM purchase.fn_InvoiceLine_ToReceive(d.Id) t
                  WHERE dt.Code = N'PINV') ir
     -- (65) why "Receive goods..." is disabled (NULL = it is not). An order also opens it for pieces recorded short that
-    --      turn up later (MaxOutsideBase: what remains outside containers, settled pieces included; the dialog proposes 0).
+    --      turn up later (MaxOutsideBase: what remains outside containers, settled pieces included; the dialog proposes 0),
+    --      but not for what draft goods receipts already hold (Room: MaxOutsideBase - InDraftReceiptsBase per line).
     CROSS APPLY (SELECT Reason = CAST(CASE
                      WHEN dt.Code = N'PO' THEN
                          CASE WHEN d.Status = 1 THEN N'Approve the order first: goods are received against an approved order.'
                               WHEN d.Status = 5 THEN N'This order is waiting for approval.'
                               WHEN d.Status = 3 THEN N'This order is cancelled.'
-                              WHEN ISNULL(pr.ToReceive, 0) > 0 OR ISNULL(pr.MaxOutside, 0) > 0 THEN NULL
+                              WHEN ISNULL(pr.ToReceive, 0) > 0 OR ISNULL(pr.Room, 0) > 0 THEN NULL
+                              WHEN ISNULL(pr.InDrafts, 0) > 0
+                                  THEN N'The rest of this order is on draft goods receipts: post or delete them first.'
                               WHEN ISNULL(pr.InContainers, 0) > 0 AND ISNULL(pr.NotReceived, 0) > 0
                                   THEN N'Everything still to receive travels in containers: it is received with its containers.'
                               ELSE N'Everything ordered is already received.' END
@@ -2511,7 +2517,8 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    THROW 69010, 'Containers are received with a goods receipt now. Use Receive goods... on the container.', 1;
+    DECLARE @Msg NVARCHAR(200) = N'Containers are received with a goods receipt now. Use Receive goods' + NCHAR(8230) + N' on the container.';
+    THROW 69010, @Msg, 1;
 END
 GO
 
@@ -2666,6 +2673,39 @@ GO
 
 /* ================================================================== 13. Close: every received piece invoiced (Close and Reopen under lock) */
 
+-- (65) WHY AN OFFLOADED CONTAINER CANNOT BE CLOSED YET, IN ONE PLACE: Close refuses with it, and the container page and
+-- list show it (CloseBlockedReason), so the Close button says why before the click. At most one row: draft charges
+-- first (70010), then rule 20 (69016): the first container line, in line order, whose pieces received by posted goods
+-- receipts are not all matched to posted invoices. A container offloaded before goods receipts had its posted invoices
+-- before the offload: rule 20 does not apply to it. No row: nothing here blocks it (the status is checked apart).
+-- No NULL reaches a SUM (a receipt line nothing is matched to counts 0): a NULL inside the SUM raised warning 8153 ("Null
+-- value is eliminated by an aggregate"), which SqlClient joined to the 69016 message the user read.
+CREATE OR ALTER FUNCTION logistics.fn_Container_CloseBlock (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT TOP (1) b.ErrorNumber, b.Reason
+    FROM (SELECT ErrorNumber = 70010, Ord = 0, LineNumber = 0,
+                 Reason = CAST(N'The container still has draft charges. Post or delete them before closing it.' AS NVARCHAR(400))
+          WHERE EXISTS (SELECT 1 FROM logistics.ContainerCharges ch WHERE ch.ContainerId = @ContainerId AND ch.Status = 1)
+          UNION ALL
+          SELECT 69016, 1, cl.LineNumber,
+                 CAST(N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                      + CAST(x.Received AS NVARCHAR(20)) + N' received but ' + CAST(x.Invoiced AS NVARCHAR(20))
+                      + N' invoiced by posted invoices. Post the supplier invoices before closing the container.' AS NVARCHAR(400))
+          FROM logistics.ContainerLines cl
+          INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+          CROSS APPLY (SELECT Received = ISNULL(SUM(ISNULL(gl.QuantityBase, 0)), 0), Invoiced = ISNULL(SUM(mm.Qty), 0)
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                       CROSS APPLY (SELECT Qty = ISNULL(SUM(m.QuantityBase), 0) FROM purchase.GoodsReceiptInvoiceMatches m
+                                    WHERE m.GoodsReceiptLineId = gl.Id) mm
+                       WHERE gl.ContainerLineId = cl.Id) x
+          WHERE cl.ContainerId = @ContainerId AND x.Invoiced < x.Received
+            AND EXISTS (SELECT 1 FROM logistics.fn_Container_ReceivedBy(@ContainerId) r WHERE r.ReceivedBy = N'GRN')) b
+    ORDER BY b.Ord, b.LineNumber;
+GO
+
 -- Re-created (65) from the body of script 27: a container received with a goods receipt closes only when its received
 -- pieces are matched to posted invoices (69016, rule 20).
 -- (65) ONE TRANSACTION, THE CONTAINER READ UNDER LOCK (UPDLOCK, HOLDLOCK) BEFORE ANY CHECK: goods receipt Post and
@@ -2689,31 +2729,15 @@ BEGIN
         IF @Status <> 6 THROW 69010, 'Only an offloaded container can be closed.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
-        IF EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE ContainerId = @Id AND Status = 1)
-            THROW 70010, 'The container still has draft charges. Post or delete them before closing it.', 1;
-
-        -- (65) RULE 20: A CONTAINER RECEIVED WITH A GOODS RECEIPT CLOSES WHEN EVERY RECEIVED PIECE IS MATCHED TO A
-        -- POSTED INVOICE (the matches of its receipt's lines, per container line). Goods may now arrive before their
-        -- invoice, and a closed container is frozen. An offload of the old kind needed the posted invoices before it:
-        -- no check for those.
-        IF EXISTS (SELECT 1 FROM logistics.fn_Container_ReceivedBy(@Id) r WHERE r.ReceivedBy = N'GRN')
-        BEGIN
-            DECLARE @Msg NVARCHAR(400);
-            SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
-                                  + CAST(x.Received AS NVARCHAR(20)) + N' received but ' + CAST(x.Invoiced AS NVARCHAR(20))
-                                  + N' invoiced by posted invoices. Post the supplier invoices before closing the container.'
-            FROM logistics.ContainerLines cl
-            INNER JOIN inventory.Items i ON i.Id = cl.ItemId
-            CROSS APPLY (SELECT Received = ISNULL(SUM(gl.QuantityBase), 0), Invoiced = ISNULL(SUM(mm.Qty), 0)
-                         FROM purchase.GoodsReceiptLines gl
-                         INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId AND g.Status = 2
-                         OUTER APPLY (SELECT Qty = SUM(m.QuantityBase) FROM purchase.GoodsReceiptInvoiceMatches m
-                                      WHERE m.GoodsReceiptLineId = gl.Id) mm
-                         WHERE gl.ContainerLineId = cl.Id) x
-            WHERE cl.ContainerId = @Id AND x.Invoiced < x.Received
-            ORDER BY cl.LineNumber;
-            IF @Msg IS NOT NULL THROW 69016, @Msg, 1;
-        END
+        -- Draft charges (70010), then (65) RULE 20: A CONTAINER RECEIVED WITH A GOODS RECEIPT CLOSES WHEN EVERY RECEIVED
+        -- PIECE IS MATCHED TO A POSTED INVOICE (69016: the matches of its receipt's lines, per container line). Goods
+        -- may now arrive before their invoice, and a closed container is frozen. An offload of the old kind needed the
+        -- posted invoices before it: no check for those. Both from fn_Container_CloseBlock, which the container page and
+        -- list read too.
+        DECLARE @BlockNumber INT, @Msg NVARCHAR(400);
+        SELECT @BlockNumber = b.ErrorNumber, @Msg = b.Reason FROM logistics.fn_Container_CloseBlock(@Id) b;
+        IF @BlockNumber = 70010 THROW 70010, @Msg, 1;
+        IF @BlockNumber = 69016 THROW 69016, @Msg, 1;
 
         UPDATE logistics.Containers
         SET Status = 7, ClosedAtUtc = SYSUTCDATETIME(), ClosedBy = @UserId, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
@@ -3815,7 +3839,7 @@ CROSS APPLY (SELECT FailedRule = CAST(CASE
                         WHEN d.ReceiptMode <> 2 AND d.Status = 1
                             THEN N'Turn on "Shipped in containers" first: the goods will then enter the stock when their containers are received.'
                         WHEN d.ReceiptMode <> 2 AND d.UsesGoodsReceipts = 1
-                            THEN N'This invoice was posted without "Shipped in containers": its goods are received with Receive goods..., not with containers.'
+                            THEN N'This invoice was posted without "Shipped in containers": its goods are received with Receive goods' + NCHAR(8230) + N', not with containers.'
                         WHEN d.ReceiptMode <> 2 THEN N'This invoice was received when it was posted: it cannot be linked to containers.'
                         WHEN o.Status NOT IN (2, 4)
                             THEN N'Order ' + ISNULL(o.DocumentNumber, N'(draft)') + N' is '
@@ -3957,7 +3981,10 @@ BEGIN
             THROW 65028, 'Only a purchase invoice created from a purchase order can be linked to containers.', 1;
         IF @Status NOT IN (1, 2) THROW 65010, 'A cancelled invoice cannot be linked to containers.', 1;
         IF @Status = 2 AND @Mode <> 2 AND @UsesGrn = 1      -- (65) posted after the switch: its goods come with goods receipts
-            THROW 65028, 'This invoice was posted without "Shipped in containers": its goods are received with Receive goods..., not with containers.', 1;
+        BEGIN
+            SET @Msg = N'This invoice was posted without "Shipped in containers": its goods are received with Receive goods' + NCHAR(8230) + N', not with containers.';
+            THROW 65028, @Msg, 1;
+        END
         IF @Status = 2 AND @Mode <> 2
             THROW 65028, 'This invoice was received when it was posted: it cannot be linked to containers.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId AND RowVersion = @RowVersion)
@@ -4312,6 +4339,7 @@ GO
 -- offered for 'Offload' only), its open goods receipt (a draft or the posted one: GoodsReceipt*), its latest completed
 -- Delivery (DeliveredDate, DeliveryMovement*, DeliveryPlaceName) and CanReceive ("Receive goods...": Confirmed to
 -- Cleared, no open receipt); the days at the port stop at the Delivery when nothing is received yet (edge case 29).
+-- CloseBlockedReason: why an offloaded container cannot be closed yet (fn_Container_CloseBlock, the refusal of Close).
 -- The lines' FobSource 'Offload' becomes 'Received': the container line's value once the goods are received. Columns
 -- added at the end of set 1; the other sets are unchanged.
 -- (54) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
@@ -4374,7 +4402,8 @@ BEGIN
            GoodsReceiptCreatedAtUtc = gr.CreatedAtUtc,
            DeliveredDate = dl.EndDate, DeliveryMovementId = dl.MovementId, DeliveryMovementNo = dl.MovementNo,
            DeliveryPlaceName = dl.PlaceName,
-           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT)
+           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT),
+           CloseBlockedReason = cb.Reason
     FROM logistics.Containers c
     INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
     INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
@@ -4382,6 +4411,7 @@ BEGIN
     CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
     CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
     OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
     LEFT  JOIN purchase.GoodsReceipts gr    ON gr.Id = rb.GoodsReceiptId
     LEFT  JOIN masterdata.Warehouses gw     ON gw.Id = gr.WarehouseId
     LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
@@ -4570,8 +4600,9 @@ GO
 
 -- Re-created (65) from the body of script 54: goods receipts. + the filter @DeliveredNotReceived ("Delivered, not
 -- received": Confirmed to Cleared, no posted goods receipt, and a completed Delivery-stage movement or a draft
--- receipt); + ReceivedBy, the open goods receipt (GoodsReceiptId / Number / Status), DeliveredDate and CanReceive,
--- at the end of the row; the days at the port stop at the Delivery when nothing is received yet (edge case 29).
+-- receipt); + ReceivedBy, the open goods receipt (GoodsReceiptId / Number / Status), DeliveredDate, CanReceive and
+-- CloseBlockedReason (fn_Container_CloseBlock) at the end of the row; the days at the port stop at the Delivery when
+-- nothing is received yet (edge case 29).
 -- (54) from the body of script 27: the fill from the items' Container units instead of MaxUnits / UtilizationPct.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
@@ -4656,7 +4687,8 @@ BEGIN
            -- (65) goods receipts
            rb.ReceivedBy, rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
            DeliveredDate = dl.EndDate,
-           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT)
+           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT),
+           CloseBlockedReason = cb.Reason
     FROM logistics.Containers c
     INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
     INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
@@ -4668,6 +4700,7 @@ BEGIN
     CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
     CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
     OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
     OUTER APPLY (SELECT OrderCount = COUNT(DISTINCT cl.PurchaseOrderId), SupplierCount = COUNT(DISTINCT d.SupplierId),
                         FirstOrder = MIN(d.DocumentNumber), FirstSupplier = MIN(sp.PartyName)
                  FROM logistics.ContainerLines cl
@@ -5771,7 +5804,7 @@ FROM (VALUES (N'purchase.usp_PurchaseDocument_ValidateInput'), (N'purchase.usp_P
              (N'logistics.usp_ContainerCharge_Post'), (N'logistics.usp_ContainerCharge_Cancel'),
              (N'logistics.usp_Movement_SetStatus'), (N'logistics.usp_Movement_Get'),
              (N'logistics.usp_Container_Offload'), (N'logistics.usp_Container_CancelOffload'),
-             (N'logistics.usp_Container_Close'), (N'logistics.usp_Container_Reopen'),
+             (N'logistics.usp_Container_Close'), (N'logistics.usp_Container_Reopen'), (N'logistics.fn_Container_CloseBlock'),
              (N'logistics.usp_Container_Save'), (N'logistics.usp_Container_Cancel'), (N'logistics.usp_Container_Delete'),
              (N'logistics.usp_Container_PlanFromOrder'), (N'logistics.usp_Container_CreateBatch'),
              (N'logistics.usp_Container_AvailablePoLines'), (N'logistics.usp_Container_InvoiceCandidates'),
@@ -5779,7 +5812,7 @@ FROM (VALUES (N'purchase.usp_PurchaseDocument_ValidateInput'), (N'purchase.usp_P
              (N'inventory.usp_Item_RebuildCosts'), (N'inventory.usp_Item_StockStatement'),
              (N'inventory.fn_Shortage_Live'), (N'inventory.usp_Item_PurchaseOrders')) o (ObjectName)
 LEFT JOIN sys.objects so ON so.object_id = OBJECT_ID(o.ObjectName)
-ORDER BY ObjectType, o.ObjectName;                                    -- expected 38: 2 functions, 36 procedures, none MISSING
+ORDER BY ObjectType, o.ObjectName;                                    -- expected 39: 3 functions, 36 procedures, none MISSING
 
 -- The switch: one row, written once.
 SELECT SwitchedAtUtc FROM purchase.GoodsReceiptSwitch;               -- expected 1 row

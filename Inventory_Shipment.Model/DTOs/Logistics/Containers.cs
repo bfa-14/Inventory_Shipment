@@ -137,7 +137,15 @@ public abstract record ContainerStatusFlags
     /// <summary>Only a container offloaded before goods receipts; one received by a goods receipt cancels that receipt instead.</summary>
     public bool CanCancelOffload => Status == ContainerStatus.Offloaded && ReceivedBy == ContainerReceivedBy.Offload;
 
-    public bool CanClose => Status == ContainerStatus.Offloaded;
+    /// <summary>
+    /// Why an offloaded container cannot be closed yet, null when nothing blocks it: draft charges (70010), or received
+    /// pieces not matched to posted invoices (69016, rule 20). From <c>logistics.fn_Container_CloseBlock</c>, the refusal
+    /// Close itself gives, so the Close button can say it before the click.
+    /// </summary>
+    public string? CloseBlockedReason { get; init; }
+
+    /// <summary>Offloaded and nothing blocks it (<see cref="CloseBlockedReason"/>).</summary>
+    public bool CanClose => Status == ContainerStatus.Offloaded && CloseBlockedReason is null;
 
     /// <summary>A closed container opens again as offloaded — a late charge arrived.</summary>
     public bool CanReopen => Status == ContainerStatus.Closed;

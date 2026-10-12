@@ -781,7 +781,7 @@ Every changed object is re-created with **CREATE OR ALTER from its current body 
        - `usp_GoodsReceipt_Rematch` for the groups of its lines.
     4. **Cost at receipt:**
        - **Container:**
-         - set `ContainerLines.ReceivedQuantityBase` and `VarianceReason` (code + note);
+         - set `ContainerLines.ReceivedQuantityBase` and `VarianceReason` (the reason's name + note: "Short-shipped: …");
          - `ContainerLines.FobCostBase` = target FOB (#10);
          - `usp_Container_ReallocateCharges @Id, 0`, then `AppliedAtOffload = 1` on the posted landed charges, then
            `usp_Container_RecalcCosts`;

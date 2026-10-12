@@ -45,8 +45,8 @@ GO
        shows the same sentences (fn_GoodsReceipt_Blocks, usp_GoodsReceipt_Get).
      - An invoice is marked UsesGoodsReceipts = 1 when script 65's Post posts it; GoodsReceiptSwitch gets its one row
        from script 65. Until then GoodsReceivedBase is 0 everywhere: this script never ships without 65.
-     - A received container line keeps "reason code: note" in logistics.ContainerLines.VarianceReason, widened from 200
-       to 400 characters.
+     - A received container line keeps "reason: note" in logistics.ContainerLines.VarianceReason ("Short-shipped: 2 pcs
+       short", the reason's name, never its code), widened from 200 to 400 characters.
 
    Objects
      purchase.PurchaseDocuments.UsesGoodsReceipts; purchase.PurchaseDocumentLines.GoodsReceivedBase, GoodsShortBase
@@ -2282,11 +2282,11 @@ BEGIN
                WHEN r.SkipReason = N'Received' AND g.Status = 2 THEN N'Already received with goods receipt ' + g.DocumentNumber + N'.'
                WHEN r.SkipReason = N'Received' THEN N'Already offloaded.'
                WHEN r.SkipReason = N'HasDraft' THEN N'Already has a draft goods receipt.'
-               WHEN r.SkipReason = N'NotConfirmed' THEN N'Not confirmed: confirm the container, then use Receive goods... on it.'
+               WHEN r.SkipReason = N'NotConfirmed' THEN N'Not confirmed: confirm the container, then use Receive goods' + NCHAR(8230) + N' on it.'
                WHEN r.SkipReason = N'Cancelled' THEN N'The container is cancelled.'
                WHEN r.SkipReason = N'NoLines' THEN N'The container has no lines.'
                WHEN r.SkipReason = N'InactiveItem'
-                   THEN N'Item ' + ISNULL(ia.ItemCode, N'?') + N' is inactive: activate it in Item Definition, then use Receive goods... on the container.' END
+                   THEN N'Item ' + ISNULL(ia.ItemCode, N'?') + N' is inactive: activate it in Item Definition, then use Receive goods' + NCHAR(8230) + N' on the container.' END
                AS NVARCHAR(400))
     FROM @Result r
     LEFT JOIN purchase.GoodsReceipts g    ON g.Id = r.GoodsReceiptId
@@ -2337,7 +2337,7 @@ BEGIN
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@ContainerId, N'Event',
                     LEFT(N'Draft goods receipt deleted' + CASE WHEN @IsAuto = 1 THEN ISNULL(N' (created when ' + @MovNo + N' was completed)', N'') ELSE N'' END
-                         + N': receive the container again with Receive goods...', 500), @UserId);
+                         + N': receive the container again with Receive goods' + NCHAR(8230), 500), @UserId);
 
         COMMIT TRANSACTION;
     END TRY
@@ -3475,8 +3475,14 @@ BEGIN
         BEGIN
             UPDATE cl
             SET ReceivedQuantityBase = gl.QuantityBase,
+                -- the reason's NAME, as the receipt shows it ("Short-shipped: 2 pcs short"), never the internal code: the
+                -- container page and the item's containers show this text as it is
                 VarianceReason = CASE WHEN gl.VarianceReasonCode IS NULL THEN NULLIF(LTRIM(RTRIM(gl.VarianceReason)), N'')
-                                      ELSE gl.VarianceReasonCode + ISNULL(N': ' + NULLIF(LTRIM(RTRIM(gl.VarianceReason)), N''), N'') END,
+                                      ELSE CASE gl.VarianceReasonCode WHEN N'SHORT' THEN N'Short-shipped' WHEN N'DAMAGED' THEN N'Damaged'
+                                                                      WHEN N'MISSING' THEN N'Missing'
+                                                                      WHEN N'LOADCOUNT' THEN N'Wrongly counted at loading'
+                                                                      WHEN N'OTHER' THEN N'Other' ELSE gl.VarianceReasonCode END
+                                           + ISNULL(N': ' + NULLIF(LTRIM(RTRIM(gl.VarianceReason)), N''), N'') END,
                 FobCostBase = COALESCE(t.TargetFobBase, gl.PoFobBase)
             FROM logistics.ContainerLines cl
             INNER JOIN purchase.GoodsReceiptLines gl ON gl.ContainerLineId = cl.Id AND gl.GoodsReceiptId = @Id

@@ -471,10 +471,25 @@ public static class SqlErrors
     /// </summary>
     public static BusinessRuleException Wrap(SqlException exception)
         => exception.Number is >= FirstSecurityRule and <= LastSecurityRule
-            ? new SecurityRuleException(exception.Number, exception.Message, exception)
-            : new BusinessRuleException(exception.Number, exception.Message, exception);
+            ? new SecurityRuleException(exception.Number, RuleMessage(exception), exception)
+            : new BusinessRuleException(exception.Number, RuleMessage(exception), exception);
 
     /// <summary>Wraps a security-procedure SqlException (50001-50999).</summary>
     public static SecurityRuleException ToSecurityRuleException(SqlException exception)
-        => new(exception.Number, exception.Message, exception);
+        => new(exception.Number, RuleMessage(exception), exception);
+
+    /// <summary>
+    /// THE MESSAGE THE PROCEDURE THREW, AND NOTHING ELSE. <see cref="SqlException.Message"/> joins every message of the
+    /// batch, informational ones included, so a warning raised before the THROW - 8153 "Null value is eliminated by an
+    /// aggregate or other SET operation", for one - reached the user glued to the rule's text. Only the errors that
+    /// carry the THROW's number are kept (the exception's number is its first error's).
+    /// </summary>
+    private static string RuleMessage(SqlException exception)
+    {
+        var messages = exception.Errors.Cast<SqlError>()
+            .Where(error => error.Number == exception.Number)
+            .Select(error => error.Message)
+            .ToList();
+        return messages.Count > 0 ? string.Join(Environment.NewLine, messages) : exception.Message;
+    }
 }
