@@ -12,6 +12,7 @@ public sealed class PaymentRepository : IPaymentRepository
 {
     private const string LineTypeName = "purchase.tvp_PaymentLine";
     private const string AllocationTypeName = "purchase.tvp_PaymentAllocation";
+    private const string AllocationContainerTypeName = "purchase.tvp_PaymentAllocationContainer";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the date.</summary>
     private static readonly string[] SortColumns = ["PaymentNumber", "PaymentDate", "PayeeName", "Status", "AmountBase", "CreatedAtUtc"];
@@ -243,6 +244,13 @@ public sealed class PaymentRepository : IPaymentRepository
         var files = (await multi.ReadAsync<PaymentFileDto>()).AsList();
         var audit = (await multi.ReadAsync<PaymentAuditDto>()).AsList();
 
+        // Script 73: the container split of each invoice allocation, the LAST result set.
+        var containers = (await multi.ReadAsync<PaymentInvoiceContainerDto>()).AsList();
+        foreach (var allocation in allocations)
+        {
+            allocation.Containers = containers.Where(c => c.AllocationId == allocation.Id).ToList();
+        }
+
         return new PaymentDto
         {
             Id = header.Id,
@@ -301,7 +309,7 @@ public sealed class PaymentRepository : IPaymentRepository
         await using var connection = _connectionFactory.Create();
         try
         {
-            var rows = await connection.QueryAsync<OpenPayableDocumentDto>(new CommandDefinition(
+            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
                 "purchase.usp_Payment_OpenDocuments",
                 new
                 {
@@ -312,7 +320,16 @@ public sealed class PaymentRepository : IPaymentRepository
                     AsOfDate = asOfDate?.ToDateTime(TimeOnly.MinValue),
                 },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
-            return rows.AsList();
+            var rows = (await multi.ReadAsync<OpenPayableDocumentDto>()).AsList();
+
+            // Script 73: the containers of each open invoice that has some.
+            var containers = (await multi.ReadAsync<PaymentInvoiceContainerDto>()).AsList();
+            foreach (var row in rows.Where(r => r.DocumentKind == PaymentDocumentKinds.PurchaseInvoice))
+            {
+                row.Containers = containers.Where(c => c.DocumentId == row.DocumentId).ToList();
+            }
+
+            return rows;
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -353,6 +370,7 @@ public sealed class PaymentRepository : IPaymentRepository
         parameters.Add("@Notes", request.Notes, DbType.String, size: 500);
         parameters.Add("@Lines", ToLineTable(request.Lines).AsTableValuedParameter(LineTypeName));
         parameters.Add("@Allocations", ToAllocationTable(request.Allocations).AsTableValuedParameter(AllocationTypeName));
+        parameters.Add("@AllocationContainers", ToAllocationContainerTable(request.Allocations).AsTableValuedParameter(AllocationContainerTypeName));
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
@@ -377,6 +395,7 @@ public sealed class PaymentRepository : IPaymentRepository
         var parameters = new DynamicParameters();
         parameters.Add("@PaymentId", id, DbType.Int32);
         parameters.Add("@Allocations", ToAllocationTable(allocations).AsTableValuedParameter(AllocationTypeName));
+        parameters.Add("@AllocationContainers", ToAllocationContainerTable(allocations).AsTableValuedParameter(AllocationContainerTypeName));
         parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         return ExecuteAsync("purchase.usp_Payment_Allocate", parameters, cancellationToken);
@@ -534,6 +553,28 @@ public sealed class PaymentRepository : IPaymentRepository
                 allocation.DocumentId,
                 allocation.Amount,
                 (object?)allocation.RateToPayment ?? DBNull.Value);
+        }
+
+        return table;
+    }
+
+    /// <summary>
+    /// The container split of the invoice allocations, shaped like purchase.tvp_PaymentAllocationContainer:
+    /// invoice, container (0 = "Unlinked items"), amount in the invoice's currency.
+    /// </summary>
+    private static DataTable ToAllocationContainerTable(IReadOnlyList<SavePaymentAllocationRequest> allocations)
+    {
+        var table = new DataTable();
+        table.Columns.Add("DocumentId", typeof(int));
+        table.Columns.Add("ContainerId", typeof(int));
+        table.Columns.Add("Amount", typeof(decimal));
+
+        foreach (var allocation in allocations.Where(a => a.DocumentKind.Trim().ToUpperInvariant() == PaymentDocumentKinds.PurchaseInvoice))
+        {
+            foreach (var container in allocation.Containers)
+            {
+                table.Rows.Add(allocation.DocumentId, container.ContainerId ?? 0, container.Amount);
+            }
         }
 
         return table;

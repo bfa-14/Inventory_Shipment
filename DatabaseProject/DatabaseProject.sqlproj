@@ -427,6 +427,7 @@
     <Build Include="messaging\StoredProcedures\usp_EmailSettings_SetTestResult.sql" />
     <Build Include="messaging\Tables\EmailOutbox.sql" />
     <Build Include="messaging\Tables\EmailSettings.sql" />
+    <Build Include="purchase\Functions\fn_InvoiceContainerSettlement.sql" />
     <Build Include="purchase\Functions\fn_InvoiceSettlement.sql" />
     <Build Include="purchase\Functions\fn_PayableDocument.sql" />
     <Build Include="purchase\Functions\fn_PurchaseInvoice_ContainerState.sql" />
@@ -452,6 +453,7 @@
     <Build Include="purchase\StoredProcedures\usp_LandedCostAdjustment_Save.sql" />
     <Build Include="purchase\StoredProcedures\usp_LandedCostAdjustment_Search.sql" />
     <Build Include="purchase\StoredProcedures\usp_Payment_Allocate.sql" />
+    <Build Include="purchase\StoredProcedures\usp_Payment_CheckContainerSplit.sql" />
     <Build Include="purchase\StoredProcedures\usp_Payment_Deallocate.sql" />
     <Build Include="purchase\StoredProcedures\usp_Payment_Delete.sql" />
     <Build Include="purchase\StoredProcedures\usp_Payment_Get.sql" />
@@ -516,6 +518,7 @@
     <Build Include="purchase\Tables\LandedCostAdjustmentLines.sql" />
     <Build Include="purchase\Tables\LandedCostAdjustments.sql" />
     <Build Include="purchase\Tables\OrderApprovers.sql" />
+    <Build Include="purchase\Tables\PaymentAllocationContainers.sql" />
     <Build Include="purchase\Tables\PaymentAllocations.sql" />
     <Build Include="purchase\Tables\PaymentAudit.sql" />
     <Build Include="purchase\Tables\PaymentFiles.sql" />
@@ -533,6 +536,7 @@
     <Build Include="purchase\UserDefinedTypes\tvp_ManualAllocation.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_OrderApprover.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_PaymentAllocation.sql" />
+    <Build Include="purchase\UserDefinedTypes\tvp_PaymentAllocationContainer.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_PaymentLine.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_PurchaseCharge.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_PurchaseDocumentLine.sql" />

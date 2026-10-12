@@ -1,8 +1,8 @@
-/* ================================================================== 7. Allocate a Free payment's advance later */
 
 CREATE   PROCEDURE purchase.usp_Payment_Allocate
     @PaymentId   INT,
     @Allocations purchase.tvp_PaymentAllocation READONLY,
+    @AllocationContainers purchase.tvp_PaymentAllocationContainer READONLY,   -- script 73
     @RowVersion  BINARY(8) = NULL,
     @UserId      INT       = NULL
 AS
@@ -80,7 +80,21 @@ BEGIN
             THROW 73011, @Msg, 1;
         END
 
+        -- Script 73: an invoice with containers is allocated container by container, and the split adds up.
+        -- One container and nothing else: the whole amount is that container's, without a split typed by hand.
+        DECLARE @Split purchase.tvp_PaymentAllocationContainer;
+        INSERT INTO @Split (DocumentId, ContainerId, Amount) SELECT DocumentId, ContainerId, Amount FROM @AllocationContainers;
+        INSERT INTO @Split (DocumentId, ContainerId, Amount)
+        SELECT a.DocumentId, s.ContainerKey, a.Amount
+        FROM @Allocations a
+        CROSS APPLY purchase.fn_InvoiceContainerSettlement(a.DocumentId) s
+        WHERE a.DocumentKind = N'PINV' AND s.HasContainers = 1 AND s.NeedsSplit = 0 AND a.Amount > 0
+          AND NOT EXISTS (SELECT 1 FROM @AllocationContainers c WHERE c.DocumentId = a.DocumentId);
+        EXEC purchase.usp_Payment_CheckContainerSplit @Allocations, @Split, 1;
+        DECLARE @NewAlloc TABLE (Id INT PRIMARY KEY, DocumentId INT NULL);
+
         INSERT INTO purchase.PaymentAllocations (PaymentId, DocumentKind, PurchaseDocumentId, ContainerChargeId, AmountDocCurrency, DocExchangeRate, RateToPayment, AllocatedBy)
+        OUTPUT inserted.Id, inserted.PurchaseDocumentId INTO @NewAlloc (Id, DocumentId)
         SELECT @PaymentId, a.DocumentKind,
                CASE WHEN a.DocumentKind = N'PINV' THEN a.DocumentId END,
                CASE WHEN a.DocumentKind = N'CHARGE' THEN a.DocumentId END,
@@ -89,6 +103,12 @@ BEGIN
                @UserId
         FROM @Allocations a
         CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd;
+
+        INSERT INTO purchase.PaymentAllocationContainers (PaymentAllocationId, ContainerId, AmountDocCurrency)
+        SELECT n.Id, NULLIF(c.ContainerId, 0), c.Amount
+        FROM @Split c
+        INNER JOIN @NewAlloc n ON n.DocumentId = c.DocumentId
+        WHERE c.Amount > 0;
 
         INSERT INTO purchase.PaymentAudit (PaymentId, Action, Details, UserId)
         VALUES (@PaymentId, N'Allocated', CAST((SELECT COUNT(*) FROM @Allocations) AS NVARCHAR(10)) + N' document(s), '

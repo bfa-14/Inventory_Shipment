@@ -1,4 +1,5 @@
-/* ================================================================== 3. Save (a draft) */
+
+/* ================================================================== 4. Payments */
 
 CREATE   PROCEDURE purchase.usp_Payment_Save
     @Id           INT            = NULL,           -- NULL = create
@@ -13,6 +14,7 @@ CREATE   PROCEDURE purchase.usp_Payment_Save
     @Notes        NVARCHAR(500)  = NULL,
     @Lines        purchase.tvp_PaymentLine READONLY,
     @Allocations  purchase.tvp_PaymentAllocation READONLY,
+    @AllocationContainers purchase.tvp_PaymentAllocationContainer READONLY,   -- script 73: the container split of the invoice allocations
     @RowVersion   BINARY(8)      = NULL,
     @UserId       INT            = NULL,
     @NewId        INT OUTPUT
@@ -110,6 +112,18 @@ BEGIN
     ORDER BY a.DocumentKind, a.DocumentId;
     IF @Msg IS NOT NULL THROW 73009, @Msg, 1;
 
+    -- Script 73: the container split may be incomplete on a draft, never wrong.
+    -- One container and nothing else: the whole amount is that container's, without a split typed by hand.
+    DECLARE @Split purchase.tvp_PaymentAllocationContainer;
+    INSERT INTO @Split (DocumentId, ContainerId, Amount) SELECT DocumentId, ContainerId, Amount FROM @AllocationContainers;
+    INSERT INTO @Split (DocumentId, ContainerId, Amount)
+    SELECT a.DocumentId, s.ContainerKey, a.Amount
+    FROM @Allocations a
+    CROSS APPLY purchase.fn_InvoiceContainerSettlement(a.DocumentId) s
+    WHERE a.DocumentKind = N'PINV' AND s.HasContainers = 1 AND s.NeedsSplit = 0 AND a.Amount > 0
+      AND NOT EXISTS (SELECT 1 FROM @AllocationContainers c WHERE c.DocumentId = a.DocumentId);
+    EXEC purchase.usp_Payment_CheckContainerSplit @Allocations, @Split, 0;
+
     BEGIN TRY
         BEGIN TRANSACTION;
 
@@ -174,6 +188,13 @@ BEGIN
                @UserId
         FROM @Allocations a
         CROSS APPLY purchase.fn_PayableDocument(a.DocumentKind, a.DocumentId) pd;
+
+        -- Script 73: the container split, under the allocation of its invoice (zero amounts are not kept).
+        INSERT INTO purchase.PaymentAllocationContainers (PaymentAllocationId, ContainerId, AmountDocCurrency)
+        SELECT al.Id, NULLIF(c.ContainerId, 0), c.Amount
+        FROM @Split c
+        INNER JOIN purchase.PaymentAllocations al ON al.PaymentId = @Id AND al.PurchaseDocumentId = c.DocumentId AND al.RemovedAtUtc IS NULL
+        WHERE c.Amount > 0;
 
         SET @NewId = @Id;
         COMMIT TRANSACTION;

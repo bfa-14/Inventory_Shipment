@@ -209,6 +209,38 @@ public sealed class PaymentAllocationDto
 
     /// <summary>True while the allocation still counts toward what the document has been paid.</summary>
     public bool IsLive => RemovedAtUtc is null;
+
+    /// <summary>
+    /// A purchase invoice with containers (script 73): every container of the invoice, and "Unlinked items"
+    /// for its lines in no container, with this allocation's amount on each. Empty for any other document.
+    /// </summary>
+    public IReadOnlyList<PaymentInvoiceContainerDto> Containers { get; set; } = [];
+}
+
+/// <summary>
+/// One container of a purchase invoice (or its "Unlinked items" row, ContainerId null), in the INVOICE's
+/// currency: the invoice amount for that container, what other posted payments paid on it, what it still
+/// owes, its status (Pending, Partially Paid, Fully Paid) and, on a payment, this payment's amount on it.
+/// </summary>
+public sealed class PaymentInvoiceContainerDto
+{
+    public int? AllocationId { get; init; }
+    public int DocumentId { get; init; }
+
+    /// <summary>Null = the invoice lines in no container ("Unlinked items").</summary>
+    public int? ContainerId { get; init; }
+
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+
+    /// <summary>The item codes of the invoice lines in this container (or unlinked).</summary>
+    public string? Items { get; init; }
+
+    public decimal ContainerAmount { get; init; }
+    public decimal PreviouslyPaid { get; init; }
+    public decimal OutstandingAmount { get; init; }
+    public string PaymentStatus { get; init; } = string.Empty;
+    public decimal AllocatedAmount { get; init; }
 }
 
 public sealed class PaymentFileDto
@@ -347,6 +379,12 @@ public sealed class OpenPayableDocumentDto
 
     public decimal OutstandingBase { get; init; }
     public decimal? DefaultRateToPayment { get; init; }
+
+    /// <summary>
+    /// A purchase invoice with containers: its rows (containers and "Unlinked items"). Two rows or more and the
+    /// payment is split over them (script 73); one container alone takes the whole amount by itself.
+    /// </summary>
+    public IReadOnlyList<PaymentInvoiceContainerDto> Containers { get; set; } = [];
 }
 
 /// <summary>
@@ -435,6 +473,21 @@ public sealed class SavePaymentAllocationRequest
     /// <summary>Multiplier to the payment currency. Null = from the official rates.</summary>
     [Range(0.000000000001, 999999999999.0)]
     public decimal? RateToPayment { get; init; }
+
+    /// <summary>
+    /// A purchase invoice with two rows or more (containers, or a container and unlinked items): the amount
+    /// split over them, in the invoice's currency (script 73). Required to post; adds up to <see cref="Amount"/>.
+    /// </summary>
+    public IReadOnlyList<SavePaymentAllocationContainerRequest> Containers { get; init; } = [];
+}
+
+public sealed class SavePaymentAllocationContainerRequest
+{
+    /// <summary>Null = "Unlinked items", the invoice lines in no container.</summary>
+    public int? ContainerId { get; init; }
+
+    [Range(0, 9999999999999999.99)]
+    public decimal Amount { get; init; }
 }
 
 public sealed class SavePaymentRequest

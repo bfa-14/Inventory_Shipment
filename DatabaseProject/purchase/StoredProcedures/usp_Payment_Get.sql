@@ -1,6 +1,4 @@
-/* ================================================================== 9. Get */
 
--- Five result sets: the payment, its lines, its allocations, its files, its audit trail (newest first).
 CREATE   PROCEDURE purchase.usp_Payment_Get
     @Id INT
 AS
@@ -81,6 +79,20 @@ BEGIN
     LEFT JOIN security.Users u ON u.Id = a.UserId
     WHERE a.PaymentId = @Id
     ORDER BY a.AtUtc DESC, a.Id DESC;
+
+    /* Script 73: the container split of each invoice allocation - EVERY container of the invoice (and
+       "Unlinked items"), with this payment's amount on it, so a draft can be edited. PreviouslyPaid leaves
+       out this payment's own share once it is posted, like the allocation above. */
+    SELECT AllocationId = al.Id, s.DocumentId, s.ContainerId, s.ContainerRef, s.ContainerNo, s.Items, s.ContainerAmount,
+           PreviouslyPaid = s.PaidAmount - CASE WHEN p.Status = 2 AND al.RemovedAtUtc IS NULL THEN ISNULL(pac.AmountDocCurrency, 0) ELSE 0 END,
+           s.OutstandingAmount, s.PaymentStatus,
+           AllocatedAmount = ISNULL(pac.AmountDocCurrency, 0)
+    FROM purchase.PaymentAllocations al
+    INNER JOIN purchase.Payments p ON p.Id = al.PaymentId
+    CROSS APPLY purchase.fn_InvoiceContainerSettlement(al.PurchaseDocumentId) s
+    LEFT JOIN purchase.PaymentAllocationContainers pac ON pac.PaymentAllocationId = al.Id AND pac.ContainerKey = s.ContainerKey
+    WHERE al.PaymentId = @Id AND al.PurchaseDocumentId IS NOT NULL AND s.HasContainers = 1
+    ORDER BY al.Id, CASE WHEN s.ContainerKey = 0 THEN 1 ELSE 0 END, s.ContainerRef;
 END
 
 GO
