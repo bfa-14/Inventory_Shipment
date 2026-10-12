@@ -192,7 +192,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Transshipment** | Moving a container to another vessel at an intermediate port. |
 | **FERI** | Electronic cargo tracking note required for DRC imports (a container field). |
 | **BIVAC Out** | Inventory › BIVAC Out (script 66, document type `BIV_OUT`, numbers like `BIV-BR-002-000001`): units of **BIVAC items** (items with "BIVAC Item" ticked in Item Definition) taken out of stock at average cost, like an Inventory Out, with its own list and permissions. The user chooses the item (model) and a quantity; other items are refused. No link to a shipment: the BIVAC certificate or container number goes in Reference No. Not the BIVAC fee, which is the charge type `BIV` "BIVAC / Inspection". |
-| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 65): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (open: ordered − received − settled short; closed: invoiced − received − settled short), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order" uses the same number. |
+| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 65): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (open: ordered − received − settled short; closed: invoiced − received − settled short), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order (still to come)" (Item Definition › Purchase orders) counts the orders' part only, before Transit is taken off: the invoices without an order are not on its list. The Dashboard's "On the way" adds the three parts (script 72). |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
 | **Payment type** | On sales invoices (Ali: "Payment Type and auto…"), probably cash / credit **(unsure)**. |
@@ -316,7 +316,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
    - Completing a **Delivery** movement creates a **draft goods receipt** per container; "Receive goods…" on the
      container does it by hand (any container from Confirmed to Cleared).
    - The warehouse counts: received 0 to loaded per line, a reason when it differs, one warehouse of the container's
-     branch. The goods need not be invoiced yet.
+     branch at the bottom of the tree (script 72). The goods need not be invoiced yet.
    - Posting it: the goods enter stock at landed cost (the invoice FOB, or the order price for pieces not invoiced
      yet, + the charges re-divided over what arrived, then frozen); average, last and FOB costs are updated; the
      container becomes **Offloaded**. Refused while a movement of the container is in progress.
@@ -407,8 +407,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
    - Exporter's Ref. required. **Post: no stock.** It may also be posted after the goods arrive (step 8).
 5. **Shipment:** Start shipment (SEA Chennai → Dar es Salaam), then INLAND → Kasumbalesa, CUSTOMS, DELIVERY →
    Lubumbashi. Each movement is started and completed. **Completing the DELIVERY creates a draft goods receipt for
-   each container**, into the container's warehouse when it belongs to the container's branch (else "warehouse to
-   choose"). The notification names the drafts made and the containers left out, with the reason.
+   each container**, into the container's warehouse when it is active, belongs to the container's branch and has no
+   warehouses under it (else "warehouse to choose", and the notification says why). The notification names the drafts
+   made and the containers left out, with the reason.
 6. **Charges** (freight, clearing, transport, port fees, demurrage) entered on containers, split and allocated,
    **posted**. Documents attached (B/L, packing list, FERI).
 7. **Goods receipt** at the warehouse: open the draft (Purchase › Goods Receipts; the menu counts the drafts), check
@@ -897,8 +898,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
 **Containers**
 5. **Completing a Delivery-stage movement** creates a draft for each container in status 2–5 with no draft or posted
    receipt: lines = the container lines (expected = received = loaded), date = the movement's end date, warehouse =
-   the container's when it is active and of its branch, else to choose. The completion never fails because of them
-   (4.6).
+   the container's when it is active, of its branch and at the bottom of the tree (script 72), else to choose. The
+   completion never fails because of them (4.6).
 6. **"Receive goods…" on the container** makes the same draft by hand: containers followed without movements, those
    whose last leg is not a Delivery, those delivered before the switch. Status 2–5 only; refused when a receipt exists
    (63013: "Container KTG-2026-0031 already has {goods receipt GRN-… | a draft goods receipt}. Open it instead."). A
@@ -946,8 +947,10 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
   save and again at posting (63000: "The warehouse LUB has warehouses under it. Choose one of those: stock is kept only
   in the warehouses at the bottom of the tree."). An order's, an invoice's or a receipt without an order: any branch. A
   container's: the container's branch as well.
-- A container whose own warehouse has warehouses under it gets its draft with the warehouse to choose; the Delivery's
-  notification says why ("choose the warehouse (LUB, the container's, has warehouses under it: …)").
+- A container whose own warehouse has warehouses under it (or is inactive, or of another branch) gets its draft with
+  the warehouse to choose. The Complete dialog of the Delivery says it first ("KTG-2026-0031 → draft, warehouse to
+  choose (LUB, the container's, has warehouses under it)"), and the notification after it says why, once per reason:
+  "KTG-2026-0031: choose the warehouse (LUB, the container's, has warehouses under it: …)."
 - A warehouse named by a goods receipt (a draft too) counts as used: it cannot become a parent.
 
 **Cost** (the details and examples: `docs/notes/costing-rules.md`)
@@ -986,6 +989,12 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     "Invoiced" progress; filters "To receive" (orders), "Not fully received" (invoices); the Goods Receipts list has
     "With differences" and "Received not invoiced", with a line "Received not invoiced: {n} pcs, {value} at the order
     price." for month-end.
+    - **The Dashboard's "On the way"** (script 72) is what Shortages count, company-wide or per branch: the orders'
+      outstanding less the pieces in containers that left the supplier (shown to who may see orders), the posted
+      invoices without an order not received yet (who may see invoices), and those containers' pieces (who may see
+      containers; a reader who may not gets them in the orders' figure). Its free-time alarms stop at the end of the
+      Delivery, as on the container's page and the Tracking board: a delivered container waits Cleared for its goods
+      receipt and is "Free time over" only if the free days ran out before it left. **[Implemented]**
 20. **Closing:** automatically "Fully invoiced and received"; it reopens when an invoice or goods receipt that closed
     it is cancelled. Cancelling an order is refused while it has goods receipts (65011: "This purchase order has posted
     goods receipts. Cancel those first." / "…draft goods receipts. Delete them first."); closing it by hand is refused

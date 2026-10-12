@@ -1,3 +1,5 @@
+using System.Text.Json.Serialization;
+
 namespace Inventory_Shipment.Model.DTOs.Dashboard;
 
 /// <summary>
@@ -110,13 +112,30 @@ public sealed class DashboardInventoryDto
     public int ItemsInStock { get; set; }
 }
 
-/// <summary>Pieces still to receive on approved orders, and pieces in containers between the ship and the warehouse.</summary>
+/// <summary>
+/// What is still to receive (script 72), in the parts of the "Outstanding order" and "Transit" of Shortages: pieces still
+/// to receive on approved orders, on posted invoices without an order, and in containers between the ship and the
+/// warehouse. Each part is null for a reader who may not open the screen it comes from.
+/// </summary>
 public sealed class DashboardOnTheWayDto
 {
+    /// <summary>The orders' still to receive less the pieces travelling in containers (<see cref="InTransitPieces"/> counts those).</summary>
     public int? OnOrderPieces { get; set; }
+
     public int? OpenOrders { get; set; }
+
+    /// <summary>Posted invoices WITHOUT an order whose goods are not received yet: since the switch they wait for a goods receipt.</summary>
+    public int? InvoicedNotReceivedPieces { get; set; }
+
     public int? InTransitPieces { get; set; }
     public int? ContainersInTransit { get; set; }
+
+    /// <summary>
+    /// The orders' still to receive WITH the pieces travelling: what <see cref="OnOrderPieces"/> becomes for a reader
+    /// who may not see the containers, so those pieces do not vanish with <see cref="InTransitPieces"/>. Server only.
+    /// </summary>
+    [JsonIgnore]
+    public int? OutstandingPieces { get; set; }
 }
 
 /// <summary>Documents saved but not posted, per document type (Kind: Sales, Purchase, Inventory, Receipt, Payment).</summary>

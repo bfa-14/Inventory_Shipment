@@ -272,12 +272,14 @@ public record ContainerListDto : ContainerStatusFlags
 
     /// <summary>
     /// The free time at the port is used up and the goods are still there. Only while the container
-    /// is at port or cleared: once offloaded, the days are history, not an alarm.
+    /// is at port or cleared: once offloaded, the days are history, not an alarm. The free time stops
+    /// counting at the end of the Delivery (edge case 29): a delivered container waits Cleared for its
+    /// goods receipt, and is over only if its last free day passed before it left (the container page's rule).
     /// </summary>
     public bool IsFreeTimeOver
         => LastFreeDay is { } last
            && Status is ContainerStatus.AtPort or ContainerStatus.Cleared
-           && DateTime.UtcNow.Date > last.Date;
+           && last.Date < (DeliveredDate?.Date ?? DateTime.UtcNow.Date);
 
     protected override bool FullyInvoiced => InvoicingStatus == ContainerInvoicingStatus.Fully;
 }
@@ -744,11 +746,11 @@ public sealed record ContainerDto : ContainerStatusFlags
     public string? UpdatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
 
-    /// <summary>Same rule as the list: at port or cleared, and the last free day is behind us.</summary>
+    /// <summary>Same rule as the list: at port or cleared, and the last free day passed before the Delivery's end, else before today.</summary>
     public bool IsFreeTimeOver
         => LastFreeDay is { } last
            && Status is ContainerStatus.AtPort or ContainerStatus.Cleared
-           && DateTime.UtcNow.Date > last.Date;
+           && last.Date < (DeliveredDate?.Date ?? DateTime.UtcNow.Date);
 
     /// <summary>Charges are added until the container is offloaded, and after (a late charge = cost adjustment); not once closed.</summary>
     public bool CanAddCharge => Status is >= ContainerStatus.Draft and <= ContainerStatus.Offloaded;

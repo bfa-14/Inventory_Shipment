@@ -489,19 +489,28 @@ public sealed class MovementService : IMovementService
 
     /// <summary>
     /// The notification of rule 5: "Draft goods receipts created: KTG-2026-0031, KTG-2026-0032 (warehouse to choose).
-    /// Not created: KTG-2026-0033 already has GRN-BR-002-000004." Null when the movement had no container.
+    /// KTG-2026-0032: choose the warehouse (LUB, the container's, has warehouses under it: …). Not created: KTG-2026-0033
+    /// already has GRN-BR-002-000004." Null when the movement had no container. A draft made without the container's
+    /// own warehouse says why (script 72), once per reason for the containers that share it.
     /// </summary>
     internal static string? ReceiptsSummary(IReadOnlyList<MovementReceiptResultDto> rows)
     {
         var created = rows.Where(r => r.Created)
             .Select(r => r.WarehouseCode is null ? $"{r.ContainerRef} (warehouse to choose)" : r.ContainerRef)
             .ToList();
+        var whyToChoose = rows
+            .Select(r => (r.ContainerRef, Reason: WarehouseToChooseReason(r)))
+            .Where(x => x.Reason is not null)
+            .GroupBy(x => x.Reason!, StringComparer.Ordinal)
+            .Select(g => $"{string.Join(", ", g.Select(x => x.ContainerRef))}: {g.Key}.")
+            .ToList();
         var skipped = rows.Where(r => !r.Created).Select(r => $"{r.ContainerRef} {SkipPhrase(r)}").ToList();
 
-        var parts = new List<string>(2);
+        var parts = new List<string>(2 + whyToChoose.Count);
         if (created.Count > 0)
         {
             parts.Add($"{(created.Count == 1 ? "Draft goods receipt created" : "Draft goods receipts created")}: {string.Join(", ", created)}.");
+            parts.AddRange(whyToChoose);
         }
 
         if (skipped.Count > 0)
@@ -522,6 +531,25 @@ public sealed class MovementService : IMovementService
         MovementReceiptSkipReasons.NoLines => "has no lines",
         _ => $"was refused: {WithoutFinalPeriod(row.Message ?? "unknown reason")}",
     };
+
+    /// <summary>
+    /// Why a draft was created without a warehouse although its container has one, from the database's sentence
+    /// (usp_GoodsReceipt_CreateForMovement, script 72): "choose the warehouse (LUB, the container's, has warehouses
+    /// under it: …)". Null for a draft with a warehouse, for the plain "choose the warehouse" (the container has none)
+    /// and for a skipped container.
+    /// </summary>
+    internal static string? WarehouseToChooseReason(MovementReceiptResultDto row)
+    {
+        const string prefix = "Draft goods receipt created: ";
+        if (!row.Created || row.WarehouseCode is not null || row.Message is not { } message
+            || !message.StartsWith(prefix, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        var reason = WithoutFinalPeriod(message[prefix.Length..]);
+        return reason.Contains('(', StringComparison.Ordinal) ? reason : null;
+    }
 
     private static string WithoutFinalPeriod(string text) => text.Trim().TrimEnd('.');
 }

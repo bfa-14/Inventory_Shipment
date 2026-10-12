@@ -136,6 +136,18 @@ public sealed class DashboardService : IDashboardService
                 s.OnTheWay.OnOrderPieces = null;
                 s.OnTheWay.OpenOrders = null;
             }
+            else if (!containers)
+            {
+                // The pieces travelling in containers are left out of the orders' figure because the in-transit figure
+                // counts them. A reader who may not see that one (the Owner, for example) gets them back in the
+                // orders' figure, or they would show nowhere.
+                s.OnTheWay.OnOrderPieces = s.OnTheWay.OutstandingPieces;
+            }
+
+            if (!Has(Permissions.Purchase.InvoicesView))
+            {
+                s.OnTheWay.InvoicedNotReceivedPieces = null;
+            }
 
             if (!containers)
             {
@@ -143,7 +155,8 @@ public sealed class DashboardService : IDashboardService
                 s.OnTheWay.ContainersInTransit = null;
             }
 
-            if (s.OnTheWay.OnOrderPieces is null && s.OnTheWay.InTransitPieces is null)
+            s.OnTheWay.OutstandingPieces = null;
+            if (s.OnTheWay.OnOrderPieces is null && s.OnTheWay.InvoicedNotReceivedPieces is null && s.OnTheWay.InTransitPieces is null)
             {
                 s.OnTheWay = null;
             }
