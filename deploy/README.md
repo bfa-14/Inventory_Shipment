@@ -192,8 +192,9 @@ The everyday cycle:
 3. **Release**: merge `main` into `production`, in **both** repositories, and push. **Production** is updated
    with it (automatically, or `sudo ./update.sh` in `/opt/inventory/Inventory_Shipment/deploy`).
 
-   On GitLab: **Merge requests > New**, source `main`, target `production`, then **Merge**, in both projects.
-   Or on your PC, in **both** repositories (`Inventory_Shipment` and `Inventory_Shipment.Web`):
+   On GitHub: **Pull requests > New pull request**, base `production`, compare `main`, then **Merge pull
+   request** (keep "Create a merge commit"), in both repositories. Or on your PC, in **both** repositories
+   (`Inventory_Shipment` and `Inventory_Shipment.Web`):
 
    ```bash
    git fetch origin && (git checkout production 2>/dev/null || git checkout -b production --track origin/production) && git pull --ff-only origin production && git merge --no-edit origin/main && git push origin production && git checkout main
@@ -207,44 +208,53 @@ Database changes need nothing extra: each API applies `Schema.sql` to its own da
 
 **Never commit straight to `production`.** A fix goes to `main` first, is checked in testing, then is merged.
 
-### The server reads GitHub; keep GitLab and GitHub in step
+### GitHub is the only place the team pushes
 
-The server pulls from GitHub (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`). The team
-works on GitLab, so every push to `main` and `production` must also reach GitHub. Set up a **push mirror** on
-GitLab, once per project. From then on **GitLab is the only place where anything is pushed or merged**;
-GitHub is a read-only copy.
+Both repositories live on GitHub, private, under the `bfa-14` account: **`bfa-14/Inventory_Shipment`** (API,
+database, deployment) and **`bfa-14/Inventory_Shipment_Frontend`** (web). Everyone pushes and merges there, and
+the server pulls from there. GitLab is no longer used.
 
-1. **Bring GitLab level with GitHub first** (work merged on GitHub, such as the deployment itself, must not
-   be lost). On your PC, in both repositories, with `origin` = GitLab and `github` = GitHub:
+In every clone, `origin` is GitHub:
+
+```bash
+git remote -v
+```
+
+shows `https://github.com/bfa-14/Inventory_Shipment` in the API folder and
+`https://github.com/bfa-14/Inventory_Shipment_Frontend` in the web folder. Someone joining the team needs to be
+added on GitHub (**Settings > Collaborators** in each repository) before they can clone or push.
+
+**Moving from GitLab (once).** The team used to push to GitLab, which copied every push to GitHub with a push
+mirror. In this order:
+
+1. **Check that GitHub holds everything.** In each repository, the last commit of `main` and `production` on
+   GitLab and on GitHub must be the same (both pages show it). The mirror kept them equal; if GitLab is ahead,
+   push its branches to GitHub first.
+2. **Remove the push mirror** in each GitLab project: **Settings > Repository > Mirroring repositories**, delete
+   the GitHub entry. Do it before anyone pushes to GitHub: the mirror forces GitHub to match GitLab, so a push to
+   GitLab with the mirror still on would overwrite what was pushed on GitHub. The mirror's GitHub token is then
+   not needed any more: revoke it on GitHub (**Settings > Developer settings > Personal access tokens**).
+3. **Switch every clone** to GitHub, on each PC. In the API folder:
 
    ```bash
-   git fetch origin && git fetch github
-   git push origin github/main:refs/heads/main github/production:refs/heads/production
+   git remote set-url origin https://github.com/bfa-14/Inventory_Shipment
    ```
 
-   Both are plain fast-forwards. If one is refused, GitLab has commits GitHub lacks: merge them first
-   (`git checkout main && git pull --no-rebase origin main && git merge github/main && git push origin main`),
-   then push again.
+   In the web folder:
 
-2. **A GitHub token** for the mirror, made by the `bfa-14` account: GitHub > Settings > Developer settings >
-   **Fine-grained tokens** > Generate. Resource owner `bfa-14`, repositories `Inventory_Shipment` and
-   `Inventory_Shipment_Frontend`, permissions **Contents: Read and write** and **Workflows: Read and write**
-   (without Workflows, GitHub refuses every push that touches `.github/workflows`). A classic token needs the
-   scopes `repo` and `workflow`. **Pick an expiry date and note it**: when the token expires, the mirror and so
-   every deployment stop.
+   ```bash
+   git remote set-url origin https://github.com/bfa-14/Inventory_Shipment_Frontend
+   ```
 
-3. **The mirror**, in each GitLab project: **Settings > Repository > Mirroring repositories**:
-   - Git repository URL: `https://github.com/bfa-14/<repo>.git`
-   - Mirror direction: **Push**
-   - Authentication method: **Username and Password**, username `bfa-14`, password = the token
-   - **Keep divergent refs**: leave it off. GitHub is then always forced to match GitLab; anything committed or
-     merged on GitHub alone is overwritten. That is why nothing is merged on GitHub any more.
+   Then, in each folder:
 
-4. **Check it** after a push: the same page shows "Last successful update" and any error. Anything pushed to
-   GitLab reaches GitHub within a minute, and deploys, as long as the mirror shows no error.
+   ```bash
+   git fetch origin && git branch -u origin/main main
+   ```
 
-Without a mirror, push to both remotes every time (`git push origin main && git push github main`, the same
-for `production`), and still merge only in one place.
+   A clone that kept a second remote named `github` can drop it: `git remote remove github`.
+4. **Archive the GitLab projects** (**Settings > General > Advanced > Archive project**), so nobody pushes there
+   by mistake.
 
 ### Deploying automatically from GitHub (one-time setup)
 
@@ -601,9 +611,11 @@ one. To change one, edit the file (`sudo nano .env`) and run `sudo docker compos
 - The GitHub deploy key can only start `inventory-deploy production|testing` (a forced command with `restrict`
   in `authorized_keys`); it cannot open a shell or reach anything else. `update.sh` runs the code it pulls, so
   whoever can push to `main` or `production` decides what the server runs: keep that list short.
-- **Protect `production` on GitLab**, where the team pushes: **Settings > Repository > Protected branches**,
-  `production`, *Allowed to merge*: Maintainers, *Allowed to push and merge*: No one. Releases then go through a
-  merge request. On GitHub add no "require a pull request" rule: it would refuse the mirror's pushes.
+- **Protect `production` on GitHub**, in both repositories: **Settings > Branches > Add branch protection rule**
+  (or **Rules > Rulesets**), branch `production`: *Require a pull request before merging*, and *Restrict who can
+  push* to the people who release. Releases then go through a pull request (see
+  [Branches and deploying](#branches-and-deploying)); the deploy workflow only reads the repositories, so the rule
+  does not stop it.
 - Testing holds a copy of production's data: see [Testing's data](#testings-data) to keep it to the company's
   network. The GitHub repositories should be **private**.
 - When memory runs out, the kernel stops testing's processes before production's (`OOM_SCORE_ADJ=500` in
