@@ -1471,8 +1471,8 @@ LastCost sources.
    that is lost.
 2. **Branches.**
    - All the work, A1 to C1 in both repositories, is done on a feature branch (`grn`).
-   - Never push script 64 or 65 to `main`, to GitLab `origin`, or to the GitHub `github` remote before the web is ready.
-     A push to `main` deploys testing. GitLab reaches Ali's database at his next start.
+   - Never push script 64 or 65 to `main` (GitHub `origin`) before the web is ready.
+     A push to `main` deploys testing, and reaches Ali's database at his next start after he pulls.
 3. **Rehearse on testing.**
    - On the server, in the testing folder: `sudo ./copy-production-to-testing.sh`.
    - Merge `grn` into `main`, **Web first, then API**, so the deploy started by the API push finds the new web.

@@ -72,8 +72,7 @@ Conventions worth keeping:
 - Deploy: a push to `main` / `production` (GitHub Actions "Deploy to server", once set up), or on the server
   `sudo ./update.sh` in that environment's `deploy/` folder. Each API applies Schema.sql as it starts.
 - Both repositories live on GitHub (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`): the team
-  pushes and merges there, and the server pulls from there. GitLab is no longer used (`deploy/README.md`,
-  "GitHub is the only place the team pushes").
+  pushes and merges there, and the server pulls from there (`deploy/README.md`, "The repositories: GitHub").
 - Never commit `deploy/.env`, and never ask for or repeat passwords, keys or server credentials.
 
 ## Working with the user

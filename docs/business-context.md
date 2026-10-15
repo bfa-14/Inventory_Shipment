@@ -1213,11 +1213,9 @@ before trusting the statuses of 5.2. The next script takes the next free number 
   - Fix given: add, as line 2 of `~/.bashrc`, `export ConnectionStrings__<Key>="Server=localhost;Database=Inventory_Shipment;User Id=sa;Password=$SQLCMDPASSWORD;TrustServerCertificate=True"`.
   - The key name comes from appsettings; DefaultConnection was assumed. Whether Bilal applied it is unknown.
 - **Ali's PC:** IIS Express locks the DLLs; port 5174 can stay busy; he starts with `npm run dev`.
-- **GitHub is the team repository** (since 15 October 2026): `origin` = `github.com/bfa-14/Inventory_Shipment` for
-  the API and `github.com/bfa-14/Inventory_Shipment_Frontend` for the Web. GitLab
-  (`gitlab.com/InventoryShipment/…`) is no longer used. **A clone still pointing at GitLab is out of date**: switch it
-  with `git remote set-url origin <the GitHub address>` (`deploy/README.md`, "GitHub is the only place the team
-  pushes"). Until the GitLab push mirror is removed, a push to GitLab overwrites GitHub.
+- **GitHub is the team repository**: `origin` = `github.com/bfa-14/Inventory_Shipment` for the API and
+  `github.com/bfa-14/Inventory_Shipment_Frontend` for the Web. A clone pointing anywhere else is out of date: switch it
+  with `git remote set-url origin <the GitHub address>` (`deploy/README.md`, "The repositories: GitHub").
 - **Commit status:** at the last check the work of prompts 36 (rest), 41 and 37 was uncommitted. I gave a commit
   plan: by feature; never commit `appsettings.Development.json`, `App_Data/` or screenshots; `git pull --no-rebase
   origin main`; push. Whether it was done is unknown, and 43 came after.
@@ -1579,8 +1577,6 @@ every step that did not behave as described.
   - save your work before any `git reset --hard`;
   - `main` deploys **testing**, `production` deploys **production**; a release is a pull request `main` →
     `production` in both repositories (`deploy/README.md`).
-- **GitLab** (`gitlab.com/InventoryShipment/…`) was the team repository until 15 October 2026, copying every push to
-  GitHub with a push mirror. It is no longer used: its mirror is to be removed and its projects archived.
 - **After a push**, Ali pulls and restarts his API (new scripts apply by themselves). He keeps his own
   `appsettings.Development.json`.
 - **Files delivered outside the repos:**

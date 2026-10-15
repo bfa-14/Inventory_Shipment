@@ -208,11 +208,11 @@ Database changes need nothing extra: each API applies `Schema.sql` to its own da
 
 **Never commit straight to `production`.** A fix goes to `main` first, is checked in testing, then is merged.
 
-### GitHub is the only place the team pushes
+### The repositories: GitHub
 
 Both repositories live on GitHub, private, under the `bfa-14` account: **`bfa-14/Inventory_Shipment`** (API,
 database, deployment) and **`bfa-14/Inventory_Shipment_Frontend`** (web). Everyone pushes and merges there, and
-the server pulls from there. GitLab is no longer used.
+the server pulls from there.
 
 In every clone, `origin` is GitHub:
 
@@ -221,40 +221,10 @@ git remote -v
 ```
 
 shows `https://github.com/bfa-14/Inventory_Shipment` in the API folder and
-`https://github.com/bfa-14/Inventory_Shipment_Frontend` in the web folder. Someone joining the team needs to be
-added on GitHub (**Settings > Collaborators** in each repository) before they can clone or push.
-
-**Moving from GitLab (once).** The team used to push to GitLab, which copied every push to GitHub with a push
-mirror. In this order:
-
-1. **Check that GitHub holds everything.** In each repository, the last commit of `main` and `production` on
-   GitLab and on GitHub must be the same (both pages show it). The mirror kept them equal; if GitLab is ahead,
-   push its branches to GitHub first.
-2. **Remove the push mirror** in each GitLab project: **Settings > Repository > Mirroring repositories**, delete
-   the GitHub entry. Do it before anyone pushes to GitHub: the mirror forces GitHub to match GitLab, so a push to
-   GitLab with the mirror still on would overwrite what was pushed on GitHub. The mirror's GitHub token is then
-   not needed any more: revoke it on GitHub (**Settings > Developer settings > Personal access tokens**).
-3. **Switch every clone** to GitHub, on each PC. In the API folder:
-
-   ```bash
-   git remote set-url origin https://github.com/bfa-14/Inventory_Shipment
-   ```
-
-   In the web folder:
-
-   ```bash
-   git remote set-url origin https://github.com/bfa-14/Inventory_Shipment_Frontend
-   ```
-
-   Then, in each folder:
-
-   ```bash
-   git fetch origin && git branch -u origin/main main
-   ```
-
-   A clone that kept a second remote named `github` can drop it: `git remote remove github`.
-4. **Archive the GitLab projects** (**Settings > General > Advanced > Archive project**), so nobody pushes there
-   by mistake.
+`https://github.com/bfa-14/Inventory_Shipment_Frontend` in the web folder. A clone that points anywhere else is
+switched with `git remote set-url origin <the address above>`, then `git fetch origin && git branch -u origin/main
+main`. Someone joining the team needs to be added on GitHub (**Settings > Collaborators** in each repository)
+before they can clone or push.
 
 ### Deploying automatically from GitHub (one-time setup)
 
