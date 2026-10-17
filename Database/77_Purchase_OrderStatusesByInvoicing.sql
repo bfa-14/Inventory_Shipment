@@ -40,11 +40,18 @@ GO
    (Shortages, the item's On order, the Dashboard's On the way, "To receive", "Receive goods..." proposals) is then
    what it was. An order closed by itself is fully invoiced, so nothing is added to it. (Script 65's drift report
    counts those added pieces as a difference: its "expected" knows only goods receipts and old offloads.)
+   The same pieces are also kept apart in a new column, purchase.PurchaseDocumentLines.ClosedShortBase, because a piece
+   settled short may still be RECEIVED if it turns up (fn_PoLine_Progress.MaxOutsideBase) and is not counted when
+   containers are loaded (fn_PoLine_CommittedOutside): without it, an order closed by hand would again take goods
+   receipts and containers for what its close gave up. Both functions are re-created below to leave those pieces out
+   (all of them while they are not invoiced; once the supplier invoices some, those count as any invoiced piece). They
+   can still be invoiced, like any piece settled short (the supplier claim covers what never arrives).
 
    Procedures re-created from their current bodies: purchase.usp_PurchaseDocument_Post (72), purchase.usp_GoodsReceipt_Post
    (64), purchase.usp_PurchaseDocument_Close (65, retired), purchase.usp_PurchaseDocument_Get (65: the linked documents
    + InvoicingStatus), inventory.usp_ShortageDocument_Get (25: its orders + InvoicingStatus), inventory.usp_Item_PurchaseOrders
-   (65: + InvoicingStatus). New: purchase.fn_PurchaseOrder_Invoicing.
+   (65: + InvoicingStatus), purchase.fn_PoLine_Progress and purchase.fn_PoLine_CommittedOutside (64: ClosedShortBase).
+   New: purchase.fn_PurchaseOrder_Invoicing; the column purchase.PurchaseDocumentLines.ClosedShortBase.
 
    Errors: no new number. 65010 "Purchase orders are no longer closed: ..." (Close).
 
@@ -65,6 +72,15 @@ BEGIN
     RAISERROR ('Run scripts 64 to 72 before this script.', 16, 1);
     SET NOEXEC ON;
 END
+GO
+
+/* ================================================================== 0. The pieces a close by hand gave up */
+
+-- Set once, by the data step of section 2, on the lines of the orders closed by hand: the pieces it settled short
+-- (also added to GoodsShortBase). 0 everywhere else, and never written again.
+IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'ClosedShortBase') IS NULL
+    ALTER TABLE purchase.PurchaseDocumentLines
+        ADD ClosedShortBase INT NOT NULL CONSTRAINT DF_PurchaseDocumentLines_ClosedShortBase DEFAULT (0);
 GO
 
 /* ================================================================== 1. How far the posted invoices cover an order */
@@ -119,7 +135,7 @@ BEGIN TRY
         CROSS APPLY (SELECT Extra = l.QuantityBase - k.Done) x
         WHERE x.Extra > 0;
 
-        UPDATE l SET GoodsShortBase = l.GoodsShortBase + x.Extra
+        UPDATE l SET GoodsShortBase = l.GoodsShortBase + x.Extra, ClosedShortBase = l.ClosedShortBase + x.Extra
         FROM purchase.PurchaseDocumentLines l
         INNER JOIN @Lines x ON x.LineId = l.Id;
 
@@ -153,6 +169,124 @@ BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
     THROW;
 END CATCH
+-- Back to the connection's default, as after the one-off steps of scripts 64, 65 and 69: the API applies every batch of
+-- Schema.sql on one connection.
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 2b. What a close by hand gave up stays given up */
+
+-- Re-created (77) from the body of script 64: (77) MaxOutsideBase, the posting cap of a local receipt line, leaves out the
+-- pieces a close by hand gave up (ClosedShortBase, section 2) while they are not invoiced. Every other piece settled short
+-- may still be received if it turns up, as before; and once the supplier invoices given-up pieces they are received like
+-- any invoiced piece. Nothing else changes.
+-- One row per line of a purchase order (none for another document type). In pieces:
+--   OrderedBase          ordered
+--   InvoicedBase         invoiced = ReceivedQuantityBase (its old name, its meaning unchanged)
+--   GoodsReceivedBase    received; GoodsShortBase settled short (nothing more will come)
+--   InContainersBase     loaded in containers not received yet (status 1-5: draft to cleared)
+--   InDraftReceiptsBase  on draft goods receipts outside containers
+--   ToReceiveBase        what the "Receive goods..." dialogs propose: ordered - received - short - in containers - in drafts
+--   MaxOutsideBase       the posting cap of a local receipt line: ordered - received - in containers - (77) given up by a
+--                        close and not invoiced. Neither the drafts (the one being posted is one) nor the other pieces
+--                        settled short count: pieces recorded short that turn up later can still be received.
+--   OutstandingBase      rule 17, for Shortages and the item's "On order": an open order ordered - received - short, a
+--                        closed one invoiced - received - short; 0 when cancelled. Never below 0.
+-- ON A CLOSED ORDER (4) "ordered" is what was INVOICED in all three, as in OutstandingBase (rule 17). (77) No order is
+-- closed any more: the closed branches stay for the old rows only, which section 2 turned back into approved orders.
+-- The status of the order is the caller's to check (OrderStatus): this function never refuses.
+CREATE OR ALTER FUNCTION purchase.fn_PoLine_Progress (@PurchaseOrderId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT PurchaseOrderId     = d.Id,
+           PoLineId            = l.Id,
+           l.LineNumber, l.ItemId, l.ItemUnitId, l.PackingFormula, l.WarehouseId,
+           OrderStatus         = d.Status,
+           OrderedBase         = l.QuantityBase,
+           InvoicedBase        = l.ReceivedQuantityBase,
+           l.GoodsReceivedBase,
+           l.GoodsShortBase,
+           InContainersBase    = q.InContainers,
+           InDraftReceiptsBase = q.InDrafts,
+           ToReceiveBase       = CASE WHEN x.ToReceive > 0 THEN x.ToReceive ELSE 0 END,
+           MaxOutsideBase      = CASE WHEN x.MaxOutside > 0 THEN x.MaxOutside ELSE 0 END,
+           OutstandingBase     = CASE WHEN x.Outstanding > 0 THEN x.Outstanding ELSE 0 END
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt         ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+    INNER JOIN purchase.PurchaseDocumentLines l   ON l.DocumentId = d.Id
+    CROSS APPLY (SELECT InContainers = ISNULL((SELECT SUM(cl.QuantityBase)
+                                               FROM logistics.ContainerLines cl
+                                               INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                               WHERE cl.PoLineId = l.Id AND c.Status BETWEEN 1 AND 5), 0),
+                        InDrafts     = ISNULL((SELECT SUM(gl.QuantityBase)
+                                               FROM purchase.GoodsReceiptLines gl
+                                               INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                                               WHERE gl.PoLineId = l.Id AND gl.ContainerLineId IS NULL AND g.Status = 1), 0)) q
+    CROSS APPLY (SELECT Expected = CASE WHEN d.Status = 4 AND l.ReceivedQuantityBase < l.QuantityBase
+                                        THEN l.ReceivedQuantityBase ELSE l.QuantityBase END,
+                        -- (77) given up by a close and still not invoiced: at most what is not invoiced
+                        GivenUp  = CASE WHEN l.ClosedShortBase <= 0 THEN 0
+                                        WHEN l.ClosedShortBase < l.QuantityBase - l.ReceivedQuantityBase THEN l.ClosedShortBase
+                                        WHEN l.QuantityBase > l.ReceivedQuantityBase THEN l.QuantityBase - l.ReceivedQuantityBase
+                                        ELSE 0 END) e
+    CROSS APPLY (SELECT ToReceive   = e.Expected - l.GoodsReceivedBase - l.GoodsShortBase - q.InContainers - q.InDrafts,
+                        MaxOutside  = e.Expected - l.GoodsReceivedBase - q.InContainers - e.GivenUp,
+                        Outstanding = CASE d.Status WHEN 3 THEN 0
+                                                    WHEN 4 THEN l.ReceivedQuantityBase - l.GoodsReceivedBase - l.GoodsShortBase
+                                                    ELSE l.QuantityBase - l.GoodsReceivedBase - l.GoodsShortBase END) x
+    WHERE d.Id = @PurchaseOrderId;
+GO
+
+-- Re-created (77) from the body of script 64: (77) Qty also counts the pieces a close by hand gave up (ClosedShortBase)
+-- while they are not invoiced, so they cannot be loaded into containers again: they will never come. Disjoint from the
+-- invoiced and received pieces when the close was removed (section 2 settled only what was neither), so they are added
+-- to the maximum; once the supplier invoices some of them they count as invoiced instead. Nothing else changes.
+-- WHAT AN ORDER LINE HAS COMMITTED OUTSIDE CONTAINERS, in pieces - script 65 uses it in place of the "dir" subquery
+-- (invoiced outside containers) wherever the pieces still loadable into containers are worked out:
+--   Qty = MAX(invoiced outside containers, received outside containers + on draft receipts outside containers)
+--         + (77) given up by a close and not invoiced.
+-- A maximum, not a sum: an invoiced piece and a received piece outside containers are the same goods (they are matched).
+-- Except the pieces of an invoice that took its goods into stock WHEN IT WAS POSTED, before goods receipts
+-- (UsesGoodsReceipts = 0, ReceiptMode 1): they are invoiced AND received, and never matched (usp_GoodsReceipt_Rematch
+-- leaves those invoices out), so they count on both sides - otherwise goods received later by a goods receipt for the
+-- rest of the same order line would hide behind them in the maximum and could be loaded into a container again.
+-- Qty is then: those pieces + MAX(the other invoiced pieces, received by goods receipts + on draft receipts).
+--   InvoicedOutsideBase         today's "dir": lines of invoices in status 1, 2 or 4 not shipped in containers
+--                               (ReceiptMode <> 2) with no container line; @ExceptDocumentId (NULL = none) leaves out
+--                               one invoice, as the callers that check that invoice's own lines do
+--   ReceivedOutsideBase         posted goods receipt lines of the order line with no container line, plus the pieces of
+--                               the invoices received when they were posted (above)
+--   InDraftReceiptsOutsideBase  goods receipt lines of the order line with no container line on draft receipts
+-- One row, always (0 when nothing).
+CREATE OR ALTER FUNCTION purchase.fn_PoLine_CommittedOutside (@PoLineId INT, @ExceptDocumentId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT Qty                        = CASE WHEN inv.Qty >= inv.AtPosting + rcv.Posted + rcv.Drafts THEN inv.Qty
+                                             ELSE inv.AtPosting + rcv.Posted + rcv.Drafts END
+                                        + gu.GivenUp,
+           InvoicedOutsideBase        = inv.Qty,
+           ReceivedOutsideBase        = inv.AtPosting + rcv.Posted,
+           InDraftReceiptsOutsideBase = rcv.Drafts
+    FROM (SELECT Qty       = ISNULL(SUM(x.QuantityBase), 0),
+                 AtPosting = ISNULL(SUM(CASE WHEN xd.Status IN (2, 4) AND xd.UsesGoodsReceipts = 0 AND xd.ReceiptMode = 1
+                                             THEN x.QuantityBase END), 0)
+          FROM purchase.PurchaseDocumentLines x
+          INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+          WHERE x.SourceLineId = @PoLineId AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2
+            AND (@ExceptDocumentId IS NULL OR xd.Id <> @ExceptDocumentId)) inv
+    CROSS JOIN (SELECT Posted = ISNULL(SUM(CASE WHEN g.Status = 2 THEN gl.QuantityBase END), 0),
+                       Drafts = ISNULL(SUM(CASE WHEN g.Status = 1 THEN gl.QuantityBase END), 0)
+                FROM purchase.GoodsReceiptLines gl
+                INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                WHERE gl.PoLineId = @PoLineId AND gl.ContainerLineId IS NULL AND g.Status IN (1, 2)) rcv
+    -- (77) given up by a close and still not invoiced (as in fn_PoLine_Progress); 0 for every other line
+    CROSS JOIN (SELECT GivenUp = ISNULL(MAX(CASE WHEN l.ClosedShortBase <= 0 THEN 0
+                                                 WHEN l.ClosedShortBase < l.QuantityBase - l.ReceivedQuantityBase THEN l.ClosedShortBase
+                                                 WHEN l.QuantityBase > l.ReceivedQuantityBase THEN l.QuantityBase - l.ReceivedQuantityBase
+                                                 ELSE 0 END), 0)
+                FROM purchase.PurchaseDocumentLines l WHERE l.Id = @PoLineId) gu;
 GO
 
 /* ================================================================== 3. Post: the order is no longer closed */
@@ -1434,6 +1568,10 @@ GROUP BY CASE d.Status WHEN 1 THEN N'Draft' WHEN 5 THEN N'Waiting for approval' 
                        WHEN 2 THEN CASE inv.InvoicingStatus WHEN 0 THEN N'Saved' WHEN 1 THEN N'Partially posted' ELSE N'Posted' END
                        ELSE N'Closed (unexpected)' END
 ORDER BY Shown;
+
+-- Order lines whose pieces a close by hand gave up (section 2): settled short, not received, not loaded again.
+SELECT Lines = COUNT(*), GivenUpPcs = ISNULL(SUM(ClosedShortBase), 0)
+FROM purchase.PurchaseDocumentLines WHERE ClosedShortBase > 0;
 
 PRINT 'Script 77 applied: purchase orders show Saved, Partially posted or Posted from their posted invoices; Closed is gone.';
 GO

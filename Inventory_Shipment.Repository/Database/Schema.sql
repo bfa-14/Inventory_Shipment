@@ -65686,11 +65686,18 @@ GO
    (Shortages, the item's On order, the Dashboard's On the way, "To receive", "Receive goods..." proposals) is then
    what it was. An order closed by itself is fully invoiced, so nothing is added to it. (Script 65's drift report
    counts those added pieces as a difference: its "expected" knows only goods receipts and old offloads.)
+   The same pieces are also kept apart in a new column, purchase.PurchaseDocumentLines.ClosedShortBase, because a piece
+   settled short may still be RECEIVED if it turns up (fn_PoLine_Progress.MaxOutsideBase) and is not counted when
+   containers are loaded (fn_PoLine_CommittedOutside): without it, an order closed by hand would again take goods
+   receipts and containers for what its close gave up. Both functions are re-created below to leave those pieces out
+   (all of them while they are not invoiced; once the supplier invoices some, those count as any invoiced piece). They
+   can still be invoiced, like any piece settled short (the supplier claim covers what never arrives).
 
    Procedures re-created from their current bodies: purchase.usp_PurchaseDocument_Post (72), purchase.usp_GoodsReceipt_Post
    (64), purchase.usp_PurchaseDocument_Close (65, retired), purchase.usp_PurchaseDocument_Get (65: the linked documents
    + InvoicingStatus), inventory.usp_ShortageDocument_Get (25: its orders + InvoicingStatus), inventory.usp_Item_PurchaseOrders
-   (65: + InvoicingStatus). New: purchase.fn_PurchaseOrder_Invoicing.
+   (65: + InvoicingStatus), purchase.fn_PoLine_Progress and purchase.fn_PoLine_CommittedOutside (64: ClosedShortBase).
+   New: purchase.fn_PurchaseOrder_Invoicing; the column purchase.PurchaseDocumentLines.ClosedShortBase.
 
    Errors: no new number. 65010 "Purchase orders are no longer closed: ..." (Close).
 
@@ -65711,6 +65718,15 @@ BEGIN
     RAISERROR ('Run scripts 64 to 72 before this script.', 16, 1);
     SET NOEXEC ON;
 END
+GO
+
+/* ================================================================== 0. The pieces a close by hand gave up */
+
+-- Set once, by the data step of section 2, on the lines of the orders closed by hand: the pieces it settled short
+-- (also added to GoodsShortBase). 0 everywhere else, and never written again.
+IF COL_LENGTH(N'purchase.PurchaseDocumentLines', N'ClosedShortBase') IS NULL
+    ALTER TABLE purchase.PurchaseDocumentLines
+        ADD ClosedShortBase INT NOT NULL CONSTRAINT DF_PurchaseDocumentLines_ClosedShortBase DEFAULT (0);
 GO
 
 /* ================================================================== 1. How far the posted invoices cover an order */
@@ -65765,7 +65781,7 @@ BEGIN TRY
         CROSS APPLY (SELECT Extra = l.QuantityBase - k.Done) x
         WHERE x.Extra > 0;
 
-        UPDATE l SET GoodsShortBase = l.GoodsShortBase + x.Extra
+        UPDATE l SET GoodsShortBase = l.GoodsShortBase + x.Extra, ClosedShortBase = l.ClosedShortBase + x.Extra
         FROM purchase.PurchaseDocumentLines l
         INNER JOIN @Lines x ON x.LineId = l.Id;
 
@@ -65799,6 +65815,124 @@ BEGIN CATCH
     IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
     THROW;
 END CATCH
+-- Back to the connection's default, as after the one-off steps of scripts 64, 65 and 69: the API applies every batch of
+-- Schema.sql on one connection.
+SET XACT_ABORT OFF;
+GO
+
+/* ================================================================== 2b. What a close by hand gave up stays given up */
+
+-- Re-created (77) from the body of script 64: (77) MaxOutsideBase, the posting cap of a local receipt line, leaves out the
+-- pieces a close by hand gave up (ClosedShortBase, section 2) while they are not invoiced. Every other piece settled short
+-- may still be received if it turns up, as before; and once the supplier invoices given-up pieces they are received like
+-- any invoiced piece. Nothing else changes.
+-- One row per line of a purchase order (none for another document type). In pieces:
+--   OrderedBase          ordered
+--   InvoicedBase         invoiced = ReceivedQuantityBase (its old name, its meaning unchanged)
+--   GoodsReceivedBase    received; GoodsShortBase settled short (nothing more will come)
+--   InContainersBase     loaded in containers not received yet (status 1-5: draft to cleared)
+--   InDraftReceiptsBase  on draft goods receipts outside containers
+--   ToReceiveBase        what the "Receive goods..." dialogs propose: ordered - received - short - in containers - in drafts
+--   MaxOutsideBase       the posting cap of a local receipt line: ordered - received - in containers - (77) given up by a
+--                        close and not invoiced. Neither the drafts (the one being posted is one) nor the other pieces
+--                        settled short count: pieces recorded short that turn up later can still be received.
+--   OutstandingBase      rule 17, for Shortages and the item's "On order": an open order ordered - received - short, a
+--                        closed one invoiced - received - short; 0 when cancelled. Never below 0.
+-- ON A CLOSED ORDER (4) "ordered" is what was INVOICED in all three, as in OutstandingBase (rule 17). (77) No order is
+-- closed any more: the closed branches stay for the old rows only, which section 2 turned back into approved orders.
+-- The status of the order is the caller's to check (OrderStatus): this function never refuses.
+CREATE OR ALTER FUNCTION purchase.fn_PoLine_Progress (@PurchaseOrderId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT PurchaseOrderId     = d.Id,
+           PoLineId            = l.Id,
+           l.LineNumber, l.ItemId, l.ItemUnitId, l.PackingFormula, l.WarehouseId,
+           OrderStatus         = d.Status,
+           OrderedBase         = l.QuantityBase,
+           InvoicedBase        = l.ReceivedQuantityBase,
+           l.GoodsReceivedBase,
+           l.GoodsShortBase,
+           InContainersBase    = q.InContainers,
+           InDraftReceiptsBase = q.InDrafts,
+           ToReceiveBase       = CASE WHEN x.ToReceive > 0 THEN x.ToReceive ELSE 0 END,
+           MaxOutsideBase      = CASE WHEN x.MaxOutside > 0 THEN x.MaxOutside ELSE 0 END,
+           OutstandingBase     = CASE WHEN x.Outstanding > 0 THEN x.Outstanding ELSE 0 END
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes dt         ON dt.Id = d.DocumentTypeId AND dt.Code = N'PO'
+    INNER JOIN purchase.PurchaseDocumentLines l   ON l.DocumentId = d.Id
+    CROSS APPLY (SELECT InContainers = ISNULL((SELECT SUM(cl.QuantityBase)
+                                               FROM logistics.ContainerLines cl
+                                               INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                               WHERE cl.PoLineId = l.Id AND c.Status BETWEEN 1 AND 5), 0),
+                        InDrafts     = ISNULL((SELECT SUM(gl.QuantityBase)
+                                               FROM purchase.GoodsReceiptLines gl
+                                               INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                                               WHERE gl.PoLineId = l.Id AND gl.ContainerLineId IS NULL AND g.Status = 1), 0)) q
+    CROSS APPLY (SELECT Expected = CASE WHEN d.Status = 4 AND l.ReceivedQuantityBase < l.QuantityBase
+                                        THEN l.ReceivedQuantityBase ELSE l.QuantityBase END,
+                        -- (77) given up by a close and still not invoiced: at most what is not invoiced
+                        GivenUp  = CASE WHEN l.ClosedShortBase <= 0 THEN 0
+                                        WHEN l.ClosedShortBase < l.QuantityBase - l.ReceivedQuantityBase THEN l.ClosedShortBase
+                                        WHEN l.QuantityBase > l.ReceivedQuantityBase THEN l.QuantityBase - l.ReceivedQuantityBase
+                                        ELSE 0 END) e
+    CROSS APPLY (SELECT ToReceive   = e.Expected - l.GoodsReceivedBase - l.GoodsShortBase - q.InContainers - q.InDrafts,
+                        MaxOutside  = e.Expected - l.GoodsReceivedBase - q.InContainers - e.GivenUp,
+                        Outstanding = CASE d.Status WHEN 3 THEN 0
+                                                    WHEN 4 THEN l.ReceivedQuantityBase - l.GoodsReceivedBase - l.GoodsShortBase
+                                                    ELSE l.QuantityBase - l.GoodsReceivedBase - l.GoodsShortBase END) x
+    WHERE d.Id = @PurchaseOrderId;
+GO
+
+-- Re-created (77) from the body of script 64: (77) Qty also counts the pieces a close by hand gave up (ClosedShortBase)
+-- while they are not invoiced, so they cannot be loaded into containers again: they will never come. Disjoint from the
+-- invoiced and received pieces when the close was removed (section 2 settled only what was neither), so they are added
+-- to the maximum; once the supplier invoices some of them they count as invoiced instead. Nothing else changes.
+-- WHAT AN ORDER LINE HAS COMMITTED OUTSIDE CONTAINERS, in pieces - script 65 uses it in place of the "dir" subquery
+-- (invoiced outside containers) wherever the pieces still loadable into containers are worked out:
+--   Qty = MAX(invoiced outside containers, received outside containers + on draft receipts outside containers)
+--         + (77) given up by a close and not invoiced.
+-- A maximum, not a sum: an invoiced piece and a received piece outside containers are the same goods (they are matched).
+-- Except the pieces of an invoice that took its goods into stock WHEN IT WAS POSTED, before goods receipts
+-- (UsesGoodsReceipts = 0, ReceiptMode 1): they are invoiced AND received, and never matched (usp_GoodsReceipt_Rematch
+-- leaves those invoices out), so they count on both sides - otherwise goods received later by a goods receipt for the
+-- rest of the same order line would hide behind them in the maximum and could be loaded into a container again.
+-- Qty is then: those pieces + MAX(the other invoiced pieces, received by goods receipts + on draft receipts).
+--   InvoicedOutsideBase         today's "dir": lines of invoices in status 1, 2 or 4 not shipped in containers
+--                               (ReceiptMode <> 2) with no container line; @ExceptDocumentId (NULL = none) leaves out
+--                               one invoice, as the callers that check that invoice's own lines do
+--   ReceivedOutsideBase         posted goods receipt lines of the order line with no container line, plus the pieces of
+--                               the invoices received when they were posted (above)
+--   InDraftReceiptsOutsideBase  goods receipt lines of the order line with no container line on draft receipts
+-- One row, always (0 when nothing).
+CREATE OR ALTER FUNCTION purchase.fn_PoLine_CommittedOutside (@PoLineId INT, @ExceptDocumentId INT)
+RETURNS TABLE
+AS
+RETURN
+    SELECT Qty                        = CASE WHEN inv.Qty >= inv.AtPosting + rcv.Posted + rcv.Drafts THEN inv.Qty
+                                             ELSE inv.AtPosting + rcv.Posted + rcv.Drafts END
+                                        + gu.GivenUp,
+           InvoicedOutsideBase        = inv.Qty,
+           ReceivedOutsideBase        = inv.AtPosting + rcv.Posted,
+           InDraftReceiptsOutsideBase = rcv.Drafts
+    FROM (SELECT Qty       = ISNULL(SUM(x.QuantityBase), 0),
+                 AtPosting = ISNULL(SUM(CASE WHEN xd.Status IN (2, 4) AND xd.UsesGoodsReceipts = 0 AND xd.ReceiptMode = 1
+                                             THEN x.QuantityBase END), 0)
+          FROM purchase.PurchaseDocumentLines x
+          INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
+          WHERE x.SourceLineId = @PoLineId AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2
+            AND (@ExceptDocumentId IS NULL OR xd.Id <> @ExceptDocumentId)) inv
+    CROSS JOIN (SELECT Posted = ISNULL(SUM(CASE WHEN g.Status = 2 THEN gl.QuantityBase END), 0),
+                       Drafts = ISNULL(SUM(CASE WHEN g.Status = 1 THEN gl.QuantityBase END), 0)
+                FROM purchase.GoodsReceiptLines gl
+                INNER JOIN purchase.GoodsReceipts g ON g.Id = gl.GoodsReceiptId
+                WHERE gl.PoLineId = @PoLineId AND gl.ContainerLineId IS NULL AND g.Status IN (1, 2)) rcv
+    -- (77) given up by a close and still not invoiced (as in fn_PoLine_Progress); 0 for every other line
+    CROSS JOIN (SELECT GivenUp = ISNULL(MAX(CASE WHEN l.ClosedShortBase <= 0 THEN 0
+                                                 WHEN l.ClosedShortBase < l.QuantityBase - l.ReceivedQuantityBase THEN l.ClosedShortBase
+                                                 WHEN l.QuantityBase > l.ReceivedQuantityBase THEN l.QuantityBase - l.ReceivedQuantityBase
+                                                 ELSE 0 END), 0)
+                FROM purchase.PurchaseDocumentLines l WHERE l.Id = @PoLineId) gu;
 GO
 
 /* ================================================================== 3. Post: the order is no longer closed */
@@ -67081,6 +67215,10 @@ GROUP BY CASE d.Status WHEN 1 THEN N'Draft' WHEN 5 THEN N'Waiting for approval' 
                        ELSE N'Closed (unexpected)' END
 ORDER BY Shown;
 
+-- Order lines whose pieces a close by hand gave up (section 2): settled short, not received, not loaded again.
+SELECT Lines = COUNT(*), GivenUpPcs = ISNULL(SUM(ClosedShortBase), 0)
+FROM purchase.PurchaseDocumentLines WHERE ClosedShortBase > 0;
+
 PRINT 'Script 77 applied: purchase orders show Saved, Partially posted or Posted from their posted invoices; Closed is gone.';
 GO
 
@@ -67103,11 +67241,15 @@ GO
      1. Auto-plan refused an order needing more than 200 containers TWICE in usp_Container_PlanFromOrder (before and
         after packing: the proposal itself, so the dialog never even showed the order's lines) and once more in
         usp_Container_CreateBatch. The three THROWs go (the C# copy, ContainerService.MaxContainersPerPlan, goes too).
-        Measured in the sandbox (SQL Server 2025, one item of 10 pcs per container): proposing 2,000 containers
-        0.8 s; creating 300 / 1,000 / 2,000 (confirmed) 1.4 / 4.5 / 12.6 s; confirming 1,000 0.5 s; numbers for 2,000
-        0.15 s; Start shipment of 3,000 1.4 s; a Delivery of 3,000 completed 0.7 s and its 3,000 draft goods receipts
-        8.7 s; one invoice of 2,000 containers created 1.0 s and posted 6.0 s. The cursors stay: none of these comes
-        near the server's 90 s, and the API now gives the batch calls a longer timeout of their own (600 s).
+        Creating a plan grew as N x N (each container re-checked the order lines and re-read every container line of
+        its order line, and the CNT counter stayed locked for the whole plan, so every other Add Container waited):
+        usp_Container_Save now skips those for a container of a plan (@PlanChecked, @ContainerRef) and CreateBatch
+        takes the numbers at its end. Measured in the sandbox (SQL Server 2025, one item of 10 pcs per container, a
+        database of up to 50,000 containers): proposing 2,000 containers 0.8 s, 5,000 3.7 s; creating 3,000 / 5,000 /
+        10,000 (confirmed) 5.5 / 9.5 / 18 s; confirming 1,000 0.5 s; numbers for 2,000 0.15 s; Start shipment of 3,000
+        1.4 s; a Delivery of 3,000 completed 0.7 s and its 3,000 draft goods receipts 8.7 s; one invoice of 2,000
+        containers created 1.0 s and posted 6.0 s. The API also gives the batch calls a longer timeout of their own
+        (600 s). A plan holds its new containers until it commits: pages that read containers wait for it meanwhile.
      2. Error 9829 ("STRING_AGG aggregation result exceeded the limit of 8000 bytes"): STRING_AGG over a non-MAX text
         returns NVARCHAR(4000), and a LEFT() around it comes too late. Three lists grew with the containers:
           - purchase.fn_PayableDocument's ContainerRef (Supplier Payments: every open invoice of the supplier, and the
@@ -67137,7 +67279,7 @@ GO
      8. usp_Movement_MatchContainers (a movement's import of container numbers) takes 10,000 numbers a call (500).
 
    Procedures re-created from their current bodies: inventory.usp_DocumentType_NextNumber (22),
-   logistics.usp_Container_PlanFromOrder (65), logistics.usp_Container_CreateBatch (65),
+   logistics.usp_Container_PlanFromOrder (65), logistics.usp_Container_Save (65), logistics.usp_Container_CreateBatch (65),
    purchase.usp_PurchaseInvoice_LinkContainers (65), purchase.fn_PayableDocument (47),
    purchase.usp_PurchaseInvoice_ReceiptCostPreview (64), logistics.usp_ContainerCharge_CopyCandidates (28),
    logistics.usp_Container_Search (65), logistics.usp_Movement_ContainerCandidates (53),
@@ -67433,9 +67575,16 @@ BEGIN
 END
 GO
 
--- Re-created (78) from the body of script 65: (78) @ForInvoiceChecked = 1 skips the invoice's rules for a container of a
--- plan, which usp_Container_CreateBatch checked for the whole plan. A last, optional parameter: every other caller is
--- unchanged. Nothing else changes.
+-- Re-created (78) from the body of script 65, with two last, optional parameters for usp_Container_CreateBatch (every
+-- other caller is unchanged):
+--   @PlanChecked = 1   the caller checked the whole plan: the invoice's rules and what the order lines still allow
+--                      (69008). Not again for each container: both read a total that grows with every container made,
+--                      which made a plan of N containers cost N x N.
+--   @ContainerRef      the ref to give a new container instead of the next CNT number: CreateBatch gives each container
+--                      a placeholder and takes the real numbers only at its end, so the CNT counter is not held locked
+--                      (every other Add Container waiting) while the whole plan is created.
+-- And a new container skips the update of its existing lines (it has none): that join read every container line of the
+-- order line. Nothing else changes.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
     @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
@@ -67483,7 +67632,8 @@ CREATE OR ALTER PROCEDURE logistics.usp_Container_Save
     @UserId              INT            = NULL,
     @ForInvoiceId        INT            = NULL,   -- (43) for this invoice of the order: the order may be closed by it
     @NewId               INT OUTPUT,
-    @ForInvoiceChecked   BIT            = 0       -- (78) 1 = the caller checked the invoice's rules for the whole plan
+    @PlanChecked         BIT            = 0,      -- (78) 1 = the caller checked the whole plan (invoice rules, order lines' room)
+    @ContainerRef        NVARCHAR(30)   = NULL    -- (78) on create: this ref instead of the next CNT number
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -67500,10 +67650,10 @@ BEGIN
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
     -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created. (78) Not again
-    -- for each container of a plan: usp_Container_CreateBatch checks them once for the whole plan (@ForInvoiceChecked),
+    -- for each container of a plan: usp_Container_CreateBatch checks them once for the whole plan (@PlanChecked),
     -- and checking each container against an invoice state that grows with every container made it quadratic - 2,205
     -- containers from one invoice took 42 s, most of it here.
-    IF @ForInvoiceId IS NOT NULL AND @Id IS NULL AND ISNULL(@ForInvoiceChecked, 0) = 0
+    IF @ForInvoiceId IS NOT NULL AND @Id IS NULL AND ISNULL(@PlanChecked, 0) = 0
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
         EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Add', @QuantityBase = @ForInvoiceQty;
@@ -67565,7 +67715,7 @@ BEGIN
                 THROW 69000, 'The purchase order must be approved and still open.', 1;
         END
 
-        DECLARE @Msg NVARCHAR(400);
+        DECLARE @Msg NVARCHAR(400), @IsNew BIT = 0;
 
         IF EXISTS (SELECT PoLineId FROM @Lines GROUP BY PoLineId HAVING COUNT(*) > 1)
             THROW 69000, 'The same order line appears twice in the container.', 1;
@@ -67592,6 +67742,8 @@ BEGIN
 
         -- Quantity still loadable on the order line. (65) What the order line committed outside containers is the larger of
         -- what is invoiced and what is received (or on draft receipts) outside containers: the same goods, matched.
+        -- (78) Not for a container of a plan: CreateBatch checked the whole plan under a lock on the order (@PlanChecked).
+        IF ISNULL(@PlanChecked, 0) = 0
         SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
                               + CAST(l.QuantityBase AS NVARCHAR(20)) + N' loaded but only '
                               + CAST(pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) AS NVARCHAR(20))
@@ -67639,8 +67791,8 @@ BEGIN
 
         IF @Id IS NULL
         BEGIN
-            DECLARE @Ref NVARCHAR(30), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'CNT');
-            EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Ref OUTPUT, @BranchId;
+            DECLARE @Ref NVARCHAR(30) = NULLIF(LTRIM(RTRIM(@ContainerRef)), N''), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'CNT');
+            IF @Ref IS NULL EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Ref OUTPUT, @BranchId;
 
             INSERT INTO logistics.Containers (DocumentTypeId, ContainerRef, PurchaseOrderId, ContainerNo, ContainerTypeId, SealNo, CustomsSealNo, Description,
                                               OrderDate, ShippingMethod, CountryOfOrigin, ForwarderId, TransporterId,
@@ -67655,6 +67807,7 @@ BEGIN
                     NULL, @BranchId, @WarehouseId, @TruckNo, @WaybillNo, @DeclarationNo, @FeriNo,
                     @ActualPortArrival, @BorderCrossingDate, @CustomsReleaseDate, @StatusNote, @Notes, 1, @UserId);
             SET @Id = SCOPE_IDENTITY();
+            SET @IsNew = 1;
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@Id, N'Created', N'Draft ' + @Ref + ISNULL(N' from order ' + (SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @PurchaseOrderId), N''), @UserId);
         END
@@ -67700,6 +67853,9 @@ BEGIN
         DELETE cl FROM logistics.ContainerLines cl
         WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
 
+        -- (78) Only on a container that already had lines: on a new one there is nothing to update, and the join read
+        -- every container line of the order line (one more for each container of a plan).
+        IF @IsNew = 0
         UPDATE cl
         SET LineNumber = l.LineNumber, Quantity = l.QuantityBase, OilIncluded = ISNULL(l.OilIncluded, 0),
             OilQtyPerUnit = CASE WHEN ISNULL(l.OilIncluded, 0) = 1 THEN ISNULL(l.OilQtyPerUnit, i.OilQtyPerUnit) END,
@@ -67755,9 +67911,20 @@ END
 GO
 
 -- Re-created (78) from the body of script 65: (78) NO CEILING ON THE NUMBER OF CONTAINERS created at once (the
--- refusal above 200 is gone), and the invoice's rules are checked once for the whole plan, not again for each container
--- (usp_Container_Save @ForInvoiceChecked). Still all or nothing, one container after the other: 2,000 confirmed containers take
--- about 13 s in the sandbox, and the API gives this call a timeout of its own (Database:BatchCommandTimeoutSeconds).
+-- refusal above 200 is gone). Still all or nothing, one container after the other, but:
+--   - the invoice's rules and the room on the order lines are checked once for the whole plan, under the lock on the
+--     order, not again for each container (usp_Container_Save @PlanChecked): a check per container read a total that
+--     grew with every container made, so N containers cost N x N;
+--   - THE CNT NUMBERS ARE TAKEN AT THE END. Each container is created with a placeholder ref ('~' + session + '-' +
+--     its place in the plan) and gets its real number, in plan order, just before the commit: the CNT counter row is
+--     locked only for that moment, not for the whole plan (every other Add Container... or Auto-plan in the company
+--     waited for it). A plan that fails takes no number at all.
+-- The plan's transaction still holds its new containers' rows until it commits: readers that scan the containers
+-- (the Containers page, another order's page) wait for it (the database does not use read-committed snapshot).
+-- So a plan blocks those readers for as long as it runs. Measured in the sandbox (a database of up to 50,000
+-- containers), confirmed at once: 3,000 containers in about 5.5 s, 5,000 in 9.5 s, 10,000 in 18 s (before these two
+-- changes: 2,500 took 18 s, 5,000 75 s, 10,000 52 s on a smaller database). The API gives this call a timeout of its own
+-- (Database:BatchCommandTimeoutSeconds, 600 s).
 CREATE OR ALTER PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
     @ContainerTypeId     INT,
@@ -67831,9 +67998,9 @@ BEGIN
     INSERT INTO @Seqs (Seq, Ord)
     SELECT x.Seq, ROW_NUMBER() OVER (ORDER BY x.Seq) FROM (SELECT DISTINCT Seq FROM @Plan) x;
 
-    DECLARE @Created TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
+    DECLARE @Created TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL, Placeholder NVARCHAR(30) NOT NULL);
     DECLARE @L logistics.tvp_ContainerLoadLine;
-    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @NewId INT, @Lock INT;
+    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @NewId INT, @Lock INT, @Placeholder NVARCHAR(30);
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -67889,6 +68056,7 @@ BEGIN
             WHERE p.Seq = @Seq;
 
             SET @NewId = NULL;
+            SET @Placeholder = N'~' + CAST(@@SPID AS NVARCHAR(10)) + N'-' + CAST(@Ord AS NVARCHAR(10));
             EXEC logistics.usp_Container_Save
                  @PurchaseOrderId     = @PurchaseOrderId,
                  @ContainerTypeId     = @ContainerTypeId,
@@ -67908,18 +68076,43 @@ BEGIN
                  @AllowOverCapacity   = @AllowOverCapacity,
                  @UserId              = @UserId,
                  @ForInvoiceId        = @ForInvoiceId,
-                 @ForInvoiceChecked   = 1,               -- (78) checked above for the whole plan
+                 @PlanChecked         = 1,               -- (78) checked above for the whole plan
+                 @ContainerRef        = @Placeholder,    -- (78) the real number at the end
                  @NewId               = @NewId OUTPUT;
 
             IF ISNULL(@Confirm, 0) = 1
                 EXEC logistics.usp_Container_Confirm @Id = @NewId, @UserId = @UserId;
 
-            INSERT INTO @Created (Seq, ContainerId) VALUES (@Seq, @NewId);
+            INSERT INTO @Created (Seq, ContainerId, Placeholder) VALUES (@Seq, @NewId, @Placeholder);
             FETCH NEXT FROM plan_cur INTO @Seq, @Ord;
         END
         CLOSE plan_cur;
         DEALLOCATE plan_cur;
         SET @Ord = NULL;
+
+        -- (78) THE REAL NUMBERS, in plan order, now: from here to the commit the CNT counter is locked (one short loop
+        -- and two updates), not while the containers were made. The placeholder is replaced in the ref and in the
+        -- "Draft ... from order" history row Save wrote.
+        DECLARE @Numbers TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerRef NVARCHAR(30) NOT NULL);
+        DECLARE @NumSeq INT = (SELECT MIN(Seq) FROM @Created), @Number NVARCHAR(30);
+        WHILE @NumSeq IS NOT NULL
+        BEGIN
+            SET @Number = NULL;
+            EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Number OUTPUT, @BranchId;
+            INSERT INTO @Numbers (Seq, ContainerRef) VALUES (@NumSeq, @Number);
+            SET @NumSeq = (SELECT MIN(Seq) FROM @Created WHERE Seq > @NumSeq);
+        END
+
+        UPDATE c SET ContainerRef = n.ContainerRef
+        FROM logistics.Containers c
+        INNER JOIN @Created x ON x.ContainerId = c.Id
+        INNER JOIN @Numbers n ON n.Seq = x.Seq;
+
+        UPDATE a SET Details = REPLACE(a.Details, x.Placeholder, n.ContainerRef)
+        FROM logistics.ContainerAudit a
+        INNER JOIN @Created x ON x.ContainerId = a.ContainerId
+        INNER JOIN @Numbers n ON n.Seq = x.Seq
+        WHERE a.Details LIKE N'%~%';
 
         COMMIT TRANSACTION;
     END TRY
@@ -68196,20 +68389,23 @@ BEGIN
 
         -- (78) THE AUDIT NAMES AT MOST 20 CONTAINERS, THEN "and N more"; aggregated as NVARCHAR(MAX). Over NVARCHAR(30)
         -- refs STRING_AGG returned NVARCHAR(4000) and failed (9829) from about 190 containers - the LEFT came too late -
-        -- rolling back the whole link (Link containers, Add container and Auto-plan from the invoice).
+        -- rolling back the whole link (Link containers, Add container and Auto-plan from the invoice). The text is cut
+        -- to the 500 characters of PurchaseDocumentAudit.Details (the old LEFT(..., 1000) failed with 2628 once 20 long
+        -- refs and quantities passed 500), keeping its "and N more"; the refs in number order (KTG-2026-9999 before
+        -- KTG-2026-10000).
         INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
-        SELECT @InvoiceId, N'Updated',
-               LEFT(CASE WHEN MAX(x.N) <= 20 THEN N'Linked to containers '
-                         ELSE N'Linked to ' + CAST(MAX(x.N) AS NVARCHAR(10)) + N' containers: ' END
-                    + STRING_AGG(CASE WHEN x.Rn <= 20 THEN CAST(x.Ref AS NVARCHAR(MAX)) + N' (' + CAST(x.Qty AS NVARCHAR(20)) + N')' END, N', ')
-                      WITHIN GROUP (ORDER BY x.Ref)
-                    + CASE WHEN MAX(x.N) > 20 THEN N' and ' + CAST(MAX(x.N) - 20 AS NVARCHAR(10)) + N' more' ELSE N'' END, 1000), @UserId
-        FROM (SELECT g.Ref, g.Qty, Rn = ROW_NUMBER() OVER (ORDER BY g.Ref), N = COUNT(*) OVER ()
+        SELECT @InvoiceId, N'Updated', LEFT(a.Head + a.Names, 500 - LEN(a.Tail)) + a.Tail, @UserId
+        FROM (SELECT Head  = CASE WHEN MAX(x.N) <= 20 THEN N'Linked to containers '
+                                  ELSE N'Linked to ' + CAST(MAX(x.N) AS NVARCHAR(10)) + N' containers: ' END,
+                     Names = STRING_AGG(CASE WHEN x.Rn <= 20 THEN CAST(x.Ref AS NVARCHAR(MAX)) + N' (' + CAST(x.Qty AS NVARCHAR(20)) + N')' END, N', ')
+                               WITHIN GROUP (ORDER BY LEN(x.Ref), x.Ref),
+                     Tail  = CASE WHEN MAX(x.N) > 20 THEN N' and ' + CAST(MAX(x.N) - 20 AS NVARCHAR(10)) + N' more' ELSE N'' END
+        FROM (SELECT g.Ref, g.Qty, Rn = ROW_NUMBER() OVER (ORDER BY LEN(g.Ref), g.Ref), N = COUNT(*) OVER ()
               FROM (SELECT Ref = c.ContainerRef, Qty = SUM(k.QuantityBase)
                     FROM @Links k
                     INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
                     INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
-                    GROUP BY c.ContainerRef) g) x;
+                    GROUP BY c.ContainerRef) g) x) a;
 
         COMMIT TRANSACTION;
     END TRY
@@ -68223,7 +68419,7 @@ END
 GO
 
 -- Re-created (78) from the body of script 47: ContainerRef names at most 5 containers ("KTG-2026-0001, KTG-2026-0002,
--- KTG-2026-0003 +1996 more" above), so Supplier Payments opens an invoice of any number of containers (the
+-- KTG-2026-0003 +1996 more" above, in number order), so Supplier Payments opens an invoice of any number of containers (the
 -- per-container split, purchase.fn_InvoiceContainerSettlement, lists them all); a CHG- number above 999,999 keeps all
 -- its digits. Nothing else changes.
 CREATE OR ALTER FUNCTION purchase.fn_PayableDocument (@Kind NVARCHAR(10), @DocumentId INT)
@@ -68236,10 +68432,10 @@ RETURN
            DocumentTotal = d.TotalAmount, st.ReturnedAmount, st.PaidAmount, st.OutstandingAmount, st.PaymentStatus,
            -- (78) at most 5 refs, else the first 3 and "+N more" (aggregated as NVARCHAR(MAX): 9829 above about 267)
            ContainerRef = (SELECT CAST(STRING_AGG(CASE WHEN r.N <= 5 OR r.Rn <= 3 THEN CAST(r.ContainerRef AS NVARCHAR(MAX)) END, N', ')
-                                           WITHIN GROUP (ORDER BY r.ContainerRef)
+                                           WITHIN GROUP (ORDER BY LEN(r.ContainerRef), r.ContainerRef)
                                        + CASE WHEN MAX(r.N) > 5 THEN N' +' + CAST(MAX(r.N) - 3 AS NVARCHAR(10)) + N' more' ELSE N'' END
                                        AS NVARCHAR(200))
-                           FROM (SELECT q.ContainerRef, Rn = ROW_NUMBER() OVER (ORDER BY q.ContainerRef), N = COUNT(*) OVER ()
+                           FROM (SELECT q.ContainerRef, Rn = ROW_NUMBER() OVER (ORDER BY LEN(q.ContainerRef), q.ContainerRef), N = COUNT(*) OVER ()
                                  FROM (SELECT DISTINCT k.ContainerRef
                                        FROM purchase.PurchaseDocumentLines l
                                        INNER JOIN logistics.ContainerLines cl ON cl.Id = l.ContainerLineId
@@ -68426,7 +68622,8 @@ GO
 
 /* ================================================================== 4. Apply to other containers: every candidate */
 
--- Re-created (78) from the body of script 28: no TOP (500) any more. Nothing else changes.
+-- Re-created (78) from the body of script 28: no TOP (500) any more, and the refs in number order (a ref past the
+-- type's NumberLength, KTG-2026-10000, after KTG-2026-9999). Nothing else changes.
 CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_CopyCandidates
     @ChargeId  INT,
     @Search    NVARCHAR(100) = NULL,    -- container ref / no.
@@ -68464,13 +68661,14 @@ BEGIN
     WHERE c.Status NOT IN (7, 8)
       AND (ISNULL(@SameOrder, 1) = 0 OR c.PurchaseOrderId = @SourceOrder OR c.Id = @SourceContainer)
       AND (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%')
-    ORDER BY c.ContainerRef;
+    ORDER BY LEN(c.ContainerRef), c.ContainerRef;   -- (78) number order: KTG-2026-9999 before KTG-2026-10000
 END
 GO
 
 /* ================================================================== 5. Bigger pages for the lists of one order or movement */
 
--- Re-created (78) from the body of script 65: a page holds up to 5,000 containers (200 before). Nothing else changes.
+-- Re-created (78) from the body of script 65: a page holds up to 5,000 containers (200 before), and a sort on the ref
+-- puts KTG-2026-9999 before KTG-2026-10000 (its length first). Nothing else changes.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
     @ContainerRef        NVARCHAR(30)  = NULL,
@@ -68639,6 +68837,9 @@ BEGIN
            OR (c.Status BETWEEN 2 AND 5 AND ISNULL(rb.ReceivedBy, N'') <> N'GRN'
                AND (dl.MovementId IS NOT NULL OR rb.GoodsReceiptStatus = 1)))
     ORDER BY
+        -- (78) a ref sorts by its length first: KTG-2026-9999 before KTG-2026-10000 (numbers past NumberLength)
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'ContainerRef' THEN LEN(c.ContainerRef) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'ContainerRef' THEN LEN(c.ContainerRef) END DESC,
         CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ContainerNo' THEN c.ContainerNo END END ASC,
         CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ContainerNo' THEN c.ContainerNo END END DESC,
         CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'OrderDate' THEN c.OrderDate WHEN N'DispatchDate' THEN c.DispatchDate WHEN N'Eta' THEN c.Eta END END ASC,
@@ -68864,7 +69065,7 @@ BEGIN
         FROM logistics.Containers c
         INNER JOIN @Ids i ON i.Id = c.Id
         WHERE @MaxStatus IS NULL OR c.Status <= @MaxStatus
-        ORDER BY c.ContainerRef;
+        ORDER BY LEN(c.ContainerRef), c.ContainerRef;   -- number order: KTG-2026-9999 before KTG-2026-10000
     ELSE
         SELECT TOP (@Top) c.Id, c.ContainerRef, c.ContainerNo, c.Status, Pieces = c.TotalAllocatedBase, c.PurchaseOrderId
         FROM logistics.Containers c

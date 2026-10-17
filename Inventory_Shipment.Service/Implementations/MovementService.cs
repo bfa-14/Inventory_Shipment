@@ -495,7 +495,9 @@ public sealed class MovementService : IMovementService
     /// The notification of rule 5: "Draft goods receipts created: KTG-2026-0031, KTG-2026-0032 (warehouse to choose).
     /// KTG-2026-0032: choose the warehouse (LUB, the container's, has warehouses under it: …). Not created: KTG-2026-0033
     /// already has GRN-BR-002-000004." Null when the movement had no container. A draft made without the container's
-    /// own warehouse says why (script 72), once per reason for the containers that share it.
+    /// own warehouse says why (script 72), once per reason for the containers that share it. Each list names at most
+    /// <see cref="SummaryNames"/> containers, then "and N more" (script 78: a Delivery of 8,000 containers wrote 8,000
+    /// refs into one message).
     /// </summary>
     internal static string? ReceiptsSummary(IReadOnlyList<MovementReceiptResultDto> rows)
     {
@@ -506,24 +508,33 @@ public sealed class MovementService : IMovementService
             .Select(r => (r.ContainerRef, Reason: WarehouseToChooseReason(r)))
             .Where(x => x.Reason is not null)
             .GroupBy(x => x.Reason!, StringComparer.Ordinal)
-            .Select(g => $"{string.Join(", ", g.Select(x => x.ContainerRef))}: {g.Key}.")
+            .Select(g => $"{NameSome(g.Select(x => x.ContainerRef).ToList(), ", ")}: {g.Key}.")
             .ToList();
         var skipped = rows.Where(r => !r.Created).Select(r => $"{r.ContainerRef} {SkipPhrase(r)}").ToList();
 
         var parts = new List<string>(2 + whyToChoose.Count);
         if (created.Count > 0)
         {
-            parts.Add($"{(created.Count == 1 ? "Draft goods receipt created" : "Draft goods receipts created")}: {string.Join(", ", created)}.");
+            parts.Add($"{(created.Count == 1 ? "Draft goods receipt created" : "Draft goods receipts created")}: {NameSome(created, ", ")}.");
             parts.AddRange(whyToChoose);
         }
 
         if (skipped.Count > 0)
         {
-            parts.Add($"Not created: {string.Join("; ", skipped)}.");
+            parts.Add($"Not created: {NameSome(skipped, "; ")}.");
         }
 
         return parts.Count > 0 ? string.Join(' ', parts) : null;
     }
+
+    /// <summary>How many containers a list of the Delivery summary names before "and N more".</summary>
+    internal const int SummaryNames = 10;
+
+    /// <summary>"KTG-2026-0001, KTG-2026-0002 and 7,998 more": the first <see cref="SummaryNames"/>, then the count.</summary>
+    private static string NameSome(IReadOnlyList<string> names, string separator) =>
+        names.Count <= SummaryNames
+            ? string.Join(separator, names)
+            : $"{string.Join(separator, names.Take(SummaryNames))} and {(names.Count - SummaryNames).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} more";
 
     private static string SkipPhrase(MovementReceiptResultDto row) => row.SkipReason switch
     {

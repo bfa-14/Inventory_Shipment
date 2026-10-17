@@ -516,7 +516,10 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     settled with "Nothing more will come" when receiving. The orders closed before (by themselves or by hand) went
     back to approved at script 77, with "Closed status removed (was: …)" in their history; on an order closed by hand
     the pieces the close gave up were settled short, so what it still expects (Shortages, On order, To receive) did
-    not change - it can be invoiced again for the rest.
+    not change. Those pieces are also kept apart (`ClosedShortBase` on the order line): unlike other pieces settled
+    short they cannot be received if they turn up, nor loaded into containers again, while they are not invoiced.
+    They can still be invoiced, like any piece settled short (the supplier claim covers what never arrives); once
+    invoiced they are received like any invoiced piece.
   - The order's history says "Fully invoiced by PINV-…" when an invoice completes it.
   - Before script 77 the PO auto-closed (4) when fully invoiced and received ("Fully invoiced and received"; before
     goods receipts: when fully invoiced), or was closed by hand.
@@ -710,9 +713,12 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     (then fill to the brim).
   - "Mix the rest" on/off. **Any number of containers** (script 78; at most 200 before, refused in the proposal
     itself). All or nothing ("Container 3 of 30: …"). Optionally "Confirm the containers after creating them".
-  - Measured in the sandbox: proposing 2,000 containers under 1 s; creating 300 / 1,000 / 2,000 (confirmed) 1.4 / 4.5 /
-    12.6 s; through the API 1,201 containers in 4.3 s, and 2,205 from an invoice (created, confirmed and linked) in
-    about 30 s. The pages draw long lists 200 rows at a time ("Show more"): a draft invoice of 2,205 lines opens in
+  - Measured in the sandbox: proposing 2,000 containers under 1 s, 5,000 in 3.7 s; creating 3,000 / 5,000 / 10,000
+    (confirmed) 5.5 / 9.5 / 18 s on a database of up to 50,000 containers (each container of a plan is no longer
+    re-checked against the order lines, and the container numbers are taken at the end of the plan, so another
+    user's Add Container no longer waits on the numbering); through the API 1,201 containers in 4.3 s, and 2,205 from
+    an invoice (created, confirmed and linked) in about 30 s. A plan is one transaction: while it runs, pages that
+    read containers (the Containers list, another order's containers) wait for it, about 2 s per 1,000 containers. The pages draw long lists 200 rows at a time ("Show more"): a draft invoice of 2,205 lines opens in
     under 7 s. The API gives the batch calls (plan, create, invoices from containers and their posting, Link, Confirm,
     numbers, Delete, Start shipment, movements, the goods receipts of a Delivery) a timeout of 10 minutes of their own
     (`Database:BatchCommandTimeoutSeconds`), above the ordinary 90 s. **[Implemented – script 78]**
