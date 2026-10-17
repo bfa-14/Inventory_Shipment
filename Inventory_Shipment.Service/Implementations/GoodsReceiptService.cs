@@ -166,7 +166,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             return Result<GoodsReceiptDto>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
         }
 
-        // Re-read: posting gives the number, writes the ledger and the costs, may close the order and offload the
+        // Re-read: posting gives the number, writes the ledger and the costs, counts the order's received pieces and offloads the
         // container. The document is the server's answer, not a patch of what was sent.
         return await ReadAsync(id, cancellationToken);
     }

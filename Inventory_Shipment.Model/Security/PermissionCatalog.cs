@@ -479,7 +479,7 @@ public static class Permissions
         new(Purchase.OrdersCreate, "Create Purchase Orders", PurchaseModule,
             "Create and edit draft purchase orders.", 1010),
         new(Purchase.OrdersPost, "Post Purchase Orders", PurchaseModule,
-            "Confirm purchase orders (assigns number, stock becomes incoming) and close open ones.", 1020),
+            "Confirm purchase orders (assigns number, stock becomes incoming).", 1020),
         new(Purchase.OrdersCancel, "Cancel Purchase Orders", PurchaseModule,
             "Cancel confirmed purchase orders.", 1030),
         new(Purchase.OrdersDelete, "Delete Purchase Orders", PurchaseModule,

@@ -125,19 +125,6 @@ public sealed class PurchaseDocumentsController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    [HttpPost("{id:int}/close")]
-    [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<PurchaseDocumentDto>> Close(
-        int id, [FromBody] ClosePurchaseDocumentRequest? request, CancellationToken cancellationToken)
-    {
-        var result = await _documents.CloseAsync(
-            id, request ?? new ClosePurchaseDocumentRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
-
-        return result.ToActionResult(this);
-    }
-
     /// <summary>
     /// The charges of a DRAFT purchase invoice — freight, customs, clearing — replacing whatever was
     /// there. Sent apart from the lines: the lines are the supplier's bill and the charges are

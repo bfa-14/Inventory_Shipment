@@ -735,7 +735,7 @@ public sealed class ReceiveFromOrderLineRequest
 }
 
 /// <summary>
-/// "Receive goods..." on a purchase order (posted or closed), and "+ New › From a purchase order...". No lines = every
+/// "Receive goods..." on an approved purchase order, and "+ New › From a purchase order...". No lines = every
 /// order line with something to receive outside containers. <see cref="Post"/> posts the draft at once (with the post
 /// permission).
 /// </summary>
@@ -894,7 +894,7 @@ public sealed class ReceivableQuery
     public int? PurchaseOrderId { get; init; }
     public int? InvoiceId { get; init; }
 
-    /// <summary>"+ New › From a purchase order...": the supplier's posted or closed orders with something to receive.</summary>
+    /// <summary>"+ New › From a purchase order...": the supplier's approved orders with something to receive.</summary>
     public int? SupplierId { get; init; }
 
     public int? ContainerId { get; init; }
@@ -1002,7 +1002,7 @@ public sealed class ReceivableDocumentDto
     public string? DocumentNumber { get; init; }
     public DateTime DocumentDate { get; init; }
 
-    /// <summary>The purchase document status: 2 posted (an approved order), 4 closed...</summary>
+    /// <summary>The purchase document status: 2 posted (an approved order, or a posted invoice).</summary>
     public byte Status { get; init; }
 
     public int BranchId { get; init; }

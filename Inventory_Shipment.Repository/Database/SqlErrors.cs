@@ -219,7 +219,7 @@ public static class SqlErrors
     /// <summary>Charges typed on an imported invoice: an import's charges are entered on its containers.</summary>
     public const int PurchaseChargesOnContainer = 65020;
 
-    /// <summary>The order is shipped in containers: invoiced from them, not from the order; not cancelled or closed while loaded.</summary>
+    /// <summary>The order is shipped in containers: invoiced from them, not from the order; not cancelled while loaded.</summary>
     public const int PurchaseOrderInContainers = 65021;
 
     // ----- 65026-65028: an invoice and its containers (script 43) -----

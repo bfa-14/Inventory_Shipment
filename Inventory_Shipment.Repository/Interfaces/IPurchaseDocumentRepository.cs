@@ -36,8 +36,6 @@ public interface IPurchaseDocumentRepository
 
     Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
-    Task CloseAsync(int id, string? reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
-
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>purchase.usp_PurchaseDocument_SetCharges — draft invoices only; throws 65012 when a charge is refused.</summary>

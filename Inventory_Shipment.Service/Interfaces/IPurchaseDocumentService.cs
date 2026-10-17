@@ -48,11 +48,6 @@ public interface IPurchaseDocumentService
         int id, CancelPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Orders only: ends an open order that will not be received any further.</summary>
-    Task<Result<PurchaseDocumentDto>> CloseAsync(
-        int id, ClosePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default);
-
     /// <summary>Records what the supplier has shipped on an open order. Needs purchase.orders.create.</summary>
     Task<Result<PurchaseDocumentDto>> MarkShippedAsync(
         int id, MarkShippedRequest request, int userId, IReadOnlySet<string> permissions,

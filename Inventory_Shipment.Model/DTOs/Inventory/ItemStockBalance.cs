@@ -113,8 +113,11 @@ public sealed class ItemPurchaseOrderDto
     public DateTime? ExpectedDate { get; init; }
     public byte StatusCode { get; init; }
 
-    /// <summary>Draft | PendingApproval | Posted | Closed | Cancelled.</summary>
+    /// <summary>Draft | PendingApproval | Posted (approved: see <see cref="InvoicingStatus"/>) | Cancelled.</summary>
     public string Status => PurchaseDocumentStatus.From(StatusCode);
+
+    /// <summary>(77) The whole order's stage when approved: 0 Saved, 1 Partially posted, 2 Posted (its posted invoices).</summary>
+    public int? InvoicingStatus { get; init; }
 
     public string SupplierCode { get; init; } = string.Empty;
     public string SupplierName { get; init; } = string.Empty;
@@ -151,7 +154,7 @@ public sealed class ItemPurchaseOrdersDto
     public string ItemCode { get; init; } = string.Empty;
     public string ItemName { get; init; } = string.Empty;
 
-    /// <summary>Posted (or closed) orders still waiting for some of the item.</summary>
+    /// <summary>Approved orders still waiting for some of the item.</summary>
     public int OpenOrders { get; init; }
 
     /// <summary>On order: what the orders have still to deliver, in base units (rule 25).</summary>

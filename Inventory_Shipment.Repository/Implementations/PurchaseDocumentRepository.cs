@@ -66,6 +66,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? SourceDocumentNumber { get; init; }
         public decimal? ReceivedPercent { get; init; }
         public decimal? InvoicedPercent { get; init; }
+        public int? InvoicingStatus { get; init; }
         public bool UsesGoodsReceipts { get; init; }
         public int? QuantityBase { get; init; }
         public int? ReceivedBase { get; init; }
@@ -114,6 +115,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             CommercialInvoiceNo = CommercialInvoiceNo,
             ReceiptMode = ReceiptMode,
             Status = PurchaseDocumentStatus.From(Status),
+            InvoicingStatus = InvoicingStatus,
             TotalItems = TotalItems,
             TotalQuantity = TotalQuantity,
             Subtotal = Subtotal,
@@ -158,6 +160,12 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             query.WarehouseId,
             query.SupplierId,
             Status = PurchaseDocumentStatus.ToCode(query.Status),
+            // (77) the stage of an approved order: Saved 0, Partially posted 1, Posted 2 - orders only (the procedure
+            //      would find no invoice or return with it)
+            InvoicingStatus = PurchaseDocumentTypes.Normalize(query.DocumentTypeCode) == PurchaseDocumentTypes.Order
+                              && query.InvoicingStatus is >= 0 and <= 2
+                ? (byte?)query.InvoicingStatus
+                : null,
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
             SortColumn = ResolveSortColumn(query.SortBy),
@@ -400,6 +408,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? DocumentNumber { get; init; }
         public DateTime DocumentDate { get; init; }
         public byte Status { get; init; }
+        public int? InvoicingStatus { get; init; }
         public decimal TotalAmount { get; init; }
         public string CurrencyCode { get; init; } = string.Empty;
 
@@ -412,6 +421,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             DocumentNumber = DocumentNumber,
             DocumentDate = DocumentDate,
             Status = PurchaseDocumentStatus.From(Status),
+            InvoicingStatus = InvoicingStatus,
             TotalAmount = TotalAmount,
             CurrencyCode = CurrencyCode,
         };
@@ -743,10 +753,6 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Cancel",
-            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
-
-    public Task CloseAsync(int id, string? reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("purchase.usp_PurchaseDocument_Close",
             new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)

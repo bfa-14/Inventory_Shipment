@@ -250,7 +250,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             outcome.GoodsReceiptNumber is { } receipt ? $"; goods received with {receipt}"
             : outcome.ReceiveWarning is not null ? "; the goods receipt was refused" : string.Empty);
 
-        // Re-read: posting assigns the number, may close the order and adjust received goods. The document is the
+        // Re-read: posting assigns the number, may complete the order's invoicing and adjust received goods. The document is the
         // server's answer, with what the posting did beside it.
         var posted = await ReadAsync(id, cancellationToken);
         if (posted.Value is { } document)
@@ -384,26 +384,6 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         return await ChangeAsync(id, cancellationToken,
             version => _documents.CancelAsync(id, request.Reason, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled");
-    }
-
-    /// <summary>
-    /// CLOSING IS THE POSTER'S RIGHT. Whoever may confirm an order decides when it is done: closing
-    /// reverses nothing and keeps every receipt, so it is a step of the order's life rather than the
-    /// undoing that cancelling is. The procedure refuses anything that is not an open order.
-    /// </summary>
-    public async Task<Result<PurchaseDocumentDto>> CloseAsync(
-        int id, ClosePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default)
-    {
-        var allowed = await AllowAsync(id, s => s.Post, permissions, cancellationToken);
-        if (allowed.IsFailure)
-        {
-            return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
-        }
-
-        return await ChangeAsync(id, cancellationToken,
-            version => _documents.CloseAsync(id, request.Reason, version, userId, cancellationToken),
-            request.RowVersion, userId, "closed");
     }
 
     /// <summary>
@@ -995,7 +975,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         var header = new List<(string Label, string Value)>
         {
             ("Document No.", document.DocumentNumber ?? "DRAFT"),
-            ("Status", document.Status),
+            // (77) an approved order says Saved, Partially posted or Posted (its posted invoices), as on the page
+            ("Status", PurchaseDocumentStatus.Label(document.Status, document.DocumentTypeCode, document.InvoicingStatus)),
             ("Document Date", document.DocumentDate.ToString("dd/MM/yyyy")),
             (document.DocumentTypeCode == PurchaseDocumentTypes.Order ? "Expected Date" : "Due Date",
                 document.ExpectedDate?.ToString("dd/MM/yyyy") ?? string.Empty),
@@ -1029,11 +1010,6 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                     ? (shipped ? "Yes - stock in at the container offload" : "No - stock in on posting")
                     : (shipped ? "Yes - received with its containers" : "No - received with Receive goods…")),
             ]);
-        }
-
-        if (document.Status == PurchaseDocumentStatus.Closed)
-        {
-            header.Add(("Closed", $"{document.ClosedAtUtc:dd/MM/yyyy} {document.CloseReason}".Trim()));
         }
 
         if (document.Status == PurchaseDocumentStatus.Cancelled)
@@ -1171,7 +1147,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         _logger.LogInformation("Purchase document {DocumentId} {Verb} by user {UserId}", id, verb, userId);
 
         // Re-read: posting assigns the number, writes the ledger and the costs, moves the status and
-        // may close the source. The document is the server's answer, not a patch of what was sent.
+        // may change how far its order is invoiced. The document is the server's answer, not a patch of what was sent.
         return await ReadAsync(id, cancellationToken);
     }
 

@@ -123,6 +123,10 @@ public sealed class ShortagePurchaseOrderDto
     public string? DocumentNumber { get; init; }
     public DateTime DocumentDate { get; init; }
     public string Status { get; init; } = string.Empty;
+
+    /// <summary>(77) An approved order: 0 Saved, 1 Partially posted, 2 Posted (its posted invoices).</summary>
+    public int? InvoicingStatus { get; init; }
+
     public decimal TotalAmount { get; init; }
     public string CurrencyCode { get; init; } = string.Empty;
     public DateTime CreatedAtUtc { get; init; }

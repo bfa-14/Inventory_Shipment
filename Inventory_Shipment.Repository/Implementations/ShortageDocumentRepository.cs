@@ -265,6 +265,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         public string? DocumentNumber { get; init; }
         public DateTime DocumentDate { get; init; }
         public byte Status { get; init; }
+        public int? InvoicingStatus { get; init; }
         public decimal TotalAmount { get; init; }
         public string CurrencyCode { get; init; } = string.Empty;
         public DateTime CreatedAtUtc { get; init; }
@@ -275,6 +276,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
             DocumentNumber = DocumentNumber,
             DocumentDate = DocumentDate,
             Status = PurchaseDocumentStatus.From(Status),
+            InvoicingStatus = InvoicingStatus,
             TotalAmount = TotalAmount,
             CurrencyCode = CurrencyCode,
             CreatedAtUtc = CreatedAtUtc,

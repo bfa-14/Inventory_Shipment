@@ -10,6 +10,9 @@ receipt, and a supplier invoice no longer moves stock (glossary, 3.3–3.10, 4.1
 *Updated on 12 October 2026 for the merge with Ali's GitLab work (scripts 68–72): the new Dashboard, lines in a
 warehouse at the bottom of the tree of any branch, goods receipts included (1.4, 3.1, 4.9, 4.12, 5.4).*
 
+*Updated on 17 October 2026 for **purchase order statuses** (script 77): an approved order shows Saved, Partially
+posted or Posted from its posted invoices, and Closed is gone (glossary, 3.4, 3.9, 3.10, 4.2, 4.12).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -139,6 +142,7 @@ per user in Settings › Purchase approval (see 4.3).
 | Term | Meaning here |
 |---|---|
 | **PO** | Purchase order. Document type code `PO`, number like `PO-BR-002-000042` (prefix, branch, sequence). |
+| **Saved / Partially posted / Posted (order)** | What an approved order shows (script 77, the owner's words), from its **posted** supplier invoices: **Saved** no posted invoice yet, **Partially posted** invoiced less than ordered, **Posted** everything ordered invoiced. Draft invoices do not count; purchase returns do not lower it; goods receipts never change it. Stored as status 2 (approved) with the invoicing status 0 / 1 / 2 beside it. There is no **Closed** any more. |
 | **PINV** | Purchase (supplier) invoice, `PINV-BR-003-000011`. The number is given **at posting**; a draft has none. Since the switch to goods receipts, posting it makes the amount payable and moves **no stock**. |
 | **PRET** | Purchase return, created from a posted PINV, `PRET-…`. |
 | **GRN / goods receipt** | Purchase › Goods Receipts (scripts 64–65, document type `GRN`, `GRN-BR-002-000001` given at posting): the goods that arrived, counted and put in a warehouse. **The only way supplier goods enter the stock.** Draft → Posted → Cancelled. One source each: a container, an order, an invoice, or "Without an order". |
@@ -263,8 +267,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 
 ### 3.4 Purchase
 **Documents:**
-- **PO** → approval → posted (= approved). It then auto-closes (status 4) when fully invoiced **and** every piece is
-  received or settled short ("Fully invoiced and received").
+- **PO** → approval → approved, shown **Saved**; then **Partially posted** while its posted invoices cover less than
+  ordered, and **Posted** once they cover everything (script 77). An order is never closed: goods may still be
+  received on a Posted order, and pieces that will never come are settled with "Nothing more will come".
 - **GRN** (goods receipt, Purchase › Goods Receipts, scripts 64–65): **the only way goods enter the stock.** Made from
   a container (automatically when its Delivery is completed, or Receive goods…), from an order, from a posted invoice,
   or without an order. See 4.12.
@@ -437,7 +442,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
    amount is payable, no stock moves, and the received pieces are brought to the invoice cost (FOB + charges).
    - Invoice first instead: post it, then "Receive goods…" on the invoice, or tick "Receive the goods now" in its post
      confirmation (off by default): the goods then take the invoice cost at once.
-4. The order closes by itself when fully invoiced and received (or settled short).
+4. The order shows Partially posted, then Posted once its posted invoices cover everything ordered (script 77).
 5. Late charges: LCA (later "+ Add charge" on the posted invoice, prompt 38); it adjusts the goods already received.
 6. Return: **PRET** from the posted invoice, at most what was received and not returned.
 
@@ -451,7 +456,7 @@ allowed), then receipt, customer statement and sales profit [Ali – details unk
 
 | Object | Statuses |
 |---|---|
-| **Purchase documents** (PO, PINV, PRET; `purchase.PurchaseDocuments.Status`) | 1 Draft · 2 Posted (for a PO = approved) · 3 Cancelled · 4 Closed (a PO auto-closes "Fully invoiced and received" when every line is invoiced and received or settled short, or is closed by hand; orders closed "Fully received" before goods receipts stay closed) · 5 Waiting for approval (PO only, locked) |
+| **Purchase documents** (PO, PINV, PRET; `purchase.PurchaseDocuments.Status`) | 1 Draft · 2 Posted (for a PO = approved, shown **Saved** / **Partially posted** / **Posted** from its posted invoices, script 77) · 3 Cancelled · 4 Closed (**no longer used**: script 77 brought every closed order back to 2, settling short what a close by hand gave up) · 5 Waiting for approval (PO only, locked) |
 | **Goods receipts** (GRN; `purchase.GoodsReceipts.Status`) | 1 Draft (no stock yet; editable, deletable) · 2 Posted (stock in, number given) · 3 Cancelled (posted only, with a reason; the stock goes back out) |
 | **Containers** (`logistics.Containers.Status`) | 1 Draft · 2 Confirmed · 3 In Transit · 4 At Port · 5 Cleared · 6 Offloaded (received: by a posted goods receipt, or by an offload before goods receipts) · 7 Closed · 8 Cancelled (3 inferred, the others confirmed) |
 | **Movements** | 1 Planned · 2 In progress · 3 Completed · 4 Cancelled (4 inferred) |
@@ -490,10 +495,23 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   too. **[Convention]**
 
 ### 4.2 Purchase orders and supplier invoices
-- **PO statuses and closing:** a PO is a draft until posted; posting a PO = approving it (when approval applies). Each
-  PO line tracks what is invoiced, received and settled short, and the PO **auto-closes (4) when fully invoiced and
-  every piece is received or settled short** ("Fully invoiced and received"; before goods receipts: when fully
-  invoiced). **[Implemented – script 65]**
+- **PO statuses:** Draft → (Waiting for approval) → approved → Cancelled. Posting a PO = approving it (when approval
+  applies). An approved order **shows how far its posted invoices cover it** (the owner's words): **Saved** (none),
+  **Partially posted** (the invoiced pieces are fewer than the ordered ones), **Posted** (equal; each line is capped at
+  what it ordered). **[Implemented – script 77]**
+  - Draft invoices do not count; cancelling a posted invoice brings the order back to Partially posted or Saved.
+  - Purchase returns do not lower it (they never touched the order's counters): an order whose goods went back
+    partly still shows Posted.
+  - Goods receipts never change it: a Posted order may still have goods to receive.
+  - **There is no Closed any more.** Close Order is gone (the procedure refuses with 65010 "Purchase orders are no
+    longer closed: …"), and neither an invoice nor a goods receipt closes an order. Pieces that will never come are
+    settled with "Nothing more will come" when receiving. The orders closed before (by themselves or by hand) went
+    back to approved at script 77, with "Closed status removed (was: …)" in their history; on an order closed by hand
+    the pieces the close gave up were settled short, so what it still expects (Shortages, On order, To receive) did
+    not change - it can be invoiced again for the rest.
+  - The order's history says "Fully invoiced by PINV-…" when an invoice completes it.
+  - Before script 77 the PO auto-closed (4) when fully invoiced and received ("Fully invoiced and received"; before
+    goods receipts: when fully invoiced), or was closed by hand.
 - **An invoice made from a PO** takes the PO's supplier and branch; each line may take at most what remains on its
   source line. **[Implemented]**
 - **One item per supplier invoice:** **[Implemented – prompt 37, script 45]**
@@ -556,7 +574,7 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Buttons are visible but disabled with a tooltip:
     - Draft: "Approve the order first: containers are created from an approved order."
     - Waiting: "This order is waiting for approval."
-    - "This order is closed." / "This order is cancelled."
+    - "This order is cancelled."
   - Buttons are hidden only without the permission.
 
 ### 4.3 Purchase order approval **[Implemented – script 42 + prompt 36, unless marked]**
@@ -918,7 +936,7 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
    then frozen; average, last and FOB costs updated; the container **Offloaded** at the warehouse, read-only.
 
 **Local purchases**
-9. **"Receive goods…" on a purchase order**, Posted or Closed. Disabled with a reason: "Approve the order first: goods
+9. **"Receive goods…" on an approved purchase order** (Saved, Partially posted or Posted). Disabled with a reason: "Approve the order first: goods
    are received against an approved order.", "This order is waiting for approval.", "This order is cancelled.",
    "Everything ordered is already received.", "Everything still to receive travels in containers: it is received with
    its containers."
@@ -987,8 +1005,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
 
 **Orders, reports**
 19. **Order line counters:** Received (goods receipts, plus the receipts made before them), Invoiced, Settled short.
-    Outstanding = ordered − received − short on an open order, invoiced − received − short on a closed one, never
-    below 0: what Shortages, the item's "On order" and the dialogs use. The order list shows a "Received" and an
+    Outstanding = ordered − received − short on an approved order, never below 0 (before script 77 a closed order
+    counted invoiced − received − short): what Shortages, the item's "On order" and the dialogs use. The order list shows a "Received" and an
     "Invoiced" progress; filters "To receive" (orders), "Not fully received" (invoices); the Goods Receipts list has
     "With differences" and "Received not invoiced", with a line "Received not invoiced: {n} pcs, {value} at the order
     price." for month-end.
@@ -998,10 +1016,11 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
       containers; a reader who may not gets them in the orders' figure). Its free-time alarms stop at the end of the
       Delivery, as on the container's page and the Tracking board: a delivered container waits Cleared for its goods
       receipt and is "Free time over" only if the free days ran out before it left. **[Implemented]**
-20. **Closing:** automatically "Fully invoiced and received"; it reopens when an invoice or goods receipt that closed
-    it is cancelled. Cancelling an order is refused while it has goods receipts (65011: "This purchase order has posted
-    goods receipts. Cancel those first." / "…draft goods receipts. Delete them first."); closing it by hand is refused
-    while received goods wait for their invoice or a draft goods receipt waits on it (65021).
+20. **No closing (script 77):** an order is never closed; it shows Saved, Partially posted or Posted from its posted
+    invoices, and goods receipts do not change that. Cancelling an order is refused while it has goods receipts (65011:
+    "This purchase order has posted goods receipts. Cancel those first." / "…draft goods receipts. Delete them
+    first."). (Before 77 it closed automatically "Fully invoiced and received", reopened when an invoice or goods
+    receipt that closed it was cancelled, and could be closed by hand.)
 21. **Last cost, FOB cost, last supplier** come from the latest posted goods receipt line, after its adjustments.
 22. **Invoice lines a goods receipt refers to** cannot be linked to or unlinked from containers (65028: "Line {n}
     ({item}): {goods receipt GRN-… | a draft goods receipt} refers to this invoice line: delete or cancel it first.").
@@ -1017,7 +1036,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     - Draft invoices follow the new rule when they are posted.
     - Containers still travelling are received with goods receipts. Those whose Delivery was completed before the
       switch got no automatic draft: Containers › "Delivered, not received", then Receive goods….
-    - Orders closed "Fully received" with goods still to come stay closed; the goods can still be received.
+    - Orders closed "Fully received" with goods still to come stayed closed; the goods could still be received.
+      (Script 77 brought every closed order back.)
     - The invoice list tells the people who post invoices: "Since {switch date}, posting a supplier invoice no longer
       adds stock: receive the goods with Receive goods…".
 24. **One-way.** Once a goods receipt, or an invoice posted the new way, exists, the code before script 65 would
@@ -1046,7 +1066,7 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
 
 Re-used or new outside the block: 69019 (new) a container with a goods receipt; 69016 Close with received pieces not
 invoiced; 69010 the Offload retired / Cancel Offload of a GRN container; 65011 an order with goods receipts / a return
-above what was received; 65021 an order closed by hand with received goods not invoiced; 65028 an invoice line a goods
+above what was received; 65021 (until script 77) an order closed by hand with received goods not invoiced; 65028 an invoice line a goods
 receipt refers to (65030 for Add container / Auto-plan from that invoice); 65008 a purchase document type other than
 PO, PINV, PRET; 67012 an LCA on a "Shipped in containers" invoice.
 
@@ -1156,6 +1176,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `74_Dashboard_Permission.sql` | The Dashboard gets its own permission `dashboard.view` (granted once to every role) |
 | `75_Screen_Permissions.sql` | Stock Valuation, Customer Statement, Movements and Tracking get their own view permissions (granted once to the roles holding what each screen borrowed); a container's page keeps its movements and route with View Containers |
 | `76_CashBankAccount_No_Branch.sql` | Cash / bank accounts belong to no branch: the Branch is gone from the account, and sales invoices, receipts and supplier payments no longer refuse an account of another branch |
+| `77_Purchase_OrderStatusesByInvoicing.sql` | Purchase order statuses: an approved order shows Saved, Partially posted or Posted from its posted invoices (`purchase.fn_PurchaseOrder_Invoicing`); Closed is gone (no auto-close on invoice or goods receipt posting, Close Order refused 65010); the closed orders brought back once, what a close by hand gave up settled short |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
