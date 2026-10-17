@@ -47,7 +47,7 @@ public sealed class ContainerChargeImportController : ControllerBase
     /// Error — and what it resolved to. Nothing is created. "today" (optional, yyyy-MM-dd) is the browser's
     /// date, used for a blank Charge Date.
     ///
-    /// A 400 with code INVALID_FILE is the file's own problem (not .xlsx, over 5 MB, more than 500 rows, not
+    /// A 400 with code INVALID_FILE is the file's own problem (not .xlsx, over 5 MB, more than 5,000 rows, not
     /// the template's columns). A bad ROW is not a failure of the call: it comes back with its own message.
     /// </summary>
     [HttpPost("validate")]

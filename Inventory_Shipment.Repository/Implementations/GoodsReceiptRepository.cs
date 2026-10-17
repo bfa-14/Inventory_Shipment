@@ -632,9 +632,10 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
     public async Task<IReadOnlyList<ReceivableContainerDto>> ReceivableContainersAsync(
         ReceivableContainersQuery query, CancellationToken cancellationToken = default)
     {
-        // At most 200, the delivered ones first (they are at the warehouse), then by reference.
+        // At most 200, the delivered ones first (they are at the warehouse), then by reference. (78) TotalCount = how many
+        // match (the window runs before the TOP), so the dialog can say "Showing 200 of N" instead of cutting silently.
         const string sql = $"""
-            SELECT TOP (200) q.*
+            SELECT TOP (200) q.*, TotalCount = COUNT(*) OVER ()
             FROM (
             {ContainerSelect}
             WHERE c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL

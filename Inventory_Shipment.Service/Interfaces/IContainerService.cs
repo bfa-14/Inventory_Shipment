@@ -95,6 +95,17 @@ public interface IContainerService
 
     /* ── many containers per order ── */
 
+    /// <summary>The container pickers: the given ids, or the newest matching the search. Needs containers.view.</summary>
+    Task<Result<IReadOnlyList<ContainerLookupDto>>> LookupAsync(
+        ContainerLookupRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// What Auto-plan containers... and Add Container... fill in by themselves for an order: its supplier (read-only), the
+    /// forwarder (the order's last container's, else the supplier) and the country of origin. Needs containers.create.
+    /// </summary>
+    Task<Result<ContainerOrderDefaultsDto>> GetOrderDefaultsAsync(
+        int purchaseOrderId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     /// <summary>The proposed containers of an approved order for one container type; nothing is saved. Needs containers.create.</summary>
     Task<Result<AutoPlanDto>> AutoPlanAsync(
         AutoPlanRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

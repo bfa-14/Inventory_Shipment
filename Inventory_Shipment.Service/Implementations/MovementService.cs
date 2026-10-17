@@ -17,8 +17,11 @@ public sealed class MovementService : IMovementService
     /// <summary>The procedure's page ceiling; the export walks the pages at this size.</summary>
     private const int ExportPageSize = 200;
 
-    /// <summary>The page ceiling of logistics.usp_Movement_ContainerCandidates.</summary>
-    private const int CandidatePageSize = 200;
+    /// <summary>
+    /// The page ceiling of logistics.usp_Movement_ContainerCandidates: 5,000 since script 78 (200 before), so the movement's
+    /// list holds every candidate at its From in one call - each page costs the whole place check.
+    /// </summary>
+    private const int CandidatePageSize = 5000;
 
     /// <summary>The width of a value of logistics.tvp_TextList.</summary>
     private const int MaxNumberLength = 100;
@@ -234,7 +237,7 @@ public sealed class MovementService : IMovementService
         });
     }
 
-    /// <summary>More than 500 numbers is the procedure's refusal (70000 → 400), with its message.</summary>
+    /// <summary>More than 10,000 numbers (500 before script 78) is the procedure's refusal (70000 → 400), with its message.</summary>
     public async Task<Result<IReadOnlyList<MovementContainerMatchDto>>> MatchContainersAsync(
         MatchMovementContainersRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {

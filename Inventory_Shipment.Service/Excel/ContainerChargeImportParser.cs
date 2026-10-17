@@ -35,8 +35,12 @@ public sealed class ContainerChargeImportParser
     /// <summary>A charge file is a few hundred rows: far below this.</summary>
     public const long MaxFileBytes = 5 * 1024 * 1024;
 
-    /// <summary>The most data rows one file may carry, like the movement import's container numbers.</summary>
-    public const int MaxDataRows = 500;
+    /// <summary>
+    /// The most data rows one file may carry. One row is one charge on one container, and a freight or clearing bill can
+    /// cover any number of containers (script 78): 5,000, where it was 500 - a bill of more containers had to be cut by
+    /// hand. Each row is written by its own call, so no single database call grows with the file.
+    /// </summary>
+    public const int MaxDataRows = 5000;
 
     /// <summary>The template's data sheet. Read first when present; otherwise the first sheet.</summary>
     public const string DataSheetName = "Charges";

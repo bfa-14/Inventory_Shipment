@@ -16,9 +16,6 @@ public sealed class ContainerService : IContainerService
 {
     private const string NotFoundMessage = "Container not found.";
 
-    /// <summary>usp_Container_CreateBatch's own limit, said before the call.</summary>
-    private const int MaxContainersPerPlan = 200;
-
     private readonly IContainerRepository _containers;
     private readonly ILogger<ContainerService> _logger;
 
@@ -378,6 +375,31 @@ public sealed class ContainerService : IContainerService
 
     /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
 
+    public async Task<Result<IReadOnlyList<ContainerLookupDto>>> LookupAsync(
+        ContainerLookupRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.View))
+        {
+            return Forbidden<IReadOnlyList<ContainerLookupDto>>(Permissions.Containers.View);
+        }
+
+        return Result<IReadOnlyList<ContainerLookupDto>>.Success(await _containers.LookupAsync(request, cancellationToken));
+    }
+
+    public async Task<Result<ContainerOrderDefaultsDto>> GetOrderDefaultsAsync(
+        int purchaseOrderId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Create))
+        {
+            return Forbidden<ContainerOrderDefaultsDto>(Permissions.Containers.Create);
+        }
+
+        var defaults = await _containers.GetOrderDefaultsAsync(purchaseOrderId, cancellationToken);
+        return defaults is null
+            ? Result<ContainerOrderDefaultsDto>.Failure(ErrorType.NotFound, "Purchase order not found.", "NOT_FOUND")
+            : Result<ContainerOrderDefaultsDto>.Success(defaults);
+    }
+
     public async Task<Result<AutoPlanDto>> AutoPlanAsync(
         AutoPlanRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
@@ -634,11 +656,8 @@ public sealed class ContainerService : IContainerService
             return "The plan has no container with a line to create.";
         }
 
+        // Any number of containers (script 78): the 200 ceiling is gone here and in usp_Container_CreateBatch.
         var total = containers.Count;
-        if (total > MaxContainersPerPlan)
-        {
-            return $"At most {MaxContainersPerPlan} containers can be created at once; the plan has {total}.";
-        }
 
         for (var position = 1; position <= total; position++)
         {

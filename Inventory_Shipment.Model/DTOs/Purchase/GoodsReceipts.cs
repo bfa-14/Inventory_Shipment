@@ -1083,6 +1083,12 @@ public sealed class ReceivableContainerDto
 
     /// <summary>Confirmed and never dispatched (status 2): the page warns "has not left the supplier".</summary>
     public bool NotDispatched => Status == 2;
+
+    /// <summary>
+    /// (78) The list "From a container..." offers: how many containers match, of which at most 200 are listed (0 where
+    /// one container is read).
+    /// </summary>
+    public int TotalCount { get; init; }
 }
 
 /// <summary>

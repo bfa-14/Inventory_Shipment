@@ -17,9 +17,22 @@ public sealed class SqlConnectionFactory : ISqlConnectionFactory
         }
 
         _connectionString = WithCommandTimeout(connectionString, options.Value.CommandTimeoutSeconds);
+        BatchCommandTimeout = LongerTimeout(_connectionString, options.Value.BatchCommandTimeoutSeconds);
     }
 
     public SqlConnection Create() => new(_connectionString);
+
+    public int? BatchCommandTimeout { get; }
+
+    /// <summary>
+    /// <paramref name="seconds"/> when it is longer than what the connection string gives every command; null otherwise -
+    /// a "Command Timeout=0" (wait forever) is never shortened, and Dapper keeps the connection's default for null.
+    /// </summary>
+    internal static int? LongerTimeout(string connectionString, int seconds)
+    {
+        var current = new SqlConnectionStringBuilder(connectionString).CommandTimeout;
+        return seconds > 0 && current > 0 && seconds > current ? seconds : null;
+    }
 
     /// <summary>
     /// The default timeout of every command made on these connections, IN ONE PLACE rather than on each call: the

@@ -700,8 +700,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
                 await using var connection = _connectionFactory.Create();
                 PostRow? row = null;
+                // An invoice of any number of containers (script 78): posting reallocates the charges of each.
                 await using (var multi = await connection.QueryMultipleAsync(new CommandDefinition(
                                  "purchase.usp_PurchaseDocument_Post", parameters,
+                                 commandTimeout: _connectionFactory.BatchCommandTimeout,
                                  commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)))
                 {
                     if (!multi.IsConsumed)
@@ -753,7 +755,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Cancel",
-            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken,
+            _connectionFactory.BatchCommandTimeout);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Delete", new { Id = id, UserId = userId }, cancellationToken);
@@ -850,6 +853,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     /// <summary>
     /// The rows of the invoices a procedure created (Id, ItemId, ItemCode, ItemName, LineCount, QuantityBase,
     /// TotalAmount, RowVersion, ItemCount), in its order. A procedure that returns none (a return) gives an empty list.
+    /// Invoices are created from any number of containers (script 78): the batch timeout.
     /// </summary>
     private async Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> QueryCreatedAsync(
         string procedure, DynamicParameters parameters, CancellationToken cancellationToken)
@@ -860,7 +864,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             {
                 await using var connection = _connectionFactory.Create();
                 return (await connection.QueryAsync<CreatedPurchaseInvoiceDto>(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+                    procedure, parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
             }, cancellationToken);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
@@ -954,7 +959,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     /// updates the order's lines then its header, and a reader of that order arriving between the
     /// two is enough for one of them to be killed. The transaction rolled back; the retry is clean.
     /// </summary>
-    private async Task ExecuteAsync(string procedure, object parameters, CancellationToken cancellationToken)
+    private async Task ExecuteAsync(
+        string procedure, object parameters, CancellationToken cancellationToken, int? commandTimeout = null)
     {
         try
         {
@@ -962,7 +968,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             {
                 await using var connection = _connectionFactory.Create();
                 await connection.ExecuteAsync(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure,
+                    procedure, parameters, commandTimeout: commandTimeout, commandType: CommandType.StoredProcedure,
                     cancellationToken: cancellationToken));
             }, cancellationToken);
         }

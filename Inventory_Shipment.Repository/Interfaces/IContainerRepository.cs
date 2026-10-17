@@ -74,6 +74,12 @@ public interface IContainerRepository
 
     /* ── many containers per order (script 28) ── */
 
+    /// <summary>The container pickers: the given containers, or the newest matching a search (logistics.usp_Container_Lookup).</summary>
+    Task<IReadOnlyList<ContainerLookupDto>> LookupAsync(ContainerLookupRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>What the container dialogs start with for an order (logistics.usp_Container_OrderDefaults); null when it is not one.</summary>
+    Task<ContainerOrderDefaultsDto?> GetOrderDefaultsAsync(int purchaseOrderId, CancellationToken cancellationToken = default);
+
     /// <summary>The proposed containers, their lines and the order lines (logistics.usp_Container_PlanFromOrder); nothing is saved.</summary>
     Task<AutoPlanDto> PlanFromOrderAsync(AutoPlanRequest request, CancellationToken cancellationToken = default);
 

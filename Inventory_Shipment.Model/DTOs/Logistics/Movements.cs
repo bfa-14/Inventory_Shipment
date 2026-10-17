@@ -623,7 +623,7 @@ public sealed class MovementContainerCandidateQuery
 
     public int Page { get; init; } = 1;
 
-    /// <summary>At most 200.</summary>
+    /// <summary>At most 5,000 (script 78; 200 before).</summary>
     public int PageSize { get; init; } = 200;
 }
 

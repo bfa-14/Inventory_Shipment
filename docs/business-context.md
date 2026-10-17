@@ -13,6 +13,10 @@ warehouse at the bottom of the tree of any branch, goods receipts included (1.4,
 *Updated on 17 October 2026 for **purchase order statuses** (script 77): an approved order shows Saved, Partially
 posted or Posted from its posted invoices, and Closed is gone (glossary, 3.4, 3.9, 3.10, 4.2, 4.12).*
 
+*Updated on 17 October 2026 for **any number of containers** (script 78): Auto-plan, the invoices and the lists take
+any number of containers (no 200 ceiling), and Auto-plan / Add Container fill in the supplier and the forwarder by
+themselves (glossary, 4.1, 4.5, 4.6).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -173,7 +177,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is being removed (prompt 46). |
 | **Container unit** | In Item Definition › units: the unit whose unit type is a container unit (`masterdata.UnitTypes.IsContainer = 1`). Its packing formula is the pieces of this item per container (for example 84). **The only source of container capacity** (prompt 46). |
 | **Base unit / pieces** | The smallest unit of an item (`PC`). Container quantities are always in base units. Other units have a packing formula. |
-| **Auto-plan** | On an approved PO: choose the container type and the app proposes all containers, filled from the order lines; edit, then create them all at once (all or nothing, at most 200). |
+| **Auto-plan** | On an approved PO: choose the container type and the app proposes all containers, filled from the order lines; edit, then create them all at once (all or nothing, **any number of containers** since script 78; 200 at most before). The supplier is shown from the order and the forwarder filled in (4.5). |
 | **Mix the rest** | Auto-plan option: what is left of each line after full containers is packed into shared containers. Off = each rest gets its own container. |
 | **Fill % / equivalent capacity** | How full a container is: the sum of quantity ÷ pieces per container of each item (prompt 46). |
 | **Over capacity** | Fill above 100%: a warning that only users with "Load Above Capacity" can confirm (69007). |
@@ -484,6 +488,10 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   draft shows "Assigned on posting". Posting is refused while the GRN type is inactive (63010). An automatic draft
   needs no number, so it is still created. **[Implemented – scripts 64, 65]**
 - **Containers:** `KTG-2026-0031` (type CNT: prefix KTG, year, 4 digits). **[Implemented]**
+  - **A number never gets cut** (script 78): once a sequence has more digits than the type's length it keeps them all
+    (container 10,000 of a year is `KTG-2026-10000`, not a duplicate `KTG-2026-0000` that refused every container
+    after it). This holds for every document type (`inventory.usp_DocumentType_NextNumber`); CNT keeps its length 4,
+    so the refs given so far read the same. **[Implemented – script 78]**
   - The container **number** (box no.) must be unique among open containers (69013). **[Implemented]**
   - Before goods receipts, a second offload of the same container got its own stock-ledger number,
     `KTG-2026-0031/2`. Now a container received again (after its goods receipt was cancelled) gets a new goods
@@ -700,8 +708,30 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Every order line first fills whole containers of its own item.
   - The rest is packed without cutting a line (first fit, largest first), unless cutting lines needs fewer containers
     (then fill to the brim).
-  - "Mix the rest" on/off. At most 200 containers. All or nothing ("Container 3 of 30: …"). Optionally "Confirm the
-    containers after creating them".
+  - "Mix the rest" on/off. **Any number of containers** (script 78; at most 200 before, refused in the proposal
+    itself). All or nothing ("Container 3 of 30: …"). Optionally "Confirm the containers after creating them".
+  - Measured in the sandbox: proposing 2,000 containers under 1 s; creating 300 / 1,000 / 2,000 (confirmed) 1.4 / 4.5 /
+    12.6 s; through the API 1,201 containers in 4.3 s, and 2,205 from an invoice (created, confirmed and linked) in
+    about 30 s. The pages draw long lists 200 rows at a time ("Show more"): a draft invoice of 2,205 lines opens in
+    under 7 s. The API gives the batch calls (plan, create, invoices from containers and their posting, Link, Confirm,
+    numbers, Delete, Start shipment, movements, the goods receipts of a Delivery) a timeout of 10 minutes of their own
+    (`Database:BatchCommandTimeoutSeconds`), above the ordinary 90 s. **[Implemented – script 78]**
+- **The supplier is automatic in Auto-plan and Add Container** (script 78, the owner's words: "in the auto-plan for
+  containers the supplier must be automatic"): **[Implemented – script 78]**
+  - The dialogs show "Supplier: SUP-0001 - TVS Motor Company (from the order)", read-only: a container's goods come
+    from its order lines, so its supplier was never typed (containers have no supplier column).
+  - **Forwarder** (the company that ships the containers, a Supplier party) starts as the forwarder of the order's most
+    recent container that has an active one, else **the order's supplier**; it stays editable and clearable, and is
+    searched on the server as it is typed (it listed the first 50 suppliers only).
+  - **Country of origin** starts as the supplier's country (`masterdata.Parties.Country`, e.g. IN for TVS).
+  - Add Container… got the same Forwarder and Country fields (it always sent no forwarder).
+- **Lists of any number of containers** (script 78): the order's Containers card, a movement's containers and its
+  candidates hold every container (one page of 200 before), so their bulk actions reach all of them; "Apply to other
+  containers…" lists every candidate (500 before); the container pickers (New charge, Container Charges, the Containers
+  page's order and invoice filters) search the server; a movement's document goes to any number of containers (the
+  form limit of 1,024 values is raised); the container charges import takes 5,000 rows (500); an invoice's container
+  list in Supplier Payments reads "KTG-2026-0001, KTG-2026-0002, KTG-2026-0003 +1996 more" (it failed with SQL error
+  9829 from about 267 containers, as Link containers did from about 190). **[Implemented – script 78]**
 - **Bulk actions:** Confirm, Container numbers (paste list), Start shipment, Add charge, Delete drafts.
   **[Implemented – script 28]**
 - **Capacity today:**
@@ -762,7 +792,7 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - **[Implemented – prompt 43, basic]**: matches the container number, then the ref; capitals, spaces, dashes, dots
     and slashes are ignored; never creates containers.
   - Results: Will be added / Already on this movement / Not found / Cannot be added (reason) / Found twice /
-    Duplicate. At most 500 numbers.
+    Duplicate. At most 10,000 numbers a call (500 before script 78); the page sends a longer file in parts.
   - **[Decided – prompt 45]:**
     - Only valid numbers can be ticked, with no forcing.
     - "Download the result" gives sheets Result and Summary.
@@ -1177,6 +1207,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `75_Screen_Permissions.sql` | Stock Valuation, Customer Statement, Movements and Tracking get their own view permissions (granted once to the roles holding what each screen borrowed); a container's page keeps its movements and route with View Containers |
 | `76_CashBankAccount_No_Branch.sql` | Cash / bank accounts belong to no branch: the Branch is gone from the account, and sales invoices, receipts and supplier payments no longer refuse an account of another branch |
 | `77_Purchase_OrderStatusesByInvoicing.sql` | Purchase order statuses: an approved order shows Saved, Partially posted or Posted from its posted invoices (`purchase.fn_PurchaseOrder_Invoicing`); Closed is gone (no auto-close on invoice or goods receipt posting, Close Order refused 65010); the closed orders brought back once, what a close by hand gave up settled short |
+| `78_Logistics_AnyNumberOfContainers.sql` | Any number of containers: the 200 ceilings of Auto-plan gone, no SQL error 9829 on long container lists (Supplier Payments, Link containers, the receipt cost preview), numbers never cut, bigger pages for one order's or movement's containers, every "Apply to other containers" candidate, the movement import's 10,000 numbers; new `logistics.usp_Container_OrderDefaults` (supplier, forwarder, country of origin for the dialogs) and `logistics.usp_Container_Lookup` (the container pickers) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

@@ -128,6 +128,7 @@ public sealed class MovementRepository : IMovementRepository
             await using var connection = _connectionFactory.Create();
             return (await connection.QueryAsync<MovementReceiptResultDto>(new CommandDefinition(
                 "purchase.usp_GoodsReceipt_CreateForMovement", new { MovementId = id, UserId = userId },
+                commandTimeout: _connectionFactory.BatchCommandTimeout,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
@@ -170,6 +171,7 @@ public sealed class MovementRepository : IMovementRepository
                 await using var connection = _connectionFactory.Create();
                 return await connection.QuerySingleAsync<ShippedMovementDto>(new CommandDefinition(
                     "logistics.usp_Movement_ShipContainers", parameters,
+                    commandTimeout: _connectionFactory.BatchCommandTimeout,
                     commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
         }
@@ -248,7 +250,8 @@ public sealed class MovementRepository : IMovementRepository
     /// <summary>
     /// One procedure call, run again if SQL Server made it the deadlock victim: starting or completing
     /// a movement refreshes every container it carries, and a container page reading one of them at
-    /// the same moment is enough for one side to be killed.
+    /// the same moment is enough for one side to be killed. A movement may carry any number of containers
+    /// (script 78): save, start and complete get the batch timeout.
     /// </summary>
     private async Task ExecuteAsync(string procedure, object parameters, CancellationToken cancellationToken)
     {
@@ -258,8 +261,8 @@ public sealed class MovementRepository : IMovementRepository
             {
                 await using var connection = _connectionFactory.Create();
                 await connection.ExecuteAsync(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure,
-                    cancellationToken: cancellationToken));
+                    procedure, parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

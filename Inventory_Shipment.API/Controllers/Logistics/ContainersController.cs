@@ -209,6 +209,35 @@ public sealed class ContainersController : ControllerBase
     /* ── many containers per order ────────────────────────────────────────────────────────────── */
     /* Literal routes: the existing {id:int} routes cannot take "auto-plan" or "bulk". */
 
+    /// <summary>
+    /// The container pickers (script 78): { ids } gives those containers, whatever their number (a preset selection, in
+    /// one call); { search, top } the newest matching the ref or the container no. maxStatus 6 = the containers a charge
+    /// can still be typed for. A POST because a selection can hold thousands of ids.
+    /// </summary>
+    [HttpPost("lookup")]
+    [HasPermission(Permissions.Containers.View)]
+    [ProducesResponseType<IReadOnlyList<ContainerLookupDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<ContainerLookupDto>>> Lookup(
+        [FromBody] ContainerLookupRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.LookupAsync(request, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// What Auto-plan containers... and Add Container... fill in by themselves for an order (script 78): its supplier
+    /// (shown read-only), the forwarder (of the order's most recent container, else the supplier) and the country of origin.
+    /// </summary>
+    [HttpGet("order-defaults/{purchaseOrderId:int}")]
+    [HasPermission(Permissions.Containers.Create)]
+    [ProducesResponseType<ContainerOrderDefaultsDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ContainerOrderDefaultsDto>> OrderDefaults(int purchaseOrderId, CancellationToken cancellationToken)
+    {
+        var result = await _containers.GetOrderDefaultsAsync(purchaseOrderId, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /// <summary>The proposed containers of an approved order for one container type (containers, lines, orderLines); nothing is saved.</summary>
     [HttpPost("auto-plan")]
     [HasPermission(Permissions.Containers.Create)]
@@ -295,9 +324,17 @@ public sealed class ContainersController : ControllerBase
     /* ── attachments ──────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
-    /// Multipart: file, containerIds (repeated), attachmentTypeId (required: a type used for containers), and
-    /// optionally movementId, chargeId, note and documentDate (yyyy-MM-dd). PDF, image or Office file, up to 20 MB.
-    /// The file is stored ONCE and recorded on every container; the answer is the created records (201).
+    /// How many form values one upload may carry: one per container, and a movement's document goes to every container
+    /// of the movement - any number of them (script 78). ASP.NET Core's own default is 1,024 values (FormOptions), and a
+    /// bound collection stops at 1,024 items too (MvcOptions.MaxModelBindingCollectionSize): a movement of about 1,020
+    /// containers got a 400 for its document. The ids are therefore read from the form here, not model-bound.
+    /// </summary>
+    private const int MaxAttachmentFormValues = 100_000;
+
+    /// <summary>
+    /// Multipart: file, containerIds (repeated, or comma-separated), attachmentTypeId (required: a type used for
+    /// containers), and optionally movementId, chargeId, note and documentDate (yyyy-MM-dd). PDF, image or Office file, up
+    /// to 20 MB. The file is stored ONCE and recorded on every container; the answer is the created records (201).
     /// </summary>
     [HttpPost("attachments")]
     [HasPermission(Permissions.Containers.AttachmentsManage)]
@@ -305,9 +342,9 @@ public sealed class ContainersController : ControllerBase
     [ProducesResponseType<IReadOnlyList<ContainerAttachmentCreatedDto>>(StatusCodes.Status201Created)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
     [RequestSizeLimit(AttachmentRules.MaxRequestBytes)]
-    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes)]
+    [RequestFormLimits(MultipartBodyLengthLimit = AttachmentRules.MaxRequestBytes, ValueCountLimit = MaxAttachmentFormValues)]
     public async Task<IActionResult> AddAttachment(
-        IFormFile file, [FromForm] List<int>? containerIds, [FromForm] int? movementId, [FromForm] int? chargeId,
+        IFormFile file, [FromForm] int? movementId, [FromForm] int? chargeId,
         [FromForm] int? attachmentTypeId, [FromForm] string? note, [FromForm] DateOnly? documentDate,
         CancellationToken cancellationToken)
     {
@@ -317,12 +354,33 @@ public sealed class ContainersController : ControllerBase
             return refusal;
         }
 
+        var containerIds = new List<int>();
+        foreach (var value in (await Request.ReadFormAsync(cancellationToken))["containerIds"])
+        {
+            foreach (var part in (value ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+            {
+                if (!int.TryParse(part, out var containerId))
+                {
+                    return BadRequest(new ProblemDetails
+                    {
+                        Status = StatusCodes.Status400BadRequest,
+                        Title = "Validation failed",
+                        Detail = "containerIds must be container ids (whole numbers).",
+                        Instance = HttpContext.Request.Path,
+                        Extensions = { ["code"] = "VALIDATION" },
+                    });
+                }
+
+                containerIds.Add(containerId);
+            }
+        }
+
         using var buffer = new MemoryStream();
         await file.CopyToAsync(buffer, cancellationToken);
 
         var upload = new ContainerAttachmentUpload
         {
-            ContainerIds = containerIds ?? [],
+            ContainerIds = containerIds,
             MovementId = movementId,
             ChargeId = chargeId,
             AttachmentTypeId = attachmentTypeId,

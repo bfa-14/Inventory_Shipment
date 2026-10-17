@@ -55,7 +55,7 @@ public sealed class MovementsController : ControllerBase
     /// <summary>
     /// The containers a movement can take (movementId empty = a new one) for the From on the page, saved or not:
     /// at the From — where their previous movement ends — or never moved. includeBlocked also lists the ones the
-    /// save would refuse (canAdd false, reason). At most 200 a page. 400 VALIDATION without fromPlaceId.
+    /// save would refuse (canAdd false, reason). At most 5,000 a page (script 78). 400 VALIDATION without fromPlaceId.
     /// </summary>
     [HttpGet("container-candidates")]
     [HasPermission(Permissions.Containers.MovementsManage)]
@@ -73,7 +73,7 @@ public sealed class MovementsController : ControllerBase
     /// <summary>
     /// Container numbers or refs (typed, pasted or read from a file) matched for a movement: one row per number in
     /// the order given — Ready, AlreadyOnMovement, NotFound, Ambiguous, Blocked or Duplicate, with the reason. Nothing
-    /// is saved. 400 VALIDATION without a number or above 500.
+    /// is saved. 400 VALIDATION without a number or above 10,000.
     /// </summary>
     [HttpPost("match-containers")]
     [HasPermission(Permissions.Containers.MovementsManage)]
