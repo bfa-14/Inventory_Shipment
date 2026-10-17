@@ -293,6 +293,11 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             message.Add($"Goods received: {receipt}.");
         }
 
+        // The type's switch says what it would do, not what this posting did: a "Shipped in containers" invoice, or one
+        // with nothing left to receive, is posted without any receipt being tried, and then nothing is said. Only a
+        // receipt made or refused counts as received by the document type.
+        var byType = outcome.ReceiveOnPost && (outcome.GoodsReceiptId is not null || outcome.ReceiveWarning is not null);
+
         return new PurchasePostResultDto
         {
             DocumentNumber = number,
@@ -302,8 +307,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             CostAdjustedCogsBase = outcome.CostAdjustedCogsBase,
             CostAdjustedLines = outcome.CostAdjustedLines,
             BaseCurrencyCode = document.BaseCurrencyCode,
-            ReceiveRequested = receiveNow || outcome.ReceiveOnPost,
-            ReceivedByDocumentType = outcome.ReceiveOnPost,
+            ReceiveRequested = receiveNow || byType,
+            ReceivedByDocumentType = byType,
             GoodsReceiptId = outcome.GoodsReceiptId,
             GoodsReceiptNumber = outcome.GoodsReceiptNumber,
             ReceiveWarning = outcome.ReceiveWarning,
@@ -651,6 +656,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Forbidden<IReadOnlyList<BulkActionItemResult>>(Invoices.Post);
         }
 
+        var notes = new Dictionary<int, PurchasePostResultDto?>();
         var result = await BulkDocumentActions.RunAsync(ids, async id =>
         {
             var stub = await _documents.GetStubAsync(id, cancellationToken);
@@ -665,25 +671,52 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             }
 
             var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
+            notes[id] = posted.Value?.PostResult;
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
         });
 
-        return Result<IReadOnlyList<BulkActionItemResult>>.Success(result.Results);
+        return Result<IReadOnlyList<BulkActionItemResult>>.Success(WithPostNotes(result, notes).Results);
     }
+
+    /// <summary>
+    /// A BULK POST SAYS WHAT EACH POSTING DID BESIDES POSTING (script 79): a supplier invoice whose type receives its goods
+    /// names the goods receipt made, or - posted all the same - why it was refused, so a receipt that failed is never
+    /// lost behind a plain "Posted".
+    /// </summary>
+    private static BulkActionResult WithPostNotes(BulkActionResult result, IReadOnlyDictionary<int, PurchasePostResultDto?> notes)
+        => BulkActionResult.From(result.Results
+            .Select(item => item.Ok && notes.TryGetValue(item.Id, out var post) && post is not null
+                            && (post.GoodsReceiptNumber is not null || post.ReceiveWarning is not null)
+                ? new BulkActionItemResult
+                {
+                    Id = item.Id,
+                    DocumentNumber = item.DocumentNumber,
+                    Ok = true,
+                    Message = post.GoodsReceiptNumber is { } receipt ? $"Goods received: {receipt}." : null,
+                    Warning = post.ReceiveWarning,
+                }
+                : item)
+            .ToList());
 
     private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    public Task<BulkActionResult> BulkPostAsync(
+    public async Task<BulkActionResult> BulkPostAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
-        => BulkDocumentActions.RunAsync(ids, async id =>
+    {
+        var notes = new Dictionary<int, PurchasePostResultDto?>();
+        var result = await BulkDocumentActions.RunAsync(ids, async id =>
         {
             var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
+            notes[id] = posted.Value?.PostResult;
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
         });
+
+        return WithPostNotes(result, notes);
+    }
 
     public Task<BulkActionResult> BulkDeleteAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
@@ -785,12 +818,14 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             }
 
             var document = saved.Value;
+            PurchasePostResultDto? postResult = null;
             if (request.PostImmediately)
             {
                 var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
                 if (result.IsSuccess && result.Value is not null)
                 {
                     document = result.Value;
+                    postResult = document.PostResult;   // (79) the goods receipt its type made, or why not
                     posted++;
                 }
                 else
@@ -818,6 +853,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 ItemId = item?.ItemId,
                 ItemCode = item?.ItemCode,
                 ItemName = item?.ItemName,
+                Warning = postResult?.ReceiveWarning,
+                GoodsReceiptNumber = postResult?.GoodsReceiptNumber,
             });
         }
 

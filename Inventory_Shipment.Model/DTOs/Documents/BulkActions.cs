@@ -24,8 +24,18 @@ public sealed class BulkActionItemResult
     /// <summary>The refusal's code (NO_LINES, INSUFFICIENT_STOCK, FORBIDDEN…) when not ok.</summary>
     public string? Code { get; init; }
 
-    /// <summary>The procedure's own sentence when not ok.</summary>
+    /// <summary>
+    /// The procedure's own sentence when not ok. When ok, what the action did besides, when it did more ("Goods
+    /// received: GRN-BR-002-000004." for a supplier invoice whose type receives its goods); null otherwise.
+    /// </summary>
     public string? Message { get; init; }
+
+    /// <summary>
+    /// Ok, but part of it did not happen, and the reader must act: a supplier invoice posted whose goods receipt the
+    /// database refused ("Invoice posted; the goods receipt was not: {reason}. Use Receive goods…", script 79).
+    /// The document itself went through, so the row counts as succeeded.
+    /// </summary>
+    public string? Warning { get; init; }
 }
 
 /// <summary>

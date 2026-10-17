@@ -807,8 +807,9 @@ public sealed class PurchasePostResultDto
     public bool ReceiveRequested { get; init; }
 
     /// <summary>
-    /// (79) The PINV type's "Affects on-hand": posting received the goods by itself, whoever posted. Nothing is received
-    /// when the invoice's goods travel in containers or are all received already, and then nothing is said.
+    /// (79) The PINV type's "Affects on-hand" tried to receive the goods by itself, whoever posted: true only when a
+    /// receipt was made (GoodsReceiptId) or refused (ReceiveWarning). Nothing is tried when the invoice's goods travel in
+    /// containers or are all received already: then it is false and nothing is said.
     /// </summary>
     public bool ReceivedByDocumentType { get; init; }
 

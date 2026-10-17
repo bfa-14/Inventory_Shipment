@@ -121,10 +121,16 @@ posted with 0:
   at posting - typed, else the item's last cost, else its average (an item with no cost at all: the invoice's price,
   once, so goods never enter at nothing). Like a "Without an order" line, it changes the item's last cost, FOB cost and
   last supplier only once matched to an invoice that changes costs.
-- **Returns** (`usp_PurchaseDocument_Save` / `_Post`, PRET from it): the goods go out at the current cost of the receipt
-  lines matched to the invoice line, weighted by the matched pieces (container lines at the container line's landed
-  cost) - what they are in stock at - so the average does not drift. The supplier credit (the return's price) stays the
-  invoice price. No match: the item's average.
+- **Returns** (`usp_PurchaseDocument_Save` / `_Post`, PRET from it): the goods go out at the BASE cost of the receipt
+  lines matched to the invoice line (`fn_GoodsReceiptLine_TargetCost`: the order price, or a manual line's cost; a
+  container line adds its container's charges per piece), weighted by the matched pieces - what these pieces entered
+  stock at. Not the lines' current cost: one receipt line can hold pieces of a cost-affecting invoice too, and its
+  current cost blends that price in; returning at the blend would leave the difference in stock for good (the later
+  true-ups work per line, on its net received pieces). The supplier credit (the return's price) stays the invoice
+  price. No match: the item's average.
+- **Item replays** (`usp_GoodsReceipt_TrueUpCost`): the items of the lines of an order-less non-cost invoice are
+  replayed on every true-up, as manual lines are, so a match to a cost-affecting invoice gained or lost at the same
+  price still moves the last cost, FOB cost and last supplier.
 - **Landed cost adjustments** are refused, in Save and Post: 67013 "This invoice does not change item costs (its
   document type was set so when it was posted): a landed cost adjustment on it would change no cost. Container charges
   still enter the cost of goods received in containers." (The late charges of the invoice page are not offered.)
@@ -136,7 +142,8 @@ Example: order 10 pcs at 100, received (average 100). Invoice at 120 posted with
 stay 100, the receipt line shows CostSource Order, a return of 3 goes out at 100 (credit 3 × 120). With the switch on,
 another order's 10 pcs at 100 invoiced at 120: + 200.00 to stock, average 120. Both on one order line (20 pcs at 100;
 10 invoiced at 120 with the switch off, then 10 at 130 with it on): 10 at 100 + 10 at 130 = average 115, CostSource
-Mixed.
+Mixed. On that mixed line, a return of the 10 from the switch-off invoice goes out at 100 (the order price), not at the
+blend: cancelling the switch-on invoice afterwards leaves 10 pcs worth 1,000.
 
 ### Cancelling a receipt
 

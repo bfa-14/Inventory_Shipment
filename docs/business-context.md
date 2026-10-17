@@ -831,8 +831,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **An invoice that does not change item costs** (the PINV type's "Affects item cost" off when it was posted,
   script 79) **[Implemented]**: the pieces matched to it cost as if unmatched - the order price, plus the container's
   charges on container goods. It is still matched (invoiced counters, return caps, container Close, payments). A return
-  from it takes its goods out at what they are in stock at (the matched receipt lines' cost), the supplier credit
-  staying the invoice price; a landed cost adjustment on it is refused (67013: "This invoice does not change item
+  from it takes its goods out at what they entered stock at (the matched receipt lines' order price, plus container
+  charges; never a cost blended with another invoice's price), the supplier credit staying the invoice price; a landed cost adjustment on it is refused (67013: "This invoice does not change item
   costs (its document type was set so when it was posted): a landed cost adjustment on it would change no cost.
   Container charges still enter the cost of goods received in containers."). Goods of an order-less invoice of that
   kind take a typed cost, else the item's last cost, else its average (an item with no cost yet: the invoice's price
@@ -1063,7 +1063,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
       **whoever posts: no goods receipt right is needed**, the rule is the document type's. Lines in containers, a
       "Shipped in containers" invoice and goods already received are left alone and nothing is said; a receipt the
       database refuses leaves the invoice posted: "Invoice posted; the goods receipt was not: {reason}. Use Receive
-      goods…". The post confirmation shows "Its goods are received at once into {warehouse}: a goods receipt is made and
+      goods…" - on the invoice page as a warning, in the Post selected and bulk post results and in the import result
+      beside that invoice (a receipt made is named there too: "Goods received: GRN-…"). The post confirmation shows "Its goods are received at once into {warehouse}: a goods receipt is made and
       posted with the invoice (Configuration › Document Types)." instead of the tick.
     - **GRN "Create goods receipts when a Delivery is completed" off**: rule 5 makes no draft; the Complete dialog and
       the notification say "Goods receipts are made by hand: use Receive goods… on each container."; rule 6 (Receive
