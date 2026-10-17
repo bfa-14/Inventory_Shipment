@@ -276,6 +276,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public bool CanReceive { get; init; }
         public string? ReceiveBlockedReason { get; init; }
         public DateTime? GoodsReceiptsSinceUtc { get; init; }
+
+        // (79) what the document type makes of a supplier invoice (true / false on a database without script 79)
+        public bool AffectsCost { get; init; } = true;
+        public bool ReceiveOnPost { get; init; }
     }
 
     /// <summary>A line as the procedure returns it. LineNumber here, LineNo on the DTO — LINENO is reserved in T-SQL.</summary>
@@ -552,6 +556,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             CanReceive = header.CanReceive,
             ReceiveBlockedReason = header.ReceiveBlockedReason,
             GoodsReceiptsSinceUtc = header.GoodsReceiptsSinceUtc,
+            AffectsCost = header.AffectsCost,
+            ReceiveOnPost = header.ReceiveOnPost,
             GoodsReceipts = goodsReceipts,
             CostAdjustments = costAdjustments,
             Lines = lines.Select(l => l.ToDto()).ToList(),
@@ -673,6 +679,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal CostAdjustedInventoryBase { get; init; }
         public decimal CostAdjustedCogsBase { get; init; }
         public int CostAdjustedLines { get; init; }
+
+        /// <summary>(79) The type's "Affects on-hand", captured on the invoice; null from an older body.</summary>
+        public bool? ReceiveOnPost { get; init; }
     }
 
     /// <summary>
@@ -727,6 +736,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
                     GoodsReceiptId = parameters.Get<int?>("@GoodsReceiptId"),
                     GoodsReceiptNumber = parameters.Get<string?>("@GoodsReceiptNumber"),
                     ReceiveWarning = parameters.Get<string?>("@ReceiveWarning"),
+                    ReceiveOnPost = row?.ReceiveOnPost ?? false,
                 };
             }, cancellationToken);
         }

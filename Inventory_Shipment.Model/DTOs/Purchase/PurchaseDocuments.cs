@@ -529,6 +529,21 @@ public sealed class PurchaseDocumentDto
     /// <summary>When goods receipts started (the switch): "Posted before goods receipts ({date})". Null before the switch.</summary>
     public DateTime? GoodsReceiptsSinceUtc { get; init; }
 
+    /* (79) WHAT THE DOCUMENT TYPE MAKES OF A SUPPLIER INVOICE: captured when it is posted, the type's switch while it is a
+       draft (Configuration › Document Types). True / false on orders and returns, which they do not concern. */
+
+    /// <summary>
+    /// The invoice's price and its own charges become the cost of the goods received against it. False: those goods keep
+    /// the order price (and their container's charges), and a landed cost adjustment on it is refused (67013).
+    /// </summary>
+    public bool AffectsCost { get; init; } = true;
+
+    /// <summary>
+    /// Posting it receives its goods at once with a goods receipt (its lines not travelling in containers), whoever posts:
+    /// the post confirmation says so instead of offering "Receive the goods now".
+    /// </summary>
+    public bool ReceiveOnPost { get; init; }
+
     /// <summary>
     /// Supplier invoices: true = it holds ONE item (saving or posting a second one is refused, 65029; the page limits
     /// its item picker and offers Split by item), false = it may hold several items. Its own mode, chosen when it was
@@ -788,8 +803,14 @@ public sealed class PurchasePostResultDto
 
     public string? BaseCurrencyCode { get; init; }
 
-    /// <summary>"Receive the goods now" was asked (a supplier invoice only).</summary>
+    /// <summary>"Receive the goods now" was asked (a supplier invoice only), or the document type receives them (below).</summary>
     public bool ReceiveRequested { get; init; }
+
+    /// <summary>
+    /// (79) The PINV type's "Affects on-hand": posting received the goods by itself, whoever posted. Nothing is received
+    /// when the invoice's goods travel in containers or are all received already, and then nothing is said.
+    /// </summary>
+    public bool ReceivedByDocumentType { get; init; }
 
     /// <summary>The goods receipt created and posted with the invoice; null when not asked, or when it failed.</summary>
     public int? GoodsReceiptId { get; init; }
@@ -840,6 +861,9 @@ public sealed class ReceiptCostPreviewLineDto
     public string? Receipts { get; init; }
 
     public bool IsEstimate { get; init; } = true;
+
+    /// <summary>(79) The PINV type changes item costs now: false, the received pieces keep their cost (no difference).</summary>
+    public bool AffectsCost { get; init; } = true;
 }
 
 /// <summary>
@@ -869,6 +893,13 @@ public sealed class ReceiptCostPreviewDto
     public bool HasReceivedGoods => ReceivedNotInvoicedBase > 0;
 
     public bool IsEstimate => true;
+
+    /// <summary>
+    /// (79) Posting it will change the cost of the goods received against it (the PINV type's "Affects item cost" as it
+    /// is now). False: the message says they keep their cost.
+    /// </summary>
+    public bool AffectsCost { get; init; } = true;
+
     public string? Message { get; init; }
     public IReadOnlyList<ReceiptCostPreviewLineDto> Lines { get; init; } = [];
 }
@@ -1010,6 +1041,8 @@ public sealed class PostPurchaseDocumentRequest
     /// is posted, its lines not in a container are received with one goods receipt, created and posted in a second
     /// transaction. Needs purchase.goodsreceipts.create and .post besides the invoice's post (403 otherwise, nothing
     /// posted). A receipt that fails leaves the invoice posted: the answer's postResult.receiveWarning says why.
+    /// (79) When the PINV type's "Affects on-hand" is on, the database receives the goods whatever this says, and no
+    /// goods receipt right is needed: the rule is the document type's.
     /// </summary>
     public bool ReceiveNow { get; init; }
 }

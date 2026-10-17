@@ -310,6 +310,12 @@ public static class SqlErrors
     /// <summary>A landed cost adjustment on an imported invoice: its late charges go on the containers.</summary>
     public const int LandedCostImportedInvoice = 67012;
 
+    /// <summary>
+    /// (79) A landed cost adjustment on an invoice that does not change item costs (its document type's "Affects item
+    /// cost" was off when it was posted): the adjustment would change no cost.
+    /// </summary>
+    public const int LandedCostNoCostInvoice = 67013;
+
     // ----- 68xxx: purchase - charge types (US-MD-008) -----
     public const int ChargeTypeValidation = 68000;
     public const int ChargeTypeDuplicateCode = 68001;

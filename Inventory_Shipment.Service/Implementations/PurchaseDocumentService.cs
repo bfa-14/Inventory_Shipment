@@ -212,6 +212,10 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// receives its lines not in a container with a goods receipt, in a transaction of its own: it needs the goods
     /// receipt rights too, checked BEFORE anything is posted, and a receipt the database refuses leaves the invoice posted
     /// with the reason as a warning - never a failed answer for an invoice that is posted.
+    ///
+    /// (79) WHEN THE PINV TYPE RECEIVES THE GOODS ITSELF ("Affects on-hand", Configuration › Document Types), the database
+    /// does it on every posting, whoever posts: it is the document type's rule, not the user's choice, so the goods
+    /// receipt rights are not asked for then - a tick sent by an older page is simply not needed.
     /// </summary>
     public async Task<Result<PurchaseDocumentDto>> PostWithOptionsAsync(
         int id, PostPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
@@ -225,15 +229,15 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         var typeCode = PurchaseDocumentTypes.Normalize(allowed.Value?.DocumentTypeCode);
         var receiveNow = request.ReceiveNow && typeCode == PurchaseDocumentTypes.Invoice;
-        if (receiveNow)
+        if (receiveNow && GoodsReceiptRights.FirstOrDefault(right => !permissions.Contains(right)) is { } missing)
         {
-            foreach (var right in GoodsReceiptRights)
+            // The type receives the goods anyway: the tick asks for nothing more, and needs no right of its own.
+            if (await _documents.GetAsync(id, cancellationToken) is not { ReceiveOnPost: true })
             {
-                if (!permissions.Contains(right))
-                {
-                    return Forbidden<PurchaseDocumentDto>(right);
-                }
+                return Forbidden<PurchaseDocumentDto>(missing);
             }
+
+            receiveNow = false;
         }
 
         PurchasePostOutcome outcome;
@@ -298,7 +302,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             CostAdjustedCogsBase = outcome.CostAdjustedCogsBase,
             CostAdjustedLines = outcome.CostAdjustedLines,
             BaseCurrencyCode = document.BaseCurrencyCode,
-            ReceiveRequested = receiveNow,
+            ReceiveRequested = receiveNow || outcome.ReceiveOnPost,
+            ReceivedByDocumentType = outcome.ReceiveOnPost,
             GoodsReceiptId = outcome.GoodsReceiptId,
             GoodsReceiptNumber = outcome.GoodsReceiptNumber,
             ReceiveWarning = outcome.ReceiveWarning,
@@ -346,6 +351,13 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         {
             message = $"Only a draft invoice is previewed: this one is {document.Status.ToLowerInvariant()}.";
         }
+        // (79) The PINV type does not change item costs: the goods keep what they cost - the database previews no difference.
+        else if (!document.AffectsCost)
+        {
+            message = pieces > 0
+                ? $"{pieces} pcs already received keep their cost: this invoice does not change item costs (Configuration › Document Types)."
+                : "Goods received against it will keep the order price: this invoice does not change item costs (Configuration › Document Types).";
+        }
         else if (pieces > 0)
         {
             message = $"{pieces} pcs already received will have their cost adjusted by {Signed(difference)} {currency}".TrimEnd()
@@ -366,6 +378,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             DifferenceBase = difference,
             EstimatedInventoryBase = inventory,
             EstimatedCogsBase = cogs,
+            AffectsCost = document.AffectsCost,
             Message = message,
             Lines = lines,
         });

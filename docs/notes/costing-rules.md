@@ -1,4 +1,4 @@
-# Item costing — rules implemented in SQL (scripts 23, 27, 64-65) and what the UI will expose later
+# Item costing — rules implemented in SQL (scripts 23, 27, 64-65, 79) and what the UI will expose later
 
 ## Rules (all costs per BASE unit, base currency USD)
 
@@ -102,6 +102,41 @@ receipt's lines of the item by their pieces. Cancelling the receipt reverses it.
 - **Short shipment:** 84 loaded and invoiced, 82 received with a reason: the 82 match the first 82 invoiced pieces and
   take the invoice cost; the 2 are settled short. Their FOB is not in the stock cost (a claim on the supplier).
 - **Negative stock:** company stock −10, a receipt of 30 at a cost 5.00 above the average → `NEGSTOCK` COGS 50.00.
+
+### An invoice that does not change item costs (script 79)
+
+The PINV document type's **Affects item cost** (Configuration › Document Types, default on) is captured on each invoice
+when it is posted (`purchase.PurchaseDocuments.AffectsCost`; every invoice posted before script 79 has 1). An invoice
+posted with 0:
+
+- **Is still matched** (`usp_GoodsReceipt_Rematch` unchanged): its invoiced / received counters, the return caps
+  (65011), container Close (69016) and the payment splits need it. Only `CostSource` counts the matches to invoices
+  that change costs.
+- **Prices nothing** (`fn_GoodsReceiptLine_TargetCost`, the one place): its matched pieces cost as if unmatched - the
+  order price; a container line keeps its container's charges (they never came from an invoice). `MatchedBase` still
+  counts every match, `CostMatchedBase` the pricing ones. Every true-up, the cost at receipt and the item's last / FOB
+  cost read the target, so the rule flows through; the true-up calls stay (posting it as the newest invoice changes
+  nothing; cancelling it may hand its pieces to a cost-affecting invoice of the same order line, `PINVCANCEL`).
+- **A line of a goods receipt made from such an invoice WITHOUT an order** has no order price: it takes a manual cost
+  at posting - typed, else the item's last cost, else its average (an item with no cost at all: the invoice's price,
+  once, so goods never enter at nothing). Like a "Without an order" line, it changes the item's last cost, FOB cost and
+  last supplier only once matched to an invoice that changes costs.
+- **Returns** (`usp_PurchaseDocument_Save` / `_Post`, PRET from it): the goods go out at the current cost of the receipt
+  lines matched to the invoice line, weighted by the matched pieces (container lines at the container line's landed
+  cost) - what they are in stock at - so the average does not drift. The supplier credit (the return's price) stays the
+  invoice price. No match: the item's average.
+- **Landed cost adjustments** are refused, in Save and Post: 67013 "This invoice does not change item costs (its
+  document type was set so when it was posted): a landed cost adjustment on it would change no cost. Container charges
+  still enter the cost of goods received in containers." (The late charges of the invoice page are not offered.)
+- **The post confirmation's estimate** (`usp_PurchaseInvoice_ReceiptCostPreview`, a draft follows the type as it is
+  now): no difference, and the sentence "{n} pcs already received keep their cost: this invoice does not change item
+  costs (Configuration › Document Types)."
+
+Example: order 10 pcs at 100, received (average 100). Invoice at 120 posted with the switch off: average and last cost
+stay 100, the receipt line shows CostSource Order, a return of 3 goes out at 100 (credit 3 × 120). With the switch on,
+another order's 10 pcs at 100 invoiced at 120: + 200.00 to stock, average 120. Both on one order line (20 pcs at 100;
+10 invoiced at 120 with the switch off, then 10 at 130 with it on): 10 at 100 + 10 at 130 = average 115, CostSource
+Mixed.
 
 ### Cancelling a receipt
 

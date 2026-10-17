@@ -56,6 +56,9 @@ public sealed class StockDocumentRepository : IStockDocumentRepository
         parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@YearInNumber", request.YearInNumber, DbType.Boolean);
+        parameters.Add("@AffectsItemCost", request.AffectsItemCost, DbType.Boolean);
+        parameters.Add("@AffectsOnHand", request.AffectsOnHand, DbType.Boolean);
+        parameters.Add("@AutoCreateOnDelivery", request.AutoCreateOnDelivery, DbType.Boolean);
 
         await using var connection = _connectionFactory.Create();
         try

@@ -421,8 +421,19 @@ public sealed class MovementService : IMovementService
             return read;
         }
 
+        // (79) The goods receipt type makes them by hand: no draft, and the answer says what to do instead. (The procedure
+        // also stops on its own when the switch is off, should it have been turned between this read and the call.)
+        if (!movement.GoodsReceiptsAutomatic)
+        {
+            _logger.LogInformation("Movement {MovementNo} completed: goods receipts are made by hand (Document Types)", movement.MovementNo);
+            return Result<MovementDto>.Success(movement with { GoodsReceipts = [], GoodsReceiptsMessage = ByHandMessage });
+        }
+
         return Result<MovementDto>.Success(await CreateGoodsReceiptsAsync(movement, userId));
     }
+
+    /// <summary>(79) The answer to completing a Delivery when the goods receipt type does not draft them.</summary>
+    internal const string ByHandMessage = "Goods receipts are made by hand: use Receive goods… on each container.";
 
     /* ── the draft goods receipts of a completed Delivery (script 65) ─────────────────────────── */
 
@@ -483,7 +494,8 @@ public sealed class MovementService : IMovementService
         return current with
         {
             GoodsReceipts = rows,
-            GoodsReceiptsMessage = ReceiptsSummary(rows),
+            // (79) the switch turned off between the read and the call: the procedure made nothing, and says why here
+            GoodsReceiptsMessage = rows.Count == 0 && !current.GoodsReceiptsAutomatic ? ByHandMessage : ReceiptsSummary(rows),
             Warnings = rows.Where(r => r.SkipReason == MovementReceiptSkipReasons.Error)
                 .Select(r => $"{r.ContainerRef}: the draft goods receipt was not created: {WithoutFinalPeriod(r.Message ?? "refused")}. "
                              + "Use Receive goods… on the container.")

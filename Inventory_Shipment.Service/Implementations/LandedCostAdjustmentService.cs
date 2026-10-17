@@ -355,6 +355,7 @@ public sealed class LandedCostAdjustmentService : ILandedCostAdjustmentService
         SqlErrors.LandedCostInvalidStatus => new RuleFailure(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
         SqlErrors.LandedCostSourceInvalid => new RuleFailure(ErrorType.Conflict, exception.Message, "SOURCE_INVALID"),
         SqlErrors.LandedCostImportedInvoice => new RuleFailure(ErrorType.Conflict, exception.Message, "IMPORTED_INVOICE"),
+        SqlErrors.LandedCostNoCostInvoice => new RuleFailure(ErrorType.Conflict, exception.Message, "NO_COST_INVOICE"),
         SqlErrors.PurchaseChargesOnContainer => new RuleFailure(ErrorType.Conflict, exception.Message, "CHARGES_ON_CONTAINER"),
         SqlErrors.PurchaseChargeAllocation => new RuleFailure(ErrorType.Validation, exception.Message, "CHARGE_ALLOCATION"),
         SqlErrors.PurchaseDocumentMasterInactive => new RuleFailure(ErrorType.Validation, exception.Message, "MASTER_INACTIVE"),

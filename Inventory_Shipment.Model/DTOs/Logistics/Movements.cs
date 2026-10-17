@@ -413,6 +413,13 @@ public sealed record MovementDto : MovementStatusFlags
     public string? UpdatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
 
+    /// <summary>
+    /// (79) The goods receipt type's "Create goods receipts on Delivery" (Configuration › Document Types): true, completing
+    /// a Delivery-stage movement drafts one per container; false, they are made by hand with Receive goods… on each
+    /// container, and the Complete dialog and its answer say so.
+    /// </summary>
+    public bool GoodsReceiptsAutomatic { get; init; } = true;
+
     /// <summary>Planned or in progress, and the ETA is behind us.</summary>
     public bool IsLate
         => Status is MovementStatus.Planned or MovementStatus.InProgress

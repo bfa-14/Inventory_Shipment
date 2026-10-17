@@ -124,6 +124,9 @@ public sealed class PurchasePostOutcome
     public int? GoodsReceiptId { get; init; }
     public string? GoodsReceiptNumber { get; init; }
     public string? ReceiveWarning { get; init; }
+
+    /// <summary>(79) The PINV type receives the goods when an invoice is posted ("Affects on-hand"), captured on it.</summary>
+    public bool ReceiveOnPost { get; init; }
 }
 
 public sealed class PurchaseDocumentFileContent

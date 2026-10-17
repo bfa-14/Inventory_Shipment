@@ -17,6 +17,10 @@ posted or Posted from its posted invoices, and Closed is gone (glossary, 3.4, 3.
 any number of containers (no 200 ceiling), and Auto-plan / Add Container fill in the supplier and the forwarder by
 themselves (glossary, 4.1, 4.5, 4.6).*
 
+*Updated on 17 October 2026 for **what a document type does** (script 79): in Configuration › Document Types a
+purchase invoice may change item costs or not, may receive its goods when it is posted, and goods receipts may be
+drafted on a Delivery or made by hand (glossary, 3.7, 4.7, 4.12, 5.4).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -151,7 +155,8 @@ per user in Settings › Purchase approval (see 4.3).
 | **PRET** | Purchase return, created from a posted PINV, `PRET-…`. |
 | **GRN / goods receipt** | Purchase › Goods Receipts (scripts 64–65, document type `GRN`, `GRN-BR-002-000001` given at posting): the goods that arrived, counted and put in a warehouse. **The only way supplier goods enter the stock.** Draft → Posted → Cancelled. One source each: a container, an order, an invoice, or "Without an order". |
 | **Receive goods…** | The button that creates a draft goods receipt: on a container (status Confirmed to Cleared), an approved order (open or closed) or a posted invoice; "+ New" on the Goods Receipts list does the same. "Create draft" or "Create and post". |
-| **Automatic draft** | The draft goods receipt made for each container when a movement of the **Delivery** stage is completed (badge "Auto"). Cancelling that movement deletes it. |
+| **Automatic draft** | The draft goods receipt made for each container when a movement of the **Delivery** stage is completed (badge "Auto"). Cancelling that movement deletes it. Made only while the GRN type's "Create goods receipts when a Delivery is completed" is on (script 79, default on); off, goods receipts are made by hand with Receive goods…. |
+| **Affects item cost / Affects on-hand** | The two switches of the purchase invoice type (PINV) in Configuration › Document Types (script 79). *Affects item cost* (default on): the invoice's price and its own charges become the cost of the goods received against it; off, those goods keep the order price (plus their container's charges). *Affects on-hand* (default off): posting an invoice also receives its goods with a goods receipt made and posted at once. Each invoice keeps the values it was posted with (`PurchaseDocuments.AffectsCost` / `ReceiveOnPost`). |
 | **Delivered, not received** | A container whose Delivery is completed (or with a draft goods receipt) and whose goods receipt is not posted: a filter of the Containers list. |
 | **Settled short** | Pieces that will never come: on a container receipt, loaded − received (a reason is required); on a local receipt line, the rest of the order line when "Nothing more will come" is ticked. The order counts them as done. |
 | **Received / Invoiced / Short** | The three counters of an order line: received by goods receipts (`GoodsReceivedBase`), invoiced by posted invoices (`ReceivedQuantityBase`, an old name that has always meant invoiced), settled short (`GoodsShortBase`). |
@@ -370,6 +375,19 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 - **Document Types** (`inventory.DocumentTypes`): Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost,
   RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength, BivacItemsOnly
   (script 66, read-only on the page). This drives numbering (4.1).
+  - **What a type does** (script 79, permission `inventory.documenttypes.manage`; the defaults are what the system did
+    before, so nothing changes until someone turns one):
+
+    | Type | Switch | Default | On | Off |
+    |---|---|---|---|---|
+    | PINV | Affects item cost | on | the invoice's price + its own charges become the cost of the goods received against it (4.12 rule 14) | the goods keep the order price (+ their container's charges); landed cost adjustments refused (67013) |
+    | PINV | Affects on-hand | off | posting the invoice also receives its goods: a goods receipt made and posted at once, for its lines not travelling in containers, into each line's warehouse | the goods come with goods receipts made apart (Receive goods…) |
+    | GRN | Create goods receipts when a Delivery is completed | on | a completed Delivery drafts one per container (4.6) | none is drafted: Receive goods… on each container ("Delivered, not received" lists them) |
+
+  - The Stock column tells the truth for PINV: "None (goods receipts)", or "In, through a goods receipt at posting" with
+    Affects on-hand. Its stored StockDirection stays +1: the invoices posted before goods receipts still read it.
+  - An invoice **captures** its two switches when it is posted: changing them never re-prices or re-receives an
+    invoice already posted; a draft follows the type as it is when it is posted.
 - **Settings › General** (Ali's global settings, for example "Allow selling out-of-stock items").
 - **Settings › Email:**
   - sender, mail server and app password (encrypted), the "Address of the application" used in links, and a test
@@ -810,6 +828,15 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   (COGS). `inventory.usp_Item_RebuildCosts` recomputes.
 - **Import landed cost** = FOB per piece + posted charges on the line ÷ pieces received. The FOB is the posted
   invoice's for the pieces it covers, else the order price; an invoice posted after the goods corrects it (4.12).
+- **An invoice that does not change item costs** (the PINV type's "Affects item cost" off when it was posted,
+  script 79) **[Implemented]**: the pieces matched to it cost as if unmatched - the order price, plus the container's
+  charges on container goods. It is still matched (invoiced counters, return caps, container Close, payments). A return
+  from it takes its goods out at what they are in stock at (the matched receipt lines' cost), the supplier credit
+  staying the invoice price; a landed cost adjustment on it is refused (67013: "This invoice does not change item
+  costs (its document type was set so when it was posted): a landed cost adjustment on it would change no cost.
+  Container charges still enter the cost of goods received in containers."). Goods of an order-less invoice of that
+  kind take a typed cost, else the item's last cost, else its average (an item with no cost yet: the invoice's price
+  once), and set the item's last cost only once matched to an invoice that does change costs.
   - Before the goods receipt the screens show an estimate ("est."): the order price until invoiced, and the pieces
     loaded.
 - **Container charges:**
@@ -1025,6 +1052,23 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     fill the negative stock goes to COGS at posting (`NEGSTOCK`).
 16. Late **container** charges keep the late-charge mechanism (`CNTCHARGE`). Invoiced pieces that never arrive carry
     their share of the invoice's own charges out of the cost, as their FOB: the supplier claim covers both.
+16a. **The three switches of script 79** (Configuration › Document Types, 3.7), defaults = rules 5-16 as written:
+    - **PINV "Affects item cost" off**: rules 13-14 skip that invoice for the cost - its matched pieces keep the order
+      price (+ container charges), its post confirmation says "{n} pcs already received keep their cost: this invoice
+      does not change item costs (Configuration › Document Types).", its page's "Cost of received goods" says why it is
+      empty, and its late charges are refused (67013). Cancelling it still re-matches: its pieces may go to another
+      invoice that does change costs, and take that one's price.
+    - **PINV "Affects on-hand" on**: posting the invoice is followed, in its own transaction, by the receipt of rule 11
+      ("Receive the goods now") without the tick - from the invoice page, Post selected or an import that posts, and
+      **whoever posts: no goods receipt right is needed**, the rule is the document type's. Lines in containers, a
+      "Shipped in containers" invoice and goods already received are left alone and nothing is said; a receipt the
+      database refuses leaves the invoice posted: "Invoice posted; the goods receipt was not: {reason}. Use Receive
+      goods…". The post confirmation shows "Its goods are received at once into {warehouse}: a goods receipt is made and
+      posted with the invoice (Configuration › Document Types)." instead of the tick.
+    - **GRN "Create goods receipts when a Delivery is completed" off**: rule 5 makes no draft; the Complete dialog and
+      the notification say "Goods receipts are made by hand: use Receive goods… on each container."; rule 6 (Receive
+      goods… on the container) and the "Delivered, not received" filter work as before. Cancelling a Delivery still
+      deletes the automatic drafts it made while the switch was on.
 
 **Cancelling**
 17. **Cancel a goods receipt** (posted only, reason required). Refused: the container is Closed (63010: "Container
@@ -1104,7 +1148,8 @@ Re-used or new outside the block: 69019 (new) a container with a goods receipt; 
 invoiced; 69010 the Offload retired / Cancel Offload of a GRN container; 65011 an order with goods receipts / a return
 above what was received; 65021 (until script 77) an order closed by hand with received goods not invoiced; 65028 an invoice line a goods
 receipt refers to (65030 for Add container / Auto-plan from that invoice); 65008 a purchase document type other than
-PO, PINV, PRET; 67012 an LCA on a "Shipped in containers" invoice.
+PO, PINV, PRET; 67012 an LCA on a "Shipped in containers" invoice; 67013 (script 79) an LCA on an invoice that does
+not change item costs.
 
 ---
 
@@ -1214,6 +1259,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `76_CashBankAccount_No_Branch.sql` | Cash / bank accounts belong to no branch: the Branch is gone from the account, and sales invoices, receipts and supplier payments no longer refuse an account of another branch |
 | `77_Purchase_OrderStatusesByInvoicing.sql` | Purchase order statuses: an approved order shows Saved, Partially posted or Posted from its posted invoices (`purchase.fn_PurchaseOrder_Invoicing`); Closed is gone (no auto-close on invoice or goods receipt posting, Close Order refused 65010); the closed orders brought back once, what a close by hand gave up settled short |
 | `78_Logistics_AnyNumberOfContainers.sql` | Any number of containers: the 200 ceilings of Auto-plan gone, no SQL error 9829 on long container lists (Supplier Payments, Link containers, the receipt cost preview), numbers never cut, bigger pages for one order's or movement's containers, every "Apply to other containers" candidate, the movement import's 10,000 numbers; new `logistics.usp_Container_OrderDefaults` (supplier, forwarder, country of origin for the dialogs) and `logistics.usp_Container_Lookup` (the container pickers) |
+| `79_Configuration_DocumentTypeEffects.sql` | What a document type does: PINV "Affects item cost" (default on) and "Affects on-hand" (default off), GRN "Create goods receipts when a Delivery is completed" (default on), edited in Configuration › Document Types; each invoice captures its two at posting (`AffectsCost`, `ReceiveOnPost`); the cost rule in `purchase.fn_GoodsReceiptLine_TargetCost`; returns from a non-cost invoice at the receipt cost; LCA refused 67013; the Delivery hook and `usp_Movement_Get` read the GRN switch |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

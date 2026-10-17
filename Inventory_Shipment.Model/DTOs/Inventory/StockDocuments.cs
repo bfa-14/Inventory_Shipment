@@ -97,6 +97,26 @@ public sealed class DocumentTypeDto
     /// </summary>
     public bool BivacItemsOnly { get; init; }
 
+    /// <summary>
+    /// The purchase invoice type (PINV) only (script 79): true, the invoice's price and its own charges become the cost of
+    /// the goods received against it; false, those goods keep the order price (and their container's charges). Each
+    /// invoice captures it when it is posted. True on every other type, which it does not concern.
+    /// </summary>
+    public bool AffectsItemCost { get; init; } = true;
+
+    /// <summary>
+    /// The purchase invoice type (PINV) only (script 79): true, posting an invoice also receives its goods, with a goods
+    /// receipt created and posted at once (its lines not travelling in containers); false, its goods come with goods
+    /// receipts made apart. Stock still enters only through goods receipts. False on every other type.
+    /// </summary>
+    public bool AffectsOnHand { get; init; }
+
+    /// <summary>
+    /// The goods receipt type (GRN) only (script 79): true, completing a Delivery movement drafts a goods receipt per
+    /// container; false, goods receipts are made by hand with Receive goods… on each container. True on every other type.
+    /// </summary>
+    public bool AutoCreateOnDelivery { get; init; } = true;
+
     public bool IsActive { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
     public byte[] RowVersion { get; init; } = [];
@@ -425,6 +445,17 @@ public sealed class UpdateDocumentTypeRequest
 
     /// <summary>The year as a segment of the number, with a sequence per year. Null leaves the stored value alone.</summary>
     public bool? YearInNumber { get; init; }
+
+    /// <summary>
+    /// What the type does (script 79), each null when not sent so an older form never turns one off. The first two are
+    /// for the purchase invoice type (PINV), the third for the goods receipt type (GRN); sent for another type, the
+    /// database refuses them (62000). Changing one never changes an invoice already posted: it captured its values.
+    /// </summary>
+    public bool? AffectsItemCost { get; init; }
+
+    public bool? AffectsOnHand { get; init; }
+
+    public bool? AutoCreateOnDelivery { get; init; }
 
     public bool IsActive { get; init; } = true;
 
