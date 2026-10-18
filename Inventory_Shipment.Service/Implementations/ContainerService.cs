@@ -266,6 +266,35 @@ public sealed class ContainerService : IContainerService
         return Result<TrackingDto>.Success(await _containers.GetTrackingAsync(query, cancellationToken));
     }
 
+    /// <summary>
+    /// (82) Logistics › Shipments: every container on its way, by stage, with the server's filters. Its own screen
+    /// permission, View Shipments. Movement numbers come back whatever the reader may open: the page links them only for a
+    /// reader who may view movements.
+    /// </summary>
+    public async Task<Result<ShipmentBoardDto>> GetShipmentBoardAsync(
+        ShipmentBoardQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.ShipmentsView))
+        {
+            return Forbidden<ShipmentBoardDto>(Permissions.Containers.ShipmentsView);
+        }
+
+        // An id that names nothing is a typo, not "no filter".
+        var invalid = new (string Name, int? Value)[]
+            {
+                ("supplierId", query.SupplierId), ("purchaseOrderId", query.PurchaseOrderId),
+                ("branchId", query.BranchId), ("placeId", query.PlaceId),
+            }
+            .FirstOrDefault(f => f.Value is <= 0);
+        if (invalid.Name is not null)
+        {
+            return Result<ShipmentBoardDto>.Failure(
+                ErrorType.Validation, $"{invalid.Name} must be greater than zero.", "VALIDATION");
+        }
+
+        return Result<ShipmentBoardDto>.Success(await _containers.GetShipmentBoardAsync(query, cancellationToken));
+    }
+
     public async Task<Result<IReadOnlyList<ContainerAttachmentCreatedDto>>> AddAttachmentAsync(
         ContainerAttachmentUpload upload, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)

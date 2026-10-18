@@ -82,8 +82,9 @@ public sealed class MovementRepository : IMovementRepository
         var containers = (await multi.ReadAsync<MovementContainerDto>()).AsList();
         var charges = (await multi.ReadAsync<MovementChargeDto>()).AsList();
         var attachments = (await multi.ReadAsync<MovementAttachmentDto>()).AsList();
+        var history = (await multi.ReadAsync<MovementAuditDto>()).AsList();       // (82) its splits
 
-        return header with { Containers = containers, Charges = charges, Attachments = attachments };
+        return header with { Containers = containers, Charges = charges, Attachments = attachments, History = history };
     }
 
     public async Task<int> SaveAsync(
@@ -269,6 +270,40 @@ public sealed class MovementRepository : IMovementRepository
                     "logistics.usp_Movement_AddLeg", parameters,
                     commandTimeout: _connectionFactory.BatchCommandTimeout,
                     commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>
+    /// (82) logistics.usp_Movement_SplitContainers: the ticked containers of a movement in progress get their own movement,
+    /// all or nothing in the procedure (one transaction under the movement's lock), so a deadlock victim is simply run
+    /// again. completeDate is the completion that follows, checked by the procedure before anything is split.
+    /// </summary>
+    public async Task<MovementSplitDto> SplitContainersAsync(
+        int movementId, IReadOnlyList<int> containerIds, byte[]? rowVersion, DateOnly? completeDate, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@MovementId", movementId, DbType.Int32);
+        parameters.Add("@ContainerIds", ToIdTable(containerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+        parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@CompleteDate", ToDate(completeDate), DbType.Date);
+        parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        try
+        {
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                return await connection.QuerySingleAsync<MovementSplitDto>(new CommandDefinition(
+                    "logistics.usp_Movement_SplitContainers", parameters,
+                    commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

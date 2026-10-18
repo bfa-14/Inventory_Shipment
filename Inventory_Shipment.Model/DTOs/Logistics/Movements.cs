@@ -325,6 +325,17 @@ public sealed class MovementContainerDto
     public DateTime? GoodsReceiptUpdatedAtUtc { get; init; }
 
     public string? GoodsReceiptUpdatedByName { get; init; }
+
+    /* (82) "ONLY SOME CONTAINERS ARRIVED" in the Complete dialog: the checklist of the movement's containers */
+
+    /// <summary>The movement is in progress, carries other containers, and this one has no later leg: it can arrive alone.</summary>
+    public bool CanSplitOff { get; init; }
+
+    /// <summary>
+    /// Why not ("KTG-2026-0031 already has the next leg MOV-2026-000051 planned: complete MOV-2026-000046 for every
+    /// container, or take it off MOV-2026-000051 first."), null when it can.
+    /// </summary>
+    public string? SplitOffBlockedReason { get; init; }
 }
 
 /// <summary>Why a container of a completed Delivery got no draft goods receipt (purchase.usp_GoodsReceipt_CreateForMovement).</summary>
@@ -423,7 +434,23 @@ public sealed class MovementAttachmentDto
     public string? CreatedByName { get; init; }
 }
 
-/// <summary>A movement with its containers, charges and documents — the four sets of logistics.usp_Movement_Get.</summary>
+/// <summary>(82) What happened to a movement beyond its own stamps (set 5 of usp_Movement_Get): a split, on both movements.</summary>
+public sealed class MovementAuditDto
+{
+    public int Id { get; init; }
+
+    /// <summary>"Split off" (the original) or "Split from" (the movement made for the containers that arrived).</summary>
+    public string Action { get; init; } = string.Empty;
+
+    /// <summary>"Split off into MOV-2026-000052: KTG-2026-0031" / "Split from MOV-2026-000046: KTG-2026-0031 arrived on its own."</summary>
+    public string? Details { get; init; }
+
+    public int? UserId { get; init; }
+    public string? UserName { get; init; }
+    public DateTime AtUtc { get; init; }
+}
+
+/// <summary>A movement with its containers, charges and documents — the sets of logistics.usp_Movement_Get.</summary>
 public sealed record MovementDto : MovementStatusFlags
 {
     public int Id { get; init; }
@@ -465,6 +492,14 @@ public sealed record MovementDto : MovementStatusFlags
     public DateTime? UpdatedAtUtc { get; init; }
     public string? UpdatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
+
+    /// <summary>(82) The movement it was split off, when only part of that one arrived: "Split from MOV-2026-000046".</summary>
+    public int? SplitFromMovementId { get; init; }
+
+    public string? SplitFromMovementNo { get; init; }
+
+    /// <summary>(82) Its history beyond its own stamps (created, started, completed, cancelled): its splits, newest first.</summary>
+    public IReadOnlyList<MovementAuditDto> History { get; init; } = [];
 
     /// <summary>
     /// (79) The goods receipt type's "Create goods receipts on Delivery" (Configuration › Document Types): true, completing
@@ -550,6 +585,71 @@ public sealed class MovementStatusRequest
     public string? Reason { get; init; }
 
     public string? RowVersion { get; init; }
+}
+
+/// <summary>
+/// (82) "Only some containers arrived" (the movement page's Complete): the ticked containers of a movement in progress
+/// leave it for their own movement, which is completed on <see cref="Date"/>; the others stay on it, in progress.
+/// </summary>
+public sealed class CompleteSomeContainersRequest
+{
+    /// <summary>The containers that arrived: some of the movement's, not all of them.</summary>
+    public IReadOnlyList<int> ContainerIds { get; init; } = [];
+
+    /// <summary>The end date (arrival, clearance, delivery...); null = today. Never in the future, never before the start.</summary>
+    public DateOnly? Date { get; init; }
+
+    /// <summary>The movement's rowVersion as the page read it (70004 / 409 when someone changed it since).</summary>
+    public string? RowVersion { get; init; }
+}
+
+/// <summary>(82) The row of logistics.usp_Movement_SplitContainers: the movement made for the containers that arrived.</summary>
+public sealed class MovementSplitDto
+{
+    public int NewId { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+    public byte Status { get; init; }
+    public byte[] RowVersion { get; init; } = [];
+    public int OriginalMovementId { get; init; }
+    public string OriginalMovementNo { get; init; } = string.Empty;
+    public int ContainersMoved { get; init; }
+
+    /// <summary>The containers still on the original, in progress.</summary>
+    public int ContainersLeft { get; init; }
+}
+
+/// <summary>
+/// (82) The answer to "Only some containers arrived": the split is committed; <see cref="Ok"/> says whether its movement
+/// was completed too. Not completed (rare: the date is checked before the split), the message says what happened -
+/// "MOV-2026-000052 was split off MOV-2026-000046 but not completed: {reason}. Complete it on its page."
+/// </summary>
+public sealed class MovementSplitResultDto
+{
+    /// <summary>The containers' own movement is completed.</summary>
+    public bool Ok { get; init; }
+
+    /// <summary>The completion's refusal code when <see cref="Ok"/> is false; null when completed.</summary>
+    public string? Code { get; init; }
+
+    /// <summary>
+    /// "KTG-2026-0031: arrived at Dar es Salaam on 17/10/2026 with MOV-2026-000052 (split off MOV-2026-000046). Now At
+    /// Port. The 11 others are still on MOV-2026-000046."
+    /// </summary>
+    public string Message { get; init; } = string.Empty;
+
+    public int OriginalMovementId { get; init; }
+    public string OriginalMovementNo { get; init; } = string.Empty;
+
+    /// <summary>The containers still on the original movement, in progress.</summary>
+    public int RemainingContainerCount { get; init; }
+
+    /// <summary>
+    /// The containers' own movement as it is now: completed (a Delivery's goodsReceipts, goodsReceiptsMessage and warnings
+    /// with it, as after a Complete), or in progress when its completion was refused.
+    /// </summary>
+    public MovementDto? Movement { get; init; }
+
+    public IReadOnlyList<string> Warnings { get; init; } = [];
 }
 
 /// <summary>

@@ -213,6 +213,20 @@ public sealed record ContainerNextStepDto
 
     /// <summary>Its group in <see cref="NextStepPreviewDto.Groups"/>: an opaque key, (step, movement, type, From, To).</summary>
     public string? GroupKey { get; init; }
+
+    /* (82) only part of its movement arrived */
+
+    /// <summary>
+    /// A movement to complete (Complete) that carries other containers: this one can complete alone - it leaves the
+    /// movement and gets its own ("Only KTG-2026-0031: it leaves MOV-2026-000046 and gets its own movement").
+    /// </summary>
+    public bool CanSplitOff { get; init; }
+
+    /// <summary>
+    /// Why not, on a Complete step ("KTG-2026-0031 already has the next leg MOV-2026-000051 planned: complete
+    /// MOV-2026-000046 for every container, or take it off MOV-2026-000051 first."); null otherwise.
+    /// </summary>
+    public string? SplitOffBlockedReason { get; init; }
 }
 
 /// <summary>
@@ -294,6 +308,17 @@ public sealed class NextStepGroupDto
     public string? ThenSource { get; init; }
     public int? ThenLegs { get; init; }
     public bool ThenDefault { get; init; }
+
+    /* (82) "Complete MOV-2026-000046 for all its 30 containers" / "Only the 20 ticked (they get their own movement)" */
+
+    /// <summary>A Complete group of only part of its movement whose ticked containers can complete alone (splitOff).</summary>
+    public bool SplitPossible { get; init; }
+
+    /// <summary>
+    /// Why not, on a Complete group: every container of the movement is ticked, or one of them has a later leg. Null on the
+    /// other kinds of step.
+    /// </summary>
+    public string? SplitBlockedReason { get; init; }
 }
 
 /// <summary>The ticked containers that cannot move on, by reason ("Received, closed or cancelled (12)").</summary>
@@ -404,6 +429,13 @@ public sealed class NextStepGroupRequest
 
     /// <summary>Complete only: then start the suggested next leg, a second step after the completion is committed.</summary>
     public NextStepThenRequest? Then { get; init; }
+
+    /// <summary>
+    /// (82) Complete only: ONLY THE TICKED CONTAINERS ARRIVED. They leave the movement and get their own - a copy with the
+    /// same header and start date - which is completed (a Delivery drafts their goods receipts); the others stay on the
+    /// movement, in progress. False (the default): the movement is completed for every container it carries.
+    /// </summary>
+    public bool SplitOff { get; init; }
 }
 
 public sealed class NextStepLegContainerRequest
@@ -469,6 +501,16 @@ public sealed class NextStepGroupResultDto
     /// started: {reason}. Use Next step…".
     /// </summary>
     public IReadOnlyList<string> Warnings { get; init; } = [];
+
+    /* (82) a split (splitOff): the movement the ticked containers left, and how many stay on it */
+
+    /// <summary>The movement they were split off; null without a split. Movements[0] is then their own movement.</summary>
+    public int? SplitFromMovementId { get; init; }
+
+    public string? SplitFromMovementNo { get; init; }
+
+    /// <summary>The containers still on <see cref="SplitFromMovementNo"/>, in progress.</summary>
+    public int? RemainingContainerCount { get; init; }
 }
 
 public sealed class NextStepMovementDto

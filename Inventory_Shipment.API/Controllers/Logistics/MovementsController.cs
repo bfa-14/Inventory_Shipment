@@ -201,6 +201,29 @@ public sealed class MovementsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// (82) Only some containers arrived: { containerIds, date, rowVersion } - the ticked containers (some of the movement's,
+    /// not all) leave the movement in progress for their own movement, a copy with the same header and start date, which
+    /// is completed on the date (a Delivery drafts their goods receipts, as Complete does); the others stay on it, in
+    /// progress. The date is checked before anything is split. 200 { ok, code, message, originalMovementId,
+    /// originalMovementNo, remainingContainerCount, movement, warnings } - ok false when split but its completion was
+    /// refused (the message says so, movement is the new one in progress). Nothing split: 400 VALIDATION (no container, one
+    /// not on the movement, a date in the future or before the start), 404 NOT_FOUND, 409 CONCURRENCY (changed since) or
+    /// INVALID_STATUS (not in progress, every container ticked, a container with a later leg).
+    /// </summary>
+    [HttpPost("{id:int}/complete-some")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<MovementSplitResultDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<MovementSplitResultDto>> CompleteSome(
+        int id, [FromBody] CompleteSomeContainersRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _movements.CompleteSomeAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpPost("{id:int}/cancel")]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]

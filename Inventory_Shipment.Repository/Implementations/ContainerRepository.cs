@@ -170,6 +170,35 @@ public sealed class ContainerRepository : IContainerRepository
         return new TrackingDto { Containers = containers, Legs = legs };
     }
 
+    /// <summary>
+    /// (82) The Shipments board in one round trip: the cards, then the columns. Every container on its way, no paging - the
+    /// batch timeout, as the other calls that read thousands of containers.
+    /// </summary>
+    public async Task<ShipmentBoardDto> GetShipmentBoardAsync(ShipmentBoardQuery query, CancellationToken cancellationToken = default)
+    {
+        var parameters = new
+        {
+            Search = Trimmed(query.Search),
+            query.SupplierId,
+            query.PurchaseOrderId,
+            query.BranchId,
+            query.PlaceId,
+            query.LateOnly,
+            query.WithPlannedLeg,
+            query.ShowReceived,
+        };
+
+        await using var connection = _connectionFactory.Create();
+        using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+            "logistics.usp_Shipment_Board", parameters,
+            commandTimeout: _connectionFactory.BatchCommandTimeout,
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        var cards = (await multi.ReadAsync<ShipmentCardDto>()).AsList();
+        var columns = (await multi.ReadAsync<ShipmentColumnDto>()).AsList();
+        return new ShipmentBoardDto { Columns = columns, Containers = cards };
+    }
+
     public async Task<ContainerAttachmentFile?> GetAttachmentFileAsync(int id, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();

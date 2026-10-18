@@ -293,6 +293,12 @@ public static class Permissions
         /// </summary>
         public const string MovementsView = "containers.movements.view";
         public const string TrackingView = "containers.tracking.view";
+
+        /// <summary>
+        /// Logistics › Shipments (script 82): the board of the containers on their way, by stage. Granted once, when first
+        /// created, to the roles holding View Movements, View Tracking or Manage Shipment Movements.
+        /// </summary>
+        public const string ShipmentsView = "containers.shipments.view";
         public const string ChargesView = "containers.charges.view";
         public const string ChargesCreate = "containers.charges.create";
         public const string ChargesPost = "containers.charges.post";
@@ -577,6 +583,9 @@ public static class Permissions
         // Names, descriptions and sort orders match script 27's MERGE, so the start-up sync changes nothing.
         new(Containers.MovementsView, "View Movements", ContainersModule,
             "Open the Movements list and a movement's page (a container's own page shows its movements with View Containers).", 1405),
+        // Name, description and sort order match script 82's MERGE, so the start-up sync changes nothing.
+        new(Containers.ShipmentsView, "View Shipments", ContainersModule,
+            "Logistics › Shipments: the containers on their way, by stage.", 1406),
         new(Containers.TrackingView, "View Tracking", ContainersModule,
             "Open the Tracking board (a container's own page shows its route with View Containers).", 1407),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,

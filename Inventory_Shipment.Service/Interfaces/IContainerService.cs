@@ -67,6 +67,13 @@ public interface IContainerService
     Task<Result<TrackingDto>> GetTrackingAsync(
         TrackingQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (82) The Shipments board: { columns, containers } - every container on its way in its column by stage, with its
+    /// card and group; the received ones of the last 30 days with showReceived. Needs containers.shipments.view.
+    /// </summary>
+    Task<Result<ShipmentBoardDto>> GetShipmentBoardAsync(
+        ShipmentBoardQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     /// <summary>One upload for one or several containers; the created records. Needs containers.attachments.manage.</summary>
     Task<Result<IReadOnlyList<ContainerAttachmentCreatedDto>>> AddAttachmentAsync(
         ContainerAttachmentUpload upload, int userId, IReadOnlySet<string> permissions,

@@ -28,6 +28,16 @@ public interface IMovementService
         int id, MovementStatusRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (82) "Only some containers arrived": the ticked containers of a movement in progress leave it for their own movement
+    /// (a copy: same header and start date), which is completed on the date - checked before anything is split; a Delivery
+    /// drafts their goods receipts. The others stay on it, in progress. Ok false: split, but its completion was refused
+    /// (the message says so). Needs containers.movements.manage.
+    /// </summary>
+    Task<Result<MovementSplitResultDto>> CompleteSomeAsync(
+        int id, CompleteSomeContainersRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     /// <summary>Needs a reason.</summary>
     Task<Result<MovementDto>> CancelAsync(
         int id, MovementStatusRequest request, int userId, IReadOnlySet<string> permissions,

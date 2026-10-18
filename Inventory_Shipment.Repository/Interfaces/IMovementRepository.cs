@@ -11,7 +11,7 @@ public interface IMovementRepository
     Task<(IReadOnlyList<MovementListDto> Items, int TotalCount)> SearchAsync(
         MovementQuery query, CancellationToken cancellationToken = default);
 
-    /// <summary>The four result sets of logistics.usp_Movement_Get; null when there is no such movement.</summary>
+    /// <summary>The result sets of logistics.usp_Movement_Get (82: its history too); null when there is no such movement.</summary>
     Task<MovementDto?> GetAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>Creates (id null, the number MOV-yyyy-nnnnnn is assigned now) or updates; returns the id.</summary>
@@ -56,6 +56,16 @@ public interface IMovementRepository
     /// </summary>
     Task<IReadOnlyList<AddedLegDto>> AddLegAsync(
         AddLegCommand command, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (82) logistics.usp_Movement_SplitContainers: the ticked containers of a movement in progress leave it for a copy of it,
+    /// in progress, with their rows, charges and documents filed under it - one transaction; the new movement's row.
+    /// completeDate: the completion that follows, checked first (70000: in the future, before the start). 70006 not found,
+    /// 70004 changed by another user, 70010 not in progress / every container ticked / a later leg, 70000 a container not on it.
+    /// </summary>
+    Task<MovementSplitDto> SplitContainersAsync(
+        int movementId, IReadOnlyList<int> containerIds, byte[]? rowVersion, DateOnly? completeDate, int userId,
+        CancellationToken cancellationToken = default);
 
     /// <summary>
     /// logistics.usp_Movement_ContainerCandidates: one page (at most 200) and the count across the pages.

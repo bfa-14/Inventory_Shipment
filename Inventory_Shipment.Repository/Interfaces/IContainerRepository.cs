@@ -49,6 +49,12 @@ public interface IContainerRepository
     /// <summary>The tracking board: the containers and their route legs (logistics.usp_Container_Tracking).</summary>
     Task<TrackingDto> GetTrackingAsync(TrackingQuery query, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (82) logistics.usp_Shipment_Board: every container on the board with its card, column and group (set 1), and the
+    /// containers and pieces of each column (set 2). No paging.
+    /// </summary>
+    Task<ShipmentBoardDto> GetShipmentBoardAsync(ShipmentBoardQuery query, CancellationToken cancellationToken = default);
+
     /// <summary>One upload for one or several containers: the file stored once, one record per container.</summary>
     Task<IReadOnlyList<ContainerAttachmentCreatedDto>> AddAttachmentAsync(
         ContainerAttachmentUpload upload, int userId, CancellationToken cancellationToken = default);

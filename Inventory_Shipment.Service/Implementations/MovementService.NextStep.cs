@@ -171,6 +171,9 @@ public sealed partial class MovementService
         var found = rows.Select(r => r!).ToList();
         return kind switch
         {
+            // (82) only the ticked containers arrived: they get their own movement, which is completed
+            ContainerNextStepKinds.Complete when group.SplitOff
+                => await SplitOffGroupAsync(group, ids, canConfirm, userId, permissions, cancellationToken),
             ContainerNextStepKinds.Complete => await CompleteGroupAsync(group, ids, found, canConfirm, userId, permissions, cancellationToken),
             ContainerNextStepKinds.StartPlanned => await StartGroupAsync(group, ids, found, userId, permissions, cancellationToken),
             _ => await NewLegGroupAsync(group, kind, ids, found, canConfirm, userId, cancellationToken),
@@ -179,7 +182,8 @@ public sealed partial class MovementService
 
     /// <summary>
     /// A movement in progress: its own Complete (a Delivery drafts its goods receipts after the commit), then the "Then"
-    /// leg as a second step. The completion moves every container of the movement, ticked or not (no split in phase 2).
+    /// leg as a second step. The completion moves every container of the movement, ticked or not; (82) splitOff completes
+    /// only the ticked ones instead (<see cref="SplitOffGroupAsync"/>).
     /// </summary>
     private async Task<NextStepGroupResultDto> CompleteGroupAsync(
         NextStepGroupRequest group, IReadOnlyList<int> ids, IReadOnlyList<ContainerNextStepDto> rows, bool canConfirm,
@@ -193,19 +197,8 @@ public sealed partial class MovementService
             return Refused(group, ContainerNextStepKinds.Complete, ids, completed.Error ?? "The movement was not completed.", completed.Code);
         }
 
-        var warnings = new List<string>(movement.Warnings);
-        var thenMovements = new List<NextStepMovementDto>();
-        var message = CompletionMessage(movement, rows);
-        var stage = MovementStages.Normalize(movement.Stage);
-
-        // THE "THEN" LEG, once the completion is committed: never after a Delivery (its goods are received next).
-        if (group.Then is { } then && stage != MovementStages.Delivery)
-        {
-            var (made, said, thenWarnings) = await ThenLegAsync(group, then, ids, movement, canConfirm, userId, cancellationToken);
-            thenMovements.AddRange(made);
-            warnings.AddRange(thenWarnings);
-            message = string.Join(' ', said.Prepend(message));
-        }
+        var (message, thenMovements, warnings) = await AfterCompletionAsync(
+            group, ids, movement, CompletionMessage(movement, rows), canConfirm, userId, cancellationToken);
 
         return new NextStepGroupResultDto
         {
@@ -220,6 +213,28 @@ public sealed partial class MovementService
             GoodsReceiptsMessage = movement.GoodsReceiptsMessage,
             Warnings = warnings,
         };
+    }
+
+    /// <summary>
+    /// What follows a committed completion, for the whole movement or (82) the containers split off it: THE "THEN" LEG for
+    /// these containers, never after a Delivery (its goods are received next). The message gets "Then …" and the warnings
+    /// the Then leg's refusals beside the completion's own.
+    /// </summary>
+    private async Task<(string Message, IReadOnlyList<NextStepMovementDto> ThenMovements, IReadOnlyList<string> Warnings)> AfterCompletionAsync(
+        NextStepGroupRequest group, IReadOnlyList<int> ids, MovementDto movement, string message, bool canConfirm, int userId,
+        CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>(movement.Warnings);
+        var thenMovements = new List<NextStepMovementDto>();
+        if (group.Then is { } then && MovementStages.Normalize(movement.Stage) != MovementStages.Delivery)
+        {
+            var (made, said, thenWarnings) = await ThenLegAsync(group, then, ids, movement, canConfirm, userId, cancellationToken);
+            thenMovements.AddRange(made);
+            warnings.AddRange(thenWarnings);
+            message = string.Join(' ', said.Prepend(message));
+        }
+
+        return (message, thenMovements, warnings);
     }
 
     /// <summary>A planned movement: its own Start, with every rule of phase 1 (70012, 70015, 70016, 70018, no future date).</summary>
@@ -504,6 +519,12 @@ public sealed partial class MovementService
                 return ([], $"{step}: say which movement to {(kind == ContainerNextStepKinds.Complete ? "complete" : "start")} (movementId).");
             }
 
+            // (82) only a movement in progress can arrive in parts
+            if (group.SplitOff && kind != ContainerNextStepKinds.Complete)
+            {
+                return ([], $"{step}: splitOff is for a Complete step only (only part of a movement in progress arrived).");
+            }
+
             // A container takes one step at a time: in two groups, the second would run on what the first just changed.
             foreach (var id in ids.Distinct())
             {
@@ -605,17 +626,19 @@ public sealed partial class MovementService
     private static string CompletionMessage(MovementDto movement, IReadOnlyList<ContainerNextStepDto> rows)
     {
         var who = Who(movement.Containers.Count, movement.Containers.FirstOrDefault()?.ContainerRef ?? rows[0].ContainerRef);
-        var what = MovementStages.Normalize(movement.Stage) switch
-        {
-            MovementStages.Customs => $"cleared customs at {movement.ToName}",
-            MovementStages.Border => $"crossed the border at {movement.ToName}",
-            MovementStages.Port => $"left the port of {movement.ToName}",
-            MovementStages.Origin => "loaded at the supplier",
-            MovementStages.Delivery => $"delivered to {movement.ToName}",
-            _ => $"arrived at {movement.ToName}",
-        };
-        return $"{who}: {what} on {MessageDay(movement.EndDate)} ({movement.MovementNo}).{NowStatus(movement)}";
+        return $"{who}: {CompletedWhat(movement)} on {MessageDay(movement.EndDate)} ({movement.MovementNo}).{NowStatus(movement)}";
     }
+
+    /// <summary>"arrived at Dar es Salaam", "cleared customs at Kasumbalesa"... - what a completed movement did, by its stage.</summary>
+    private static string CompletedWhat(MovementDto movement) => MovementStages.Normalize(movement.Stage) switch
+    {
+        MovementStages.Customs => $"cleared customs at {movement.ToName}",
+        MovementStages.Border => $"crossed the border at {movement.ToName}",
+        MovementStages.Port => $"left the port of {movement.ToName}",
+        MovementStages.Origin => "loaded at the supplier",
+        MovementStages.Delivery => $"delivered to {movement.ToName}",
+        _ => $"arrived at {movement.ToName}",
+    };
 
     /// <summary>"Arrival recorded; ..." - the noun of the date the dialog asked for, by the completed movement's stage.</summary>
     private static string RecordedNoun(string? stage) => MovementStages.Normalize(stage) switch
