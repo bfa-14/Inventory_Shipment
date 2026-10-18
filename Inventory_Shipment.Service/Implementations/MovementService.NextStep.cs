@@ -34,6 +34,12 @@ public sealed partial class MovementService
     /// <summary>The BlockGroup of a draft for a reader without containers.confirm (usp_Container_NextStepPreview).</summary>
     private const string DraftNotConfirmableGroup = "Draft - you may not confirm containers";
 
+    /// <summary>
+    /// The BlockGroup of a container that never moved and has no port of loading: it leaves from any From (the rule of
+    /// prompt 45), so the dialog for one container asks for it (fromPlaceId) and the step can then be taken.
+    /// </summary>
+    private const string NoPortOfLoadingGroup = "No port of loading: open the container to choose where it leaves from";
+
     private const string ContainerNotFoundMessage = "Container not found.";
 
     /* ── reading ──────────────────────────────────────────────────────────────────────────────── */
@@ -130,7 +136,19 @@ public sealed partial class MovementService
         var results = new List<NextStepGroupResultDto>(groups.Count);
         for (var i = 0; i < groups.Count; i++)
         {
-            results.Add(await ApplyGroupAsync(groups[i], kinds[i], rows, canConfirm, userId, permissions, cancellationToken));
+            // EACH GROUP ON ITS OWN, whatever fails: a deadlock or a timeout that is no business rule would otherwise turn
+            // the whole answer into an error, losing the results of the groups already committed and never running the
+            // others. The group is said refused, with the API log for the details.
+            try
+            {
+                results.Add(await ApplyGroupAsync(groups[i], kinds[i], rows, canConfirm, userId, permissions, cancellationToken));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Next step: group {Group} ({Kind}) failed for user {UserId}", i + 1, kinds[i], userId);
+                results.Add(Refused(groups[i], kinds[i], groups[i].ContainerIds.Distinct().ToList(),
+                    "This step was not applied: the database did not answer (see the API log). Open Next step… again.", "UNEXPECTED"));
+            }
         }
 
         _logger.LogInformation("Next step by user {UserId}: {Applied} of {Groups} group(s) applied, {Containers} container(s)",
@@ -318,6 +336,13 @@ public sealed partial class MovementService
             warnings.Add($"{noun} recorded; the next leg was not {verb}: {WithoutFinalPeriod(ex.Message)}. Use Next step…");
             return (made, said, warnings);
         }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The completion is committed: a database that did not answer (a deadlock, a timeout) is a warning too.
+            _logger.LogError(ex, "Movement {MovementNo} completed; its Then leg could not be worked out", completed.MovementNo);
+            warnings.Add($"{noun} recorded; the next leg was not {verb}: {DatabaseDidNotAnswer}. Use Next step…");
+            return (made, said, warnings);
+        }
 
         var ready = after.Containers.Where(r => r is { Kind: ContainerNextStepKinds.NextLeg, CanMove: true }).ToList();
         if (ready.Count == 0)
@@ -333,11 +358,13 @@ public sealed partial class MovementService
             var first = legGroup.First();
             var typeId = then.MovementTypeId ?? first.ProposedTypeId;
             var sameType = then.MovementTypeId is null || then.MovementTypeId == first.ProposedTypeId;
-            var legName = sameType ? first.ProposedTypeName ?? "The next leg" : "The next leg";
+            var legName = sameType ? first.ProposedTypeName ?? "the next leg" : "the next leg";
             var toPlaceId = then.ToPlaceId ?? (sameType ? first.ProposedToPlaceId : null);
 
-            // A leg that moves needs its To; a stay takes the place (the procedure does it).
-            if (toPlaceId is null && !(sameType && first.ProposedIsStay == true))
+            // The proposed leg that moves needs its To; a stay takes the place (the procedure does it). Another type asked
+            // for is the procedure's to judge by its own stage: a stay is made at the place, a leg that moves without a
+            // To is refused there ("Choose the departure and destination places.") and said as a warning below.
+            if (toPlaceId is null && sameType && first.ProposedIsStay != true)
             {
                 warnings.Add($"{noun} recorded; {legName} was not {verb}: choose the To. Use Next step…");
                 continue;
@@ -370,6 +397,12 @@ public sealed partial class MovementService
             {
                 _logger.LogInformation("Movement {MovementNo} completed; its Then leg was refused: {Reason}", completed.MovementNo, ex.Message);
                 warnings.Add($"{noun} recorded; {legName} was not {verb}: {WithoutFinalPeriod(ex.Message)}. Use Next step…");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Never a rollback, never an error: the arrival is committed (the goods receipts of a Delivery do the same).
+                _logger.LogError(ex, "Movement {MovementNo} completed; its Then leg failed", completed.MovementNo);
+                warnings.Add($"{noun} recorded; {legName} was not {verb}: {DatabaseDidNotAnswer}. Use Next step…");
             }
         }
 
@@ -493,7 +526,21 @@ public sealed partial class MovementService
                 return (StepChangedMessage(name, row), "NEXT_STEP_CHANGED");
             }
 
+            // A NEW LEG LEAVES FROM WHERE THE PREVIEW SAW IT: moved since (another user recorded the leg while the dialog
+            // stood open), the To chosen for the old place would make a leg from the new one - from a place to itself.
+            if (ContainerNextStepKinds.IsNewLeg(kind) && group.ExpectedPlaceId is { } expected && row.PlaceId != expected)
+            {
+                return ($"{name} is now at {row.PlaceName ?? "another place"}: open Next step… again.", "NEXT_STEP_CHANGED");
+            }
+
             if (row.CanMove)
+            {
+                continue;
+            }
+
+            // Never moved and no port of loading: any From fits it (prompt 45), so the dialog for one container asks for it.
+            if (ContainerNextStepKinds.IsNewLeg(kind) && row.PlaceId is null && group.FromPlaceId is not null
+                && row.BlockGroup == NoPortOfLoadingGroup)
             {
                 continue;
             }
@@ -511,6 +558,8 @@ public sealed partial class MovementService
 
         return null;
     }
+
+    private const string DatabaseDidNotAnswer = "the database did not answer (see the API log)";
 
     private static string StepChangedMessage(string name, ContainerNextStepDto row) => row.Kind switch
     {

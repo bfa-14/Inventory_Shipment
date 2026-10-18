@@ -351,8 +351,18 @@ public sealed class NextStepGroupRequest
     /// <summary>A new leg: null = the proposed type.</summary>
     public int? MovementTypeId { get; init; }
 
-    /// <summary>A new leg: null = where the containers are.</summary>
+    /// <summary>
+    /// A new leg: null = where the containers are. Given for a container that never moved and has no port of loading
+    /// (any From fits it), and for a Loading at the supplier.
+    /// </summary>
     public int? FromPlaceId { get; init; }
+
+    /// <summary>
+    /// A new leg: the place the preview saw the containers at (its placeId / the group's fromPlaceId). When they are
+    /// somewhere else now - someone moved them while the dialog stood open - the step is refused as changed instead of
+    /// making a leg from their new place with the To chosen for the old one. Null = not checked.
+    /// </summary>
+    public int? ExpectedPlaceId { get; init; }
 
     /// <summary>A new leg: null = the proposed To (a stay: the From).</summary>
     public int? ToPlaceId { get; init; }

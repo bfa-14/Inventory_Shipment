@@ -46,13 +46,15 @@ GO
      5. NEW logistics.fn_Container_NextStep: all of it for one container - the step, the movement it concerns (its
         RowVersion, dates, how many containers it carries), the proposed next leg, and for a movement to complete the leg
         proposed after it ("Then start Customs clearance at Kasumbalesa on the same day", ticked by default for a stay
-        at the arrival place or after Customs / Border).
+        at the arrival place or after Customs / Border; none when its next leg is already planned: that planned
+        movement is its next step).
      6. NEW logistics.usp_Container_NextStepPreview: the same for a list of containers (one call for 1,000 or more), the
         suggestion worked out once per (place, last stage), the containers grouped by (step, movement, type, From, To),
         and the ones that cannot move on, grouped by reason.
      7. NEW logistics.usp_Movement_AddLeg: a new leg for a group of containers, from where they are, "Start now" or
         "Plan only", one movement for the group or one per container (each with its own truck no. and ETA), drafts
-        confirmed only when allowed. Built from the body of usp_Movement_ShipContainers, which stays as it is.
+        confirmed only when allowed; a vessel or truck leg from a place to itself is refused (70000). Built from the
+        body of usp_Movement_ShipContainers, which stays as it is.
      8. logistics.usp_Container_Search: + the next step of each row and a @NextStep filter ("Start shipment", "Start
         planned leg", "Arrival due", "Next leg to plan", "Receive goods"): the logistics to-do list. The page is found
         first (the filters and the order of before), then its figures and its proposed legs for its rows only: 9.5 s a
@@ -60,7 +62,9 @@ GO
      9. logistics.usp_Container_Get: + the next step on the header (set 1).
     10. logistics.usp_Movement_SetStatus: cancelling a movement that is not the last leg of one of its containers is
         refused (70010): "MOV-2026-000046 is not the last leg of KTG-2026-0031: cancel MOV-2026-000051 first." It
-        silently broke the chain of places: the later leg left from a place the container never reached. Start reads
+        silently broke the chain of places: the later leg left from a place the container never reached. A planned
+        leg that a later leg already passed (started or completed after it) is no part of the chain: it may be cancelled.
+        Start reads
         each container's previous leg for itself (70016, 70018 unchanged): 18 s a Start on 50,000 containers before.
 
    Re-created from their current bodies: logistics.fn_Movement_StartBlock (80), logistics.usp_Container_Search (80),
@@ -411,15 +415,16 @@ OUTER APPLY (SELECT p.*
                                                          CASE WHEN c.Status = 5 THEN 1 ELSE 0 END,
                                                          h.MovementTypeId, h.ToPlaceId, h.Legs) p
              WHERE k.Kind IN (N'Ship', N'NextLeg')) pr
--- then: the leg after the movement it completes, from its To (a Customs completed makes it Cleared)
+-- then: the leg after the movement it completes, from its To (a Customs completed makes it Cleared) - none when its next
+-- leg is already planned: that planned movement is its next step, and a new leg would be refused (70016)
 OUTER APPLY (SELECT h.MovementTypeId, h.ToPlaceId, h.Legs
              FROM logistics.fn_Movement_NextLegHistory(mv.ToPlaceId, mv.Stage) h
-             WHERE k.Kind = N'Complete') th
+             WHERE k.Kind = N'Complete' AND ss.PlannedMovementId IS NULL) th
 OUTER APPLY (SELECT p.*
              FROM logistics.fn_Container_NextLegProposal(c.Id, mv.ToPlaceId, mv.Stage,
                                                          CASE WHEN c.Status = 5 OR mv.Stage = N'Customs' THEN 1 ELSE 0 END,
                                                          th.MovementTypeId, th.ToPlaceId, th.Legs) p
-             WHERE k.Kind = N'Complete') tn
+             WHERE k.Kind = N'Complete' AND ss.PlannedMovementId IS NULL) tn
 WHERE c.Id = @ContainerId;
 GO
 
@@ -571,7 +576,8 @@ BEGIN
     LEFT JOIN #Mov mv                ON mv.Id = s.MovementId
     LEFT JOIN #Hist h                ON s.Kind IN (N'Ship', N'NextLeg') AND h.PlaceId = s.HistPlaceId
                                     AND ISNULL(h.LastStage, N'') = ISNULL(s.HistStage, N'')
-    LEFT JOIN #Hist th               ON s.Kind = N'Complete' AND th.PlaceId = mv.ToPlaceId AND th.LastStage = mv.Stage
+    LEFT JOIN #Hist th               ON s.Kind = N'Complete' AND s.PlannedMovementId IS NULL
+                                    AND th.PlaceId = mv.ToPlaceId AND th.LastStage = mv.Stage
     OUTER APPLY (SELECT p.*
                  FROM logistics.fn_Container_NextLegProposal(s.ContainerId, s.PlaceId,
                                                              CASE WHEN s.MovementCount = 0 THEN NULL ELSE s.LastStage END,
@@ -582,7 +588,8 @@ BEGIN
                  FROM logistics.fn_Container_NextLegProposal(s.ContainerId, mv.ToPlaceId, mv.Stage,
                                                              CASE WHEN s.Status = 5 OR mv.Stage = N'Customs' THEN 1 ELSE 0 END,
                                                              th.MovementTypeId, th.ToPlaceId, th.Legs) p
-                 WHERE s.Kind = N'Complete') tn
+                 -- no "Then" when its next leg is already planned (fn_Container_NextStep)
+                 WHERE s.Kind = N'Complete' AND s.PlannedMovementId IS NULL) tn
     OUTER APPLY (SELECT OrderCount = COUNT(DISTINCT cl.PurchaseOrderId), SupplierCount = COUNT(DISTINCT d.SupplierId),
                         FirstOrder = MIN(d.DocumentNumber), FirstSupplier = MIN(sp.PartyName)
                  FROM logistics.ContainerLines cl
@@ -778,6 +785,11 @@ BEGIN
     -- (81) A STAY (a port call, customs, a border crossing) HAPPENS AT ONE PLACE: To = From, whatever was sent
     IF @Stage IN (N'Port', N'Customs', N'Border') SET @ToPlaceId = @FromPlaceId;
     IF @FromPlaceId IS NULL OR @ToPlaceId IS NULL THROW 70000, 'Choose the departure and destination places.', 1;
+    -- (81) A LEG THAT MOVES ENDS ELSEWHERE: a vessel or a truck from a place to itself is a To taken from a dialog that
+    -- stood open while the containers moved on. A Delivery may end in the town it starts from (its warehouse), a
+    -- transshipment changes vessel at one port, and a Loading at the supplier keeps its rule.
+    IF @FromPlaceId = @ToPlaceId AND (@Stage = N'Sea' OR (@Stage = N'Transit' AND @TypeCode <> N'TRANSHIP'))
+        THROW 70000, 'The departure and destination are the same place: choose the To.', 1;
 
     DECLARE @CarrierName NVARCHAR(100) = (SELECT LEFT(PartyName, 100) FROM masterdata.Parties WHERE Id = @CarrierPartyId);
     DECLARE @FromKind NVARCHAR(10) = (SELECT Kind FROM masterdata.Ports WHERE Id = @FromPlaceId),
@@ -1621,6 +1633,8 @@ BEGIN
         -- (81) ONLY THE LAST LEG OF A CONTAINER CAN BE CANCELLED (70010): a later leg (planned, in progress or completed)
         -- left from this one's To, so cancelling this one would leave the container at a place it never reached and
         -- break its chain of places. The latest one is named: it is the one to cancel first.
+        -- A PLANNED leg that a later leg already passed (started or completed after it: data of before script 80) never
+        -- happened and is no part of the chain: it may be cancelled - Delete refuses it once a charge or a file names it.
         SELECT TOP (1) @Msg = @MovementNo + N' is not the last leg of ' + c.ContainerRef + N': cancel ' + l.MovementNo + N' first.'
         FROM logistics.MovementContainers mc
         INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
@@ -1630,6 +1644,10 @@ BEGIN
                      WHERE lc.ContainerId = mc.ContainerId AND m.Id > @Id AND m.Status <> 4
                      ORDER BY m.Id DESC) l
         WHERE mc.MovementId = @Id
+          AND NOT (@Status = 1 AND EXISTS (SELECT 1
+                                           FROM logistics.MovementContainers pc
+                                           INNER JOIN logistics.Movements pm ON pm.Id = pc.MovementId
+                                           WHERE pc.ContainerId = mc.ContainerId AND pm.Id > @Id AND pm.Status IN (2, 3)))
         ORDER BY LEN(c.ContainerRef), c.ContainerRef;
         IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
     END
