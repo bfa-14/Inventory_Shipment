@@ -264,6 +264,13 @@ public sealed partial class MovementService
                             ? proposed.Value.ToPlaceId
                             : null);
 
+        // NO TYPE TO PROPOSE (the usual type of the next stage is inactive): the reader chooses it. An empty type would
+        // become Sea freight in usp_Movement_AddLeg - right for a first leg, never for a next one.
+        if (typeId is null && kind == ContainerNextStepKinds.NextLeg)
+        {
+            return Refused(group, kind, ids, "Choose the movement type.", "VALIDATION");
+        }
+
         var command = new AddLegCommand
         {
             ContainerIds = ids,
@@ -347,6 +354,20 @@ public sealed partial class MovementService
         var ready = after.Containers.Where(r => r is { Kind: ContainerNextStepKinds.NextLeg, CanMove: true }).ToList();
         if (ready.Count == 0)
         {
+            // A NEXT LEG ALREADY WAITS: another user planned (or started) it while the dialog was open. Its row carries no
+            // block reason, so say which movement is there rather than "nothing to propose from here".
+            var waiting = after.Containers.FirstOrDefault(r =>
+                r is { Kind: ContainerNextStepKinds.StartPlanned or ContainerNextStepKinds.Complete, MovementNo: not null });
+            if (waiting is not null)
+            {
+                var state = waiting.Kind == ContainerNextStepKinds.StartPlanned
+                    ? "is already planned. Start it with Next step…"
+                    : "has already started. Use Next step…";
+                warnings.Add($"{noun} recorded; the next leg was not {verb}: its next leg {waiting.MovementNo} "
+                             + $"({waiting.MovementTypeName}) {state}");
+                return (made, said, warnings);
+            }
+
             var why = after.Containers.Select(r => r.BlockedReason ?? r.BlockGroup).FirstOrDefault(r => r is not null)
                       ?? "nothing to propose from here";
             warnings.Add($"{noun} recorded; the next leg was not {verb}: {WithoutFinalPeriod(why)}. Use Next step…");
@@ -360,6 +381,13 @@ public sealed partial class MovementService
             var sameType = then.MovementTypeId is null || then.MovementTypeId == first.ProposedTypeId;
             var legName = sameType ? first.ProposedTypeName ?? "the next leg" : "the next leg";
             var toPlaceId = then.ToPlaceId ?? (sameType ? first.ProposedToPlaceId : null);
+
+            // Nothing proposed (the usual type of the next stage is inactive) and none asked for: the reader chooses it.
+            if (typeId is null)
+            {
+                warnings.Add($"{noun} recorded; the next leg was not {verb}: choose its movement type. Use Next step…");
+                continue;
+            }
 
             // The proposed leg that moves needs its To; a stay takes the place (the procedure does it). Another type asked
             // for is the procedure's to judge by its own stage: a stay is made at the place, a leg that moves without a

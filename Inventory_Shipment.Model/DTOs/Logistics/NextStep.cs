@@ -58,7 +58,7 @@ public static class NextLegProposalSources
     /// <summary>"Suggested from the stages".</summary>
     public const string Stages = "Stages";
 
-    /// <summary>No active movement type left to propose: "Choose the To".</summary>
+    /// <summary>The types of the next stage are all inactive: "Choose the type" (the container still moves on).</summary>
     public const string None = "None";
 }
 

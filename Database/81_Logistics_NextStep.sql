@@ -286,7 +286,8 @@ GO
 --      or Border leg -> Customs clearance at a border or inland place, Inland transport at a sea port (a transshipment).
 --   The type of a stage is the active one with the usual code (SEA, INLAND, CUSTOMS, DELIVERY), else the first by sort
 --   order: never an id. A stay (Port, Customs, Border) takes To = the place; an inactive place is never proposed (To to
---   choose). Source "None" when no type is left (all inactive).
+--   choose). Source "None" when the stage's types are all inactive: the type is then left to choose ("Choose the type"),
+--   the container still moves on (usp_Container_NextStepPreview blocks it only when no movement type is active at all).
 -- OnePerContainer: the default of the bulk dialog - one movement for the group for a vessel or a stay at the port
 -- (Sea, Port, a transshipment, Origin), one per container for a truck (Inland transport, Border, Customs, Delivery):
 -- each truck arrives on its own day.
@@ -452,6 +453,11 @@ BEGIN
     SET NOCOUNT ON;
     SET @CanConfirm = ISNULL(@CanConfirm, 1);
 
+    -- A PROPOSAL MISSING IS NOT A BLOCK: when the usual type of the next stage is inactive the container still moves on,
+    -- its type to choose ("Choose the type"). It cannot move on only when no movement type is active at all.
+    DECLARE @AnyActiveType BIT = CASE WHEN EXISTS (SELECT 1 FROM masterdata.MovementTypes WHERE IsActive = 1 AND Stage <> N'Origin')
+                                      THEN 1 ELSE 0 END;
+
     -- 1. the step of each container (the reads of fn_Container_NextStep, without its suggestion)
     CREATE TABLE #Step
     (
@@ -599,12 +605,16 @@ BEGIN
     CROSS APPLY (SELECT BlockGroup = CAST(CASE
                      WHEN s.Found = 0 THEN N'Not found'
                      WHEN s.Kind = N'Done' THEN N'Received, closed or cancelled'
-                     WHEN s.Kind IN (N'Receive', N'OpenReceipt')
+                     -- a draft goods receipt waits: it is opened, not made again (Receive goods... refuses it, 63013)
+                     WHEN s.Kind = N'OpenReceipt'
+                         THEN N'A draft goods receipt waits: Open goods receipt (draft)'
+                     WHEN s.Kind = N'Receive'
                          THEN N'Delivered: its goods are received next (Receive goods' + NCHAR(8230) + N')'
                      WHEN s.Kind = N'Ship' AND s.Status = 1 AND @CanConfirm = 0 THEN N'Draft - you may not confirm containers'
                      WHEN s.Kind IN (N'Ship', N'NextLeg') AND s.PlaceId IS NULL
                          THEN N'No port of loading: open the container to choose where it leaves from'
-                     WHEN s.Kind IN (N'Ship', N'NextLeg') AND pr.TypeId IS NULL THEN N'No active movement type to propose'
+                     WHEN s.Kind IN (N'Ship', N'NextLeg') AND @AnyActiveType = 0
+                         THEN N'No movement type is active: activate one in Master Data ' + NCHAR(8250) + N' Movement Types'
                      ELSE s.BlockedReason END AS NVARCHAR(400))) b;
 
     SELECT * FROM #Row ORDER BY CanMove DESC, GroupKey, LEN(ContainerRef), ContainerRef, ContainerId;
