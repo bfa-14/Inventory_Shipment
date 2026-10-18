@@ -51,6 +51,8 @@ internal static class LogisticsRuleFailures
             SqlErrors.LogisticsInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
             SqlErrors.ContainerNotAtFrom => new(ErrorType.Conflict, exception.Message, "CONTAINER_NOT_AT_FROM"),
             SqlErrors.PreviousMovementOpen => new(ErrorType.Conflict, exception.Message, "PREVIOUS_MOVEMENT_OPEN"),
+            // Script 80: a start date before the previous leg of one of its containers ended.
+            SqlErrors.StartBeforePreviousLeg => new(ErrorType.Conflict, exception.Message, "START_BEFORE_PREVIOUS_LEG"),
             SqlErrors.ContainerAttachmentType => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             SqlErrors.PurchaseExporterReferenceRequired => new(ErrorType.Validation, exception.Message, "EXPORTER_REFERENCE_REQUIRED"),
             SqlErrors.PurchaseContainerLineInvalid => new(ErrorType.Conflict, exception.Message, "CONTAINER_LINE_INVALID"),

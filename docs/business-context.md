@@ -21,6 +21,11 @@ themselves (glossary, 4.1, 4.5, 4.6).*
 purchase invoice may change item costs or not, may receive its goods when it is posted, and goods receipts may be
 drafted on a Delivery or made by hand (glossary, 3.7, 4.7, 4.12, 5.4).*
 
+*Updated on 17 October 2026 for **shipping from the container** (script 80, shipment phase 1): every container shows
+its next step in one button - "Start shipment…", "Start Inland transport…", "Arrived at Dar es Salaam…", "Next leg…" -
+on its page and in its row's "…" menu; a leg leaves from where the container is (From locked); the Movements list
+starts and completes movements on the row; a start or arrival date in the future is refused (glossary, 3.5, 4.6, 5.4).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -189,7 +194,8 @@ per user in Settings › Purchase approval (see 4.3).
 | **Confirm (container)** | The loading plan is agreed: Draft → Confirmed. |
 | **Movement** | One leg of the journey, `MOV-2026-000046`. Types: LOAD, SEA, TRANSHIP, PORT, INLAND, BORDER, CUSTOMS, DELIVERY. Planned → In progress → Completed, or Cancelled. |
 | **Stage** | What a movement type does to its containers: Origin, Sea, Transit, Port, Border, Customs, Delivery. |
-| **Start shipment** | From a selection of containers: one movement (default SEA) created and started at once. Vessel, voyage, B/L and ETA are copied to the containers. |
+| **Start shipment** | From a selection of containers, or one container's page: one movement (default SEA) created and started at once, leaving from where the containers are. Vessel, voyage, B/L and ETA are copied to the containers. |
+| **Next step (of a container)** | Script 80: the one button of a container's page (and the first entry of its row's "…" menu) whose label says what happens next: "Start shipment…" (never moved), "Start {type}…" (its next planned movement), "Arrived at {To}…" / "Complete {type}…" (a movement in progress carries it), "Next leg…" (its last movement is completed). |
 | **Place of a container** | The **To** of its previous movement (prompt 43). A container that never moved is at its **port of loading** (prompt 45). |
 | **Offload** | **Retired by goods receipts** (69010: "Use Receive goods… on the container"). It received a container's goods into stock at landed cost, with a reason when received ≠ loaded (stock rows of type `CNT`, re-offload tag `KTG-…/2`). A container is now received with a goods receipt, whose posting makes it **Offloaded**: the status kept its name. Containers offloaded before keep their Cancel Offload. |
 | **Close / Reopen (container)** | Close when every charge is posted and every received piece is invoiced (read-only). Reopen to add a late charge. |
@@ -318,10 +324,14 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
      containers…**.
    - Type the Exporter's Ref. and the Commercial invoice no., then post. No stock goes in at posting.
 5. **Shipment:**
-   - "Start shipment…" on the selected containers (for example the 5 of 30 still waiting).
+   - "Start shipment…" on the selected containers (for example the 5 of 30 still waiting), or **on the container's own
+     page** (script 80): the button next to Save, whose label is the container's next step.
    - Then each leg is a **movement**: Logistics › Movements, where the containers are ticked in a list at the
-     movement's From (prompt 45).
-   - Start / Complete move the containers' status, dates and current location forward, never back.
+     movement's From (prompt 45). From a container, "Next leg…" opens that form with the From locked to where the
+     container is and the container ticked; Back returns to the container.
+   - Start / Complete move the containers' status, dates and current location forward, never back. They are on the
+     movement page, on each row of the Movements list ("Start…", "Complete…"), and on the container ("Start Inland
+     transport…", "Arrived at Dar es Salaam…"), always in the same dialog.
 6. **Charges:**
    - Entered from the container, a movement ("Add charge for these containers"), the selection bar or Logistics ›
      Container Charges.
@@ -793,6 +803,39 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     when they differ.
   - Drafts are confirmed first. It starts today unless "Plan only".
   - Vessel, voyage, shipping line, B/L and ETA are copied to the containers; ports only when empty.
+- **Ship from the container** **[Implemented – script 80, shipment phase 1]** (the owner: "I cannot start the shipment
+  of a specific container in the containers page or any other place"):
+  - **One button per container**, next to Save on its page and first in its row's "…" menu on the Containers list,
+    labelled by its next step: "Start shipment…" (never moved: the Start shipment dialog for it alone), "Start Inland
+    transport…" (its next planned movement waits: that movement's Start dialog), "Arrived at Dar es Salaam…" /
+    "Complete Customs clearance…" (a movement in progress carries it: its Complete dialog), "Next leg…" (its last
+    movement is completed: the movement form). Hidden without `containers.movements.manage`; disabled with the reason
+    on a received, closed or cancelled container ("This container is received: its journey is over."), on a draft
+    with a planned movement, or when the planned movement cannot start yet (the refusal Start would give).
+  - **A leg leaves from where the container is**: the To of its latest movement, else its port of loading. The Start
+    shipment dialog and the movement form opened from a container fill the From with it and lock it ("A container
+    leaves from where it is."); Loading at the supplier is the exception (its To is the port of loading). A stay
+    (Port, Customs, Border) takes To = From by default. Places are grouped Sea ports / Border posts / Inland places.
+  - **A movement carrying other containers says so**: the Complete dialog opened from one container reads "All 12
+    containers of MOV-2026-000046 arrive too: …". Completing it moves every container on it.
+  - **Planned movements are visible**: the Movement column of the Containers list shows "Planned: MOV-…" under the
+    current one; the route card (now at the top of the right column, the top of the page on a phone) says where the
+    container is ("At Dar es Salaam since 12/10/2026.") and its planned next movement.
+  - **"Start shipment…" in the selection bar** is disabled when none of the ticked containers can ship ("None of the
+    ticked containers can ship: KTG-… is travelling with MOV-…: complete it first."), and its dialog lists those it
+    leaves out (received, travelling, a next movement already planned, a draft the reader may not confirm, at another
+    place) instead of failing after the click. With an empty From, the server takes the place the containers are all
+    at; the "empty = the containers' ports" default is kept for containers that never moved.
+  - **"Add to a movement…"** lists only the planned movements the container can really join: created after its
+    latest movement and at its place (`usp_Movement_JoinCandidates`).
+  - **Dates are facts** (the owner's decision): a start or end date in the future is refused, in the dialogs and on
+    the server (70000, "The start date cannot be in the future: start the movement on the day it really leaves.");
+    a start before the previous leg of one of its containers ended is refused (70018): "Container KTG-2026-0031
+    cannot start MOV-2026-000051 before MOV-2026-000046 reached Dar es Salaam on 12/10/2026."
+  - **Every completion still goes through the API's Complete**, so a Delivery still drafts the goods receipts (or not,
+    when Document Types makes them by hand).
+  - Not yet (phase 2 and 3): "Next step…" with the next leg proposed from past movements, several containers grouped
+    by step, the Shipments board, only part of a movement arriving.
 - **Place rule:** **[Implemented – prompt 43; errors 70015 / 70016 as planned, check the numbers]**
   - A movement only takes containers **at its From** = the To of each container's previous movement (cancelled
     movements don't count; previous = the latest one created before this one).
@@ -1261,6 +1304,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `77_Purchase_OrderStatusesByInvoicing.sql` | Purchase order statuses: an approved order shows Saved, Partially posted or Posted from its posted invoices (`purchase.fn_PurchaseOrder_Invoicing`); Closed is gone (no auto-close on invoice or goods receipt posting, Close Order refused 65010); the closed orders brought back once, what a close by hand gave up settled short |
 | `78_Logistics_AnyNumberOfContainers.sql` | Any number of containers: the 200 ceilings of Auto-plan gone, no SQL error 9829 on long container lists (Supplier Payments, Link containers, the receipt cost preview), numbers never cut, bigger pages for one order's or movement's containers, every "Apply to other containers" candidate, the movement import's 10,000 numbers; new `logistics.usp_Container_OrderDefaults` (supplier, forwarder, country of origin for the dialogs) and `logistics.usp_Container_Lookup` (the container pickers) |
 | `79_Configuration_DocumentTypeEffects.sql` | What a document type does: PINV "Affects item cost" (default on) and "Affects on-hand" (default off), GRN "Create goods receipts when a Delivery is completed" (default on), edited in Configuration › Document Types; each invoice captures its two at posting (`AffectsCost`, `ReceiveOnPost`); the cost rule in `purchase.fn_GoodsReceiptLine_TargetCost`; returns from a non-cost invoice at the receipt cost; LCA refused 67013; the Delivery hook and `usp_Movement_Get` read the GRN switch |
+| `80_Logistics_ShipFromTheContainer.sql` | Shipment phase 1, ship from the container: `logistics.fn_Container_ShipState` (where a container is, its movement in progress, its next planned one, its last completed one) on `usp_Container_Search` / `_Get`; `logistics.fn_Movement_StartBlock` (why a planned movement cannot start yet, its earliest start) on `usp_Movement_Search` / `_Get`; `usp_Movement_SetStatus` refuses a date in the future (70000) and a start before the previous leg ended (70018); `usp_Movement_ShipContainers` leaves from where moved containers are; new `usp_Movement_JoinCandidates` |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -1718,7 +1762,8 @@ every step that did not behave as described.
 - **Purchase invoice:**
   - Buttons: "Create Invoice from Containers…", "Create Invoice", "Split by item", "Post selected".
   - Containers card: "Shipped in containers", "Link containers…", "Add container…", "Auto-plan…".
-- **Containers:** "Start shipment…", "Container numbers…", "Apply to other containers…", "Receive goods…", "Open goods
+- **Containers:** "Start shipment…", "Start {type}…", "Arrived at {place}…", "Complete {type}…", "Next leg…" (the
+  container's next step, script 80), "Add to a movement…", "Container numbers…", "Apply to other containers…", "Receive goods…", "Open goods
   receipt (draft)", "Cancel goods receipt…", "Cancel Offload" (containers offloaded before goods receipts), "Close",
   "Reopen"; the filter "Delivered, not received".
 - **Goods receipts:** Purchase › Goods Receipts; "+ New" with "From a purchase order…", "From a container…", "Without

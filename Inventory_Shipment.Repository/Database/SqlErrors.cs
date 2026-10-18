@@ -398,6 +398,9 @@ public static class SqlErrors
     /// <summary>(52) The attachment type of a container attachment is missing, inactive or not used for containers.</summary>
     public const int ContainerAttachmentType = 70017;
 
+    /// <summary>(80) Start: a container cannot set off before its previous movement reached the From (its end date).</summary>
+    public const int StartBeforePreviousLeg = 70018;
+
     // ----- 71xxx: customer receipts - payment methods, cash / bank accounts, receipts -----
     public const int ReceiptValidation = 71000;
     public const int ReceiptConcurrency = 71004;

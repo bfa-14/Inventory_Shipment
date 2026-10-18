@@ -88,6 +88,22 @@ public sealed class MovementsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// (80) The planned movements a container can join ("Add to a movement..." on its page), newest first: created after
+    /// its latest movement and passing the checks the save makes for it at their From. 404 NOT_FOUND without the container.
+    /// </summary>
+    [HttpGet("join-candidates")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<IReadOnlyList<MovementJoinCandidateDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<MovementJoinCandidateDto>>> JoinCandidates(
+        [FromQuery] int containerId, CancellationToken cancellationToken)
+    {
+        var result = await _movements.JoinCandidatesAsync(containerId, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     // View Movements OR View Containers: a container's page reads the movements it travels with.
     [HttpGet("{id:int}")]
     [Authorize]
@@ -117,8 +133,9 @@ public sealed class MovementsController : ControllerBase
 
     /// <summary>
     /// One movement for the chosen containers: drafts confirmed (with containers.confirm), the movement
-    /// created (default SEA, from their common port of loading to their common port of destination) and
-    /// started unless startNow is false; vessel, voyage, B/L and ETA copied to the containers.
+    /// created (default SEA, from their common port of loading to their common port of destination; a container
+    /// that moved leaves from where it is - script 80) and started unless startNow is false; vessel, voyage, B/L and
+    /// ETA copied to the containers.
     /// 409 CONTAINER_BUSY names a container travelling with another movement.
     /// </summary>
     [HttpPost("ship-containers")]
@@ -151,7 +168,9 @@ public sealed class MovementsController : ControllerBase
 
     /// <summary>
     /// date = start date (default today). 409 CONTAINER_BUSY when a container travels with another movement in progress,
-    /// PREVIOUS_MOVEMENT_OPEN when its previous movement is not completed, CONTAINER_NOT_AT_FROM when it ends elsewhere.
+    /// PREVIOUS_MOVEMENT_OPEN when its previous movement is not completed, CONTAINER_NOT_AT_FROM when it ends elsewhere,
+    /// START_BEFORE_PREVIOUS_LEG (script 80) when the date is before that previous movement ended; 400 VALIDATION for a
+    /// date in the future.
     /// </summary>
     [HttpPost("{id:int}/start")]
     [HasPermission(Permissions.Containers.MovementsManage)]
@@ -165,7 +184,7 @@ public sealed class MovementsController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    /// <summary>date = end date (default today).</summary>
+    /// <summary>date = end date (default today); 400 VALIDATION for a date in the future (script 80).</summary>
     [HttpPost("{id:int}/complete")]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]

@@ -51,6 +51,13 @@ public interface IMovementService
     Task<Result<PagedResult<MovementContainerCandidateDto>>> ContainerCandidatesAsync(
         MovementContainerCandidateQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (80) The planned movements a container can join ("Add to a movement..." on its page): after its latest movement and
+    /// at its place, so the save will not refuse it for where it is. Needs containers.movements.manage.
+    /// </summary>
+    Task<Result<IReadOnlyList<MovementJoinCandidateDto>>> JoinCandidatesAsync(
+        int containerId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     /// <summary>Container numbers or refs matched for a movement, one row per number in order. Needs containers.movements.manage.</summary>
     Task<Result<IReadOnlyList<MovementContainerMatchDto>>> MatchContainersAsync(
         MatchMovementContainersRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);

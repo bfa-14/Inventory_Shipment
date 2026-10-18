@@ -155,11 +155,107 @@ public abstract record ContainerStatusFlags
 
     public bool CanDelete => Status == ContainerStatus.Draft && GoodsReceiptId is null;
 
+    /* (80) THE SHIPMENT: where the container is and what its next step is (logistics.fn_Container_ShipState), the same
+       columns on the list row and the details, so the container page's button and the list's row menu say the same. */
+
+    /// <summary>Its movements, cancelled ones left out: 0 = never moved ("Start shipment...").</summary>
+    public int MovementCount { get; init; }
+
+    /// <summary>
+    /// Where it is for its next leg: the To of its latest movement (planned, in progress or completed), else the port of
+    /// loading of a container that never moved; null when it has none (any From fits it). A leg leaves from here.
+    /// </summary>
+    public int? PlaceId { get; init; }
+
+    public string? PlaceName { get; init; }
+
+    /// <summary>The end date of that latest movement once it is completed: "at Dar es Salaam since 12/10/2026".</summary>
+    public DateTime? PlaceSince { get; init; }
+
+    /// <summary>The movement in progress that carries it ("Arrived at {To}..."), with how many containers it carries.</summary>
+    public int? ActiveMovementId { get; init; }
+
+    public string? ActiveMovementNo { get; init; }
+    public string? ActiveMovementTypeName { get; init; }
+    public string? ActiveMovementStage { get; init; }
+    public string? ActiveMovementFromName { get; init; }
+    public string? ActiveMovementToName { get; init; }
+    public DateTime? ActiveMovementStartDate { get; init; }
+    public DateTime? ActiveMovementEta { get; init; }
+    public int? ActiveMovementContainerCount { get; init; }
+
+    /// <summary>Its next planned movement ("Start {type}..."; "Planned: MOV-..." on the list).</summary>
+    public int? PlannedMovementId { get; init; }
+
+    public string? PlannedMovementNo { get; init; }
+    public string? PlannedMovementTypeName { get; init; }
+    public string? PlannedMovementStage { get; init; }
+    public string? PlannedMovementFromName { get; init; }
+    public string? PlannedMovementToName { get; init; }
+    public DateTime? PlannedMovementDate { get; init; }
+    public int? PlannedMovementContainerCount { get; init; }
+
+    /// <summary>Why that planned movement cannot start yet (the refusal Start would give), null when it can.</summary>
+    public string? PlannedMovementBlockedReason { get; init; }
+
+    /// <summary>Its earliest start date: the end of the previous leg (70018 before it).</summary>
+    public DateTime? PlannedMovementNotBefore { get; init; }
+
+    /// <summary>Its last completed movement.</summary>
+    public int? LastMovementId { get; init; }
+
+    public string? LastMovementNo { get; init; }
+    public DateTime? LastMovementEndDate { get; init; }
+
+    /// <summary>
+    /// The next step of its journey (<see cref="ContainerShipSteps"/>), the first that applies: Complete (a movement in
+    /// progress carries it), Start (its next planned movement waits), Ship (it never moved), NextLeg (its last movement is
+    /// completed). Null once received, closed or cancelled: the journey is over (<see cref="ShipStepBlockedReason"/>).
+    /// </summary>
+    public string? ShipStep => Status >= ContainerStatus.Offloaded
+        ? null
+        : ActiveMovementId is not null ? ContainerShipSteps.Complete
+        : PlannedMovementId is not null ? ContainerShipSteps.Start
+        : MovementCount == 0 ? ContainerShipSteps.Ship
+        : ContainerShipSteps.NextLeg;
+
+    /// <summary>
+    /// Why the next step cannot be taken now, null when it can: the journey is over, a draft cannot start a planned
+    /// movement, or the planned movement's own refusal. The permission (containers.movements.manage, and
+    /// containers.confirm to ship a draft) is the page's to check.
+    /// </summary>
+    public string? ShipStepBlockedReason => Status switch
+    {
+        ContainerStatus.Offloaded => "This container is received: its journey is over.",
+        ContainerStatus.Closed => "This container is closed: its journey is over.",
+        ContainerStatus.Cancelled => "This container is cancelled.",
+        _ when ShipStep == ContainerShipSteps.Start && Status == ContainerStatus.Draft
+            => "Confirm the container first: a draft cannot start a movement.",
+        _ when ShipStep == ContainerShipSteps.Start => PlannedMovementBlockedReason,
+        _ => null,
+    };
+
     /// <summary>
     /// Protected, so it stays out of the JSON: each shape says it with its own column. No flag reads it since the
     /// offload is retired (script 65); the columns stay, the page shows them.
     /// </summary>
     protected abstract bool FullyInvoiced { get; }
+}
+
+/// <summary>(80) The next step of a container's journey (<see cref="ContainerStatusFlags.ShipStep"/>).</summary>
+public static class ContainerShipSteps
+{
+    /// <summary>Never moved: "Start shipment..." (one movement for it, started or planned).</summary>
+    public const string Ship = "Ship";
+
+    /// <summary>Its next planned movement waits: "Start {type}...".</summary>
+    public const string Start = "Start";
+
+    /// <summary>A movement in progress carries it: "Arrived at {To}..." / "Complete {type}...".</summary>
+    public const string Complete = "Complete";
+
+    /// <summary>Its last movement is completed and it is not received: "Next leg..." from where it is.</summary>
+    public const string NextLeg = "NextLeg";
 }
 
 /// <summary>Invoicing of a container by posted invoices, as the list shows it.</summary>

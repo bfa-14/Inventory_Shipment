@@ -214,6 +214,21 @@ public sealed class MovementRepository : IMovementRepository
         }
     }
 
+    public async Task<IReadOnlyList<MovementJoinCandidateDto>> JoinCandidatesAsync(int containerId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<MovementJoinCandidateDto>(new CommandDefinition(
+                "logistics.usp_Movement_JoinCandidates", new { ContainerId = containerId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public async Task<IReadOnlyList<MovementContainerMatchDto>> MatchContainersAsync(
         int? movementId, int fromPlaceId, IReadOnlyList<string?> numbers, int? toPlaceId = null, int? movementTypeId = null,
         CancellationToken cancellationToken = default)

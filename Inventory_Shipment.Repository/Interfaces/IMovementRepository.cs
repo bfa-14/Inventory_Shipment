@@ -48,6 +48,9 @@ public interface IMovementRepository
     Task<(IReadOnlyList<MovementContainerCandidateDto> Items, int TotalCount)> ContainerCandidatesAsync(
         MovementContainerCandidateQuery query, int page, int pageSize, CancellationToken cancellationToken = default);
 
+    /// <summary>(80) logistics.usp_Movement_JoinCandidates: the planned movements the container can join, newest first. 70006 without it.</summary>
+    Task<IReadOnlyList<MovementJoinCandidateDto>> JoinCandidatesAsync(int containerId, CancellationToken cancellationToken = default);
+
     /// <summary>
     /// logistics.usp_Movement_MatchContainers: one row per non-empty number, rowNo = its position in the list
     /// from 1. 70000 above 500 numbers.

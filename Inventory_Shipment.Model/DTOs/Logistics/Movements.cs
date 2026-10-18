@@ -162,6 +162,20 @@ public abstract record MovementStatusFlags
     public bool CanComplete => Status == MovementStatus.InProgress;
     public bool CanCancel => Status is >= MovementStatus.Planned and <= MovementStatus.Completed;
     public bool CanDelete => Status == MovementStatus.Planned;
+
+    /* (80) A PLANNED MOVEMENT SAYS WHY IT CANNOT START YET (logistics.fn_Movement_StartBlock), on the list row and the
+       details alike: the list's "Start..." and the Start dialogs give the reason before the click, not a refusal after. */
+
+    /// <summary>The refusal Start would give now (no container, a draft, a container travelling, its previous leg open, not at the From); null when it can start.</summary>
+    public string? StartBlockedReason { get; init; }
+
+    /// <summary>The earliest start date: the latest end of its containers' previous movements (70018 before it); null when none.</summary>
+    public DateTime? StartNotBefore { get; init; }
+
+    /// <summary>The movement that ended on <see cref="StartNotBefore"/>, and where.</summary>
+    public string? StartNotBeforeMovementNo { get; init; }
+
+    public string? StartNotBeforePlaceName { get; init; }
 }
 
 /// <summary>One row of the movement list (logistics.usp_Movement_Search).</summary>
@@ -207,6 +221,42 @@ public record MovementListDto : MovementStatusFlags
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
+    public byte[] RowVersion { get; init; } = [];
+}
+
+/// <summary>
+/// (80) A planned movement a container can join (logistics.usp_Movement_JoinCandidates, "Add to a movement..."): created
+/// after the container's latest movement and passing the checks the save makes for it - so joining is never refused for
+/// its place after the click.
+/// </summary>
+public sealed class MovementJoinCandidateDto
+{
+    public int Id { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+    public int MovementTypeId { get; init; }
+    public string TypeCode { get; init; } = string.Empty;
+    public string TypeName { get; init; } = string.Empty;
+    public string Stage { get; init; } = string.Empty;
+    public int FromPlaceId { get; init; }
+    public string FromCode { get; init; } = string.Empty;
+    public string FromName { get; init; } = string.Empty;
+    public int ToPlaceId { get; init; }
+    public string ToCode { get; init; } = string.Empty;
+    public string ToName { get; init; } = string.Empty;
+    public DateTime? PlannedDate { get; init; }
+    public DateTime? Eta { get; init; }
+    public byte Status { get; init; }
+    public int? CarrierPartyId { get; init; }
+    public string? CarrierName { get; init; }
+    public string? VehicleOrVessel { get; init; }
+    public int ContainerCount { get; init; }
+
+    /// <summary>"KTG-2026-0006 +1".</summary>
+    public string? ContainerRefs { get; init; }
+
+    /// <summary>What the save would say of the container there: "Not moved yet - port of loading: Chennai.", "Draft: confirm it…".</summary>
+    public string? Note { get; init; }
+
     public byte[] RowVersion { get; init; } = [];
 }
 
@@ -512,10 +562,16 @@ public sealed class ShipContainersRequest
     /// <summary>Null = SEA.</summary>
     public int? MovementTypeId { get; init; }
 
-    /// <summary>Null = the containers' common port of loading (Sea only).</summary>
+    /// <summary>
+    /// Null = where the containers are (script 80): the place they are all at once one of them moved (the end of its
+    /// latest movement), else - none moved, Sea only - their common port of loading.
+    /// </summary>
     public int? FromPlaceId { get; init; }
 
-    /// <summary>Null = the containers' common port of destination (Sea only).</summary>
+    /// <summary>
+    /// Null = the containers' common port of destination (Sea only, and only when none of them moved); for a stay (Port,
+    /// Customs, Border) the From.
+    /// </summary>
     public int? ToPlaceId { get; init; }
 
     /// <summary>Null = today (the planned date when startNow is false).</summary>

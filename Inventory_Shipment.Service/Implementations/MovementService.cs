@@ -237,6 +237,31 @@ public sealed class MovementService : IMovementService
         });
     }
 
+    public async Task<Result<IReadOnlyList<MovementJoinCandidateDto>>> JoinCandidatesAsync(
+        int containerId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<IReadOnlyList<MovementJoinCandidateDto>>(Permissions.Containers.MovementsManage);
+        }
+
+        if (containerId <= 0)
+        {
+            return Result<IReadOnlyList<MovementJoinCandidateDto>>.Failure(
+                ErrorType.Validation, "A container id must be greater than zero.", "VALIDATION");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<MovementJoinCandidateDto>>.Success(
+                await _movements.JoinCandidatesAsync(containerId, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<MovementJoinCandidateDto>>(ex);
+        }
+    }
+
     /// <summary>More than 10,000 numbers (500 before script 78) is the procedure's refusal (70000 → 400), with its message.</summary>
     public async Task<Result<IReadOnlyList<MovementContainerMatchDto>>> MatchContainersAsync(
         MatchMovementContainersRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
