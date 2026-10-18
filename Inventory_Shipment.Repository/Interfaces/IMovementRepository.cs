@@ -17,8 +17,12 @@ public interface IMovementRepository
     /// <summary>Creates (id null, the number MOV-yyyy-nnnnnn is assigned now) or updates; returns the id.</summary>
     Task<int> SaveAsync(SaveMovementRequest request, int? id, int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>Start, Complete or Cancel: the containers' status, dates and location follow.</summary>
-    Task SetStatusAsync(
+    /// <summary>
+    /// Start, Complete or Cancel: the containers' status, dates and location follow. (82) A Cancel of a split-off movement
+    /// undoes the split - its containers go back onto the movement they were split from - and answers where they went (the
+    /// procedure's one row); null for every other call.
+    /// </summary>
+    Task<MovementSplitUndoneDto?> SetStatusAsync(
         int id, string action, DateOnly? date, string? reason, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default);
 

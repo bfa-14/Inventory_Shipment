@@ -498,8 +498,36 @@ public sealed record MovementDto : MovementStatusFlags
 
     public string? SplitFromMovementNo { get; init; }
 
+    /* (82) CANCELLING A SPLIT-OFF MOVEMENT UNDOES THE SPLIT: its containers go back onto the movement they were split from
+       (logistics.fn_Movement_SplitUndoTarget - or, when that one was cancelled itself, where its containers went). Its
+       Cancel dialog says it first: "Cancelling MOV-2026-000073 puts KTG-2026-0030 and KTG-2026-0031 back on
+       MOV-2026-000044, which is still in progress." Null on a movement that was not split off. */
+
+    /// <summary>The movement the containers go back to when this one is cancelled.</summary>
+    public int? SplitUndoMovementId { get; init; }
+
+    public string? SplitUndoMovementNo { get; init; }
+
+    /// <summary>That movement's status: 2 in progress (they travel on with it), 3 completed (they arrived with it), 4 cancelled (they are where they were before it).</summary>
+    public byte? SplitUndoStatus { get; init; }
+
+    /// <summary>Its end date, when it is completed.</summary>
+    public DateTime? SplitUndoEndDate { get; init; }
+
+    /// <summary>Its To.</summary>
+    public string? SplitUndoToName { get; init; }
+
+    /// <summary>The stage of its type: a completed Delivery leaves them delivered, not received (no draft goods receipt).</summary>
+    public string? SplitUndoStage { get; init; }
+
     /// <summary>(82) Its history beyond its own stamps (created, started, completed, cancelled): its splits, newest first.</summary>
     public IReadOnlyList<MovementAuditDto> History { get; init; } = [];
+
+    /// <summary>
+    /// (82) Only on the answer to Cancel of a split-off movement: the split was undone - where its containers went back and
+    /// the notification that says so. Null on every other answer.
+    /// </summary>
+    public MovementSplitUndoneDto? SplitUndone { get; init; }
 
     /// <summary>
     /// (79) The goods receipt type's "Create goods receipts on Delivery" (Configuration › Document Types): true, completing
@@ -601,6 +629,34 @@ public sealed class CompleteSomeContainersRequest
 
     /// <summary>The movement's rowVersion as the page read it (70004 / 409 when someone changed it since).</summary>
     public string? RowVersion { get; init; }
+}
+
+/// <summary>
+/// (82) The row logistics.usp_Movement_SetStatus answers when its Cancel undid a split: the movement the containers went
+/// back to, as it is now, and the containers put back (the first ten refs, comma-separated; <see cref="ContainerCount"/>
+/// all of them). <see cref="Message"/> is the service's notification.
+/// </summary>
+public sealed record MovementSplitUndoneDto
+{
+    public int MovementId { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+
+    /// <summary>2 in progress, 3 completed, 4 cancelled.</summary>
+    public byte Status { get; init; }
+
+    public DateTime? EndDate { get; init; }
+    public string ToName { get; init; } = string.Empty;
+    public string Stage { get; init; } = string.Empty;
+    public int ContainerCount { get; init; }
+
+    /// <summary>"KTG-2026-0030,KTG-2026-0031": the first ten, in ref order.</summary>
+    public string? ContainerRefs { get; init; }
+
+    /// <summary>
+    /// "MOV-2026-000073 cancelled, the split undone: KTG-2026-0030 and KTG-2026-0031 are back on MOV-2026-000044, still in
+    /// progress."
+    /// </summary>
+    public string Message { get; init; } = string.Empty;
 }
 
 /// <summary>(82) The row of logistics.usp_Movement_SplitContainers: the movement made for the containers that arrived.</summary>

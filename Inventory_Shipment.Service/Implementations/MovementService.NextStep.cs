@@ -636,14 +636,17 @@ public sealed partial class MovementService
     }
 
     /// <summary>"arrived at Dar es Salaam", "cleared customs at Kasumbalesa"... - what a completed movement did, by its stage.</summary>
-    private static string CompletedWhat(MovementDto movement) => MovementStages.Normalize(movement.Stage) switch
+    private static string CompletedWhat(MovementDto movement) => CompletedWhat(movement.Stage, movement.ToName);
+
+    /// <summary>The same from a movement's stage and To (82: the movement a cancelled split-off movement's containers went back to).</summary>
+    private static string CompletedWhat(string? stage, string toName) => MovementStages.Normalize(stage) switch
     {
-        MovementStages.Customs => $"cleared customs at {movement.ToName}",
-        MovementStages.Border => $"crossed the border at {movement.ToName}",
-        MovementStages.Port => $"left the port of {movement.ToName}",
+        MovementStages.Customs => $"cleared customs at {toName}",
+        MovementStages.Border => $"crossed the border at {toName}",
+        MovementStages.Port => $"left the port of {toName}",
         MovementStages.Origin => "loaded at the supplier",
-        MovementStages.Delivery => $"delivered to {movement.ToName}",
-        _ => $"arrived at {movement.ToName}",
+        MovementStages.Delivery => $"delivered to {toName}",
+        _ => $"arrived at {toName}",
     };
 
     /// <summary>"Arrival recorded; ..." - the noun of the date the dialog asked for, by the completed movement's stage.</summary>

@@ -112,12 +112,32 @@ public sealed class MovementRepository : IMovementRepository
         return parameters.Get<int>("@NewId");
     }
 
-    public Task SetStatusAsync(
+    /// <summary>
+    /// (82) The procedure answers one row only when its Cancel undid a split (read before its commit, like the split's own
+    /// answer); every other call answers none, read as null. All or nothing in the procedure, so a deadlock victim is run
+    /// again whole.
+    /// </summary>
+    public async Task<MovementSplitUndoneDto?> SetStatusAsync(
         int id, string action, DateOnly? date, string? reason, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default)
-        => ExecuteAsync("logistics.usp_Movement_SetStatus",
-            new { Id = id, Action = action, Date = ToDate(date), Reason = reason, RowVersion = rowVersion, UserId = userId },
-            cancellationToken);
+    {
+        var parameters = new { Id = id, Action = action, Date = ToDate(date), Reason = reason, RowVersion = rowVersion, UserId = userId };
+        try
+        {
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                var rows = await connection.QueryAsync<MovementSplitUndoneDto>(new CommandDefinition(
+                    "logistics.usp_Movement_SetStatus", parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+                return rows.FirstOrDefault();
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     /// <summary>
     /// NO DEADLOCK RETRY HERE: the procedure gives each container its own transaction and catches its errors, so a

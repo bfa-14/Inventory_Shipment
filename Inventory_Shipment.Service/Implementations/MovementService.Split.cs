@@ -294,4 +294,47 @@ public sealed partial class MovementService
     private static string NotCompletedMessage(MovementSplitDto split, string? reason)
         => $"{split.MovementNo} was split off {split.OriginalMovementNo} but not completed: "
            + $"{WithoutFinalPeriod(reason ?? "the movement was not completed")}. Complete it on its page.";
+
+    /// <summary>
+    /// (82) CANCELLING A SPLIT-OFF MOVEMENT UNDID THE SPLIT - what happened to its containers, by the status of the movement
+    /// they went back to:
+    /// "MOV-2026-000073 cancelled, the split undone: KTG-2026-0030 and KTG-2026-0031 are back on MOV-2026-000044, still in
+    /// progress." / "…are back on MOV-2026-000044, arrived at Dar es Salaam on 17/10/2026 with it." / "…are back on
+    /// MOV-2026-000044, which is cancelled: they are back where they were before it." A completed Delivery adds that they
+    /// have no draft goods receipt: "Delivered, not received: use Receive goods… on each container."
+    /// </summary>
+    internal static string SplitUndoneMessage(string cancelledNo, MovementSplitUndoneDto undone)
+    {
+        var refs = (undone.ContainerRefs ?? string.Empty).Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var one = undone.ContainerCount == 1;
+        var who = $"{RefsPhrase(refs, undone.ContainerCount)} {(one ? "is" : "are")} back on {undone.MovementNo}";
+        var what = undone.Status switch
+        {
+            MovementStatus.InProgress => $"{who}, still in progress.",
+            MovementStatus.Completed => $"{who}, {CompletedWhat(undone.Stage, undone.ToName)} on {MessageDay(undone.EndDate)} with it.",
+            _ => $"{who}, which is cancelled: {(one ? "it is" : "they are")} back where {(one ? "it was" : "they were")} before it.",
+        };
+        if (undone.Status == MovementStatus.Completed && MovementStages.Normalize(undone.Stage) == MovementStages.Delivery)
+        {
+            what += $" Delivered, not received: use Receive goods… on {(one ? "the container" : "each container")}.";
+        }
+
+        return $"{cancelledNo} cancelled, the split undone: {what}";
+    }
+
+    /// <summary>"KTG-2026-0030", "KTG-2026-0030 and KTG-2026-0031", "KTG-1, KTG-2 and KTG-3", "KTG-1, …, KTG-10 and 15 more".</summary>
+    private static string RefsPhrase(IReadOnlyList<string> refs, int count)
+    {
+        if (refs.Count == 0)
+        {
+            return Who(count, null);
+        }
+
+        if (count > refs.Count)
+        {
+            return $"{string.Join(", ", refs)} and {(count - refs.Count).ToString("N0", CultureInfo.InvariantCulture)} more";
+        }
+
+        return refs.Count == 1 ? refs[0] : $"{string.Join(", ", refs.Take(refs.Count - 1))} and {refs[^1]}";
+    }
 }

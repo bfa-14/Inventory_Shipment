@@ -75574,11 +75574,16 @@ GO
           70004 the movement was changed by another user;  70006 not found
         Audit on both movements (logistics.MovementAudit) and on each container moved. Its row is returned BEFORE the
         commit: a deadlock retry of the call can never run a split that is already committed.
+        NEW logistics.fn_Movement_SplitUndoTarget: where the containers of a split-off movement go when it is cancelled
+        (10.): the movement they were split from - or, when that one was cancelled itself (its own split undone), where
+        its containers went.
      6. logistics.usp_Container_NextStepPreview: + whether each container can be split off its movement in progress and
         why not (CanSplitOff, SplitOffBlockedReason; set 1), and whether a Complete group can complete only the ticked
         (SplitPossible, SplitBlockedReason; set 2): the dialogs offer "Only KTG-2026-0031" with the server's reason.
      7. logistics.usp_Movement_Get: + the movement it was split from (header), whether each of its containers can be split
-        off and why not (set 2: the movement page's "Only some containers arrived"), and its history (set 5).
+        off and why not (set 2: the movement page's "Only some containers arrived"), and its history (set 5); for a
+        split-off movement, the movement its containers go back to when it is cancelled (header: SplitUndo*, its number,
+        status, end date, To and stage - the Cancel dialog says it first).
      8. C2. THE CONTAINER PAGE'S ESTIMATE FOLLOWS THE COST RULE AND THE MATCHING OF THE GOODS RECEIPT
         (purchase.fn_GoodsReceiptLine_TargetCost, script 79; purchase.usp_GoodsReceipt_Rematch, script 64): NEW
         logistics.fn_ContainerLine_FobEstimate - the pieces of invoices linked to the container line, then the order
@@ -75591,12 +75596,28 @@ GO
      9. A SPLIT VOYAGE COUNTS ONCE in the usual next leg (fn_Movement_NextLegHistory, phase 2): a split makes two movements
         of one voyage (the same type, From, To and start); NEW logistics.fn_Movement_Voyage gives each movement its voyage
         (the root of its chain of splits), and the history counts voyages, not movements.
+    10. CANCELLING A SPLIT-OFF MOVEMENT UNDOES THE SPLIT (logistics.usp_Movement_SetStatus, its Cancel): its containers go
+        back onto the movement they were split from, whatever that movement's status, as if they had never been split off -
+        still in progress, they travel on with it; completed, they arrived with it (its end date, its To); cancelled, its
+        cancellation applies to them too (they are where they were before it, like its other containers). A copy of a copy
+        goes back to its own original (the movement it was split from); when that one was cancelled itself, its own split
+        was undone and its containers went back to its original, so these follow them there (fn_Movement_SplitUndoTarget).
+        In the one transaction of the Cancel: their rows of the movement's container list, their charges filed under it
+        and their documents filed under it (a file other containers share keeps their records where they are) go back;
+        every rule of the Cancel stays (the reason; only the last leg of each container, so none of them has a later leg;
+        never an offloaded one; a completed Delivery's automatic draft goods receipts deleted, as for any cancelled
+        Delivery - put back onto a completed Delivery they have none: Delivered, not received); their statuses and dates
+        are refreshed from their movements (usp_Container_RefreshStatus); audit on both movements ("Split undone:
+        KTG-2026-0030, KTG-2026-0031 back on MOV-2026-000044" / "Back from MOV-2026-000073 (split undone): ...") and on
+        each container. The movement cancelled ends empty. Its one row - the movement they went back to and the containers
+        put back - is returned before the commit, for the API's notification; no other call returns a row.
 
    Re-created from their current bodies: logistics.usp_Container_NextStepPreview (81), logistics.usp_Movement_Get (80),
-   logistics.usp_Container_Get (81), logistics.fn_Movement_NextLegHistory (81).
+   logistics.usp_Container_Get (81), logistics.fn_Movement_NextLegHistory (81), logistics.usp_Movement_SetStatus (81).
    New: the column logistics.Movements.SplitFromMovementId, the table logistics.MovementAudit, the permission
    containers.shipments.view, logistics.fn_Container_BoardPhase, logistics.usp_Shipment_Board,
-   logistics.usp_Movement_SplitContainers, logistics.fn_ContainerLine_FobEstimate, logistics.fn_Movement_Voyage.
+   logistics.usp_Movement_SplitContainers, logistics.fn_Movement_SplitUndoTarget, logistics.fn_ContainerLine_FobEstimate,
+   logistics.fn_Movement_Voyage.
    No new error number: 70000, 70004, 70006, 70010.
 
    Requires script 81 (Schema.sql runs it first). Idempotent, additive: re-applied at every API start-up, and builds a
@@ -76387,6 +76408,36 @@ BEGIN
 END
 GO
 
+-- ONE ROW: WHERE THE CONTAINERS OF A SPLIT-OFF MOVEMENT GO BACK WHEN IT IS CANCELLED (none for a movement that was not
+-- split off). Cancelling it undoes the split (usp_Movement_SetStatus): its containers go back onto the movement they were
+-- split from, whatever its status. A copy of a copy goes back to its own original, the movement it was split from - but
+-- when that one was cancelled itself, ITS split was undone and its containers went back to its own original, so these
+-- follow them there: up the chain while the movement reached is a cancelled split-off one ("its cancellation applies to
+-- them too, like its other containers"). The first movement of a chain was never split off: the walk always ends. With
+-- what the Cancel dialog says of that movement: its number, status, end date, To and stage. The one place of the rule,
+-- for the Cancel itself and usp_Movement_Get. Fifty splits deep at most, as fn_Movement_Voyage.
+CREATE OR ALTER FUNCTION logistics.fn_Movement_SplitUndoTarget (@MovementId INT)
+RETURNS TABLE
+AS
+RETURN
+WITH up AS (SELECT p.Id, p.SplitFromMovementId, p.Status, Depth = 1
+            FROM logistics.Movements m
+            INNER JOIN logistics.Movements p ON p.Id = m.SplitFromMovementId
+            WHERE m.Id = @MovementId
+            UNION ALL
+            SELECT p.Id, p.SplitFromMovementId, p.Status, up.Depth + 1
+            FROM up
+            INNER JOIN logistics.Movements p ON p.Id = up.SplitFromMovementId
+            WHERE up.Status = 4 AND up.Depth < 50)
+SELECT TOP (1) MovementId = t.Id, t.MovementNo, t.Status, t.EndDate, t.ToPlaceId, ToName = tp.PortName, mt.Stage
+FROM up
+INNER JOIN logistics.Movements t       ON t.Id = up.Id
+INNER JOIN masterdata.MovementTypes mt ON mt.Id = t.MovementTypeId
+INNER JOIN masterdata.Ports tp         ON tp.Id = t.ToPlaceId
+WHERE NOT (up.Status = 4 AND up.SplitFromMovementId IS NOT NULL) OR up.Depth = 50
+ORDER BY up.Depth;
+GO
+
 /* ================================================================== 6. The next step's dialogs: can a container complete alone */
 
 -- Re-created (82) from the body of script 81: + whether each container of a movement to complete can be split off it and
@@ -76654,7 +76705,9 @@ GO
 -- Re-created (82) from the body of script 80: + the movement it was split off (header: SplitFromMovementId, SplitFromMovementNo),
 -- whether each of its containers can be split off it and why not (set 2: CanSplitOff, SplitOffBlockedReason - the
 -- checklist of "Only some containers arrived" in its Complete dialog), and its history beyond its own stamps (set 5, the
--- splits). Nothing else changes.
+-- splits); for a split-off movement, the movement its containers go back to when it is cancelled (header: SplitUndo*,
+-- fn_Movement_SplitUndoTarget - its Cancel dialog says it first: "Cancelling MOV-2026-000073 puts KTG-2026-0030 and
+-- KTG-2026-0031 back on MOV-2026-000044, which is still in progress."). Nothing else changes.
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_Get
     @Id INT
 AS
@@ -76681,7 +76734,10 @@ BEGIN
            -- progress: the earliest start date its edited start date may take (usp_Movement_Save, 70018)
            StartBlockedReason = sb.Reason, sb.StartNotBefore, sb.StartNotBeforeMovementNo, sb.StartNotBeforePlaceName,
            -- (82) the movement it was split off (usp_Movement_SplitContainers): "Split from MOV-..."
-           m.SplitFromMovementId, SplitFromMovementNo = sf.MovementNo
+           m.SplitFromMovementId, SplitFromMovementNo = sf.MovementNo,
+           -- (82) cancelling it undoes the split: the movement its containers go back to, as the Cancel dialog says it
+           SplitUndoMovementId = ut.MovementId, SplitUndoMovementNo = ut.MovementNo, SplitUndoStatus = ut.Status,
+           SplitUndoEndDate = ut.EndDate, SplitUndoToName = ut.ToName, SplitUndoStage = ut.Stage
     FROM logistics.Movements m
     INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
     INNER JOIN masterdata.Ports fp         ON fp.Id = m.FromPlaceId
@@ -76694,6 +76750,7 @@ BEGIN
     LEFT  JOIN security.Users uu ON uu.Id = m.UpdatedBy
     OUTER APPLY logistics.fn_Movement_StartBlock(m.Id) sb   -- (80)
     LEFT  JOIN logistics.Movements sf ON sf.Id = m.SplitFromMovementId                  -- (82)
+    OUTER APPLY logistics.fn_Movement_SplitUndoTarget(m.Id) ut                          -- (82)
     WHERE m.Id = @Id;
 
     SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, c.Status AS ContainerStatus,
@@ -77253,22 +77310,317 @@ HAVING COUNT(DISTINCT vg.VoyageId) >= 2
 ORDER BY COUNT(DISTINCT vg.VoyageId) DESC, MAX(m.Id) DESC;
 GO
 
-/* ================================================================== 10. Check */
+/* ================================================================== 10. Cancelling a split-off movement undoes the split */
+
+-- Re-created (82) from the body of script 81: + CANCELLING A SPLIT-OFF MOVEMENT UNDOES THE SPLIT (the header's 10.). In the
+-- Cancel's own transaction its containers go back onto the movement they were split from (fn_Movement_SplitUndoTarget), with
+-- their rows of the container list and their charges and documents filed under it; their statuses and dates are refreshed
+-- with the others; audit on both movements and on each container; one row answered, before the commit: the movement they
+-- went back to and the containers put back. Start, Complete and every other rule of Cancel are unchanged.
+CREATE OR ALTER PROCEDURE logistics.usp_Movement_SetStatus
+    @Id         INT,
+    @Action     NVARCHAR(10),
+    @Date       DATE          = NULL,    -- Start: start date; Complete: end date (default today)
+    @Reason     NVARCHAR(300) = NULL,    -- Cancel
+    @RowVersion BINARY(8)     = NULL,
+    @UserId     INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Action = NULLIF(LTRIM(RTRIM(@Action)), N'');
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Date IS NULL SET @Date = CAST(SYSUTCDATETIME() AS DATE);
+    IF @Action IS NULL OR @Action NOT IN (N'Start', N'Complete', N'Cancel') THROW 70000, 'Action must be Start, Complete or Cancel.', 1;
+
+    DECLARE @Status TINYINT, @StartDate DATE, @Label NVARCHAR(300), @FromPlaceId INT, @ToPlaceId INT, @MovementTypeId INT,
+            @MovementNo NVARCHAR(30), @SplitFrom INT;                                                  -- (82)
+    SELECT @Status = m.Status, @StartDate = m.StartDate, @MovementNo = m.MovementNo, @SplitFrom = m.SplitFromMovementId,
+           @FromPlaceId = m.FromPlaceId, @ToPlaceId = m.ToPlaceId, @MovementTypeId = m.MovementTypeId,
+           @Label = m.MovementNo + N' ' + mt.TypeName + N': ' + fp.PortName + N' ' + NCHAR(8594) + N' ' + tp.PortName
+    FROM logistics.Movements m WITH (UPDLOCK, HOLDLOCK)
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+    INNER JOIN masterdata.Ports fp ON fp.Id = m.FromPlaceId
+    INNER JOIN masterdata.Ports tp ON tp.Id = m.ToPlaceId
+    WHERE m.Id = @Id;
+
+    IF @Status IS NULL THROW 70006, 'Movement not found.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This movement was modified by another user. Reload the page and try again.', 1;
+    IF @Action = N'Start' AND @Status <> 1 THROW 70010, 'Only a planned movement can be started.', 1;
+    IF @Action = N'Complete' AND @Status <> 2 THROW 70010, 'Only a movement in progress can be completed.', 1;
+    IF @Action = N'Complete' AND @Date < @StartDate THROW 70000, 'The end date cannot be earlier than the start date.', 1;
+    IF @Action = N'Cancel' AND @Status = 4 THROW 70010, 'The movement is already cancelled.', 1;
+    IF @Action = N'Cancel' AND @Reason IS NULL THROW 70000, 'A cancellation reason is required.', 1;
+    -- (80) THE OWNER'S DECISION: A START AND AN ARRIVAL RECORD FACTS, never a plan (a plan is the planned date). One day of
+    -- tolerance, as for the document dates: the date is the reader's, SYSUTCDATETIME() the server's in UTC.
+    IF @Action = N'Start' AND @Date > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 70000, 'The start date cannot be in the future: start the movement on the day it really leaves.', 1;
+    IF @Action = N'Complete' AND @Date > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 70000, 'The end date cannot be in the future: complete the movement on the day it really arrives.', 1;
+    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action = N'Start'
+        THROW 70000, 'Tick at least one container before starting.', 1;
+    IF NOT EXISTS (SELECT 1 FROM logistics.MovementContainers WHERE MovementId = @Id) AND @Action = N'Complete'
+        THROW 70000, 'The movement has no containers.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    IF @Action = N'Start'
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + CASE WHEN c.Status = 1 THEN N' is not confirmed yet.'
+                                                                    ELSE N' is already offloaded, closed or cancelled.' END
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        WHERE mc.MovementId = @Id AND (c.Status = 1 OR c.Status >= 6)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is already travelling with movement ' + m.MovementNo + N'. Complete it first.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c         ON c.Id = mc.ContainerId
+        INNER JOIN logistics.MovementContainers o ON o.ContainerId = mc.ContainerId AND o.MovementId <> @Id
+        INNER JOIN logistics.Movements m          ON m.Id = o.MovementId AND m.Status = 2
+        WHERE mc.MovementId = @Id
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
+
+        -- the place rules (script 53): the previous movement of every container is completed (70016), then every
+        -- container fits the movement's From, To and stage (70015) - the rules of Save, fn_ContainerFitForMovement
+        -- (81) each container's previous movement read for itself (fn_Container_PreviousMovement, the "previous" of
+        -- fn_ContainerPlaceForMovement): through the function over every container, the search for the first refusal
+        -- in ref order walked all the containers of the database - 18 s a Start on 50,000 containers.
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N': the previous movement ' + pm.MovementNo + N' (' + pf.PortName
+                              + N' ' + NCHAR(8594) + N' ' + pt.PortName + N') is not completed yet.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        CROSS APPLY logistics.fn_Container_PreviousMovement(mc.ContainerId, @Id) pm
+        INNER JOIN masterdata.Ports pf    ON pf.Id = pm.FromPlaceId
+        INNER JOIN masterdata.Ports pt    ON pt.Id = pm.ToPlaceId
+        WHERE mc.MovementId = @Id AND pm.Status <> 3
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70016, @Msg, 1;
+
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        INNER JOIN logistics.fn_ContainerFitForMovement(@Id, @FromPlaceId, @ToPlaceId, @MovementTypeId) p ON p.ContainerId = mc.ContainerId
+        INNER JOIN masterdata.Ports f     ON f.Id = @FromPlaceId
+        WHERE mc.MovementId = @Id AND p.Fits = 0
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70015, @Msg, 1;
+
+        -- (80) NOT BEFORE THE PREVIOUS LEG ENDED (70018): a container cannot set off from a place before it got there.
+        -- The previous movement is completed here (70016 above); its end date is the earliest start.
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot start ' + @MovementNo + N' before ' + pm.MovementNo
+                              + N' reached ' + tp.PortName + N' on ' + CONVERT(NVARCHAR(10), pm.EndDate, 103) + N'.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        CROSS APPLY logistics.fn_Container_PreviousMovement(mc.ContainerId, @Id) pm                      -- (81)
+        INNER JOIN masterdata.Ports tp    ON tp.Id = pm.ToPlaceId
+        WHERE mc.MovementId = @Id AND pm.EndDate > @Date
+        ORDER BY pm.EndDate DESC, c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70018, @Msg, 1;
+    END
+    IF @Action = N'Cancel'
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is already offloaded: its route can no longer change.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        WHERE mc.MovementId = @Id AND c.Status IN (6, 7) AND @Status IN (2, 3)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+        -- (81) ONLY THE LAST LEG OF A CONTAINER CAN BE CANCELLED (70010): a later leg (planned, in progress or completed)
+        -- left from this one's To, so cancelling this one would leave the container at a place it never reached and
+        -- break its chain of places. The latest one is named: it is the one to cancel first.
+        -- A PLANNED leg that a later leg already passed (started or completed after it: data of before script 80) never
+        -- happened and is no part of the chain: it may be cancelled - Delete refuses it once a charge or a file names it.
+        SELECT TOP (1) @Msg = @MovementNo + N' is not the last leg of ' + c.ContainerRef + N': cancel ' + l.MovementNo + N' first.'
+        FROM logistics.MovementContainers mc
+        INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+        CROSS APPLY (SELECT TOP (1) m.MovementNo
+                     FROM logistics.MovementContainers lc
+                     INNER JOIN logistics.Movements m ON m.Id = lc.MovementId
+                     WHERE lc.ContainerId = mc.ContainerId AND m.Id > @Id AND m.Status <> 4
+                     ORDER BY m.Id DESC) l
+        WHERE mc.MovementId = @Id
+          AND NOT (@Status = 1 AND EXISTS (SELECT 1
+                                           FROM logistics.MovementContainers pc
+                                           INNER JOIN logistics.Movements pm ON pm.Id = pc.MovementId
+                                           WHERE pc.ContainerId = mc.ContainerId AND pm.Id > @Id AND pm.Status IN (2, 3)))
+        ORDER BY LEN(c.ContainerRef), c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        UPDATE logistics.Movements
+        SET Status = CASE @Action WHEN N'Start' THEN 2 WHEN N'Complete' THEN 3 ELSE 4 END,
+            StartDate = CASE WHEN @Action = N'Start' THEN @Date ELSE StartDate END,
+            EndDate = CASE WHEN @Action = N'Complete' THEN @Date ELSE EndDate END,
+            StartedAtUtc = CASE WHEN @Action = N'Start' THEN SYSUTCDATETIME() ELSE StartedAtUtc END,
+            StartedBy = CASE WHEN @Action = N'Start' THEN @UserId ELSE StartedBy END,
+            CompletedAtUtc = CASE WHEN @Action = N'Complete' THEN SYSUTCDATETIME() ELSE CompletedAtUtc END,
+            CompletedBy = CASE WHEN @Action = N'Complete' THEN @UserId ELSE CompletedBy END,
+            CancelledAtUtc = CASE WHEN @Action = N'Cancel' THEN SYSUTCDATETIME() ELSE CancelledAtUtc END,
+            CancelledBy = CASE WHEN @Action = N'Cancel' THEN @UserId ELSE CancelledBy END,
+            CancelReason = CASE WHEN @Action = N'Cancel' THEN @Reason ELSE CancelReason END,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT mc.ContainerId, N'Event',
+               LEFT(CASE @Action WHEN N'Start' THEN N'Started ' WHEN N'Complete' THEN N'Arrived / completed ' ELSE N'Cancelled ' END
+                    + @Label + N' on ' + CONVERT(NVARCHAR(10), @Date, 23) + ISNULL(N' - ' + @Reason, N''), 500),
+               @UserId
+        FROM logistics.MovementContainers mc WHERE mc.MovementId = @Id;
+
+        -- (65) RULE 22: CANCELLING A COMPLETED DELIVERY TAKES BACK THE DRAFT GOODS RECEIPTS ITS COMPLETION CREATED (IsAuto,
+        -- MovementId = this movement), edited or not - the cancel dialog names the edited ones first (usp_Movement_Get).
+        -- A draft made by hand is kept. A posted receipt made its container Offloaded, so the check above refused the
+        -- cancel. The same plain deletes as usp_GoodsReceipt_Delete: a draft has no stock, number or cost to undo.
+        IF @Action = N'Cancel' AND @Status = 3
+        BEGIN
+            DECLARE @AutoDrafts TABLE (Id INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
+            INSERT INTO @AutoDrafts (Id, ContainerId)
+            SELECT g.Id, g.ContainerId
+            FROM purchase.GoodsReceipts g WITH (UPDLOCK, HOLDLOCK)
+            WHERE g.MovementId = @Id AND g.IsAuto = 1 AND g.Status = 1;
+
+            IF EXISTS (SELECT 1 FROM @AutoDrafts)
+            BEGIN
+                DELETE m FROM purchase.GoodsReceiptInvoiceMatches m
+                INNER JOIN purchase.GoodsReceiptLines l ON l.Id = m.GoodsReceiptLineId
+                INNER JOIN @AutoDrafts d                ON d.Id = l.GoodsReceiptId;
+                DELETE f FROM purchase.GoodsReceiptFiles f INNER JOIN @AutoDrafts d ON d.Id = f.GoodsReceiptId;
+                DELETE l FROM purchase.GoodsReceiptLines l INNER JOIN @AutoDrafts d ON d.Id = l.GoodsReceiptId;
+                DELETE a FROM purchase.GoodsReceiptAudit a INNER JOIN @AutoDrafts d ON d.Id = a.GoodsReceiptId;
+                DELETE g FROM purchase.GoodsReceipts g INNER JOIN @AutoDrafts d ON d.Id = g.Id;
+
+                INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+                SELECT d.ContainerId, N'Event', LEFT(N'Draft goods receipt removed: movement ' + @MovementNo + N' cancelled', 500), @UserId
+                FROM @AutoDrafts d;
+            END
+        END
+
+        -- (82) CANCELLING A SPLIT-OFF MOVEMENT UNDOES THE SPLIT (usp_Movement_SplitContainers): its containers go back onto
+        -- the movement they were split from (fn_Movement_SplitUndoTarget: that one, or where its own undone split sent its
+        -- containers), whatever its status, as if they had never been split off - in progress they travel on with it,
+        -- completed they arrived with it, cancelled its cancellation applies to them too. Their rows of the container list,
+        -- their charges filed under this movement and their documents filed under it go back with them (a file other
+        -- containers share keeps their records where they are: one record per container); this one ends cancelled, and
+        -- empty. Every rule above still holds: only the last leg of each container (none has a later leg), never an
+        -- offloaded one, a completed Delivery's automatic drafts deleted just above - put back onto a completed Delivery
+        -- they have none (Delivered, not received: Receive goods... on each container). That movement is locked like
+        -- this one (a split always points to a lower Id, so the locks are always taken in the same order).
+        DECLARE @BackTo INT, @BackToNo NVARCHAR(30), @Moved INT = 0, @Refs NVARCHAR(1000);
+        DECLARE @Back TABLE (ContainerId INT NOT NULL PRIMARY KEY, ContainerRef NVARCHAR(30) NULL);
+        IF @Action = N'Cancel' AND @SplitFrom IS NOT NULL
+        BEGIN
+            SELECT @BackTo = t.MovementId FROM logistics.fn_Movement_SplitUndoTarget(@Id) t;
+            SELECT @BackToNo = m.MovementNo FROM logistics.Movements m WITH (UPDLOCK, HOLDLOCK) WHERE m.Id = @BackTo;
+
+            INSERT INTO @Back (ContainerId, ContainerRef)
+            SELECT mc.ContainerId, c.ContainerRef
+            FROM logistics.MovementContainers mc
+            INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
+            WHERE mc.MovementId = @Id AND @BackToNo IS NOT NULL;
+            SET @Moved = @@ROWCOUNT;
+        END
+
+        IF @Moved > 0
+        BEGIN
+            -- 1. their rows (each row as it is; a container already on that movement keeps the row it has there: never
+            -- twice), their charges and their documents filed under this movement
+            UPDATE mc SET MovementId = @BackTo
+            FROM logistics.MovementContainers mc
+            WHERE mc.MovementId = @Id
+              AND NOT EXISTS (SELECT 1 FROM logistics.MovementContainers o WHERE o.MovementId = @BackTo AND o.ContainerId = mc.ContainerId);
+            DELETE FROM logistics.MovementContainers WHERE MovementId = @Id;
+
+            UPDATE ch SET MovementId = @BackTo, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            FROM logistics.ContainerCharges ch
+            INNER JOIN @Back b ON b.ContainerId = ch.ContainerId
+            WHERE ch.MovementId = @Id;
+
+            UPDATE a SET MovementId = @BackTo
+            FROM logistics.ContainerAttachments a
+            INNER JOIN @Back b ON b.ContainerId = a.ContainerId
+            WHERE a.MovementId = @Id;
+
+            -- that movement changed (containers came back to it): its RowVersion moves, a page left open on it reloads
+            UPDATE logistics.Movements SET UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @BackTo;
+
+            -- 2. AUDIT on both movements and on each container (the first 20 refs, then "and N more")
+            SELECT @Refs = STRING_AGG(CAST(x.ContainerRef AS NVARCHAR(MAX)), N', ') WITHIN GROUP (ORDER BY LEN(x.ContainerRef), x.ContainerRef)
+            FROM (SELECT TOP (20) ContainerRef FROM @Back ORDER BY LEN(ContainerRef), ContainerRef) x;
+            IF @Moved > 20 SET @Refs = @Refs + N' and ' + CAST(@Moved - 20 AS NVARCHAR(12)) + N' more';
+
+            INSERT INTO logistics.MovementAudit (MovementId, Action, Details, UserId)
+            VALUES (@Id, N'Split undone', LEFT(N'Split undone: ' + @Refs + N' back on ' + @BackToNo, 1000), @UserId),
+                   (@BackTo, N'Split undone', LEFT(N'Back from ' + @MovementNo + N' (split undone): ' + @Refs, 1000), @UserId);
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            SELECT b.ContainerId, N'Event',
+                   LEFT(N'Moved back from ' + @MovementNo + N' to ' + @BackToNo + N': ' + @MovementNo + N' cancelled (split undone)', 500), @UserId
+            FROM @Back b;
+        END
+
+        DECLARE @Cid INT;
+        DECLARE ctn CURSOR LOCAL FAST_FORWARD FOR SELECT ContainerId FROM logistics.MovementContainers WHERE MovementId = @Id
+                                                  UNION SELECT ContainerId FROM @Back;              -- (82) and the ones put back
+        OPEN ctn;
+        FETCH NEXT FROM ctn INTO @Cid;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_Container_RefreshStatus @Cid;
+            FETCH NEXT FROM ctn INTO @Cid;
+        END
+        CLOSE ctn;
+        DEALLOCATE ctn;
+
+        -- (82) A SPLIT UNDONE ANSWERS ONE ROW (the API's notification), inside the transaction like the split's own
+        -- answer: the movement they went back to, as it is now, and the containers put back on it (the first ten).
+        -- No other call of this procedure returns a row.
+        IF @Moved > 0
+            SELECT MovementId = t.Id, t.MovementNo, t.Status, t.EndDate, ToName = tp.PortName, mt.Stage,
+                   ContainerCount = @Moved,
+                   ContainerRefs = (SELECT STRING_AGG(CAST(x.ContainerRef AS NVARCHAR(MAX)), N',') WITHIN GROUP (ORDER BY LEN(x.ContainerRef), x.ContainerRef)
+                                    FROM (SELECT TOP (10) ContainerRef FROM @Back ORDER BY LEN(ContainerRef), ContainerRef) x)
+            FROM logistics.Movements t
+            INNER JOIN masterdata.MovementTypes mt ON mt.Id = t.MovementTypeId
+            INNER JOIN masterdata.Ports tp         ON tp.Id = t.ToPlaceId
+            WHERE t.Id = @BackTo;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 11. Check */
 
 -- The permission of the board and how many roles hold it.
 SELECT p.Code, p.Name, p.SortOrder, Roles = (SELECT COUNT(*) FROM security.RolePermissions rp WHERE rp.PermissionId = p.Id)
 FROM security.Permissions p
 WHERE p.Code = N'containers.shipments.view';
 
--- Movements split so far: the copy, the movement it came from, how many containers each carries now.
+-- Movements split so far: the copy, the movement it came from, how many containers each carries now, and whether the
+-- split was undone (the copy cancelled, its containers back on the movement they came from).
 SELECT TOP (20) Movement = m.MovementNo, SplitFrom = o.MovementNo, Status = m.Status,
        Containers = (SELECT COUNT(*) FROM logistics.MovementContainers x WHERE x.MovementId = m.Id),
-       LeftOnOriginal = (SELECT COUNT(*) FROM logistics.MovementContainers x WHERE x.MovementId = o.Id)
+       LeftOnOriginal = (SELECT COUNT(*) FROM logistics.MovementContainers x WHERE x.MovementId = o.Id),
+       SplitUndone = CAST(CASE WHEN EXISTS (SELECT 1 FROM logistics.MovementAudit a WHERE a.MovementId = m.Id AND a.Action = N'Split undone')
+                               THEN 1 ELSE 0 END AS BIT)
 FROM logistics.Movements m
 INNER JOIN logistics.Movements o ON o.Id = m.SplitFromMovementId
 ORDER BY m.Id DESC;
 
-PRINT 'Script 82 applied: the Shipments board (containers by stage, one permission), a movement split when only part of it arrived (a split voyage counted once in the usual next leg), the container estimate following the cost rule and the matching of its goods receipt.';
+PRINT 'Script 82 applied: the Shipments board (containers by stage, one permission), a movement split when only part of it arrived (a split voyage counted once in the usual next leg, a cancelled split-off movement undoing its split), the container estimate following the cost rule and the matching of its goods receipt.';
 GO
 
 SET NOEXEC OFF;

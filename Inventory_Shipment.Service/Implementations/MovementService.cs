@@ -421,9 +421,10 @@ public sealed partial class MovementService : IMovementService
             return Forbidden<MovementDto>(Permissions.Containers.MovementsManage);
         }
 
+        MovementSplitUndoneDto? undone;
         try
         {
-            await _movements.SetStatusAsync(
+            undone = await _movements.SetStatusAsync(
                 id, action, request.Date, request.Reason, ToRowVersion(request.RowVersion), userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
@@ -439,6 +440,18 @@ public sealed partial class MovementService : IMovementService
         var afterCommit = action == "Complete" ? CancellationToken.None : cancellationToken;
 
         var read = await ReadAsync(id, afterCommit);
+
+        // (82) A CANCEL THAT UNDID A SPLIT says where the containers went: the procedure's own row, read in its transaction.
+        if (undone is not null && read.Value is { } cancelled)
+        {
+            _logger.LogInformation("Movement {MovementNo} cancelled: the split undone, {Count} container(s) back on {BackTo}",
+                cancelled.MovementNo, undone.ContainerCount, undone.MovementNo);
+            return Result<MovementDto>.Success(cancelled with
+            {
+                SplitUndone = undone with { Message = SplitUndoneMessage(cancelled.MovementNo, undone) },
+            });
+        }
+
         if (action != "Complete"
             || read.Value is not { Status: MovementStatus.Completed } movement
             || MovementStages.Normalize(movement.Stage) != MovementStages.Delivery)
