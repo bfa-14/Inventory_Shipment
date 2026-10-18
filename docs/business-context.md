@@ -1017,8 +1017,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     Delivery. The Cancel dialog says it first, from the movement it reads (`splitUndo…`: that movement's number,
     status, end date, To and stage): "Cancelling MOV-2026-000073 puts KTG-2026-0030 and KTG-2026-0031 back on
     MOV-2026-000044, which is still in progress." / "…, which arrived at Dar es Salaam on 17/10/2026: they arrive with
-    it." / "…, which delivered to Lubumbashi on 18/10/2026: KTG-2026-0044 is delivered with it, without a draft goods
-    receipt: use Receive goods… on it." / "…, which is cancelled: they go back to where they were before it." The
+    it." / "…, which reached Lubumbashi on 18/10/2026: KTG-2026-0044 is delivered with it, without a draft goods
+    receipt. Use Receive goods… on it." / "…, which is cancelled: they go back to where they were before it." The
     notification after it is the server's (`splitUndone` on the answer, from the procedure's one row, read in its
     transaction): "MOV-2026-000073 cancelled, the split undone: KTG-2026-0030 and KTG-2026-0031 are back on
     MOV-2026-000044, still in progress." / "…are back on MOV-2026-000044, arrived at Dar es Salaam on 17/10/2026 with
