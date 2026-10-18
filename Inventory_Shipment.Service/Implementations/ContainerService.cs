@@ -42,6 +42,16 @@ public sealed class ContainerService : IContainerService
                 "status must be 1-8 or Draft, Confirmed, InTransit, AtPort, Cleared, Offloaded, Closed, Cancelled.", "VALIDATION");
         }
 
+        // (81) The "Next step" filter: one of the to-do list's values, case aside; anything else is a typo, not "no filter".
+        if (!string.IsNullOrWhiteSpace(query.NextStep))
+        {
+            if (ContainerNextStepKinds.Normalize(query.NextStep, ContainerNextStepKinds.ListFilters) is null)
+            {
+                return Result<PagedResult<ContainerListDto>>.Failure(
+                    ErrorType.Validation, "nextStep must be Ship, StartPlanned, Complete, NextLeg or Receive.", "VALIDATION");
+            }
+        }
+
         var (items, totalCount) = await _containers.SearchAsync(query, cancellationToken);
 
         return Result<PagedResult<ContainerListDto>>.Success(new PagedResult<ContainerListDto>

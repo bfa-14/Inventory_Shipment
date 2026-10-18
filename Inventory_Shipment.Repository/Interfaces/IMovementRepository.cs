@@ -42,6 +42,22 @@ public interface IMovementRepository
         ShipContainersRequest request, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// (81) logistics.usp_Container_NextStepPreview: the next step of each container (an unknown id too, Found false),
+    /// the groups that can move on together and the ones that cannot, by reason. canConfirm: the reader holds
+    /// containers.confirm (a draft that never moved can ship only then).
+    /// </summary>
+    Task<NextStepPreviewDto> NextStepPreviewAsync(
+        IEnumerable<int> containerIds, bool canConfirm, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (81) logistics.usp_Movement_AddLeg: a new leg for a group of containers from where they are, started or planned,
+    /// one movement or one per container, through usp_Movement_Save and usp_Movement_SetStatus - all or nothing, the
+    /// refusal naming the container. One row per movement made.
+    /// </summary>
+    Task<IReadOnlyList<AddedLegDto>> AddLegAsync(
+        AddLegCommand command, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// logistics.usp_Movement_ContainerCandidates: one page (at most 200) and the count across the pages.
     /// 70006 / 70005 for a movement not found or no longer editable, 70000 without a From.
     /// </summary>

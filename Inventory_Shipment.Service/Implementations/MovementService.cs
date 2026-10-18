@@ -10,7 +10,7 @@ using static Inventory_Shipment.Service.Implementations.LogisticsRuleFailures;
 
 namespace Inventory_Shipment.Service.Implementations;
 
-public sealed class MovementService : IMovementService
+public sealed partial class MovementService : IMovementService
 {
     private const string NotFoundMessage = "Movement not found.";
 

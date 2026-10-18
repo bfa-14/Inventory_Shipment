@@ -64,6 +64,9 @@ public sealed class ContainerRepository : IContainerRepository
             PageNumber = query.Page,
             query.PageSize,
             query.DeliveredNotReceived,
+            // (81) the canonical value the procedure compares (Ship, StartPlanned, Complete, NextLeg, Receive), else null;
+            // the service refuses anything else before this
+            NextStep = ContainerNextStepKinds.Normalize(query.NextStep, ContainerNextStepKinds.ListFilters),
         };
 
         await using var connection = _connectionFactory.Create();

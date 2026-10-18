@@ -27,10 +27,12 @@ public sealed class ContainersController : ControllerBase
     private const string SpreadsheetContentType = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
 
     private readonly IContainerService _containers;
+    private readonly IMovementService _movements;
 
-    public ContainersController(IContainerService containers)
+    public ContainersController(IContainerService containers, IMovementService movements)
     {
         _containers = containers;
+        _movements = movements;
     }
 
     [HttpGet]
@@ -40,6 +42,56 @@ public sealed class ContainersController : ControllerBase
         [FromQuery] ContainerQuery query, CancellationToken cancellationToken)
     {
         var result = await _containers.SearchAsync(query, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /* ── (81) the next step: "Next step..." for one container or many ──────────────────────────── */
+
+    /// <summary>
+    /// The next step of one container: kind (Done, Complete, OpenReceipt, StartPlanned, Ship, Receive, NextLeg) with the
+    /// reason when it cannot be taken, where it is, the movement it concerns (with its rowVersion), the proposed new leg
+    /// (proposalSource History / Ports / Stages / None) and the "Then" leg after a movement to complete. 404 NOT_FOUND.
+    /// </summary>
+    [HttpGet("{id:int}/next-step")]
+    [HasPermission(Permissions.Containers.View)]
+    [ProducesResponseType<ContainerNextStepDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<ContainerNextStepDto>> NextStep(int id, CancellationToken cancellationToken)
+    {
+        var result = await _movements.GetNextStepAsync(id, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// The "Next step..." dialog for ticked containers (1 to 5,000): { containers, groups, blocked } - one row per
+    /// container with its groupKey, the groups that move on together by (step, movement, type, From, To), and the ones
+    /// that cannot move on by reason. Nothing is saved.
+    /// </summary>
+    [HttpPost("next-step/preview")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<NextStepPreviewDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<NextStepPreviewDto>> PreviewNextStep(
+        [FromBody] NextStepPreviewRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _movements.PreviewNextStepAsync(request, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// Applies the groups, each on its own and all or nothing inside: one result per group, in order - { key, kind, ok,
+    /// code, message, containerIds, movements, thenMovements, goodsReceipts, goodsReceiptsMessage, warnings }. A refused
+    /// group is ok false with the database's message and code (CONTAINER_BUSY, START_BEFORE_PREVIOUS_LEG, CONCURRENCY,
+    /// NEXT_STEP_CHANGED...); 200 whatever the groups gave. 400 VALIDATION for a request that cannot be read.
+    /// </summary>
+    [HttpPost("next-step")]
+    [HasPermission(Permissions.Containers.MovementsManage)]
+    [ProducesResponseType<IReadOnlyList<NextStepGroupResultDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<IReadOnlyList<NextStepGroupResultDto>>> ApplyNextStep(
+        [FromBody] ApplyNextStepRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _movements.ApplyNextStepAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

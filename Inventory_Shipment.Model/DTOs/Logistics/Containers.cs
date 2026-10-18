@@ -235,6 +235,41 @@ public abstract record ContainerStatusFlags
         _ => null,
     };
 
+    /* (81) THE NEXT STEP (logistics.fn_Container_NextStepKind, fn_Container_NextLegProposal): the label of the container
+       page's button, the list's "Next step" column and its row menu, from the same columns. ShipStep above stays for the
+       clients of phase 1. */
+
+    /// <summary>
+    /// See <see cref="ContainerNextStepKinds"/>: Done, Complete, OpenReceipt, StartPlanned, Ship, Receive or NextLeg. The
+    /// rights (containers.movements.manage, containers.confirm for a draft, the goods receipt rights) are the page's.
+    /// </summary>
+    public string? NextStepKind { get; init; }
+
+    /// <summary>Why the step cannot be taken ("Received into Lubumbashi Warehouse: the journey is over."), null when it can.</summary>
+    public string? NextStepBlockedReason { get; init; }
+
+    /// <summary>The proposed new leg (Ship, NextLeg): "Inland transport to Kasumbalesa...", "Customs clearance at Kasumbalesa...".</summary>
+    public int? ProposedTypeId { get; init; }
+
+    public string? ProposedTypeCode { get; init; }
+    public string? ProposedTypeName { get; init; }
+    public string? ProposedStage { get; init; }
+    public int? ProposedFromPlaceId { get; init; }
+    public string? ProposedFromName { get; init; }
+
+    /// <summary>Null on a leg that moves: "Next leg from {place}..." (no To to suggest).</summary>
+    public int? ProposedToPlaceId { get; init; }
+
+    public string? ProposedToName { get; init; }
+
+    /// <summary>History, Ports, Stages or None (<see cref="NextLegProposalSources"/>).</summary>
+    public string? ProposalSource { get; init; }
+
+    public int? ProposalLegs { get; init; }
+
+    /// <summary>A stay (Port, Customs, Border): "{Type} at {place}...".</summary>
+    public bool? ProposedIsStay { get; init; }
+
     /// <summary>
     /// Protected, so it stays out of the JSON: each shape says it with its own column. No flag reads it since the
     /// offload is retired (script 65); the columns stay, the page shows them.
@@ -882,6 +917,44 @@ public sealed record ContainerDto : ContainerStatusFlags
     /// <summary>Newest first.</summary>
     public IReadOnlyList<ContainerAuditDto> Audit { get; init; } = [];
 
+    /* (81) The next step of the container page (fn_Container_NextStep), beside the columns every shape has. */
+
+    /// <summary>Never moved, with dispatch / arrival dates typed by hand: its first leg replaces them (the orange alert).</summary>
+    public bool? HasTypedDates { get; init; }
+
+    /// <summary>Sea, Border or Inland: the kind of the place it is at.</summary>
+    public string? PlaceKind { get; init; }
+
+    /// <summary>The stage of its last leg; null when it never moved.</summary>
+    public string? LastStage { get; init; }
+
+    /// <summary>Complete: the movement in progress; StartPlanned: the planned one.</summary>
+    public int? NextStepMovementId { get; init; }
+
+    public string? NextStepMovementNo { get; init; }
+
+    /// <summary>"Arrived at {To}..." (Sea, Transit), "Cleared customs at {place}..." (Customs), "Delivered to {To}..." ...</summary>
+    public string? NextStepMovementStage { get; init; }
+
+    public string? NextStepMovementTypeName { get; init; }
+    public string? NextStepMovementToName { get; init; }
+    public int? NextStepMovementContainerCount { get; init; }
+
+    /// <summary>The earliest date of the step: Complete the movement's start, StartPlanned the end of the previous leg.</summary>
+    public DateTime? NextStepNotBefore { get; init; }
+
+    /// <summary>The leg proposed after the movement in progress (the "Then" box of the arrival dialog).</summary>
+    public int? ThenTypeId { get; init; }
+
+    public string? ThenTypeName { get; init; }
+    public string? ThenStage { get; init; }
+    public int? ThenToPlaceId { get; init; }
+    public string? ThenToName { get; init; }
+    public bool? ThenIsStay { get; init; }
+
+    /// <summary>Ticked by default: a stay at the arrival place, or the leg after Customs / Border.</summary>
+    public bool? ThenDefault { get; init; }
+
     protected override bool FullyInvoiced => IsFullyInvoiced;
 }
 
@@ -1222,6 +1295,13 @@ public sealed class ContainerQuery
     /// movement or a draft goods receipt - the goods are at the warehouse and not in stock yet.
     /// </summary>
     public bool DeliveredNotReceived { get; init; }
+
+    /// <summary>
+    /// (81) The logistics to-do list, by next step: Ship ("Start shipment"), StartPlanned ("Start planned leg"), Complete
+    /// ("Arrival due": a leg in progress), NextLeg ("Next leg to plan"), Receive ("Receive goods": delivered, not received,
+    /// open drafts included). Worked out on the server, so it holds across the pages.
+    /// </summary>
+    public string? NextStep { get; init; }
 
     public string SortBy { get; init; } = "OrderDate";
     public string SortDir { get; init; } = "desc";
