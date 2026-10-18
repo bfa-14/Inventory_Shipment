@@ -33,11 +33,13 @@ selection bar moves 300 containers at once, grouped by step; the Containers list
 logistics to-do list); only the last leg of a container can be cancelled (glossary, 3.5, 4.6, 5.4).*
 
 *Updated on 18 October 2026 for **the Shipments board and a movement that arrives in parts** (script 82, shipment
-phase 3; the database and the API, the pages come with the web step): Logistics › Shipments puts every container on its
-way in one column by stage (At supplier, At sea, At port, On the road, At border / customs, Delivered, to receive; the
-received ones of 30 days on a switch), grouped by ship, leg or place, each card with its next step; a movement in
-progress can be completed for only some of its containers, which get their own movement with the same start; the
-container page's estimated cost follows the cost rule of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7, 5.4).*
+phase 3): Logistics › Shipments puts every container on its way in one column by stage (At supplier, At sea, At port, On
+the road, At border / customs, Delivered, to receive; the received ones of 30 days on a switch), grouped by ship, leg or
+place, each card with its next step, a whole ship or column ticked at once into the Containers list's selection bar, a
+List view for hundreds, one column at a time on a phone; a movement in progress can be completed for only some of its
+containers ("Which containers?", "Only the 20 ticked", "Only some containers arrived"), which get their own movement with
+the same start; the order's and the invoice's Containers cards got a row "…" menu with the next step; the container
+page's estimated cost follows the cost rule of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7, 5.4).*
 
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
@@ -256,8 +258,7 @@ per user in Settings › Purchase approval (see 4.3).
 - **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, BIVAC Out, Stock Valuation, Shortages
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
-- **Logistics:** Shipments (script 82: first in the menu; its page comes with the web step), Containers, Movements,
-  Container Charges, Tracking
+- **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
 - **Sales:** Sales Invoices, Sales Profit, Receipts, Customer Statement, Out-of-Stock Sales
 - **Backoffice › Master Data:** Branches / Sites, Warehouses, Currencies, Exchange Rates, Item Families, Brands,
   Parties, Unit Types, Ports, Attachment Types, Movement Types, Payment Methods, Cash / Bank Accounts
@@ -925,10 +926,11 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     70018 and the future-date rule hold. The step is checked again first: a dialog left open while someone else moved
     the containers gets "…: open Next step… again." (a new leg too when they are at another place now: "KTG-… is now at
     Kasumbalesa: open Next step… again."), and a vessel or truck leg from a place to itself is refused (70000, "The
-    departure and destination are the same place: choose the To."). The order's and the invoice's Containers cards and the Tracking
-    board have no row menu, so no entry there: their rows open the container.
-- **Shipments board and partial arrival** **[Implemented – script 82, shipment phase 3: the database and the API; the
-  pages come with the web step]** (the owner: "make shipment more user friendly and flexible"):
+    departure and destination are the same place: choose the To."). The Tracking board has no row menu, so no entry
+    there: its rows open the container. (The order's and the invoice's Containers cards got their row menu with script
+    82, below.)
+- **Shipments board and partial arrival** **[Implemented – script 82, shipment phase 3]** (the owner: "make shipment
+  more user friendly and flexible"):
   - **The board** (`logistics.usp_Shipment_Board`, `GET api/logistics/shipments/board`, `containers.shipments.view`):
     every container from Draft to Cleared, and with "Show received (30 days)" the ones received since; never a
     cancelled one. Its column is decided in one place (`logistics.fn_Container_BoardPhase`) from the ship state of its
@@ -943,6 +945,25 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     place (where it stands, or its leg's From or To), late only, with a planned leg. No paging. Measured: 5,000 open
     containers in a database of 50,000 in about 1.6 s (1.0–1.2 s when the received journeys spread over five years);
     two thirds of it is the usual next leg of phase 2 (`fn_Movement_NextLegHistory`, once per place and last stage).
+    The answer carries only what the page reads, without its empty fields: 3.6 MB of JSON for 5,000 cards (11.9 MB
+    before, 45% of it nulls; 0.06 MB compressed instead of 0.16 MB).
+  - **The page**: each column says its containers and pieces and has "Select all (n)"; each group folds and has its own
+    "Select all" (one tick takes a whole ship); a card shows its ref and container no., type, items ("84 pcs
+    TVS-APACHE-160"), supplier and order, where it is (the leg and its ETA, the stay, since when), the badges (Late, Free
+    time over, Draft, No container no., Cleared, GRN draft) and "Next step: …" - phase 2's dialog. Clicking a card opens
+    a drawer with its route, its next step and "Open container". The ticked cards go into the Containers list's own
+    selection bar ("Next step…", "Container numbers…", "Add charge…"), kept across the reloads. 50 cards a column, then
+    "Show 50 more"; "Board" / "List" shows the same rows as one table for hundreds; a phone shows one column at a time
+    from a row of tabs with the counts. The board reads itself again after every action, with Refresh, and a minute
+    after its last answer while the tab is visible and no dialog is open. No drag-and-drop: every move is a movement with
+    its dates, through Next step.
+  - **Where to split**: a container's Next step dialog asks "Which containers?" when its movement carries others ("All
+    12 containers of MOV-2026-000046" by default, or "Only KTG-2026-0031: it leaves MOV-2026-000046 and gets its own
+    movement"); the bulk dialog offers "Complete MOV-… for all its 30 containers" / "Only the 20 ticked (they get their
+    own movement)"; the movement page's Complete has "Only some containers arrived" with a checklist of its containers,
+    each that cannot leave said why. The new movement shows "Split from MOV-…" and both movements' history the split.
+  - **Row menus**: each container row of the order's and the invoice's Containers cards has a "…" menu with "Next step:
+    {label}" (phase 2's dialog) and "Open container".
   - **Only part of a movement arrived** (`logistics.usp_Movement_SplitContainers`; `splitOff` on a Complete group of
     `POST api/logistics/containers/next-step`; `POST api/logistics/movements/{id}/complete-some` for the movement
     page): see the glossary "Split". The completion is the movement's own Complete (`MovementService.SetStatusAsync`):
