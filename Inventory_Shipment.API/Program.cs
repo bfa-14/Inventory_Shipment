@@ -210,6 +210,7 @@ using (var scope = app.Services.CreateScope())
 
 // ----- Pipeline -----
 app.UseExceptionHandler();      // unhandled exceptions -> RFC 9457 problem details, no stack traces leak
+app.UseClientAbort();           // inside it: a call the client aborted is a 499 at Information, not a logged failure
 app.UseStatusCodePages();
 
 if (!app.Environment.IsDevelopment())

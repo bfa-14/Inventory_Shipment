@@ -883,7 +883,7 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - **Many containers** ("Next step…" in the selection bar, `logistics.usp_Container_NextStepPreview`): "Next step - 300
     containers", one row per group (same step, movement, type, From and To) with its count, orders and suppliers, for a
     new leg "One movement for the group" / "One per container" (default one per container for road legs: Transit,
-    Border, Customs, Delivery - "each truck arrives on its own day") and "Edit…" (type, To, carrier, vehicle / vessel,
+    Border, Customs, Delivery - "each truck arrives on its own day", "each container is cleared on its own day") and "Edit…" (type, To, carrier, vehicle / vessel,
     voyage, B/L, ETA, notes, a truck no. and ETA per container); a Complete of only part of a movement says the others
     arrive too; one date for every group; "Cannot move on" by reason ("Received, closed or cancelled (12)", "Draft - you
     may not confirm containers (3)", "A draft goods receipt waits: Open goods receipt (draft) (2)"; a missing proposal
