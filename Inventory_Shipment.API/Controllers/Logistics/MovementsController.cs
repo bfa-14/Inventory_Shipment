@@ -153,7 +153,11 @@ public sealed class MovementsController : ControllerBase
             : this.ToProblem(result);
     }
 
-    /// <summary>409 CONTAINER_NOT_AT_FROM when a container, added or kept, is not at the From.</summary>
+    /// <summary>
+    /// 409 CONTAINER_NOT_AT_FROM when a container, added or kept, is not at the From, or already travelled further with
+    /// a later movement (script 80). A movement in progress: 400 VALIDATION for a start date in the future, 409
+    /// START_BEFORE_PREVIOUS_LEG when it is before the previous leg of one of its containers ended (script 80).
+    /// </summary>
     [HttpPut("{id:int}")]
     [HasPermission(Permissions.Containers.MovementsManage)]
     [ProducesResponseType<MovementDto>(StatusCodes.Status200OK)]

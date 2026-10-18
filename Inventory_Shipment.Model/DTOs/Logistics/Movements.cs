@@ -169,7 +169,10 @@ public abstract record MovementStatusFlags
     /// <summary>The refusal Start would give now (no container, a draft, a container travelling, its previous leg open, not at the From); null when it can start.</summary>
     public string? StartBlockedReason { get; init; }
 
-    /// <summary>The earliest start date: the latest end of its containers' previous movements (70018 before it); null when none.</summary>
+    /// <summary>
+    /// The earliest start date: the latest end of its containers' previous movements (70018 before it); null when none.
+    /// Also on a movement in progress, whose start date the page lets the user change (the Save holds it to this date).
+    /// </summary>
     public DateTime? StartNotBefore { get; init; }
 
     /// <summary>The movement that ended on <see cref="StartNotBefore"/>, and where.</summary>

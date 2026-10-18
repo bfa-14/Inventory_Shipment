@@ -72172,10 +72172,17 @@ GO
      1. NEW logistics.fn_Movement_StartBlock: why a PLANNED movement cannot start yet (the refusal Start would give:
         no container, a draft or received container, one travelling with another movement, the previous leg not
         completed, a container not at the From) and the earliest start date (the latest end of its containers'
-        previous legs). The Movements list, the movement page and the container's button say it before the click.
+        previous legs; for a movement in progress too, whose start date stays editable). The Movements list, the
+        movement page and the container's button say it before the click.
+     1b. logistics.fn_ContainerFitForMovement (the place rules of Save, Start and the pickers): a container that already
+        travelled with a LATER movement (in progress or completed) no longer fits an older planned or in-progress one.
+        "Previous" is the movement with the highest Id below, so on an older movement the container was checked against
+        a stale leg: it could be added to it and started from a place it had already left. "Already travelled further
+        with MOV-2026-000005 (Dar es Salaam -> Kasumbalesa), a later movement: take it off this one." (70015).
      2. NEW logistics.fn_Container_ShipState: where a container is (the end of its latest movement, else its port of
-        loading), the movement in progress that carries it, its next planned movement (and why it cannot start yet),
-        its last completed movement, and how many movements it has. The API turns it into the container's next step.
+        loading), the movement in progress that carries it, its next planned movement (after the latest leg it started
+        or made: an older planned one is no longer its next step, and 1b refuses it) and why it cannot start yet, its
+        last completed movement, and how many movements it has. The API turns it into the container's next step.
      3. logistics.usp_Container_Search: + the ship state columns. The Movement column can now show a planned next
         movement ("Planned: MOV-..."): planned movements were never shown, yet they decide where a container "is".
      4. logistics.usp_Container_Get: + the same columns on the header (set 1); the other sets are unchanged.
@@ -72187,6 +72194,10 @@ GO
           - A start or end date in the future (70000), the owner's decision: a start and an arrival record facts. One
             day of tolerance, as for the document dates (the reader's date against the server's UTC date).
         Cancel is unchanged.
+     6b. logistics.usp_Movement_Save: the same two rules for the start date of a movement IN PROGRESS, which the movement
+        page lets the user change after Start: never in the future (70000), never before the previous leg of one of its
+        containers ended (70018). Otherwise a start made today could be moved to next month, or before the container
+        got to the From, with a plain Save.
      7. logistics.usp_Movement_ShipContainers: the "empty From / To = the containers' ports" default only for
         containers that never moved. A container that moved leaves from where it is: an empty From is the place every
         selected container is at (the end of its latest movement; a container that never moved is at its port of
@@ -72198,7 +72209,8 @@ GO
 
    Procedures re-created from their current bodies: logistics.usp_Container_Search (78), logistics.usp_Container_Get
    (65), logistics.usp_Movement_Search (27), logistics.usp_Movement_Get (79), logistics.usp_Movement_SetStatus (65),
-   logistics.usp_Movement_ShipContainers (28).
+   logistics.usp_Movement_Save (53), logistics.usp_Movement_ShipContainers (28); the function
+   logistics.fn_ContainerFitForMovement (53).
    New: logistics.fn_Movement_StartBlock, logistics.fn_Container_ShipState, logistics.usp_Movement_JoinCandidates.
    New error: 70018 a movement started before the previous leg of one of its containers ended.
 
@@ -72223,12 +72235,14 @@ GO
 -- movement in progress, 70012; a previous movement not completed, 70016; a container not at the From, 70015), NULL when
 -- it can start; and the earliest start date: the latest end date of its containers' previous movements (70018), with
 -- that movement and where it ended. The future-date rule is the dialog's (any date up to today).
+-- A movement IN PROGRESS gets a row too, with no Reason: its start date stays editable on the movement page, and
+-- usp_Movement_Save holds it to the same earliest start (70018), which the page shows on the field before the Save.
 CREATE OR ALTER FUNCTION logistics.fn_Movement_StartBlock (@MovementId INT)
 RETURNS TABLE
 AS
 RETURN
 SELECT m.Id AS MovementId,
-       Reason = CAST(COALESCE(
+       Reason = CAST(CASE WHEN m.Status = 1 THEN COALESCE(
            CASE WHEN NOT EXISTS (SELECT 1 FROM logistics.MovementContainers x WHERE x.MovementId = m.Id)
                 THEN N'Tick at least one container before starting.' END,
            (SELECT TOP (1) N'Container ' + c.ContainerRef + CASE WHEN c.Status = 1 THEN N' is not confirmed yet.'
@@ -72259,7 +72273,7 @@ SELECT m.Id AS MovementId,
             INNER JOIN logistics.fn_ContainerFitForMovement(m.Id, m.FromPlaceId, m.ToPlaceId, m.MovementTypeId) p ON p.ContainerId = mc.ContainerId
             INNER JOIN masterdata.Ports f     ON f.Id = m.FromPlaceId
             WHERE mc.MovementId = m.Id AND p.Fits = 0
-            ORDER BY c.ContainerRef)) AS NVARCHAR(400)),
+            ORDER BY c.ContainerRef)) END AS NVARCHAR(400)),
        StartNotBefore = nb.EndDate, StartNotBeforeMovementNo = nb.MovementNo, StartNotBeforePlaceName = nb.PlaceName
 FROM logistics.Movements m
 OUTER APPLY (SELECT TOP (1) pm.EndDate, pm.MovementNo, PlaceName = tp.PortName
@@ -72269,7 +72283,58 @@ OUTER APPLY (SELECT TOP (1) pm.EndDate, pm.MovementNo, PlaceName = tp.PortName
              INNER JOIN masterdata.Ports tp    ON tp.Id = pm.ToPlaceId
              WHERE mc.MovementId = m.Id AND pm.Status = 3 AND pm.EndDate IS NOT NULL
              ORDER BY pm.EndDate DESC, pm.Id DESC) nb
-WHERE m.Id = @MovementId AND m.Status = 1;
+WHERE m.Id = @MovementId AND m.Status IN (1, 2);
+GO
+
+/* ================================================================== 1b. The place rules: never behind a leg already made */
+
+-- Re-created (80) from the body of script 53: + a container that already travelled with a LATER movement (in progress
+-- or completed) does not fit an older planned or in-progress one. "Previous" is the movement with the highest Id BELOW
+-- @MovementId, so on an older movement the container was judged by a leg it had long finished: it could be added to it
+-- and started from a place it had already left, two journeys at once. Save (70015), Start (70015), the movement page's
+-- picker and Start's reason on the lists (fn_Movement_StartBlock) all read this one function. A LATER movement only
+-- planned still fits (planning ahead), and a completed or cancelled @MovementId is never judged (its history stays).
+-- One row per container for a movement (@MovementId NULL = a new one) leaving @FromPlaceId for @ToPlaceId with the
+-- type @MovementTypeId: where the container is (its previous movement's To, else its port of loading), whether it
+-- fits the movement and why not. Note only on a container that never moved and fits.
+CREATE OR ALTER FUNCTION logistics.fn_ContainerFitForMovement (@MovementId INT, @FromPlaceId INT, @ToPlaceId INT, @MovementTypeId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT p.ContainerId, p.PreviousMovementId, p.PreviousMovementNo, p.PreviousStatus,
+       PlaceId   = CASE WHEN p.PreviousMovementId IS NULL THEN p.PortOfLoadingId ELSE p.PlaceId END,
+       PlaceName = CASE WHEN p.PreviousMovementId IS NULL THEN p.PortOfLoadingName ELSE p.PlaceName END,
+       p.PortOfLoadingId, p.PortOfLoadingName, s.IsOrigin,
+       Fits = CAST(CASE WHEN r.Reason IS NULL THEN 1 ELSE 0 END AS BIT),
+       r.Reason,
+       Note = CAST(CASE WHEN r.Reason IS NULL AND p.PreviousMovementId IS NULL
+                        THEN ISNULL(N'Not moved yet - port of loading: ' + p.PortOfLoadingName + N'.',
+                                    N'No port of loading on this container: check it.') END AS NVARCHAR(200))
+FROM logistics.fn_ContainerPlaceForMovement(@MovementId) p
+CROSS JOIN (SELECT IsOrigin = CAST(CASE WHEN EXISTS (SELECT 1 FROM masterdata.MovementTypes t
+                                                     WHERE t.Id = @MovementTypeId AND t.Stage = N'Origin') THEN 1 ELSE 0 END AS BIT),
+                   FromName = (SELECT f.PortName FROM masterdata.Ports f WHERE f.Id = @FromPlaceId)) s
+-- (80) the latest movement it started or made after this one (only while this one is planned or in progress)
+OUTER APPLY (SELECT TOP (1) lm.MovementNo, LegFrom = lf.PortName, LegTo = lt.PortName
+             FROM logistics.MovementContainers lc
+             INNER JOIN logistics.Movements lm ON lm.Id = lc.MovementId
+             INNER JOIN masterdata.Ports lf    ON lf.Id = lm.FromPlaceId
+             INNER JOIN masterdata.Ports lt    ON lt.Id = lm.ToPlaceId
+             WHERE lc.ContainerId = p.ContainerId AND lm.Id > @MovementId AND lm.Status IN (2, 3)
+               AND EXISTS (SELECT 1 FROM logistics.Movements om WHERE om.Id = @MovementId AND om.Status IN (1, 2))
+             ORDER BY lm.Id DESC) ll
+CROSS APPLY (SELECT Reason = CAST(CASE
+                 WHEN ll.MovementNo IS NOT NULL                                                      -- (80)
+                     THEN N'Already travelled further with ' + ll.MovementNo + N' (' + ll.LegFrom + N' ' + NCHAR(8594) + N' '
+                          + ll.LegTo + N'), a later movement: take it off this one.'
+                 WHEN p.PreviousMovementId IS NOT NULL AND s.IsOrigin = 1
+                     THEN N'Loading at the supplier is only for containers that have not moved yet.'
+                 WHEN p.PreviousMovementId IS NOT NULL AND p.PlaceId <> @FromPlaceId
+                     THEN N'At ' + p.PlaceName + N' (end of ' + p.PreviousMovementNo + N'), not at ' + s.FromName + N'.'
+                 WHEN p.PreviousMovementId IS NULL AND p.PortOfLoadingId <> @FromPlaceId
+                      AND NOT (s.IsOrigin = 1 AND p.PortOfLoadingId = ISNULL(@ToPlaceId, 0))
+                     THEN N'Not moved yet: it starts from its port of loading ' + p.PortOfLoadingName + N'.' END
+             AS NVARCHAR(300))) r;
 GO
 
 /* ================================================================== 2. Where a container is, and its movements */
@@ -72278,8 +72343,10 @@ GO
 -- the highest Id. Place = the To of that movement (planned, in progress or completed), else the port of loading of a
 -- container that never moved (NULL when it has none: any From fits it). PlaceSince = its end date once completed.
 -- Active = the movement in progress that carries it (one at most: 70012). Planned = its next planned movement (the
--- lowest Id), with why it cannot start yet and its earliest start (fn_Movement_StartBlock). Last = its last completed
--- movement. The API makes the next step of it (ContainerStatusFlags.ShipStep).
+-- lowest Id ABOVE the latest movement it started or made: an older planned one would send it back to a place it has
+-- left, and fn_ContainerFitForMovement refuses it), with why it cannot start yet and its earliest start
+-- (fn_Movement_StartBlock). Last = its last completed movement. The API makes the next step of it
+-- (ContainerStatusFlags.ShipStep).
 CREATE OR ALTER FUNCTION logistics.fn_Container_ShipState (@ContainerId INT)
 RETURNS TABLE
 AS
@@ -72309,6 +72376,10 @@ OUTER APPLY (SELECT TOP (1) m.Id, m.Status, m.ToPlaceId, m.EndDate
              WHERE mc.ContainerId = c.Id AND m.Status <> 4
              ORDER BY m.Id DESC) lm
 LEFT JOIN masterdata.Ports lp ON lp.Id = lm.ToPlaceId
+OUTER APPLY (SELECT MaxId = MAX(m.Id)
+             FROM logistics.MovementContainers mc
+             INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+             WHERE mc.ContainerId = c.Id AND m.Status IN (2, 3)) ls
 OUTER APPLY (SELECT TOP (1) m.Id, m.MovementNo, mt.TypeName, mt.Stage, FromName = fp.PortName, ToName = tp.PortName,
                     m.StartDate, m.Eta,
                     Cnt = (SELECT COUNT(*) FROM logistics.MovementContainers x WHERE x.MovementId = m.Id)
@@ -72327,7 +72398,7 @@ OUTER APPLY (SELECT TOP (1) m.Id, m.MovementNo, mt.TypeName, mt.Stage, FromName 
              INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
              INNER JOIN masterdata.Ports fp         ON fp.Id = m.FromPlaceId
              INNER JOIN masterdata.Ports tp         ON tp.Id = m.ToPlaceId
-             WHERE mc.ContainerId = c.Id AND m.Status = 1
+             WHERE mc.ContainerId = c.Id AND m.Status = 1 AND m.Id > ISNULL(ls.MaxId, 0)
              ORDER BY m.Id ASC) np
 OUTER APPLY logistics.fn_Movement_StartBlock(np.Id) sb
 OUTER APPLY (SELECT TOP (1) m.Id, m.MovementNo, m.EndDate
@@ -72848,7 +72919,8 @@ BEGIN
            DurationDays = CASE WHEN m.StartDate IS NOT NULL THEN DATEDIFF(DAY, m.StartDate, ISNULL(m.EndDate, @Today)) END,
            IsLate = CAST(CASE WHEN m.Status IN (1, 2) AND m.Eta < @Today THEN 1 ELSE 0 END AS BIT),
            m.CreatedAtUtc, cu.FullName AS CreatedByName, m.UpdatedAtUtc, m.RowVersion,
-           -- (80) a planned movement: why it cannot start yet (NULL = it can) and its earliest start date
+           -- (80) a planned movement: why it cannot start yet (NULL = it can) and its earliest start date; a movement in
+           -- progress: the earliest start date its edited start date may take (usp_Movement_Save, 70018)
            StartBlockedReason = sb.Reason, sb.StartNotBefore, sb.StartNotBeforeMovementNo, sb.StartNotBeforePlaceName,
            COUNT(*) OVER () AS TotalCount
     FROM logistics.Movements m
@@ -72905,7 +72977,8 @@ BEGIN
            m.RowVersion,
            -- (79) the GRN type's switch: does completing a Delivery draft the goods receipts (the Complete dialog says)
            GoodsReceiptsAutomatic = CAST(ISNULL((SELECT dt.AutoCreateOnDelivery FROM inventory.DocumentTypes dt WHERE dt.Code = N'GRN'), 1) AS BIT),
-           -- (80) a planned movement: why it cannot start yet (NULL = it can) and its earliest start date
+           -- (80) a planned movement: why it cannot start yet (NULL = it can) and its earliest start date; a movement in
+           -- progress: the earliest start date its edited start date may take (usp_Movement_Save, 70018)
            StartBlockedReason = sb.Reason, sb.StartNotBefore, sb.StartNotBeforeMovementNo, sb.StartNotBeforePlaceName
     FROM logistics.Movements m
     INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
@@ -73166,6 +73239,196 @@ BEGIN
         CLOSE ctn;
         DEALLOCATE ctn;
 
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6b. Save: the start date of a movement in progress */
+
+-- Re-created (80) from the body of script 53: + while the movement is in progress (the page lets its start date be
+-- changed after Start), the start date is refused in the future (70000) and before the previous leg of one of its
+-- containers ended (70018), in the words of usp_Movement_SetStatus. A planned movement has no start date: unchanged.
+-- Planned movements: everything editable. In progress: header and containers editable (start date too), no end date.
+CREATE OR ALTER PROCEDURE logistics.usp_Movement_Save
+    @Id              INT            = NULL,
+    @MovementTypeId  INT,
+    @FromPlaceId     INT,
+    @ToPlaceId       INT,
+    @PlannedDate     DATE           = NULL,
+    @StartDate       DATE           = NULL,   -- used only while in progress (Start sets it)
+    @Eta             DATE           = NULL,
+    @CarrierPartyId  INT            = NULL,
+    @VehicleOrVessel NVARCHAR(100)  = NULL,
+    @VoyageNo        NVARCHAR(30)   = NULL,
+    @Reference       NVARCHAR(50)   = NULL,
+    @Notes           NVARCHAR(1000) = NULL,
+    @ContainerIds    logistics.tvp_IdList READONLY,
+    @RowVersion      BINARY(8)      = NULL,
+    @UserId          INT            = NULL,
+    @NewId           INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @VehicleOrVessel = NULLIF(LTRIM(RTRIM(@VehicleOrVessel)), N'');
+    SET @VoyageNo = NULLIF(LTRIM(RTRIM(@VoyageNo)), N'');
+    SET @Reference = NULLIF(LTRIM(RTRIM(@Reference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+
+    IF NOT EXISTS (SELECT 1 FROM masterdata.MovementTypes WHERE Id = @MovementTypeId AND IsActive = 1)
+        THROW 70000, 'Movement type not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Ports WHERE Id = @FromPlaceId AND IsActive = 1)
+        THROW 70000, 'The departure place is not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Ports WHERE Id = @ToPlaceId AND IsActive = 1)
+        THROW 70000, 'The destination place is not found or inactive.', 1;
+    IF @CarrierPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @CarrierPartyId AND IsActive = 1)
+        THROW 70000, 'The carrier is not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM @ContainerIds) THROW 70000, 'Select at least one container.', 1;
+
+    DECLARE @Status TINYINT = 1, @MovementNo NVARCHAR(30);
+    IF @Id IS NOT NULL
+    BEGIN
+        SELECT @Status = Status, @MovementNo = MovementNo FROM logistics.Movements WHERE Id = @Id;
+        IF @Status IS NULL THROW 70006, 'Movement not found.', 1;
+        IF @Status NOT IN (1, 2) THROW 70005, 'A completed or cancelled movement can no longer be changed.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 70004, 'This movement was modified by another user. Reload the page and try again.', 1;
+        IF @Status = 2 AND @StartDate IS NULL THROW 70000, 'The start date of a movement in progress is required.', 1;
+    END
+    IF @Status = 1 SET @StartDate = NULL;
+    IF @StartDate IS NOT NULL AND @Eta IS NOT NULL AND @Eta < @StartDate THROW 70000, 'The ETA cannot be earlier than the start date.', 1;
+    IF @PlannedDate IS NOT NULL AND @Eta IS NOT NULL AND @Eta < @PlannedDate THROW 70000, 'The ETA cannot be earlier than the planned date.', 1;
+    -- (80) THE START DATE OF A MOVEMENT IN PROGRESS STAYS A FACT: the rule of its Start (usp_Movement_SetStatus), with the
+    -- same day of tolerance (the reader's date against the server's UTC date). Otherwise a start made today could be
+    -- moved to next month with a plain Save.
+    IF @Status = 2 AND @StartDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 70000, 'The start date cannot be in the future: start the movement on the day it really leaves.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = CASE WHEN c.Id IS NULL THEN N'A selected container no longer exists.'
+                               WHEN c.Status >= 6 THEN N'Container ' + c.ContainerRef + N' is already offloaded, closed or cancelled.'
+                               WHEN @Status = 2 AND c.Status = 1 THEN N'Container ' + c.ContainerRef + N' is not confirmed yet.' END
+    FROM @ContainerIds x
+    LEFT JOIN logistics.Containers c ON c.Id = x.Id
+    WHERE (c.Id IS NULL OR c.Status >= 6 OR (@Status = 2 AND c.Status = 1))
+      AND (@Id IS NULL OR NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @Id AND mc.ContainerId = x.Id))
+    ORDER BY c.ContainerRef;
+    IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+
+    IF @Status = 2
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is already travelling with movement ' + m.MovementNo + N'.'
+        FROM @ContainerIds x
+        INNER JOIN logistics.Containers c         ON c.Id = x.Id
+        INNER JOIN logistics.MovementContainers o ON o.ContainerId = x.Id AND o.MovementId <> @Id
+        INNER JOIN logistics.Movements m          ON m.Id = o.MovementId AND m.Status = 2
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70012, @Msg, 1;
+    END
+
+    -- the place rules (script 53): every container of the movement, added or kept, fits its From, To and stage
+    SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot leave from ' + f.PortName + N'. ' + p.Reason
+    FROM @ContainerIds x
+    INNER JOIN logistics.Containers c ON c.Id = x.Id
+    INNER JOIN logistics.fn_ContainerFitForMovement(@Id, @FromPlaceId, @ToPlaceId, @MovementTypeId) p ON p.ContainerId = x.Id
+    INNER JOIN masterdata.Ports f ON f.Id = @FromPlaceId
+    WHERE p.Fits = 0
+    ORDER BY c.ContainerRef;
+    IF @Msg IS NOT NULL THROW 70015, @Msg, 1;
+
+    -- (80) NOT BEFORE THE PREVIOUS LEG ENDED (70018), as at Start: an edited start date, or a container added to a
+    -- movement in progress, cannot make a container set off from a place before it got there.
+    IF @Status = 2
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot start ' + @MovementNo + N' before ' + pm.MovementNo
+                              + N' reached ' + tp.PortName + N' on ' + CONVERT(NVARCHAR(10), pm.EndDate, 103) + N'.'
+        FROM @ContainerIds x
+        INNER JOIN logistics.Containers c ON c.Id = x.Id
+        INNER JOIN logistics.fn_ContainerPlaceForMovement(@Id) p ON p.ContainerId = x.Id
+        INNER JOIN logistics.Movements pm ON pm.Id = p.PreviousMovementId
+        INNER JOIN masterdata.Ports tp    ON tp.Id = pm.ToPlaceId
+        WHERE pm.Status = 3 AND pm.EndDate > @StartDate
+        ORDER BY pm.EndDate DESC, c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70018, @Msg, 1;
+    END
+
+    DECLARE @Affected TABLE (ContainerId INT PRIMARY KEY);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        DECLARE @Label NVARCHAR(300);
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'MOV');
+            EXEC inventory.usp_DocumentType_NextNumber N'MOV', @Number OUTPUT, NULL;
+            INSERT INTO logistics.Movements (DocumentTypeId, MovementNo, MovementTypeId, FromPlaceId, ToPlaceId, PlannedDate, Eta,
+                                             CarrierPartyId, VehicleOrVessel, VoyageNo, Reference, Notes, Status, CreatedBy)
+            VALUES (@TypeId, @Number, @MovementTypeId, @FromPlaceId, @ToPlaceId, @PlannedDate, @Eta,
+                    @CarrierPartyId, @VehicleOrVessel, @VoyageNo, @Reference, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+        END
+        ELSE
+        BEGIN
+            UPDATE logistics.Movements
+            SET MovementTypeId = @MovementTypeId, FromPlaceId = @FromPlaceId, ToPlaceId = @ToPlaceId, PlannedDate = @PlannedDate,
+                StartDate = CASE WHEN Status = 2 THEN @StartDate ELSE NULL END, Eta = @Eta,
+                CarrierPartyId = @CarrierPartyId, VehicleOrVessel = @VehicleOrVessel, VoyageNo = @VoyageNo, Reference = @Reference,
+                Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+        END
+
+        SELECT @Label = m.MovementNo + N' ' + mt.TypeName + N': ' + fp.PortName + N' ' + NCHAR(8594) + N' ' + tp.PortName
+        FROM logistics.Movements m
+        INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+        INNER JOIN masterdata.Ports fp ON fp.Id = m.FromPlaceId
+        INNER JOIN masterdata.Ports tp ON tp.Id = m.ToPlaceId
+        WHERE m.Id = @Id;
+
+        INSERT INTO @Affected (ContainerId)
+        SELECT mc.ContainerId FROM logistics.MovementContainers mc
+        WHERE mc.MovementId = @Id AND NOT EXISTS (SELECT 1 FROM @ContainerIds x WHERE x.Id = mc.ContainerId)
+        UNION
+        SELECT x.Id FROM @ContainerIds x
+        WHERE NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @Id AND mc.ContainerId = x.Id);
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT a.ContainerId, N'Updated',
+               LEFT(CASE WHEN EXISTS (SELECT 1 FROM @ContainerIds x WHERE x.Id = a.ContainerId) THEN N'Added to movement ' ELSE N'Removed from movement ' END + @Label, 500),
+               @UserId
+        FROM @Affected a;
+
+        DELETE mc FROM logistics.MovementContainers mc
+        WHERE mc.MovementId = @Id AND NOT EXISTS (SELECT 1 FROM @ContainerIds x WHERE x.Id = mc.ContainerId);
+        INSERT INTO logistics.MovementContainers (MovementId, ContainerId)
+        SELECT @Id, x.Id FROM @ContainerIds x
+        WHERE NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @Id AND mc.ContainerId = x.Id);
+
+        -- in progress: the containers' status follows (all of them, the dates may have changed)
+        IF @Status = 2
+        BEGIN
+            INSERT INTO @Affected (ContainerId)
+            SELECT x.Id FROM @ContainerIds x WHERE NOT EXISTS (SELECT 1 FROM @Affected a WHERE a.ContainerId = x.Id);
+            DECLARE @Cid INT;
+            DECLARE ctn CURSOR LOCAL FAST_FORWARD FOR SELECT ContainerId FROM @Affected;
+            OPEN ctn;
+            FETCH NEXT FROM ctn INTO @Cid;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_Container_RefreshStatus @Cid;
+                FETCH NEXT FROM ctn INTO @Cid;
+            END
+            CLOSE ctn;
+            DEALLOCATE ctn;
+        END
+
+        SET @NewId = @Id;
         COMMIT TRANSACTION;
     END TRY
     BEGIN CATCH
@@ -73455,6 +73718,16 @@ SELECT m.MovementNo, b.Reason
 FROM logistics.Movements m
 CROSS APPLY logistics.fn_Movement_StartBlock(m.Id) b
 WHERE b.Reason IS NOT NULL;
+
+-- Planned or in-progress movements holding a container that already travelled further with a later movement (1b):
+-- their next Save or Start refuses it until it is taken off them.
+SELECT m.MovementNo, c.ContainerRef, p.Reason
+FROM logistics.Movements m
+INNER JOIN logistics.MovementContainers mc ON mc.MovementId = m.Id
+INNER JOIN logistics.Containers c          ON c.Id = mc.ContainerId
+CROSS APPLY logistics.fn_ContainerFitForMovement(m.Id, m.FromPlaceId, m.ToPlaceId, m.MovementTypeId) p
+WHERE m.Status IN (1, 2) AND p.ContainerId = mc.ContainerId AND p.Reason LIKE N'Already travelled further%'
+ORDER BY m.MovementNo, c.ContainerRef;
 
 PRINT 'Script 80 applied: shipment from the container - each container''s next step, planned movements shown, Start and Complete with real dates in travel order, the movements a container can join.';
 GO
