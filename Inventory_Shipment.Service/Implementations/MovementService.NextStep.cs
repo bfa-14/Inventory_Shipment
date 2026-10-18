@@ -525,6 +525,12 @@ public sealed partial class MovementService
                 return ([], $"{step}: splitOff is for a Complete step only (only part of a movement in progress arrived).");
             }
 
+            // (82) a split checks the movement's row version: one sent that cannot be one is refused, never skipped
+            if (group.SplitOff && IsInvalidRowVersion(group.RowVersion))
+            {
+                return ([], $"{step}: the row version is not valid. Reload the page and try again.");
+            }
+
             // A container takes one step at a time: in two groups, the second would run on what the first just changed.
             foreach (var id in ids.Distinct())
             {

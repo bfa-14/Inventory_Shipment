@@ -10,19 +10,31 @@ namespace Inventory_Shipment.Model.DTOs.Logistics;
 /// <summary>The columns of the board, left to right (logistics.fn_Container_BoardPhase).</summary>
 public static class ShipmentPhases
 {
-    /// <summary>Never started a leg, or a Loading at the supplier in progress. Grouped by port of loading.</summary>
+    /// <summary>
+    /// Never started a leg (and not followed by typed dates), or a Loading at the supplier in progress. Grouped by port of
+    /// loading.
+    /// </summary>
     public const string AtSupplier = "AtSupplier";
 
-    /// <summary>A Sea leg in progress, or a transshipment between two sea ports. Grouped by movement (the ship).</summary>
+    /// <summary>
+    /// A Sea leg in progress, or a transshipment between two sea ports. Grouped by movement (the ship); In Transit by typed
+    /// dates in one group of its own, "Followed by typed dates".
+    /// </summary>
     public const string AtSea = "AtSea";
 
-    /// <summary>A Port stay in progress, or its last completed leg ends at a sea port. Grouped by place.</summary>
+    /// <summary>
+    /// A Port stay in progress, or its last completed leg ends at a sea port, or At Port by typed dates (at its port of
+    /// destination). Grouped by place.
+    /// </summary>
     public const string AtPort = "AtPort";
 
     /// <summary>Inland transport, a border crossing or a delivery in progress. Grouped by leg, From → To (a border crossing by its place).</summary>
     public const string OnTheRoad = "OnTheRoad";
 
-    /// <summary>Customs in progress, or its last completed leg ends at a border post or an inland place. Grouped by place.</summary>
+    /// <summary>
+    /// Customs in progress, or its last completed leg ends at a border post or an inland place, or Cleared by typed dates
+    /// (at its port of destination, else its final destination). Grouped by place.
+    /// </summary>
     public const string AtBorderCustoms = "AtBorderCustoms";
 
     /// <summary>Its last completed leg is a Delivery, or a draft goods receipt waits; no goods receipt posted. Grouped by place.</summary>
@@ -149,6 +161,12 @@ public sealed record ShipmentCardDto
     /// today - the rule of the container page, the Tracking board and the Dashboard.
     /// </summary>
     public bool IsFreeTimeOver { get; init; }
+
+    /// <summary>
+    /// True: followed by typed dates (no leg started or completed; In Transit, At Port or Cleared by the dates typed on it),
+    /// "Followed by typed dates" instead of "Not moved yet". Null otherwise (left out of the answer).
+    /// </summary>
+    public bool? FollowedByTypedDates { get; init; }
 
     /* the shipment (logistics.fn_Container_ShipState): the names of ContainerListDto */
 

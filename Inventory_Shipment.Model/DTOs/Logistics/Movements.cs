@@ -643,9 +643,15 @@ public sealed class MovementSplitResultDto
     /// <summary>The containers still on the original movement, in progress.</summary>
     public int RemainingContainerCount { get; init; }
 
+    /// <summary>The containers' own movement, always given (<see cref="Movement"/> may be null when it could not be read back).</summary>
+    public int MovementId { get; init; }
+
+    public string MovementNo { get; init; } = string.Empty;
+
     /// <summary>
     /// The containers' own movement as it is now: completed (a Delivery's goodsReceipts, goodsReceiptsMessage and warnings
-    /// with it, as after a Complete), or in progress when its completion was refused.
+    /// with it, as after a Complete), or in progress when its completion was refused - null only when the database did
+    /// not answer the read after a failed completion (<see cref="MovementId"/> and <see cref="MovementNo"/> name it).
     /// </summary>
     public MovementDto? Movement { get; init; }
 

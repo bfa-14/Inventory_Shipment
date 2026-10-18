@@ -25,6 +25,10 @@ GO
           AtBorderCustoms a Customs clearance in progress
           OnTheRoad       any other leg in progress: inland transport, a border crossing, a delivery
           Delivered       no leg in progress, and a draft goods receipt waits or its last completed leg is a Delivery
+          AtSea, AtPort, AtBorderCustoms   no leg started or completed, FOLLOWED BY TYPED DATES (business-context 3.5
+                          item 11): the status its typed dates gave it - 3 In Transit at sea ("Followed by typed dates"),
+                          4 At Port at its port of destination, 5 Cleared at its port of destination, else its final
+                          destination (where usp_Container_RefreshStatus says it is)
           AtSupplier      no leg started or completed (planned legs do not move a container)
           AtPort          its last completed leg ends at a sea port (masterdata.Ports.Kind 'Sea')
           AtBorderCustoms its last completed leg ends at a border post or an inland place (any other kind)
@@ -47,26 +51,36 @@ GO
           70010 "Only a movement in progress can be split: MOV-2026-000046 is completed."
           70010 "Every container of MOV-2026-000046 is ticked: complete the movement itself."
           70010 "KTG-2026-0031 already has the next leg MOV-2026-000051 planned: complete MOV-2026-000046 for every
-                container, or take it off MOV-2026-000051 first." (a later leg: "previous" stays "the highest Id below")
+                container, or take it off MOV-2026-000051 first (it then gets a leg of its own once it has arrived)."
+                (a later leg: "previous" stays "the highest Id below". The split-off movement comes after that older
+                planned leg in the travel order, so a container taken off it travels on with a new leg of its own.)
           70000 a container not on the movement, none ticked, a completion date in the future or before the start
           70004 the movement was changed by another user;  70006 not found
-        Audit on both movements (logistics.MovementAudit) and on each container moved.
+        Audit on both movements (logistics.MovementAudit) and on each container moved. Its row is returned BEFORE the
+        commit: a deadlock retry of the call can never run a split that is already committed.
      6. logistics.usp_Container_NextStepPreview: + whether each container can be split off its movement in progress and
         why not (CanSplitOff, SplitOffBlockedReason; set 1), and whether a Complete group can complete only the ticked
         (SplitPossible, SplitBlockedReason; set 2): the dialogs offer "Only KTG-2026-0031" with the server's reason.
      7. logistics.usp_Movement_Get: + the movement it was split from (header), whether each of its containers can be split
         off and why not (set 2: the movement page's "Only some containers arrived"), and its history (set 5).
-     8. C2. THE CONTAINER PAGE'S ESTIMATE FOLLOWS THE COST RULE (purchase.fn_GoodsReceiptLine_TargetCost, script 79): NEW
-        logistics.fn_ContainerLine_FobEstimate - the pieces of a container line covered by invoices that change item
-        costs at their price, every other piece (not invoiced, or invoiced by an invoice that does not change item costs)
-        at the order price. usp_Container_Get reads it for the FOB total (set 1) and each line's FOB, source and landed
-        cost (set 2). A received line keeps its final cost.
+     8. C2. THE CONTAINER PAGE'S ESTIMATE FOLLOWS THE COST RULE AND THE MATCHING OF THE GOODS RECEIPT
+        (purchase.fn_GoodsReceiptLine_TargetCost, script 79; purchase.usp_GoodsReceipt_Rematch, script 64): NEW
+        logistics.fn_ContainerLine_FobEstimate - the pieces of invoices linked to the container line, then the order
+        line's posted invoice pieces no receipt holds (not linked to a container line, or left over by a container line
+        received short), first in first out over the order line's receipts in the order the matching takes them (its
+        posted goods receipts, then its containers still on their way in the order they were created); the pieces of
+        invoices that change item costs at their price, every other piece (not invoiced, or invoiced by an invoice that
+        does not change item costs) at the order price. usp_Container_Get reads it for the FOB total (set 1) and each
+        line's FOB, source and landed cost (set 2). A received line keeps its final cost.
+     9. A SPLIT VOYAGE COUNTS ONCE in the usual next leg (fn_Movement_NextLegHistory, phase 2): a split makes two movements
+        of one voyage (the same type, From, To and start); NEW logistics.fn_Movement_Voyage gives each movement its voyage
+        (the root of its chain of splits), and the history counts voyages, not movements.
 
    Re-created from their current bodies: logistics.usp_Container_NextStepPreview (81), logistics.usp_Movement_Get (80),
-   logistics.usp_Container_Get (81).
+   logistics.usp_Container_Get (81), logistics.fn_Movement_NextLegHistory (81).
    New: the column logistics.Movements.SplitFromMovementId, the table logistics.MovementAudit, the permission
    containers.shipments.view, logistics.fn_Container_BoardPhase, logistics.usp_Shipment_Board,
-   logistics.usp_Movement_SplitContainers, logistics.fn_ContainerLine_FobEstimate.
+   logistics.usp_Movement_SplitContainers, logistics.fn_ContainerLine_FobEstimate, logistics.fn_Movement_Voyage.
    No new error number: 70000, 70004, 70006, 70010.
 
    Requires script 81 (Schema.sql runs it first). Idempotent, additive: re-applied at every API start-up, and builds a
@@ -184,6 +198,9 @@ GO
 -- kinds of its From and To) and its last completed leg (stage, kind of its To; NULL = it never moved). The first that
 -- applies (see the header): a leg in progress decides first, as in fn_Container_NextStepKind. NULL for a cancelled
 -- container: it is never on the board. PhaseOrder is the column's place, left to right.
+-- A container FOLLOWED BY TYPED DATES (no leg started or completed, business-context 3.5 item 11) stands where its status
+-- says: only the dates typed on its header raise it above Confirmed (usp_Container_RefreshStatus), so 3 In Transit is at
+-- sea, 4 At Port at its port, 5 Cleared at border / customs.
 CREATE OR ALTER FUNCTION logistics.fn_Container_BoardPhase
 (
     @Status             TINYINT,
@@ -213,6 +230,10 @@ FROM (SELECT Phase = CAST(CASE
           WHEN @ActiveStage = N'Customs' THEN N'AtBorderCustoms'
           WHEN @ActiveStage IS NOT NULL THEN N'OnTheRoad'                 -- inland transport, a border crossing, a delivery
           WHEN @GoodsReceiptStatus = 1 THEN N'Delivered'                  -- a draft goods receipt waits
+          -- followed by typed dates: never started a leg, the status its typed dates gave it
+          WHEN @LastStage IS NULL AND @Status = 3 THEN N'AtSea'
+          WHEN @LastStage IS NULL AND @Status = 4 THEN N'AtPort'
+          WHEN @LastStage IS NULL AND @Status = 5 THEN N'AtBorderCustoms'
           WHEN @LastStage IS NULL THEN N'AtSupplier'                      -- never started a leg
           WHEN @LastStage = N'Delivery' THEN N'Delivered'
           WHEN @LastToKind = N'Sea' THEN N'AtPort'
@@ -226,7 +247,8 @@ GO
 -- only with @ShowReceived). The filters are the server's; NO PAGING (the board shows every container on its way).
 -- Groups in a column (GroupKey, GroupLabel; GroupOrder = their order in the column):
 --   At supplier      by port of loading ("Chennai"; "No port of loading")
---   At sea           by movement ("MOV-2026-000046 · MSC Aurora V.123 · Chennai → Dar es Salaam · ETA 20/10/2026")
+--   At sea           by movement ("MOV-2026-000046 · MSC Aurora V.123 · Chennai → Dar es Salaam · ETA 20/10/2026"); the
+--                    containers followed by typed dates in one group of their own, last ("Followed by typed dates")
 --   On the road      by leg, From → To ("Dar es Salaam → Kasumbalesa"): trucks travel one movement per container; a
 --                    border crossing (a stay) by its place ("Border crossing at Kasumbalesa")
 --   At port, At border / customs   by place
@@ -439,14 +461,25 @@ BEGIN
            IsLate = CAST(CASE WHEN b.ActiveMovementEta < @Today THEN 1 ELSE 0 END AS BIT),
            IsFreeTimeOver = CAST(CASE WHEN b.Status IN (4, 5) AND b.LastFreeDay IS NOT NULL
                                            AND b.LastFreeDay < ISNULL(b.DeliveredDate, @Today) THEN 1 ELSE 0 END AS BIT),
+           -- (a container followed by typed dates - In Transit to Cleared without a leg - has neither leg: at port, its
+           -- port of destination; cleared or received by hand, that port, else its final destination - where
+           -- usp_Container_RefreshStatus puts it)
            AtPlaceId = CASE ph.Phase WHEN N'AtSupplier' THEN b.PortOfLoadingId
-                                     WHEN N'AtPort' THEN COALESCE(b.ActiveMovementToPlaceId, b.LastToPlaceId)
-                                     WHEN N'AtBorderCustoms' THEN COALESCE(b.ActiveMovementToPlaceId, b.LastToPlaceId)
-                                     WHEN N'Delivered' THEN COALESCE(b.DeliveryPlaceId, b.LastToPlaceId, b.PortOfLoadingId) END,
+                                     WHEN N'AtPort' THEN COALESCE(b.ActiveMovementToPlaceId, b.LastToPlaceId, b.PortOfDestinationId)
+                                     WHEN N'AtBorderCustoms' THEN COALESCE(b.ActiveMovementToPlaceId, b.LastToPlaceId,
+                                                                           b.PortOfDestinationId, b.FinalDestinationId)
+                                     WHEN N'Delivered' THEN COALESCE(b.DeliveryPlaceId, b.LastToPlaceId,
+                                                                     CASE WHEN b.Status BETWEEN 3 AND 5
+                                                                          THEN COALESCE(b.PortOfDestinationId, b.FinalDestinationId) END,
+                                                                     b.PortOfLoadingId) END,
            AtPlaceName = CASE ph.Phase WHEN N'AtSupplier' THEN b.PortOfLoadingName
-                                       WHEN N'AtPort' THEN COALESCE(b.ActiveMovementToName, b.LastToName)
-                                       WHEN N'AtBorderCustoms' THEN COALESCE(b.ActiveMovementToName, b.LastToName)
-                                       WHEN N'Delivered' THEN COALESCE(b.DeliveryPlaceName, b.LastToName, b.PortOfLoadingName) END,
+                                       WHEN N'AtPort' THEN COALESCE(b.ActiveMovementToName, b.LastToName, b.PortOfDestinationName)
+                                       WHEN N'AtBorderCustoms' THEN COALESCE(b.ActiveMovementToName, b.LastToName,
+                                                                             b.PortOfDestinationName, b.FinalDestinationName)
+                                       WHEN N'Delivered' THEN COALESCE(b.DeliveryPlaceName, b.LastToName,
+                                                                       CASE WHEN b.Status BETWEEN 3 AND 5
+                                                                            THEN COALESCE(b.PortOfDestinationName, b.FinalDestinationName) END,
+                                                                       b.PortOfLoadingName) END,
            -- since when: a stay in progress since its start, else the end of the leg that brought it, the delivery, the receipt
            AtPlaceSince = CASE WHEN ph.Phase IN (N'AtPort', N'AtBorderCustoms') AND b.ActiveMovementId IS NOT NULL THEN b.ActiveMovementStartDate
                                WHEN ph.Phase IN (N'AtPort', N'AtBorderCustoms') THEN b.LastMovementEndDate
@@ -568,6 +601,10 @@ BEGIN
            GroupOrder = DENSE_RANK() OVER (PARTITION BY s.Phase ORDER BY gk.SortNone, gk.SortDate, gk.GroupLabel, gk.GroupKey),
            AtPlaceId = s.AtPlaceId, AtPlaceName = COALESCE(s.AtPlaceName, rw.ReceivedWarehouseName), s.AtPlaceSince,
            s.IsLate, s.IsFreeTimeOver, rw.ReceivedWarehouseId, rw.ReceivedWarehouseName,
+           -- followed by typed dates: no leg started or completed, above Confirmed by the dates typed on it (NULL otherwise,
+           -- so the board's answer leaves it out)
+           FollowedByTypedDates = CAST(CASE WHEN b.ActiveMovementId IS NULL AND b.LastMovementId IS NULL AND b.Status BETWEEN 3 AND 5
+                                            THEN 1 END AS BIT),
            -- the shipment (fn_Container_ShipState), the columns of usp_Container_Search
            b.MovementCount, b.PlaceId, b.PlaceName, b.PlaceSince,
            b.ActiveMovementId, b.ActiveMovementNo, b.ActiveMovementTypeName, b.ActiveMovementStage,
@@ -601,19 +638,21 @@ BEGIN
     LEFT JOIN #Li li ON li.ContainerId = s.Id
     -- the group: its key, its words, and what orders the groups of a column
     CROSS APPLY (SELECT GroupKey = CASE s.Phase
-                            WHEN N'AtSea' THEN N'MOV|' + CAST(b.ActiveMovementId AS NVARCHAR(12))
+                            -- a container followed by typed dates is at sea on no movement: a group of its own
+                            WHEN N'AtSea' THEN ISNULL(N'MOV|' + CAST(b.ActiveMovementId AS NVARCHAR(12)), N'TYPED')
                             WHEN N'OnTheRoad' THEN N'LEG|' + CAST(b.ActiveMovementFromPlaceId AS NVARCHAR(12)) + N'|'
                                                    + CAST(b.ActiveMovementToPlaceId AS NVARCHAR(12))
                             WHEN N'Received' THEN N'WH|' + ISNULL(CAST(rw.ReceivedWarehouseId AS NVARCHAR(12)), N'0')
                             ELSE N'AT|' + ISNULL(CAST(s.AtPlaceId AS NVARCHAR(12)), N'0') END,
                         GroupLabel = CAST(CASE s.Phase
-                            WHEN N'AtSea' THEN CONCAT_WS(N' ' + NCHAR(183) + N' ', b.ActiveMovementNo,
+                            WHEN N'AtSea' THEN CASE WHEN b.ActiveMovementId IS NULL THEN N'Followed by typed dates' ELSE
+                                     CONCAT_WS(N' ' + NCHAR(183) + N' ', b.ActiveMovementNo,
                                      NULLIF(CONCAT_WS(N' ', b.ActiveMovementVehicleOrVessel,
                                                       CASE WHEN b.ActiveMovementVoyageNo IS NULL THEN NULL
                                                            WHEN b.ActiveMovementVoyageNo LIKE N'V%' THEN b.ActiveMovementVoyageNo
                                                            ELSE N'V.' + b.ActiveMovementVoyageNo END), N''),
                                      b.ActiveMovementFromName + N' ' + NCHAR(8594) + N' ' + b.ActiveMovementToName,
-                                     N'ETA ' + CONVERT(NVARCHAR(10), b.ActiveMovementEta, 103))
+                                     N'ETA ' + CONVERT(NVARCHAR(10), b.ActiveMovementEta, 103)) END
                             -- a stay on the road (a border crossing) has no From -> To: "Border crossing at Kasumbalesa"
                             WHEN N'OnTheRoad' THEN CASE WHEN b.ActiveMovementFromPlaceId = b.ActiveMovementToPlaceId
                                                         THEN b.ActiveMovementTypeName + N' at ' + b.ActiveMovementFromName
@@ -623,6 +662,7 @@ BEGIN
                             ELSE ISNULL(s.AtPlaceName, N'Place unknown') END AS NVARCHAR(300)),
                         SortNone = CASE WHEN s.Phase = N'Received' AND rw.ReceivedWarehouseId IS NULL THEN 1
                                         WHEN s.Phase NOT IN (N'AtSea', N'OnTheRoad', N'Received') AND s.AtPlaceId IS NULL THEN 1
+                                        WHEN s.Phase = N'AtSea' AND b.ActiveMovementId IS NULL THEN 1   -- typed dates, after the ships
                                         ELSE 0 END,
                         SortDate = CASE WHEN s.Phase = N'AtSea' THEN ISNULL(b.ActiveMovementEta, '99991231') END) gk
     ORDER BY s.PhaseOrder, GroupOrder, LEN(b.ContainerRef), b.ContainerRef, b.Id;
@@ -651,7 +691,9 @@ GO
 --   - only a movement in progress is split ("Only a movement in progress can be split: MOV-... is completed.");
 --   - a movement carrying this container alone is completed, not split;
 --   - a container that already has a LATER leg (not cancelled) stays: "previous" is the movement with the highest Id
---     below, and the copy gets a higher Id than that later leg - its place would come out wrong.
+--     below, and the copy gets a higher Id than that later leg - its place would come out wrong. The advice says what
+--     taking it off a planned leg leads to: the copy comes after that leg in the travel order (fn_ContainerFitForMovement,
+--     script 80), so the container cannot rejoin it and travels on with a new leg of its own once it has arrived.
 CREATE OR ALTER FUNCTION logistics.fn_Movement_SplitBlock
 (
     @MovementId     INT,
@@ -672,9 +714,11 @@ SELECT Reason = CAST(CASE
                THEN @MovementNo + N' carries only ' + @ContainerRef + N': complete the movement itself.'
            WHEN l.MovementNo IS NOT NULL
                THEN @ContainerRef + N' already has the next leg ' + l.MovementNo + N' ' + l.StatusWord + N': complete '
-                    + @MovementNo + N' for every container, or take it off ' + l.MovementNo + N' first.' END AS NVARCHAR(400))
+                    + @MovementNo + N' for every container, or take it off ' + l.MovementNo + N' first'
+                    + CASE WHEN l.Status = 1 THEN N' (it then gets a leg of its own once it has arrived)' ELSE N'' END
+                    + N'.' END AS NVARCHAR(400))
 FROM (SELECT One = 1) k
-OUTER APPLY (SELECT TOP (1) m.MovementNo,
+OUTER APPLY (SELECT TOP (1) m.MovementNo, m.Status,
                     StatusWord = CASE m.Status WHEN 1 THEN N'planned' WHEN 2 THEN N'in progress' ELSE N'completed' END
              FROM logistics.MovementContainers lc
              INNER JOIN logistics.Movements m ON m.Id = lc.MovementId
@@ -692,7 +736,9 @@ GO
 -- (not in the future, not before the start), so a refused date splits nothing. NULL = not checked (a split alone).
 -- All the checks run under the movement's lock, in the transaction of the split: one transaction, all or nothing.
 -- Audit: on both movements (logistics.MovementAudit), and on each container moved (logistics.ContainerAudit).
--- Returns one row: the new movement (NewId, MovementNo, RowVersion), the original, how many moved and how many stay.
+-- Returns one row: the new movement (NewId, MovementNo, RowVersion), the original, how many moved and how many stay -
+-- BEFORE THE COMMIT, the last thing the transaction does: the API retries the call on a deadlock (SqlRetry), and a
+-- deadlock can then only roll the whole split back, never hit a read after a split already committed.
 CREATE OR ALTER PROCEDURE logistics.usp_Movement_SplitContainers
     @MovementId   INT,
     @ContainerIds logistics.tvp_IdList READONLY,
@@ -808,6 +854,13 @@ BEGIN
         SELECT x.Id, N'Event', LEFT(N'Moved from ' + @MovementNo + N' to ' + @Number + N': it arrived on its own (split)', 500), @UserId
         FROM @Ids x;
 
+        -- 4. THE ANSWER, inside the transaction (see the header): nothing that can fail is left after the COMMIT
+        SELECT NewId = m.Id, m.MovementNo, m.Status, m.RowVersion,
+               OriginalMovementId = @MovementId, OriginalMovementNo = @MovementNo,
+               ContainersMoved = @Count, ContainersLeft = @Left
+        FROM logistics.Movements m
+        WHERE m.Id = @NewId;
+
         COMMIT TRANSACTION;
     END TRY
     BEGIN CATCH
@@ -815,12 +868,6 @@ BEGIN
         SET @NewId = NULL;
         THROW;
     END CATCH
-
-    SELECT NewId = m.Id, m.MovementNo, m.Status, m.RowVersion,
-           OriginalMovementId = @MovementId, OriginalMovementNo = @MovementNo,
-           ContainersMoved = @Count, ContainersLeft = @Left
-    FROM logistics.Movements m
-    WHERE m.Id = @NewId;
 END
 GO
 
@@ -1214,47 +1261,144 @@ GO
 
 -- ONE ROW: THE FOB PER UNIT OF A CONTAINER LINE, as the container page shows it ("Real cost per item", the loaded items).
 -- Once the goods are received it is the container line's own value (final: frozen by an offload of before, set by the
--- goods receipt and moved by the invoices since). Before, it is the ESTIMATE OF THE COST RULE the receipt will apply
--- (purchase.fn_GoodsReceiptLine_TargetCost, script 79): the pieces covered by invoices that change item costs at their
--- price, every other piece - not invoiced yet, or invoiced by an invoice that does not change item costs - at the order
--- price. Invoices posted or draft, as before (a draft follows its type's "Affects item cost" as it is now, as the
--- invoice's page says; a posted one what it was posted with, PurchaseDocuments.AffectsCost). The container's charges
--- are added by the caller, as before. FobSource: Received, Invoice (an invoice that changes item costs prices pieces of
--- it), Order.
+-- goods receipt and moved by the invoices since). Before, it is the ESTIMATE OF WHAT ITS GOODS RECEIPT WILL GIVE IT: the
+-- cost rule of purchase.fn_GoodsReceiptLine_TargetCost (script 79) over the invoice pieces the receipt's matching
+-- (purchase.usp_GoodsReceipt_Rematch, script 64) will give the line -
+--   1. the pieces of the invoices linked to the container line (the matching's pass 1), posted or draft, as before (a
+--      draft follows its type's "Affects item cost" as it is now, as the invoice's page says; a posted one what it was
+--      posted with, PurchaseDocuments.AffectsCost);
+--   2. then the order line's posted invoice pieces that no receipt takes by its own invoice or container line (not
+--      linked to a container line, or left over by a container line received short), first in first out by posting,
+--      over the order line's receipts in the order the matching takes them (its passes 2 and 3): its posted goods
+--      receipts first, for the pieces their own invoice or container line does not cover (a draft invoice linked to that
+--      line covers them once posted), then its container lines still on their way, in the order their containers were
+--      created (containers usually arrive so), each for the pieces no invoice is linked to;
+--   3. the pieces of invoices that change item costs at their price (with their own charges, as the receipt prices
+--      them), every other piece - not invoiced, or invoiced by an invoice that does not change item costs - at the order
+--      price.
+-- It stays an estimate: another order of arrival, a later invoice or a receipt from the order moves it. The container's
+-- charges are added by the caller, as before. FobSource: Received, Invoice (an invoice that changes item costs prices
+-- pieces of it), Order. CostInvoicedBase: the pieces such invoices price.
 CREATE OR ALTER FUNCTION logistics.fn_ContainerLine_FobEstimate (@ContainerLineId INT)
 RETURNS TABLE
 AS
 RETURN
-SELECT ContainerLineId  = cl.Id,
-       OrderPriceBase   = op.Price,
-       CostInvoicedBase = ISNULL(ci.Qty, 0),
+WITH tl AS (    -- the line, its order line and order price; IsOpen = not received yet: only then is anything estimated
+         SELECT cl.Id, cl.PoLineId, cl.QuantityBase, cl.FobCostBase, OrderPrice = op.Price,
+                IsOpen = CAST(CASE WHEN cl.FobCostBase IS NULL AND cl.PoLineId IS NOT NULL THEN 1 ELSE 0 END AS BIT)
+         FROM logistics.ContainerLines cl
+         OUTER APPLY (SELECT Price = pol.LineTotal / pod.ExchangeRate / NULLIF(pol.QuantityBase, 0)
+                      FROM purchase.PurchaseDocumentLines pol
+                      INNER JOIN purchase.PurchaseDocuments pod ON pod.Id = pol.DocumentId
+                      WHERE pol.Id = cl.PoLineId) op
+         WHERE cl.Id = @ContainerLineId),
+     -- 1. the invoices linked to the line: the pieces of those that change item costs, and their value
+     lk AS (SELECT CostQty   = SUM(CASE WHEN ac.AffectsCost = 1 THEN pil.QuantityBase ELSE 0 END),
+                   CostValue = SUM(CASE WHEN ac.AffectsCost = 1 THEN pil.LineTotal / d.ExchangeRate ELSE 0 END)
+            FROM purchase.PurchaseDocumentLines pil
+            INNER JOIN purchase.PurchaseDocuments d ON d.Id = pil.DocumentId
+            INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+            CROSS APPLY (SELECT AffectsCost = CASE WHEN d.Status = 1 THEN ISNULL(dt.AffectsItemCost, 1) ELSE d.AffectsCost END) ac
+            WHERE pil.ContainerLineId = @ContainerLineId AND d.Status <> 3),
+     -- 2a. the order line's receipts in the order the matching takes them, each for the pieces nothing of its own covers
+     --     (E = their running total): its posted goods receipts by posting, then its container lines still on their way
+     --     (their containers Draft to Cleared) by container
+     sl AS (SELECT r.Bucket, r.ContainerLineId, r.Demand,
+                   E = SUM(r.Demand) OVER (ORDER BY r.Bucket, r.SortT, r.SortC, r.SortId ROWS UNBOUNDED PRECEDING)
+            FROM (SELECT Bucket = 0, SortT = ISNULL(g.PostedAtUtc, g.CreatedAtUtc), SortC = 0, SortId = gl.Id,
+                         ContainerLineId = gl.ContainerLineId,
+                         Demand = gl.QuantityBase - ISNULL(own.Qty, 0) - ISNULL(dr.Qty, 0)
+                  FROM tl
+                  INNER JOIN purchase.GoodsReceiptLines gl ON gl.PoLineId = tl.PoLineId AND gl.PoLineId IS NOT NULL
+                  INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                  -- what its own invoice line or container line gave it (the matching's passes 0 and 1)
+                  OUTER APPLY (SELECT Qty = SUM(x.QuantityBase)
+                               FROM purchase.GoodsReceiptInvoiceMatches x
+                               INNER JOIN purchase.PurchaseDocumentLines p ON p.Id = x.InvoiceLineId
+                               WHERE x.GoodsReceiptLineId = gl.Id
+                                 AND (p.Id = gl.InvoiceLineId OR p.ContainerLineId = gl.ContainerLineId)) own
+                  -- a draft invoice linked to its container line: matched there once it is posted
+                  OUTER APPLY (SELECT Qty = SUM(p.QuantityBase)
+                               FROM purchase.PurchaseDocumentLines p
+                               INNER JOIN purchase.PurchaseDocuments d ON d.Id = p.DocumentId AND d.Status = 1
+                               WHERE gl.ContainerLineId IS NOT NULL AND p.ContainerLineId = gl.ContainerLineId) dr
+                  WHERE tl.IsOpen = 1 AND gl.QuantityBase > 0
+                  UNION ALL
+                  SELECT 1, NULL, o.ContainerId, o.Id, o.Id, o.QuantityBase - ISNULL(ol.Qty, 0)
+                  FROM tl
+                  INNER JOIN logistics.ContainerLines o ON o.PoLineId = tl.PoLineId AND o.FobCostBase IS NULL
+                  INNER JOIN logistics.Containers oc    ON oc.Id = o.ContainerId AND oc.Status BETWEEN 1 AND 5
+                  -- the pieces linked to an invoice (posted or draft): its own container line's, matched there
+                  OUTER APPLY (SELECT Qty = SUM(p.QuantityBase)
+                               FROM purchase.PurchaseDocumentLines p
+                               INNER JOIN purchase.PurchaseDocuments d ON d.Id = p.DocumentId AND d.Status <> 3
+                               WHERE p.ContainerLineId = o.Id) ol
+                  WHERE tl.IsOpen = 1
+                    AND NOT EXISTS (SELECT 1
+                                    FROM purchase.GoodsReceiptLines rl
+                                    INNER JOIN purchase.GoodsReceipts rg ON rg.Id = rl.GoodsReceiptId AND rg.Status = 2
+                                    WHERE rl.ContainerLineId = o.Id)) r
+            WHERE r.Demand > 0),
+     -- 2b. the order line's posted invoice pieces no receipt takes by its own invoice or container line, by posting (E =
+     --     their running total); a line linked to a container line only once that line is received by a goods receipt
+     --     (until then its pieces wait for it), and never one the matching leaves out (a local invoice of before goods
+     --     receipts, a container offloaded before them)
+     sp AS (SELECT u.Free, u.IsCost, u.Price,
+                   E = SUM(u.Free) OVER (ORDER BY u.T, u.Id ROWS UNBOUNDED PRECEDING)
+            FROM (SELECT p.Id, T = ISNULL(d.PostedAtUtc, d.CreatedAtUtc),
+                         Free = p.QuantityBase - ISNULL(m.Qty, 0),
+                         IsCost = CAST(CASE WHEN d.AffectsCost = 1 THEN 1 ELSE 0 END AS BIT),
+                         Price = COALESCE(p.FobCostBase, p.LineTotal / d.ExchangeRate / NULLIF(p.QuantityBase, 0))
+                                 + ISNULL(p.AllocatedChargesBase, 0) / NULLIF(p.QuantityBase, 0)
+                  FROM tl
+                  INNER JOIN purchase.PurchaseDocumentLines p ON p.SourceLineId = tl.PoLineId AND p.SourceLineId IS NOT NULL
+                  INNER JOIN purchase.PurchaseDocuments d     ON d.Id = p.DocumentId AND d.Status IN (2, 4)
+                  INNER JOIN inventory.DocumentTypes dt       ON dt.Id = d.DocumentTypeId AND dt.Code = N'PINV'
+                  -- what its own receipts took (passes 0 and 1): a receipt made from it, or its container line's
+                  OUTER APPLY (SELECT Qty = SUM(x.QuantityBase)
+                               FROM purchase.GoodsReceiptInvoiceMatches x
+                               INNER JOIN purchase.GoodsReceiptLines rl ON rl.Id = x.GoodsReceiptLineId
+                               WHERE x.InvoiceLineId = p.Id
+                                 AND (rl.InvoiceLineId = p.Id OR rl.ContainerLineId = p.ContainerLineId)) m
+                  WHERE tl.IsOpen = 1
+                    AND CASE WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 THEN 0 ELSE 1 END = 1
+                    AND (p.ContainerLineId IS NULL
+                         OR EXISTS (SELECT 1
+                                    FROM purchase.GoodsReceiptLines rl
+                                    INNER JOIN purchase.GoodsReceipts rg ON rg.Id = rl.GoodsReceiptId AND rg.Status = 2
+                                    WHERE rl.ContainerLineId = p.ContainerLineId))) u
+            WHERE u.Free > 0),
+     -- 2c. what the line's own place in 2a takes of 2b: the overlap of the two running totals, as the matching pairs them
+     q AS (SELECT CostQty   = SUM(CASE WHEN sp.IsCost = 1 THEN ov.Qty ELSE 0 END),
+                  CostValue = SUM(CASE WHEN sp.IsCost = 1 THEN ov.Qty * sp.Price ELSE 0 END)
+           FROM sl
+           INNER JOIN sp ON sl.E - sl.Demand < sp.E AND sp.E - sp.Free < sl.E
+           CROSS APPLY (SELECT Qty = CASE WHEN sl.E < sp.E THEN sl.E ELSE sp.E END
+                                     - CASE WHEN sl.E - sl.Demand > sp.E - sp.Free THEN sl.E - sl.Demand ELSE sp.E - sp.Free END) ov
+           WHERE sl.Bucket = 1 AND sl.ContainerLineId = @ContainerLineId)
+SELECT ContainerLineId  = tl.Id,
+       OrderPriceBase   = tl.OrderPrice,
+       CostInvoicedBase = c.Qty,
        EstimatedFobBase = es.Fob,
-       UnitFobBase      = COALESCE(cl.FobCostBase, es.Fob),
-       FobSource        = CAST(CASE WHEN cl.FobCostBase IS NOT NULL THEN N'Received'
-                                    WHEN ci.Qty > 0 THEN N'Invoice' ELSE N'Order' END AS NVARCHAR(10))
-FROM logistics.ContainerLines cl
-OUTER APPLY (SELECT Price = pol.LineTotal / pod.ExchangeRate / NULLIF(pol.QuantityBase, 0)
-             FROM purchase.PurchaseDocumentLines pol
-             INNER JOIN purchase.PurchaseDocuments pod ON pod.Id = pol.DocumentId
-             WHERE pol.Id = cl.PoLineId) op
-OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase), Value = SUM(pil.LineTotal / d.ExchangeRate)
-             FROM purchase.PurchaseDocumentLines pil
-             INNER JOIN purchase.PurchaseDocuments d ON d.Id = pil.DocumentId
-             INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
-             WHERE pil.ContainerLineId = cl.Id AND d.Status <> 3
-               AND CASE WHEN d.Status = 1 THEN ISNULL(dt.AffectsItemCost, 1) ELSE d.AffectsCost END = 1) ci
-CROSS APPLY (SELECT Fob = CAST(CASE WHEN ISNULL(ci.Qty, 0) = 0 THEN op.Price
-                                    ELSE (ci.Value + CASE WHEN ci.Qty < cl.QuantityBase THEN cl.QuantityBase - ci.Qty ELSE 0 END
-                                                     * COALESCE(op.Price, ci.Value / ci.Qty))
-                                         / CASE WHEN ci.Qty < cl.QuantityBase THEN cl.QuantityBase ELSE ci.Qty END END
-                               AS DECIMAL(18,6))) es
-WHERE cl.Id = @ContainerLineId;
+       UnitFobBase      = COALESCE(tl.FobCostBase, es.Fob),
+       FobSource        = CAST(CASE WHEN tl.FobCostBase IS NOT NULL THEN N'Received'
+                                    WHEN c.Qty > 0 THEN N'Invoice' ELSE N'Order' END AS NVARCHAR(10))
+FROM tl
+CROSS JOIN lk
+CROSS JOIN q
+-- 3. the pieces priced by invoices that change item costs, every other piece at the order price
+CROSS APPLY (SELECT Qty = ISNULL(lk.CostQty, 0) + ISNULL(q.CostQty, 0), Value = ISNULL(lk.CostValue, 0) + ISNULL(q.CostValue, 0)) c
+CROSS APPLY (SELECT Fob = CAST(CASE WHEN c.Qty = 0 THEN tl.OrderPrice
+                                    ELSE (c.Value + CASE WHEN c.Qty < tl.QuantityBase THEN tl.QuantityBase - c.Qty ELSE 0 END
+                                                    * COALESCE(tl.OrderPrice, c.Value / c.Qty))
+                                         / CASE WHEN c.Qty < tl.QuantityBase THEN tl.QuantityBase ELSE c.Qty END END
+                               AS DECIMAL(18,6))) es;
 GO
 
 -- Re-created (82) from the body of script 81: the FOB total (set 1) and each line's FOB per unit, source and landed cost
--- (set 2) read the estimate of the cost rule (fn_ContainerLine_FobEstimate): the pieces covered by an invoice that does
--- not change item costs (script 79) count at the order price, as at the receipt. A received line keeps its final cost.
--- Nothing else changes.
+-- (set 2) read the estimate of what the goods receipt will give the line (fn_ContainerLine_FobEstimate): the invoice
+-- pieces its matching will give it, those of an invoice that does not change item costs (script 79) at the order price,
+-- as at the receipt. A received line keeps its final cost. Nothing else changes.
 CREATE OR ALTER PROCEDURE logistics.usp_Container_Get
     @Id INT
 AS
@@ -1377,8 +1521,9 @@ BEGIN
     WHERE c.Id = @Id;
 
     -- 2: lines. FOB per unit: once the goods are received the container line's value (frozen by an offload of before; set by
-    -- the goods receipt and moved by the invoices since), else (82) the estimate of the cost rule: the pieces of invoices that
-    -- change item costs (posted or draft) at their price, every other piece at the order price (fn_ContainerLine_FobEstimate).
+    -- the goods receipt and moved by the invoices since), else (82) the estimate of what the goods receipt will give it: the
+    -- invoice pieces its matching will give the line, those of invoices that change item costs at their price, every other
+    -- piece at the order price (fn_ContainerLine_FobEstimate).
     SELECT cl.Id, cl.ContainerId, cl.LineNumber,
            cl.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber, po.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
            cl.PoLineId, pol.LineNumber AS PoLineNumber,
@@ -1525,7 +1670,74 @@ END
 
 GO
 
-/* ================================================================== 9. Check */
+/* ================================================================== 9. A split voyage counts once in the usual next leg */
+
+-- ONE ROW: THE VOYAGE A MOVEMENT BELONGS TO - the movement itself, or, for a movement split off another (only part of it
+-- arrived, usp_Movement_SplitContainers), the first movement of its chain of splits: the copy has the same type, From, To
+-- and start as the movement it came from, so the two are one voyage, which fn_Movement_NextLegHistory counts once. Fifty
+-- splits deep at most (a guard below the hundred levels of recursion a statement allows; a chain of two is already rare).
+CREATE OR ALTER FUNCTION logistics.fn_Movement_Voyage (@MovementId INT)
+RETURNS TABLE
+AS
+RETURN
+WITH up AS (SELECT m.Id, m.SplitFromMovementId, Depth = 0
+            FROM logistics.Movements m
+            WHERE m.Id = @MovementId
+            UNION ALL
+            SELECT p.Id, p.SplitFromMovementId, up.Depth + 1
+            FROM up
+            INNER JOIN logistics.Movements p ON p.Id = up.SplitFromMovementId
+            WHERE up.Depth < 50)
+SELECT TOP (1) VoyageId = up.Id
+FROM up
+ORDER BY up.Depth DESC;
+GO
+
+-- Re-created (82) from the body of script 81: A VOYAGE SPLIT IN TWO COUNTS ONCE. When only part of a movement arrived,
+-- the containers that did got a movement of their own with the same type, From, To and start: one voyage, not two
+-- "earlier legs" (fn_Movement_Voyage), so one split voyage alone never reaches "seen at least twice". Nothing else
+-- changes.
+-- At most one row: the next leg most often taken from @PlaceId by the containers whose previous leg (the movement not
+-- cancelled with the highest Id below, as everywhere) had the stage @LastStage and ended there - with @LastStage NULL,
+-- the first leg of containers that never moved before. Movements of the last 365 days (start, else planned, else created),
+-- planned, in progress or completed, counted once each however many containers they carry - (82) a voyage split in two
+-- once; seen at least twice; ties go to the most recent. A Loading at the supplier is never proposed (it is only for
+-- containers that never moved and leaves from the supplier, not from here), nor an inactive type or place.
+-- WORKED OUT ONCE PER (place, last stage): usp_Container_NextStepPreview and the list call it per group, not per row.
+CREATE OR ALTER FUNCTION logistics.fn_Movement_NextLegHistory (@PlaceId INT, @LastStage NVARCHAR(10))
+RETURNS TABLE
+AS
+RETURN
+SELECT TOP (1) m.MovementTypeId, m.ToPlaceId, Legs = COUNT(DISTINCT vg.VoyageId)
+FROM logistics.Movements m
+INNER JOIN masterdata.MovementTypes t ON t.Id = m.MovementTypeId AND t.IsActive = 1 AND t.Stage <> N'Origin'
+INNER JOIN masterdata.Ports tp        ON tp.Id = m.ToPlaceId AND tp.IsActive = 1
+-- (82) its voyage: itself, the movement it was split off, or for a split of a split the first one of its chain (the
+-- recursion read only then: read for every split movement, it made a place of 1,000 split voyages half as slow again)
+LEFT JOIN logistics.Movements sp     ON sp.Id = m.SplitFromMovementId
+CROSS APPLY (SELECT VoyageId = CASE WHEN m.SplitFromMovementId IS NULL THEN m.Id
+                                    WHEN sp.SplitFromMovementId IS NULL THEN sp.Id
+                                    ELSE (SELECT v.VoyageId FROM logistics.fn_Movement_Voyage(m.Id) v) END) vg
+WHERE m.FromPlaceId = @PlaceId
+  AND m.Status IN (1, 2, 3)
+  AND COALESCE(m.StartDate, m.PlannedDate, CAST(m.CreatedAtUtc AS DATE)) >= DATEADD(DAY, -365, CAST(SYSUTCDATETIME() AS DATE))
+  AND EXISTS (SELECT 1
+              FROM logistics.MovementContainers mc
+              OUTER APPLY (SELECT TOP (1) pm.ToPlaceId, pt.Stage
+                           FROM logistics.MovementContainers pc
+                           INNER JOIN logistics.Movements pm      ON pm.Id = pc.MovementId
+                           INNER JOIN masterdata.MovementTypes pt ON pt.Id = pm.MovementTypeId
+                           WHERE pc.ContainerId = mc.ContainerId AND pm.Status <> 4 AND pm.Id < m.Id
+                           ORDER BY pm.Id DESC) pv
+              WHERE mc.MovementId = m.Id
+                AND ((@LastStage IS NULL AND pv.Stage IS NULL)
+                     OR (pv.Stage = @LastStage AND pv.ToPlaceId = @PlaceId)))
+GROUP BY m.MovementTypeId, m.ToPlaceId
+HAVING COUNT(DISTINCT vg.VoyageId) >= 2
+ORDER BY COUNT(DISTINCT vg.VoyageId) DESC, MAX(m.Id) DESC;
+GO
+
+/* ================================================================== 10. Check */
 
 -- The permission of the board and how many roles hold it.
 SELECT p.Code, p.Name, p.SortOrder, Roles = (SELECT COUNT(*) FROM security.RolePermissions rp WHERE rp.PermissionId = p.Id)
@@ -1540,5 +1752,5 @@ FROM logistics.Movements m
 INNER JOIN logistics.Movements o ON o.Id = m.SplitFromMovementId
 ORDER BY m.Id DESC;
 
-PRINT 'Script 82 applied: the Shipments board (containers by stage, one permission), a movement split when only part of it arrived, the container estimate following the cost rule.';
+PRINT 'Script 82 applied: the Shipments board (containers by stage, one permission), a movement split when only part of it arrived (a split voyage counted once in the usual next leg), the container estimate following the cost rule and the matching of its goods receipt.';
 GO

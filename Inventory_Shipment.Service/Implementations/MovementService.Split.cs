@@ -21,10 +21,21 @@ namespace Inventory_Shipment.Service.Implementations;
 ///   cancellation, so a client that goes away never leaves the containers on their own movement still in progress
 ///   unseen. Should the completion be refused all the same, the answer says exactly what happened: "MOV-2026-000052 was
 ///   split off MOV-2026-000046 but not completed: {reason}. Complete it on its page."</item>
+///   <item>A SPLIT COMMITTED IS ALWAYS SAID, whatever fails after it: a refusal, but also an error that is no business rule
+///   (a deadlock retried three times, a timeout, a lost connection, a read after the commit). The movement is read again
+///   for what the database kept: completed after all (the failure came after the completion, e.g. the read after a
+///   Delivery's draft goods receipts), it is answered as completed with what is missing; else as split, not completed,
+///   with that movement - never as a step that did nothing.</item>
 /// </list>
 /// </summary>
 public sealed partial class MovementService
 {
+    /// <summary>
+    /// A row version that is sent but cannot be one (not 8 bytes of base64): refused, never read as "not sent" - that would
+    /// skip the concurrency check of a split. (The older endpoints keep reading it as not sent.)
+    /// </summary>
+    private const string InvalidRowVersionMessage = "The row version is not valid. Reload the page and try again.";
+
     public async Task<Result<MovementSplitResultDto>> CompleteSomeAsync(
         int id, CompleteSomeContainersRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
@@ -45,6 +56,11 @@ public sealed partial class MovementService
             return Result<MovementSplitResultDto>.Failure(ErrorType.Validation, invalid, "VALIDATION");
         }
 
+        if (IsInvalidRowVersion(request.RowVersion))
+        {
+            return Result<MovementSplitResultDto>.Failure(ErrorType.Validation, InvalidRowVersionMessage, "VALIDATION");
+        }
+
         var outcome = await SplitAndCompleteAsync(id, ids, request.Date, request.RowVersion, userId, permissions);
         if (outcome.Refusal is { } refusal)
         {
@@ -61,13 +77,15 @@ public sealed partial class MovementService
                 OriginalMovementId = split.OriginalMovementId,
                 OriginalMovementNo = split.OriginalMovementNo,
                 RemainingContainerCount = split.ContainersLeft,
+                MovementId = split.NewId,
+                MovementNo = split.MovementNo,
                 Movement = movement,
                 Warnings = movement.Warnings,
             });
         }
 
-        // Split, not completed: the containers are on their own movement, in progress - said, with that movement.
-        var current = await _movements.GetAsync(split.NewId, CancellationToken.None);
+        // Split, not completed: the containers are on their own movement, in progress - said, with that movement (read
+        // again best effort: null when the database did not answer, its id and number still given).
         return Result<MovementSplitResultDto>.Success(new MovementSplitResultDto
         {
             Ok = false,
@@ -76,7 +94,9 @@ public sealed partial class MovementService
             OriginalMovementId = split.OriginalMovementId,
             OriginalMovementNo = split.OriginalMovementNo,
             RemainingContainerCount = split.ContainersLeft,
-            Movement = current,
+            MovementId = split.NewId,
+            MovementNo = split.MovementNo,
+            Movement = outcome.Current,
         });
     }
 
@@ -94,6 +114,9 @@ public sealed partial class MovementService
 
         public string? CompletionError { get; init; }
         public string? CompletionCode { get; init; }
+
+        /// <summary>Split, not completed: the containers' own movement as read again (null when it could not be read).</summary>
+        public MovementDto? Current { get; init; }
     }
 
     /// <summary>
@@ -118,10 +141,28 @@ public sealed partial class MovementService
         _logger.LogInformation("Movement {MovementNo}: {Moved} container(s) split off into {NewMovementNo} by user {UserId}, {Left} left on it",
             split.OriginalMovementNo, split.ContainersMoved, split.MovementNo, userId, split.ContainersLeft);
 
-        var completed = await SetStatusAsync(
-            split.NewId, "Complete",
-            new MovementStatusRequest { Date = completeOn, RowVersion = Convert.ToBase64String(split.RowVersion) },
-            userId, permissions, CancellationToken.None);
+        // FROM HERE THE SPLIT IS COMMITTED: whatever fails, the answer says it (see the class).
+        Result<MovementDto> completed;
+        try
+        {
+            completed = await SetStatusAsync(
+                split.NewId, "Complete",
+                new MovementStatusRequest { Date = completeOn, RowVersion = Convert.ToBase64String(split.RowVersion) },
+                userId, permissions, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogError(ex, "Movement {NewMovementNo} was split off {MovementNo}, and its completion failed", split.MovementNo, split.OriginalMovementNo);
+            var now = await ReadBackAsync(split.NewId);
+            if (now is { Status: MovementStatus.Completed })
+            {
+                // The completion committed: what failed came after it (its read, a Delivery's draft goods receipts).
+                return new SplitOutcome { Split = split, Completed = CompletedDespiteFailure(now) };
+            }
+
+            return new SplitOutcome { Split = split, CompletionError = DatabaseDidNotAnswer, CompletionCode = "UNEXPECTED", Current = now };
+        }
+
         if (completed.IsSuccess && completed.Value is { } movement)
         {
             return new SplitOutcome { Split = split, Completed = movement };
@@ -134,8 +175,53 @@ public sealed partial class MovementService
             Split = split,
             CompletionError = completed.Error ?? "the movement was not completed",
             CompletionCode = completed.Code,
+            Current = await ReadBackAsync(split.NewId),
         };
     }
+
+    /// <summary>The movement as the database has it now, or null when it does not answer (logged): the answer goes out all the same.</summary>
+    private async Task<MovementDto?> ReadBackAsync(int id)
+    {
+        try
+        {
+            return await _movements.GetAsync(id, CancellationToken.None);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Movement {MovementId} could not be read back after its split", id);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// A split-off movement that IS completed although its completion call failed after the commit: the movement as read
+    /// again is the whole answer, except for a Delivery - its draft goods receipts were made after the commit, and the
+    /// failure may have come before them (none made: say it, as when they fail) or after them (made: their list is lost).
+    /// </summary>
+    private static MovementDto CompletedDespiteFailure(MovementDto movement)
+    {
+        if (MovementStages.Normalize(movement.Stage) != MovementStages.Delivery)
+        {
+            return movement;
+        }
+
+        if (!movement.GoodsReceiptsAutomatic)
+        {
+            return movement with { GoodsReceipts = [], GoodsReceiptsMessage = ByHandMessage };
+        }
+
+        var withoutReceipt = movement.Containers.Any(c => c.GoodsReceiptId is null && c.ContainerStatus is >= 2 and <= 5);
+        var warning = withoutReceipt
+            ? $"The movement is completed, but its draft goods receipts were not created: {DatabaseDidNotAnswer}. "
+              + "Use Receive goods… on each container."
+            : $"The movement is completed and its draft goods receipts are made, but their list could not be read: {DatabaseDidNotAnswer}. "
+              + "Find them in Purchase › Goods Receipts.";
+        return movement with { GoodsReceipts = [], Warnings = [.. movement.Warnings, warning] };
+    }
+
+    /// <summary>A row version sent but not readable as one (see <see cref="InvalidRowVersionMessage"/>).</summary>
+    private static bool IsInvalidRowVersion(string? rowVersion)
+        => !string.IsNullOrWhiteSpace(rowVersion) && ToRowVersion(rowVersion) is null;
 
     /// <summary>
     /// A Complete group of the next step with splitOff: the ticked containers arrive alone, then the "Then" leg for them as
@@ -163,7 +249,7 @@ public sealed partial class MovementService
                 Code = outcome.CompletionCode,
                 Message = NotCompletedMessage(split, outcome.CompletionError),
                 ContainerIds = ids,
-                Movements = [new NextStepMovementDto { Id = split.NewId, MovementNo = split.MovementNo, Status = split.Status }],
+                Movements = [new NextStepMovementDto { Id = split.NewId, MovementNo = split.MovementNo, Status = outcome.Current?.Status ?? split.Status }],
                 SplitFromMovementId = split.OriginalMovementId,
                 SplitFromMovementNo = split.OriginalMovementNo,
                 RemainingContainerCount = split.ContainersLeft,

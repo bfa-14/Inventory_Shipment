@@ -39,7 +39,8 @@ place, each card with its next step, a whole ship or column ticked at once into 
 List view for hundreds, one column at a time on a phone; a movement in progress can be completed for only some of its
 containers ("Which containers?", "Only the 20 ticked", "Only some containers arrived"), which get their own movement with
 the same start; the order's and the invoice's Containers cards got a row "…" menu with the next step; the container
-page's estimated cost follows the cost rule of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7, 5.4).*
+page's estimated cost follows the cost rule and the matching of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7,
+5.4).*
 
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
@@ -211,10 +212,10 @@ per user in Settings › Purchase approval (see 4.3).
 | **Stage** | What a movement type does to its containers: Origin, Sea, Transit, Port, Border, Customs, Delivery. |
 | **Start shipment** | The first leg of a container that never moved (default SEA, port of loading → port of destination), from its Next step: created and started at once ("Plan only" to plan it), leaving from where the container is. Vessel, voyage, B/L and ETA are copied to the container. |
 | **Next step (of a container)** | Scripts 80–81: the one button of a container's page (and the first entry of its row's "…" menu, "Next step: …") whose label says what happens next, and the one dialog it opens, already filled in: "Start shipment…" (never moved), "Start {type}…" (its next planned movement), "Arrived at {To}…" / "Cleared customs at {place}…" / "Crossed the border at {place}…" / "Left the port of {place}…" / "Loaded at the supplier…" / "Delivered to {To}…" (a movement in progress carries it, by the stage of its type), the proposed next leg "{Type} to {To}…" / "{Type} at {place}…" / "Next leg from {place}…" (its last leg is completed), "Receive goods…" / "Open goods receipt (draft)" (delivered, not received). "Next step…" in the selection bar does it for many containers, grouped by step. |
-| **Proposed next leg** | Script 81: what Next step proposes from where a container is: the usual next leg from that place (the most frequent of the last 365 days, after a leg of the same stage, seen at least twice: "Suggested: the usual next leg from Dar es Salaam (5 earlier legs)"), else the container's own ports (never moved: Sea freight to its port of destination; a Delivery to its final destination), else the stage order (after Sea or Port: Inland transport, To to choose; at a border or inland place: Customs there; cleared: Warehouse delivery). Only active types are proposed; when the next stage has none the type is left to choose ("Choose the type") and the container still moves on. There are no route templates: history and stages only (the owner's choice). |
+| **Proposed next leg** | Script 81: what Next step proposes from where a container is: the usual next leg from that place (the most frequent of the last 365 days, after a leg of the same stage, seen at least twice - a voyage split in two counts once, script 82: "Suggested: the usual next leg from Dar es Salaam (5 earlier legs)"), else the container's own ports (never moved: Sea freight to its port of destination; a Delivery to its final destination), else the stage order (after Sea or Port: Inland transport, To to choose; at a border or inland place: Customs there; cleared: Warehouse delivery). Only active types are proposed; when the next stage has none the type is left to choose ("Choose the type") and the container still moves on. There are no route templates: history and stages only (the owner's choice). |
 | **Then leg** | Script 81: "Then start Customs clearance at Kasumbalesa on the same day" in the arrival dialog: the proposed next leg started right after the arrival is recorded, as a second step - refused, the arrival stays ("Arrival recorded; Customs clearance was not started: {reason}. Use Next step…"). Ticked by default for a stay at the arrival place or the leg after Customs / Border, unticked for a leg that moves; never after a Delivery, nor when the container's next leg is already planned (that planned movement is its next step; planned by someone else while the dialog was open, the warning names it: "…its next leg MOV-2026-000058 (Customs clearance) is already planned. Start it with Next step…"). |
-| **Shipments board** | Script 82: Logistics › Shipments, every container on its way in one column by stage, decided in the database (`logistics.fn_Container_BoardPhase`) from the same movements as its next step: **At supplier** (never moved, or Loading at the supplier in progress), **At sea** (a Sea leg, or a transshipment between two sea ports, in progress), **At port** (a Port stay in progress, or its last leg ends at a sea port), **On the road** (inland transport, a border crossing or a delivery in progress), **At border / customs** (customs in progress, or its last leg ends at a border post or an inland place), **Delivered, to receive** (its Delivery is done or a draft goods receipt waits) and, with "Show received (30 days)", **Received**. Grouped by ship, by leg, by place, by warehouse. No drag-and-drop: every move is a movement, through Next step. Permission `containers.shipments.view`. |
-| **Split (of a movement)** | Script 82: only part of a movement in progress arrived. The ticked containers leave it for their own movement - a copy (type, From, To, dates, ETA, carrier, vessel, voyage, reference, notes), with its own MOV number and "Split from MOV-…" - taking their rows, charges and documents filed under the movement; it is completed (a Delivery drafts their goods receipts) while the others stay on the original, in progress. Refused when every container is ticked ("complete the movement itself"), when a ticked one has a later leg, or when the movement is not in progress; the date is checked before anything is split. |
+| **Shipments board** | Script 82: Logistics › Shipments, every container on its way in one column by stage, decided in the database (`logistics.fn_Container_BoardPhase`) from the same movements as its next step: **At supplier** (never moved, or Loading at the supplier in progress), **At sea** (a Sea leg, or a transshipment between two sea ports, in progress), **At port** (a Port stay in progress, or its last leg ends at a sea port), **On the road** (inland transport, a border crossing or a delivery in progress), **At border / customs** (customs in progress, or its last leg ends at a border post or an inland place), **Delivered, to receive** (its Delivery is done or a draft goods receipt waits) and, with "Show received (30 days)", **Received**; a container followed by typed dates (no leg yet, 3.5 item 11) stands in the column of its status ("Followed by typed dates"). Grouped by ship, by leg, by place, by warehouse. No drag-and-drop: every move is a movement, through Next step. Permission `containers.shipments.view`. |
+| **Split (of a movement)** | Script 82: only part of a movement in progress arrived. The ticked containers leave it for their own movement - a copy (type, From, To, dates, ETA, carrier, vessel, voyage, reference, notes), with its own MOV number and "Split from MOV-…" - taking their rows, charges and documents filed under the movement; it is completed (a Delivery drafts their goods receipts) while the others stay on the original, in progress. Refused when every container is ticked ("complete the movement itself"), when a ticked one has a later leg, or when the movement is not in progress; the date is checked before anything is split. A container taken off a planned later leg to be split travels on with a new leg of its own: the split-off movement comes after that planned leg in the travel order. |
 | **Place of a container** | The **To** of its previous movement (prompt 43). A container that never moved is at its **port of loading** (prompt 45). |
 | **Offload** | **Retired by goods receipts** (69010: "Use Receive goods… on the container"). It received a container's goods into stock at landed cost, with a reason when received ≠ loaded (stock rows of type `CNT`, re-offload tag `KTG-…/2`). A container is now received with a goods receipt, whose posting makes it **Offloaded**: the status kept its name. Containers offloaded before keep their Cancel Offload. |
 | **Close / Reopen (container)** | Close when every charge is posted and every received piece is invoiced (read-only). Reopen to add a late charge. |
@@ -882,10 +883,10 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     (draft)" (unchanged rules); received, closed or cancelled: disabled with the reason ("Received into {warehouse}: the
     journey is over.", "This container is cancelled."). Hidden without `containers.movements.manage`.
   - **The proposal** (`logistics.fn_Container_NextLegProposal`, `fn_Movement_NextLegHistory`, worked out once per place
-    and last stage): the usual next leg from the place (last 365 days, seen at least twice), else the container's own
-    ports, else the stage order; never a leg Save or Start would refuse. The dialog says where it came from: "Suggested:
-    the usual next leg from Dar es Salaam (5 earlier legs)", "Suggested from the container's ports", "Suggested from the
-    stages", "Choose the To".
+    and last stage): the usual next leg from the place (last 365 days, seen at least twice; a voyage split in two counts
+    once, script 82), else the container's own ports, else the stage order; never a leg Save or Start would refuse. The
+    dialog says where it came from: "Suggested: the usual next leg from Dar es Salaam (5 earlier legs)", "Suggested from
+    the container's ports", "Suggested from the stages", "Choose the To".
   - **The new-leg dialog**: "Now at Dar es Salaam since 12/10/2026 (end of MOV-2026-000046)." / "Not moved yet: leaves
     from its port of loading Chennai."; type grouped by stage (changing it proposes the To again); From locked; no To
     for a stay ("at Kasumbalesa"); "Start now" / "Plan only"; the date not before the previous leg ended, not in the
@@ -937,26 +938,36 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     next step: a leg in progress first (Origin → At supplier; Sea, or a transshipment between two sea ports → At sea;
     Port → At port; Customs → At border / customs; any other → On the road), then a draft goods receipt (Delivered),
     then its last completed leg (none → At supplier; a Delivery → Delivered; ending at a sea port → At port; else At
-    border / customs). Groups: At sea by movement ("MOV-2026-000046 · MSC Aurora V.123 · Chennai → Dar es Salaam · ETA
-    20/10/2026"), On the road by leg ("Dar es Salaam → Kasumbalesa"; "Border crossing at Kasumbalesa"), the others by
-    place ("No port of loading" last), Received by warehouse. Each card has its next step and proposed leg in the words
+    border / customs). A container **followed by typed dates** (no leg started or completed, 3.5 item 11) stands where
+    its status puts it: In Transit → At sea, in a group of its own "Followed by typed dates"; At Port → At port, at its
+    port of destination; Cleared → At border / customs ("Cleared"), at its port of destination, else its final
+    destination (where its Current location says it is); its card reads "Followed by typed dates" instead of "Not moved
+    yet", and its next step stays phase 2's "Start shipment…" (Sea freight from its port of loading, with the alert that
+    the movements' dates will replace the typed ones; Receive goods… stays on its page, 4.12 rule 6). Groups: At sea by
+    movement ("MOV-2026-000046 · MSC Aurora V.123 · Chennai → Dar es Salaam · ETA 20/10/2026", the movement number a
+    link), On the road by leg ("Dar es Salaam → Kasumbalesa"; "Border crossing at Kasumbalesa"), the others by place
+    ("No port of loading" last), Received by warehouse. Each card has its next step and proposed leg in the words
     of phase 2, "Late" (the leg's ETA has passed), "Free time over" (the container page's rule), the planned next leg.
     Filters on the server: search (ref, container no., B/L, vessel or truck, order number), supplier, order, branch,
     place (where it stands, or its leg's From or To), late only, with a planned leg. No paging. Measured: 5,000 open
     containers in a database of 50,000 in about 1.6 s (1.0–1.2 s when the received journeys spread over five years);
-    two thirds of it is the usual next leg of phase 2 (`fn_Movement_NextLegHistory`, once per place and last stage).
+    two thirds of it is the usual next leg of phase 2 (`fn_Movement_NextLegHistory`, once per place and last stage,
+    which counts a voyage split in two once: `logistics.fn_Movement_Voyage`).
     The answer carries only what the page reads, without its empty fields: 3.6 MB of JSON for 5,000 cards (11.9 MB
     before, 45% of it nulls; 0.06 MB compressed instead of 0.16 MB).
   - **The page**: each column says its containers and pieces and has "Select all (n)"; each group folds and has its own
     "Select all" (one tick takes a whole ship); a card shows its ref and container no., type, items ("84 pcs
-    TVS-APACHE-160"), supplier and order, where it is (the leg and its ETA, the stay, since when), the badges (Late, Free
-    time over, Draft, No container no., Cleared, GRN draft) and "Next step: …" - phase 2's dialog. Clicking a card opens
-    a drawer with its route, its next step and "Open container". The ticked cards go into the Containers list's own
-    selection bar ("Next step…", "Container numbers…", "Add charge…"), kept across the reloads. 50 cards a column, then
-    "Show 50 more"; "Board" / "List" shows the same rows as one table for hundreds; a phone shows one column at a time
-    from a row of tabs with the counts. The board reads itself again after every action, with Refresh, and a minute
-    after its last answer while the tab is visible and no dialog is open. No drag-and-drop: every move is a movement with
-    its dates, through Next step.
+    TVS-APACHE-160"), supplier and order, where it is (the leg and its ETA, the stay, since when), the badges (Late,
+    Free time over, Draft, No container no., Cleared, GRN draft) and "Next step: …" - phase 2's dialog, offered to a
+    reader who may also view containers (the dialogs read the container and the movement types: without View Containers
+    the card, the List and the drawer leave the step out, and the selection bar's "Next step…" says "Next step… needs
+    the View Containers permission."). Clicking a card opens a drawer with its route, its next step and "Open
+    container"; every movement link from the board keeps the way back (`?from=shipments`). The ticked cards go into the
+    Containers list's own selection bar ("Next step…", "Container numbers…", "Add charge…"), kept across the reloads. 50
+    cards a column, then "Show 50 more"; "Board" / "List" shows the same rows as one table for hundreds; a phone shows
+    one column at a time from a row of tabs with the counts. The board reads itself again after every action, with
+    Refresh, and a minute after its last answer while the tab is visible and no dialog is open. No drag-and-drop: every
+    move is a movement with its dates, through Next step.
   - **Where to split**: a container's Next step dialog asks "Which containers?" when its movement carries others ("All
     12 containers of MOV-2026-000046" by default, or "Only KTG-2026-0031: it leaves MOV-2026-000046 and gets its own
     movement"); the bulk dialog offers "Complete MOV-… for all its 30 containers" / "Only the 20 ticked (they get their
@@ -972,12 +983,20 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     for the reader's time zone, never before the start), so a refused date splits nothing. Refusals, nothing changed:
     70010 "Only a movement in progress can be split: MOV-2026-000046 is completed.", "Every container of
     MOV-2026-000046 is ticked: complete the movement itself.", "KTG-2026-0031 already has the next leg MOV-2026-000051
-    planned: complete MOV-2026-000046 for every container, or take it off MOV-2026-000051 first."; 70000 "KTG-2026-0031
-    is not on MOV-2026-000046.", "Tick the containers that arrived."; 70004 changed by another user; 70006 not found.
-    Should the completion be refused after the split, the answer says exactly that: "MOV-2026-000052 was split off
-    MOV-2026-000046 but not completed: {reason}. Complete it on its page." Both movements' history says it ("Split off
-    into MOV-2026-000052: KTG-2026-0031", "Split from MOV-2026-000046: KTG-2026-0031 arrived on its own."), and so does
-    each container moved.
+    planned: complete MOV-2026-000046 for every container, or take it off MOV-2026-000051 first (it then gets a leg of
+    its own once it has arrived)." - the place rule stays as it is: the split-off movement comes after that planned leg
+    in the travel order, so a container taken off it and split cannot rejoin it and travels on with a new leg of its own
+    (its Next step proposes it); 70000 "KTG-2026-0031 is not on MOV-2026-000046.", "Tick the containers that
+    arrived."; 70004 changed by another user (a row version sent that cannot be one is refused, 400 "The row version is
+    not valid. Reload the page and try again.", never read as "not sent"); 70006 not found. Should the completion be
+    refused after the split, the answer says exactly that: "MOV-2026-000052 was split off MOV-2026-000046 but not
+    completed: {reason}. Complete it on its page." - so does any other failure after the split (a deadlock, a timeout, a
+    lost connection: "…but not completed: the database did not answer (see the API log). Complete it on its page.", code
+    UNEXPECTED), on both entry points, with the new movement and the containers left; when the movement reads back
+    completed (the failure came after the completion), it is answered completed, a Delivery saying what is missing of
+    its draft goods receipts. The split's own answer is read before its commit, so a retried deadlock never runs a split
+    twice. Both movements' history says it ("Split off into MOV-2026-000052: KTG-2026-0031", "Split from
+    MOV-2026-000046: KTG-2026-0031 arrived on its own."), and so does each container moved.
 - **Place rule:** **[Implemented – prompt 43; errors 70015 / 70016 as planned, check the numbers]**
   - A movement only takes containers **at its From** = the To of each container's previous movement (cancelled
     movements don't count; previous = the latest one created before this one).
@@ -1022,12 +1041,19 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   Container charges still enter the cost of goods received in containers."). Goods of an order-less invoice of that
   kind take a typed cost, else the item's last cost, else its average (an item with no cost yet: the invoice's price
   once), and set the item's last cost only once matched to an invoice that does change costs.
-  - Before the goods receipt the screens show an estimate ("est."), for the pieces loaded, that follows the cost rule
-    the goods receipt will apply (script 82, `logistics.fn_ContainerLine_FobEstimate`): the pieces covered by invoices
-    that change item costs at their price, every other piece (not invoiced yet, or invoiced by an invoice that does not
-    change item costs) at the order price. Example: 84 pcs ordered at 100, 30 invoiced at 120 by an invoice that
-    changes costs and 20 at 130 by one that does not: est. (30 × 120 + 54 × 100) ÷ 84 = 107.14 per piece, the cost the
-    goods receipt then gives them (the screen said 114.29 before script 82).
+  - Before the goods receipt the screens show an estimate ("est."), for the pieces loaded, of the cost its goods receipt
+    will give them (script 82, `logistics.fn_ContainerLine_FobEstimate`): the cost rule over the invoice pieces the
+    receipt's matching will give the line - first the invoices linked to the container line, then the order line's
+    posted invoice pieces no receipt takes by its own invoice or container line (not linked to a container, or left over
+    by a container received short), first in first out by posting over the order line's receipts in the order the
+    matching takes them (its posted goods receipts first, then its containers still on their way in the order they were
+    created, as they usually arrive). The pieces of invoices that change item costs count at their price, every other
+    piece (not invoiced yet, or invoiced by an invoice that does not change item costs) at the order price. Examples: 84
+    pcs ordered at 100, 30 invoiced at 120 by an invoice that changes costs and 20 at 130 by one that does not: est. (30
+    × 120 + 54 × 100) ÷ 84 = 107.14 per piece (the screen said 114.29 before script 82); 168 pcs at 100 in two containers
+    of 84 and an invoice of 84 at 120 not linked to either: the first container est. 120, the second 100 - what their
+    goods receipts then give them. It stays an estimate: another order of arrival, a later invoice or a receipt from the
+    order moves it; a received line shows its final cost.
 - **Container charges:**
   - Draft → Posted → Cancelled. Only posted charges that "enter the landed cost" count.
   - Any currency, at the rate of the charge date (editable): "No exchange rate for this currency on the charge date.
@@ -1452,7 +1478,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `79_Configuration_DocumentTypeEffects.sql` | What a document type does: PINV "Affects item cost" (default on) and "Affects on-hand" (default off), GRN "Create goods receipts when a Delivery is completed" (default on), edited in Configuration › Document Types; each invoice captures its two at posting (`AffectsCost`, `ReceiveOnPost`); the cost rule in `purchase.fn_GoodsReceiptLine_TargetCost`; returns from a non-cost invoice at the receipt cost; LCA refused 67013; the Delivery hook and `usp_Movement_Get` read the GRN switch |
 | `80_Logistics_ShipFromTheContainer.sql` | Shipment phase 1, ship from the container: `logistics.fn_Container_ShipState` (where a container is, its movement in progress, its next planned one, its last completed one) on `usp_Container_Search` / `_Get`; `logistics.fn_Movement_StartBlock` (why a planned movement cannot start yet, its earliest start) on `usp_Movement_Search` / `_Get`; `usp_Movement_SetStatus` refuses a date in the future (70000) and a start before the previous leg ended (70018), and `usp_Movement_Save` the same for the start date of a movement in progress; `fn_ContainerFitForMovement` refuses a container on a movement older than a leg it already made; `usp_Movement_ShipContainers` leaves from where moved containers are; new `usp_Movement_JoinCandidates` |
 | `81_Logistics_NextStep.sql` | Shipment phase 2, Next step everywhere: `logistics.fn_Container_NextStepKind`, `fn_Movement_NextLegHistory` (the usual next leg from a place), `fn_Container_NextLegProposal` (history, else the container's ports, else the stages), `fn_Container_NextStep`, `fn_Container_PreviousMovement`; `usp_Container_NextStepPreview` (the ticked containers grouped by step, the blocked ones by reason); `usp_Movement_AddLeg` (a new leg for a group, one movement or one per container, with `tvp_LegContainer`); `usp_Container_Search` (the next step of the page's rows and the `@NextStep` filter; the page found first, then its rows worked out) and `usp_Container_Get`; `usp_Movement_SetStatus` refuses cancelling a leg that is not a container's last (70010; a planned leg already passed by a later one may be cancelled); `usp_Movement_AddLeg` refuses a vessel or truck leg from a place to itself (70000); `fn_Movement_StartBlock` and the 70016 / 70018 checks read each container's previous leg for itself (a list and a Start were slow on 50,000 containers) |
-| `82_Logistics_ShipmentsBoard.sql` | Shipment phase 3: `logistics.fn_Container_BoardPhase` (a container's column on the Shipments board) and `usp_Shipment_Board` (the board, set-based for its rows, the usual next leg once per place and last stage); the permission `containers.shipments.view` (granted once); only part of a movement arriving: `logistics.Movements.SplitFromMovementId`, `logistics.MovementAudit`, `fn_Movement_SplitBlock`, `usp_Movement_SplitContainers`; `usp_Container_NextStepPreview` and `usp_Movement_Get` say whether a container can be split off and why not (`usp_Movement_Get` also gives the movement's history and the movement it was split from); the container page's estimated FOB follows the cost rule (`fn_ContainerLine_FobEstimate`, read by `usp_Container_Get`) |
+| `82_Logistics_ShipmentsBoard.sql` | Shipment phase 3: `logistics.fn_Container_BoardPhase` (a container's column on the Shipments board) and `usp_Shipment_Board` (the board, set-based for its rows, the usual next leg once per place and last stage); the permission `containers.shipments.view` (granted once); only part of a movement arriving: `logistics.Movements.SplitFromMovementId`, `logistics.MovementAudit`, `fn_Movement_SplitBlock`, `usp_Movement_SplitContainers`; `usp_Container_NextStepPreview` and `usp_Movement_Get` say whether a container can be split off and why not (`usp_Movement_Get` also gives the movement's history and the movement it was split from); the container page's estimated FOB follows the cost rule and the matching of the goods receipt (`fn_ContainerLine_FobEstimate`, read by `usp_Container_Get`); a container followed by typed dates in the column of its status; a voyage split in two counted once in the usual next leg (`fn_Movement_Voyage`; `fn_Movement_NextLegHistory` re-created from 81) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
