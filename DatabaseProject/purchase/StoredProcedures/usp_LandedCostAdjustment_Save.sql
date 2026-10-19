@@ -1,3 +1,6 @@
+/* ================================================================== 11. Landed cost adjustments: refused on an invoice that does not change item costs */
+
+-- Re-created (79) from the body of script 65: + 67013 after 67012.
 CREATE   PROCEDURE purchase.usp_LandedCostAdjustment_Save
     @Id                INT            = NULL,
     @SourceInvoiceId   INT,
@@ -21,8 +24,13 @@ BEGIN
     FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceInvoiceId;
     IF @InvStatus IS NULL THROW 67011, 'Purchase invoice not found.', 1;
     IF @InvType <> N'PINV' OR @InvStatus <> 2 THROW 67011, 'Landed cost adjustments apply to POSTED purchase invoices only.', 1;
-    IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceInvoiceId AND ContainerLineId IS NOT NULL)
+    -- (65) + "Shipped in containers" (ReceiptMode 2), linked or not
+    IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceInvoiceId AND ReceiptMode = 2)
+       OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines WHERE DocumentId = @SourceInvoiceId AND ContainerLineId IS NOT NULL)
         THROW 67012, 'This invoice comes from containers: late charges are entered on the containers (Container Charges), not as a landed cost adjustment.', 1;
+    -- (79) an invoice that does not change item costs: an adjustment on it would change no cost
+    IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @SourceInvoiceId AND AffectsCost = 0)
+        THROW 67013, 'This invoice does not change item costs (its document type was set so when it was posted): a landed cost adjustment on it would change no cost. Container charges still enter the cost of goods received in containers.', 1;
     IF NOT EXISTS (SELECT 1 FROM @Charges) THROW 67000, 'At least one charge is required.', 1;
 
     IF @Id IS NOT NULL

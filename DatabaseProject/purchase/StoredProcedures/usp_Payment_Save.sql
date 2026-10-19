@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE purchase.usp_Payment_Save
     @Id           INT            = NULL,           -- NULL = create
     @PaymentDate  DATE,

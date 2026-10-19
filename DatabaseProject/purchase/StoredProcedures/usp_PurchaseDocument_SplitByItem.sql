@@ -1,11 +1,7 @@
-/* ================================================================== 6. Split a draft invoice by item */
+/* ================================================================== 8. Split a draft invoice by item */
 
--- A draft purchase invoice saved with several items (before this script): the item of its first line stays on it, every
--- other item gets a new draft with the same header (not the number, the status and its dates, the totals), its lines
--- moved there and numbered from 1. A moved line keeps every column, its ContainerLineId included: that IS the
--- container link, and the new drafts keep the receipt mode ("Shipped in containers"). The files and the charges stay on
--- the original; a manual allocation of one of its charges on a line that leaves it is dropped (it would point at
--- another invoice), as a save of the lines drops them. Returns the rows of the invoices: the original first.
+-- Re-created (63) from the body of script 45: allowed on any draft purchase invoice holding several items, whatever its
+-- mode; every invoice it leaves (the original included) is of one item from then on (OneItemOnly = 1).
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_SplitByItem
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -90,6 +86,7 @@ BEGIN
         UPDATE d
         SET TotalItems = x.Items, TotalQuantity = x.Qty, Subtotal = x.Sub, TotalAmount = x.Amt, TotalDiscount = x.Sub - x.Amt,
             TotalAmountBase = ROUND(x.Amt / d.ExchangeRate, 2), TotalLandedCostBase = ROUND(x.Amt / d.ExchangeRate, 2) + d.TotalChargesBase,
+            OneItemOnly = 1,      -- (63) split by item: each invoice holds one item from now on, the original too
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
         FROM purchase.PurchaseDocuments d
         INNER JOIN @Created c ON c.InvoiceId = d.Id
@@ -111,7 +108,7 @@ BEGIN
         THROW;
     END CATCH
 
-    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
     FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
     ORDER BY c.Seq;
 END

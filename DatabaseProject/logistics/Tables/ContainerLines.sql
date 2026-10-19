@@ -13,7 +13,7 @@ CREATE TABLE [logistics].[ContainerLines] (
     [OilQtyPerUnit]        DECIMAL (9, 2)  NULL,
     [TotalOilQty]          AS              (CONVERT([decimal](18,2),[Quantity]*isnull([OilQtyPerUnit],(0)))) PERSISTED,
     [ReceivedQuantityBase] INT             NULL,
-    [VarianceReason]       NVARCHAR (200)  NULL,
+    [VarianceReason]       NVARCHAR (400)  NULL,
     [Notes]                NVARCHAR (300)  NULL,
     [PurchaseOrderId]      INT             NOT NULL,
     [PoLineId]             INT             NOT NULL,

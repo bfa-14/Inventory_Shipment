@@ -1,6 +1,12 @@
-/* ================================================================== 4. CreateFromContainers: one invoice per item */
+/* ================================================================== 7. Containers received with a goods receipt can still be invoiced */
 
--- Re-created (45) from the body of script 27: one draft per item, + @ExporterReference / @CommercialInvoiceNo.
+-- Re-created (65) from the body of script 63 (one invoice per item, or one): rule 19 - the goods may arrive before their
+-- invoice, so "Create Invoice from Containers..." also takes a container RECEIVED WITH A GOODS RECEIPT (Offloaded or
+-- Closed, fn_Container_ReceivedBy = 'GRN'), with an empty selection too. Still refused (65019): a cancelled container
+-- and one offloaded before goods receipts ("... the container is cancelled or was offloaded before goods receipts."),
+-- and more than the loaded pieces not yet invoiced; a line already fully invoiced is still left out. The invoices are
+-- "Shipped in containers" and linked to the container lines, as before; posting one trues up the cost of the goods
+-- already received (usp_PurchaseDocument_Post).
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromContainers
     @PurchaseOrderId INT,
     @Selection       logistics.tvp_ContainerLineQty READONLY,
@@ -8,7 +14,8 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromContainers
     @UserId          INT  = NULL,
     @NewId           INT OUTPUT,                      -- (45) the FIRST invoice created
     @ExporterReference   NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
-    @CommercialInvoiceNo NVARCHAR(50) = NULL          -- (45) copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL,         -- (45) copied to every invoice created
+    @OnePerItem          BIT          = NULL          -- (63) 1 one invoice per item, 0 one invoice of every item; NULL = the setting
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -26,6 +33,10 @@ BEGIN
     IF @TypeCode <> N'PO' THROW 65011, 'Invoices from containers are created for a purchase order.', 1;
     IF @Status <> 2 THROW 65011, 'The purchase order must be approved and still open.', 1;
 
+    -- (65) RULE 19: the goods may arrive before the invoice. A container RECEIVED WITH A GOODS RECEIPT (Offloaded or
+    --      Closed, fn_Container_ReceivedBy = 'GRN') is invoiced like one still travelling; only a cancelled container,
+    --      or one offloaded before goods receipts (its goods entered stock with its invoices then), is refused - and
+    --      never more than the loaded pieces.
     DECLARE @Pick TABLE (ContainerLineId INT PRIMARY KEY, QuantityBase INT);
     IF EXISTS (SELECT 1 FROM @Selection)
         INSERT INTO @Pick (ContainerLineId, QuantityBase) SELECT ContainerLineId, QuantityBase FROM @Selection;
@@ -37,7 +48,9 @@ BEGIN
         OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
                      INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
                      WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
-        WHERE cl.PurchaseOrderId = @PurchaseOrderId AND c.Status NOT IN (6, 7, 8) AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0;
+        CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+        WHERE cl.PurchaseOrderId = @PurchaseOrderId AND c.Status <> 8 AND NOT (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+          AND cl.QuantityBase - ISNULL(q.Qty, 0) > 0;
 
     IF NOT EXISTS (SELECT 1 FROM @Pick) THROW 65019, 'Nothing is left to invoice on the containers of this order.', 1;
 
@@ -45,7 +58,9 @@ BEGIN
     SELECT TOP (1) @Msg =
         CASE WHEN cl.Id IS NULL THEN N'A selected container line no longer exists.'
              WHEN cl.PurchaseOrderId <> @PurchaseOrderId THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' belongs to another purchase order.'
-             WHEN c.Status IN (6, 7, 8) THEN N'Container ' + c.ContainerRef + N' is already offloaded, closed or cancelled.'
+             WHEN c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+                  THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10))
+                       + N': the container is cancelled or was offloaded before goods receipts.'
              WHEN p.QuantityBase <= 0 THEN N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': the quantity must be greater than zero.'
              ELSE N'Container ' + c.ContainerRef + N' line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': ' + CAST(p.QuantityBase AS NVARCHAR(20))
                   + N' selected but only ' + CAST(cl.QuantityBase - ISNULL(q.Qty, 0) AS NVARCHAR(20)) + N' are loaded and not yet invoiced.' END
@@ -55,7 +70,9 @@ BEGIN
     OUTER APPLY (SELECT Qty = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
                  INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
                  WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
-    WHERE cl.Id IS NULL OR cl.PurchaseOrderId <> @PurchaseOrderId OR c.Status IN (6, 7, 8) OR p.QuantityBase <= 0
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+    WHERE cl.Id IS NULL OR cl.PurchaseOrderId <> @PurchaseOrderId OR c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+       OR p.QuantityBase <= 0
        OR p.QuantityBase > cl.QuantityBase - ISNULL(q.Qty, 0)
     ORDER BY c.ContainerRef, cl.LineNumber;
     IF @Msg IS NOT NULL THROW 65019, @Msg, 1;
@@ -97,12 +114,16 @@ BEGIN
 
     -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
     --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    -- (63) ...UNLESS @OnePerItem = 0 (NULL = the setting Purchase.OneItemPerInvoice): then ONE invoice holds every line,
+    --      in the same order, created the same way; its mode allows several items (OneItemOnly = 0). With 1 every
+    --      invoice is of one item (OneItemOnly = 1), as before.
+    SET @OnePerItem = COALESCE(@OnePerItem, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
     DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
     INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
 
     DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
     DECLARE @Part purchase.tvp_PurchaseDocumentLine, @PartContainers purchase.tvp_LineContainer;
-    DECLARE @Seq INT = 1, @Last INT = (SELECT MAX(Seq) FROM @Items), @Item INT, @InvoiceId INT;
+    DECLARE @Seq INT = 1, @Last INT = CASE WHEN @OnePerItem = 1 THEN (SELECT MAX(Seq) FROM @Items) ELSE 1 END, @Item INT, @InvoiceId INT;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -114,13 +135,13 @@ BEGIN
             INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
             SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
                    ImportRowNumber, Notes, SourceLineId
-            FROM @Lines WHERE ItemId = @Item;
+            FROM @Lines WHERE ItemId = @Item OR @OnePerItem = 0;
 
             DELETE FROM @PartContainers;
             INSERT INTO @PartContainers (LineNumber, ContainerLineId)
             SELECT ROW_NUMBER() OVER (ORDER BY r.LineNumber), r.ContainerLineId
             FROM @Rows r INNER JOIN @Lines l ON l.LineNumber = r.LineNumber
-            WHERE l.ItemId = @Item;
+            WHERE l.ItemId = @Item OR @OnePerItem = 0;
 
             SET @InvoiceId = NULL;
             EXEC purchase.usp_PurchaseDocument_Save
@@ -129,7 +150,7 @@ BEGIN
                  @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
                  @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @PurchaseOrderId, @RowVersion = NULL, @UserId = @UserId,
                  @ReceiptMode = 2, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
-                 @LineContainers = @PartContainers, @NewId = @InvoiceId OUTPUT;
+                 @LineContainers = @PartContainers, @NewId = @InvoiceId OUTPUT, @OneItemOnly = @OnePerItem;
             INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
 
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
@@ -151,7 +172,7 @@ BEGIN
     -- the first invoice, as before: the callers that read @NewId keep working
     SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
 
-    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
     FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
     ORDER BY c.Seq;
 END

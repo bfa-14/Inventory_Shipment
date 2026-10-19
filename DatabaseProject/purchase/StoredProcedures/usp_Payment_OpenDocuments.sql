@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE purchase.usp_Payment_OpenDocuments
     @PayeeId           INT,
     @DocumentKind      NVARCHAR(10),          -- PINV | CHARGE

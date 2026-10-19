@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE masterdata.usp_CashBankAccount_Save
     @Id          INT           = NULL,
     @AccountCode NVARCHAR(20),

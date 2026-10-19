@@ -1,10 +1,10 @@
 /* ==================================================================================================
-   65: Document lines take a warehouse at the bottom of the tree, of any branch
+   70: Document lines take a warehouse at the bottom of the tree, of any branch
    --------------------------------------------------------------------------------------------------
    Every detail line that moves stock (sales invoices and returns, purchase orders, invoices and
    returns, Inventory In and Out, and the Excel imports of these) names a warehouse:
      - of ANY branch: the header's branch numbers the document, it does not limit its lines
-       (already so for sales and purchases; script 64 for Inventory In / Out; here for the import's
+       (already so for sales and purchases; script 69 for Inventory In / Out; here for the import's
        default warehouse);
      - at the BOTTOM of the warehouse tree: a warehouse with warehouses under it is a group, not a
        place that holds stock, so no line may take or put stock there.

@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE masterdata.usp_Warehouse_Create
     @WarehouseCode        NVARCHAR(20),
     @WarehouseName        NVARCHAR(150),

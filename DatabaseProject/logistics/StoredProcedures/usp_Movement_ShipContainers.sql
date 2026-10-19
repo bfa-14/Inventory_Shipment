@@ -1,12 +1,8 @@
-/* ================================================================== 5. A shipment for the chosen containers */
+/* ================================================================== 7. Start shipment: a container leaves from where it is */
 
--- Confirms the draft containers (@ConfirmDrafts), creates ONE movement for all of them and starts it (@StartNow),
--- in one transaction. Places by default (Sea stage only): from the common port of loading to the common port of
--- destination of the containers. @UpdateContainers copies to the containers the values that change: for a vessel leg
--- (Sea, or a transshipment between two sea ports) the vessel, voyage, shipping line (the carrier's name) and ETA; for a
--- Sea movement also the ports, only when the container has none; for a road leg (Transit, Border, Delivery) the truck;
--- the B/L no. / date when given. Each changed container gets one audit line listing what changed.
--- Returns the movement (Id, MovementNo, Status, StartDate, Eta, ContainerCount, RowVersion) and @NewId.
+-- Re-created (80) from the body of script 28: the "empty From / To = the containers' ports" default only for containers
+-- that never moved; one that moved leaves from where it is (an empty From = the place they are all at, the To
+-- required); a stay with an empty To takes the From. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_Movement_ShipContainers
     @ContainerIds     logistics.tvp_IdList READONLY,
     @MovementTypeId   INT            = NULL,   -- NULL = SEA
@@ -62,6 +58,23 @@ BEGIN
     ORDER BY c.ContainerRef;
     IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
 
+    -- (80) A CONTAINER LEAVES FROM WHERE IT IS: the end of its latest movement, else (never moved) its port of loading.
+    -- The ports default below is only for containers that never moved; for one that moved, an empty From is the place
+    -- every selected container is at, and the To is required.
+    DECLARE @Places TABLE (ContainerId INT NOT NULL PRIMARY KEY, Moved BIT NOT NULL, PlaceId INT NULL);
+    INSERT INTO @Places (ContainerId, Moved, PlaceId)
+    SELECT x.Id, CASE WHEN p.PreviousMovementId IS NULL THEN 0 ELSE 1 END,
+           CASE WHEN p.PreviousMovementId IS NULL THEN p.PortOfLoadingId ELSE p.PlaceId END
+    FROM @Ids x
+    INNER JOIN logistics.fn_ContainerPlaceForMovement(NULL) p ON p.ContainerId = x.Id;
+    DECLARE @AnyMoved BIT = CASE WHEN EXISTS (SELECT 1 FROM @Places WHERE Moved = 1) THEN 1 ELSE 0 END;
+
+    IF @FromPlaceId IS NULL AND @AnyMoved = 1
+    BEGIN
+        IF EXISTS (SELECT 1 FROM @Places WHERE PlaceId IS NULL) OR (SELECT COUNT(DISTINCT PlaceId) FROM @Places) > 1
+            THROW 70000, 'Choose the From: the selected containers are not all at the same place.', 1;
+        SELECT TOP (1) @FromPlaceId = PlaceId FROM @Places;
+    END
     IF @Stage = N'Sea' AND @FromPlaceId IS NULL
     BEGIN
         IF EXISTS (SELECT 1 FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id WHERE c.PortOfLoadingId IS NULL)
@@ -69,13 +82,15 @@ BEGIN
             THROW 70000, 'Choose the departure port: the selected containers have no port of loading, or different ones.', 1;
         SELECT TOP (1) @FromPlaceId = c.PortOfLoadingId FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id;
     END
-    IF @Stage = N'Sea' AND @ToPlaceId IS NULL
+    IF @Stage = N'Sea' AND @ToPlaceId IS NULL AND @AnyMoved = 0
     BEGIN
         IF EXISTS (SELECT 1 FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id WHERE c.PortOfDestinationId IS NULL)
            OR (SELECT COUNT(DISTINCT c.PortOfDestinationId) FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id) > 1
             THROW 70000, 'Choose the destination port: the selected containers have no port of destination, or different ones.', 1;
         SELECT TOP (1) @ToPlaceId = c.PortOfDestinationId FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id;
     END
+    -- (80) a stay (a port call, customs, a border crossing) happens at one place
+    IF @ToPlaceId IS NULL AND @Stage IN (N'Port', N'Customs', N'Border') SET @ToPlaceId = @FromPlaceId;
     IF @FromPlaceId IS NULL OR @ToPlaceId IS NULL THROW 70000, 'Choose the departure and destination places.', 1;
 
     DECLARE @CarrierName NVARCHAR(100) = (SELECT LEFT(PartyName, 100) FROM masterdata.Parties WHERE Id = @CarrierPartyId);

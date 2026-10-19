@@ -1,3 +1,6 @@
+/* ================================================================== 7. Shortage plan: its purchase orders */
+
+-- Re-created (77) from the body of script 25: the purchase orders made from the plan carry InvoicingStatus.
 CREATE   PROCEDURE inventory.usp_ShortageDocument_Get
     @Id INT
 AS
@@ -36,9 +39,12 @@ BEGIN
     WHERE l.DocumentId = @Id
     ORDER BY l.LineNumber;
 
-    SELECT p.Id, p.DocumentNumber, p.DocumentDate, p.Status, p.TotalAmount, c.CurrencyCode, p.CreatedAtUtc
+    -- (77) + InvoicingStatus (0 / 1 / 2: Saved, Partially posted, Posted on an approved order)
+    SELECT p.Id, p.DocumentNumber, p.DocumentDate, p.Status, p.TotalAmount, c.CurrencyCode, p.CreatedAtUtc,
+           inv.InvoicingStatus
     FROM purchase.PurchaseDocuments p
     INNER JOIN masterdata.Currencies c ON c.Id = p.CurrencyId
+    OUTER APPLY purchase.fn_PurchaseOrder_Invoicing(p.Id) inv
     WHERE p.SourceShortageId = @Id
     ORDER BY p.CreatedAtUtc;
 

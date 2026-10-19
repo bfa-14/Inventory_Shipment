@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE purchase.usp_Payment_Get
     @Id INT
 AS

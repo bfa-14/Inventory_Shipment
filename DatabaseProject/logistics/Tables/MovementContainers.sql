@@ -11,6 +11,12 @@ CREATE TABLE [logistics].[MovementContainers] (
 
 GO
 
+CREATE NONCLUSTERED INDEX [IX_MovementContainers_ContainerMovement]
+    ON [logistics].[MovementContainers]([ContainerId] ASC, [MovementId] ASC);
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_MovementContainers_Container]
     ON [logistics].[MovementContainers]([ContainerId] ASC);
 

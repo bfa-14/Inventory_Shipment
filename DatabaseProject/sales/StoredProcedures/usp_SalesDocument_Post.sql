@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE sales.usp_SalesDocument_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,

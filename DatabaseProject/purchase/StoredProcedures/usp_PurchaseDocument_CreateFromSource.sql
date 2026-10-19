@@ -1,6 +1,12 @@
-/* ================================================================== 5. CreateFromSource: one invoice per item (PO -> PINV) */
+/* ================================================================== 6. CreateFromSource: a return of what was received */
 
--- Re-created (45) from the body of script 43: PO -> PINV one draft per item (receipt mode of 43 kept), other pairs unchanged.
+-- Re-created (65) from the body of script 63 (one invoice per item, or one): PINV -> PRET from an invoice whose goods
+-- came through goods receipts (UsesGoodsReceipts = 1) or travel in containers (receipt mode 2) - rule 23:
+--   - what each line can still return = received (ReceivedQuantityBase: the pieces matched to it) - returned - on draft
+--     returns, as usp_PurchaseDocument_Post checks it (65011); goods received but not invoiced are not on the invoice;
+--   - the line's warehouse = the warehouse of the posted goods receipt line matched to it with the most pieces (where
+--     the goods are), else the invoice line's.
+-- Returns from older invoices, and PO -> PINV, are unchanged. The cost of the return is set by Save and again by Post.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
     @SourceId       INT,
     @TargetTypeCode NVARCHAR(20),        -- PINV (from PO) | PRET (from PINV)
@@ -9,16 +15,21 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_CreateFromSource
     @UserId         INT  = NULL,
     @NewId          INT OUTPUT,                       -- (45) PO -> PINV: the FIRST invoice created
     @ExporterReference   NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
-    @CommercialInvoiceNo NVARCHAR(50) = NULL          -- (45) PO -> PINV: copied to every invoice created
+    @CommercialInvoiceNo NVARCHAR(50) = NULL,         -- (45) PO -> PINV: copied to every invoice created
+    @OnePerItem          BIT          = NULL          -- (63) PO -> PINV: 1 one invoice per item, 0 one invoice of every item; NULL = the setting
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
     IF @DocumentDate IS NULL SET @DocumentDate = CAST(SYSUTCDATETIME() AS DATE);
 
-    DECLARE @SrcType NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT, @RateType TINYINT, @SupplierRef NVARCHAR(100);
+    DECLARE @SrcType NVARCHAR(20), @Status TINYINT, @BranchId INT, @WarehouseId INT, @SupplierId INT, @CurrencyId INT, @RateType TINYINT, @SupplierRef NVARCHAR(100),
+            @SrcByReceipts BIT;
     SELECT @SrcType = dt.Code, @Status = d.Status, @BranchId = d.BranchId, @WarehouseId = d.WarehouseId, @SupplierId = d.SupplierId,
-           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference
+           @CurrencyId = d.CurrencyId, @RateType = d.RateType, @SupplierRef = d.SupplierReference,
+           -- (65) rule 23: an invoice whose goods came (or come) through goods receipts - posted after the switch, or
+           --      "Shipped in containers" - returns only what was RECEIVED and not returned yet
+           @SrcByReceipts = CASE WHEN dt.Code = N'PINV' AND (d.UsesGoodsReceipts = 1 OR d.ReceiptMode = 2) THEN 1 ELSE 0 END
     FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId WHERE d.Id = @SourceId;
 
     IF @SrcType IS NULL THROW 65006, 'Source document not found.', 1;
@@ -50,6 +61,7 @@ BEGIN
                  INNER JOIN inventory.DocumentTypes xt ON xt.Id = xd.DocumentTypeId
                  WHERE x.SourceLineId = l.Id AND xd.Status = 1 AND xt.Code = @TargetTypeCode) dr
     CROSS APPLY (SELECT Available = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                         WHEN @SrcByReceipts = 1 THEN l.ReceivedQuantityBase - l.ReturnedQuantityBase   -- (65) received, not returned
                                          ELSE l.QuantityBase - l.ReturnedQuantityBase END - ISNULL(dr.Qty, 0)) av
         WHERE l.Id IS NULL OR sel.QuantityBase <= 0 OR sel.QuantityBase > av.Available
         ORDER BY sel.SourceLineId;
@@ -58,16 +70,26 @@ BEGIN
 
     -- Remaining quantity per line; when it is not a whole number of the line's unit, the new line uses the BASE unit
     -- (price converted per base unit) so nothing is over-received or over-returned.
+    -- (65) A return from an invoice whose goods came through goods receipts takes them out of the warehouse they were
+    --      received into: that of the posted receipt line matched to the invoice line with the most pieces (else the
+    --      invoice line's).
     DECLARE @Lines purchase.tvp_PurchaseDocumentLine;
     INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
-    SELECT ROW_NUMBER() OVER (ORDER BY l.LineNumber), l.ItemId, c.ItemUnitId, l.WarehouseId, l.ExpiryDate,
+    SELECT ROW_NUMBER() OVER (ORDER BY l.LineNumber), l.ItemId, c.ItemUnitId, COALESCE(rw.WarehouseId, l.WarehouseId), l.ExpiryDate,
            c.Quantity, c.UnitPrice, l.DiscountPercent, NULL, l.Notes, l.Id
     FROM purchase.PurchaseDocumentLines l
+    OUTER APPLY (SELECT TOP (1) WarehouseId = COALESCE(gl.WarehouseId, g.WarehouseId)
+                 FROM purchase.GoodsReceiptInvoiceMatches m
+                 INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                 INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                 WHERE m.InvoiceLineId = l.Id AND @SrcByReceipts = 1 AND COALESCE(gl.WarehouseId, g.WarehouseId) IS NOT NULL
+                 ORDER BY m.QuantityBase DESC, gl.Id) rw
     OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
                  INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
                  INNER JOIN inventory.DocumentTypes xt ON xt.Id = xd.DocumentTypeId
                  WHERE x.SourceLineId = l.Id AND xd.Status = 1 AND xt.Code = @TargetTypeCode) dr
     CROSS APPLY (SELECT Available = CASE WHEN @SrcType = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                         WHEN @SrcByReceipts = 1 THEN l.ReceivedQuantityBase - l.ReturnedQuantityBase   -- (65) received, not returned
                                          ELSE l.QuantityBase - l.ReturnedQuantityBase END - ISNULL(dr.Qty, 0)) av
     LEFT JOIN @Selection sel ON sel.SourceLineId = l.Id
     CROSS APPLY (SELECT Remaining = CASE WHEN @HasSelection = 1 THEN ISNULL(sel.QuantityBase, 0) ELSE av.Available END) r
@@ -93,12 +115,16 @@ BEGIN
 
     -- (45) ONE INVOICE PER ITEM: the lines are split by item, in the order of each item's first line, and every invoice
     --      is created exactly as one was before (usp_PurchaseDocument_Save: header, lines, totals, audit), all or nothing.
+    -- (63) ...UNLESS @OnePerItem = 0 (NULL = the setting Purchase.OneItemPerInvoice): then ONE invoice holds every line,
+    --      in the same order, created the same way; its mode allows several items (OneItemOnly = 0). With 1 every
+    --      invoice is of one item (OneItemOnly = 1), as before.
+    SET @OnePerItem = COALESCE(@OnePerItem, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
     DECLARE @Items TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, ItemId INT NOT NULL UNIQUE);
     INSERT INTO @Items (ItemId) SELECT ItemId FROM @Lines GROUP BY ItemId ORDER BY MIN(LineNumber);
 
     DECLARE @Created TABLE (Seq INT PRIMARY KEY, InvoiceId INT NOT NULL);
     DECLARE @Part purchase.tvp_PurchaseDocumentLine;
-    DECLARE @Seq INT = 1, @Last INT = (SELECT MAX(Seq) FROM @Items), @Item INT, @InvoiceId INT;
+    DECLARE @Seq INT = 1, @Last INT = CASE WHEN @OnePerItem = 1 THEN (SELECT MAX(Seq) FROM @Items) ELSE 1 END, @Item INT, @InvoiceId INT;
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -110,7 +136,7 @@ BEGIN
             INSERT INTO @Part (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent, ImportRowNumber, Notes, SourceLineId)
             SELECT ROW_NUMBER() OVER (ORDER BY LineNumber), ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitPrice, DiscountPercent,
                    ImportRowNumber, Notes, SourceLineId
-            FROM @Lines WHERE ItemId = @Item;
+            FROM @Lines WHERE ItemId = @Item OR @OnePerItem = 0;
 
             SET @InvoiceId = NULL;
             EXEC purchase.usp_PurchaseDocument_Save
@@ -119,7 +145,7 @@ BEGIN
                  @RateType = @RateType, @ExchangeRate = NULL, @SupplierReference = @SupplierRef, @Notes = NULL,
                  @Lines = @Part, @MaxDiscountPercent = 100, @SourceDocumentId = @SourceId, @RowVersion = NULL, @UserId = @UserId,
                  @ReceiptMode = @ReceiptMode, @ExporterReference = @ExporterReference, @CommercialInvoiceNo = @CommercialInvoiceNo,
-                 @NewId = @InvoiceId OUTPUT;
+                 @NewId = @InvoiceId OUTPUT, @OneItemOnly = @OnePerItem;
             INSERT INTO @Created (Seq, InvoiceId) VALUES (@Seq, @InvoiceId);
 
             SET @Seq += 1;
@@ -134,7 +160,7 @@ BEGIN
     -- the first invoice, as before: the callers that read @NewId keep working
     SET @NewId = (SELECT InvoiceId FROM @Created WHERE Seq = 1);
 
-    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion
+    SELECT r.Id, r.ItemId, r.ItemCode, r.ItemName, r.LineCount, r.QuantityBase, r.TotalAmount, r.RowVersion, r.ItemCount
     FROM @Created c CROSS APPLY purchase.fn_PurchaseInvoice_Row(c.InvoiceId) r
     ORDER BY c.Seq;
 END

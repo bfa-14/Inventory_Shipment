@@ -1,3 +1,7 @@
+/* ================================================================== 2. Inventory In / Out / BIVAC Out: save */
+
+-- Re-created (72) from the body of script 70 (Ali: 69 no branch limit on the header warehouse or the lines, 70 a line's
+-- warehouse at the bottom of the tree) + script 66's BIVAC line check of a BivacItemsOnly type.
 CREATE   PROCEDURE inventory.usp_StockDocument_ValidateInput
     @DocumentTypeCode NVARCHAR(20),
     @DocumentDate     DATE,
@@ -12,8 +16,9 @@ AS
 BEGIN
     SET NOCOUNT ON;
 
-    DECLARE @RequiresReason BIT;
-    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection, @RequiresReason = RequiresReason
+    DECLARE @RequiresReason BIT, @BivacOnly BIT, @TypeName NVARCHAR(100);
+    SELECT @DocumentTypeId = Id, @StockDirection = StockDirection, @RequiresReason = RequiresReason,
+           @BivacOnly = BivacItemsOnly, @TypeName = Name   -- (66)
     FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Inventory' AND IsActive = 1;
     IF @DocumentTypeId IS NULL
         THROW 62008, 'Document type not found, inactive, or not an inventory document.', 1;
@@ -45,6 +50,9 @@ BEGIN
     SELECT TOP (1) @Msg =
         CASE WHEN i.Id IS NULL THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item not found.'
              WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+             -- (66) a BIVAC-only type (BIVAC Out) takes BIVAC items only
+             WHEN @BivacOnly = 1 AND i.IsBivac = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode
+                  + N' is not a BIVAC item. A ' + @TypeName + N' holds BIVAC items only.'
              WHEN iu.Id IS NULL THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the unit does not belong to item ' + i.ItemCode + N'.'
              WHEN w.Id IS NULL OR w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse not found or inactive.'
              WHEN l.Quantity IS NULL OR l.Quantity <= 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': quantity must be greater than zero.'
@@ -54,11 +62,11 @@ BEGIN
     LEFT JOIN inventory.Items i       ON i.Id = l.ItemId
     LEFT JOIN inventory.ItemUnits iu  ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId
     LEFT JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
-    WHERE i.Id IS NULL OR i.IsActive = 0 OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR (@BivacOnly = 1 AND i.IsBivac = 0) OR iu.Id IS NULL OR w.Id IS NULL OR w.IsActive = 0
        OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitCost IS NOT NULL AND l.UnitCost < 0)
     ORDER BY l.LineNumber;
 
-    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 70).
     IF @Msg IS NULL
         SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
         FROM @Lines l

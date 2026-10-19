@@ -1,3 +1,7 @@
+-- WITH A GOODS RECEIPT (Offloaded or Closed, fn_Container_ReceivedBy = 'GRN') can still be invoiced. Still left out:
+-- cancelled containers and containers offloaded before goods receipts (ReceivedBy = 'Offload'); a line already fully
+-- invoiced unless @IncludeAll. + ReceivedBy and ReceivedBase (the pieces received on the line) at the end.
+-- Container lines that can still be invoiced (containers not offloaded the old way / cancelled), by order or by container.
 CREATE   PROCEDURE logistics.usp_Container_InvoiceCandidates
     @PurchaseOrderId INT = NULL,
     @ContainerId     INT = NULL,
@@ -17,9 +21,12 @@ BEGIN
            InvoicedPostedBase = ISNULL(q.Posted, 0),
            InvoicedDraftBase  = ISNULL(q.Draft, 0),
            AvailableBase      = cl.QuantityBase - ISNULL(q.Posted, 0) - ISNULL(q.Draft, 0),
-           OrderLineRemainingBase = pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(od.Draft, 0)
+           OrderLineRemainingBase = pol.QuantityBase - pol.ReceivedQuantityBase - ISNULL(od.Draft, 0),
+           rb.ReceivedBy,                                        -- (65) 'GRN' once its goods receipt is posted, else NULL
+           ReceivedBase = cl.ReceivedQuantityBase                 -- (65) received by that goods receipt (NULL before)
     FROM logistics.ContainerLines cl
     INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
     INNER JOIN purchase.PurchaseDocuments d       ON d.Id = cl.PurchaseOrderId
     INNER JOIN masterdata.Parties sp              ON sp.Id = d.SupplierId
     INNER JOIN masterdata.Currencies cur          ON cur.Id = d.CurrencyId
@@ -36,7 +43,7 @@ BEGIN
                  FROM purchase.PurchaseDocumentLines pil
                  INNER JOIN purchase.PurchaseDocuments x ON x.Id = pil.DocumentId
                  WHERE pil.SourceLineId = pol.Id AND x.Status = 1) od
-    WHERE c.Status NOT IN (6, 7, 8)
+    WHERE (c.Status NOT IN (6, 7, 8) OR rb.ReceivedBy = N'GRN')     -- (65) received with a goods receipt: still invoiceable
       AND (@PurchaseOrderId IS NULL OR cl.PurchaseOrderId = @PurchaseOrderId)
       AND (@ContainerId IS NULL OR cl.ContainerId = @ContainerId)
       AND (@IncludeAll = 1 OR cl.QuantityBase - ISNULL(q.Posted, 0) - ISNULL(q.Draft, 0) > 0)

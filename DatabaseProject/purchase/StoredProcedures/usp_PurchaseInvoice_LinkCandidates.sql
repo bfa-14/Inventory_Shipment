@@ -1,5 +1,9 @@
-/* ================================================================== 11. Link candidates */
+/* ================================================================== 16. Invoice lines a goods receipt refers to stay where they are (rule 28) */
 
+-- Re-created (65) from the body of script 43: no candidate while the invoice fails rule 6 of
+-- purchase.fn_PurchaseInvoice_ContainerState - a goods receipt refers to its lines outside containers (rule 28), or
+-- every piece is in a container already (then there is nothing to link anyway) - so the "Link containers..." dialog
+-- never offers a container that usp_PurchaseInvoice_LinkContainers would refuse.
 -- The container lines an invoice can be linked to: containers of its purchase order still Draft or Confirmed, lines of
 -- the order lines the invoice still has pieces of outside any container, with something loaded and not yet invoiced
 -- (by any invoice that is not cancelled). UnlinkedBase = what the invoice has of that order line outside containers.
@@ -12,6 +16,10 @@ BEGIN
     DECLARE @OrderId INT = (SELECT d.SourceDocumentId FROM purchase.PurchaseDocuments d
                             INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
                             WHERE d.Id = @InvoiceId AND dt.Code = N'PINV' AND d.Status IN (1, 2));
+
+    -- (65) rule 6: a goods receipt refers to the invoice's lines outside containers
+    IF EXISTS (SELECT 1 FROM purchase.fn_PurchaseInvoice_ContainerState(@InvoiceId) s WHERE s.FailedRule = 6)
+        SET @OrderId = NULL;
 
     SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus,
            cl.Id AS ContainerLineId, cl.LineNumber AS ContainerLineNumber, cl.PoLineId, cl.ItemId, i.ItemCode, i.ItemName,

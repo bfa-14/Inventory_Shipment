@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE purchase.usp_Payment_Allocate
     @PaymentId   INT,
     @Allocations purchase.tvp_PaymentAllocation READONLY,

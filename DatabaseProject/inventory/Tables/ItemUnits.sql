@@ -39,14 +39,14 @@ CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_BaseUnit]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_Barcode]
-    ON [inventory].[ItemUnits]([Barcode] ASC) WHERE ([Barcode] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_ItemUnits_Item]
+    ON [inventory].[ItemUnits]([ItemId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ItemUnits_Item]
-    ON [inventory].[ItemUnits]([ItemId] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_Barcode]
+    ON [inventory].[ItemUnits]([Barcode] ASC) WHERE ([Barcode] IS NOT NULL);
 
 
 GO

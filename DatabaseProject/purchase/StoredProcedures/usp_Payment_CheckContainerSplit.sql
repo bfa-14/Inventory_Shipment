@@ -1,4 +1,3 @@
-
 /* ================================================================== 3. The split rules, in one place */
 
 /* THE CONTAINER SPLIT OF THE INVOICE ALLOCATIONS, judged in one place for Save, Post and Allocate. THROWs

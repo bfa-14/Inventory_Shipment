@@ -125,7 +125,7 @@ BEGIN
        OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
     ORDER BY l.LineNumber;
 
-    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 70).
     IF @Msg IS NULL
         SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
         FROM @Lines l

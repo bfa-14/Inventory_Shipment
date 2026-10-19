@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE masterdata.usp_CashBankAccount_Lookup
     @ActiveOnly BIT = 1,
     @CurrencyId INT = NULL,

@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE masterdata.usp_Warehouse_Update
     @Id                   INT,
     @WarehouseCode        NVARCHAR(20),

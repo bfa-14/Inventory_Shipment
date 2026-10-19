@@ -1,9 +1,8 @@
-/* ================================================================== 17. Costs, shortage plans */
+/* ================================================================== 5. The item's last cost */
 
--- Re-created (27): replays the ledger (documents without reversal, matched by family + TYPE + id) + inventory cost
--- adjustments in date order -> exact moving average; LastCost / FobCost / last supplier from the latest RECEIPT:
--- a local invoice received at posting or a container offload (landed cost of the container line).
--- @ItemId NULL = every item (maintenance).
+-- Re-created (79) from the body of script 65: a line received without an order counts for the last cost, FOB cost
+-- and last supplier only once matched to an invoice that changes item costs - a manual line as before (its typed
+-- cost is not a purchase price), and now a line of an order-less invoice that does not change item costs.
 CREATE   PROCEDURE inventory.usp_Item_RebuildCosts
     @ItemId INT = NULL
 AS
@@ -68,17 +67,40 @@ BEGIN
     SET LastCost = x.Landed, FobCost = x.Fob, LastSupplierId = x.SupplierId, LastPurchaseAtUtc = x.ReceivedAtUtc
     FROM inventory.Items i
     OUTER APPLY (SELECT TOP (1) r.Landed, r.Fob, r.SupplierId, r.ReceivedAtUtc
-                 FROM (SELECT Landed = l.UnitCostBase, Fob = l.FobCostBase, d.SupplierId, ReceivedAtUtc = d.PostedAtUtc, Tie = l.Id
+                 FROM (-- (65) (a) a local invoice posted before goods receipts (it received its goods when posted)
+                       SELECT Landed = l.UnitCostBase, Fob = l.FobCostBase, d.SupplierId, ReceivedAtUtc = d.PostedAtUtc, Tie = l.Id
                        FROM purchase.PurchaseDocumentLines l
                        INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
                        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-                       WHERE dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 1 AND l.ItemId = i.Id
+                       WHERE dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 1 AND d.UsesGoodsReceipts = 0 AND l.ItemId = i.Id
                        UNION ALL
+                       -- (65) (b) a container offloaded before goods receipts (a container received with one is (c))
                        SELECT cl.LandedCostBase, cl.FobCostBase, po.SupplierId, c.OffloadedAtUtc, cl.Id
                        FROM logistics.ContainerLines cl
                        INNER JOIN logistics.Containers c        ON c.Id = cl.ContainerId
                        INNER JOIN purchase.PurchaseDocuments po ON po.Id = cl.PurchaseOrderId
-                       WHERE c.Status IN (6, 7) AND cl.ItemId = i.Id AND cl.ReceivedQuantityBase > 0) r
+                       CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+                       WHERE rb.ReceivedBy = N'Offload' AND cl.ItemId = i.Id AND cl.ReceivedQuantityBase > 0
+                       UNION ALL
+                       -- (65) (c) a posted goods receipt line with pieces; a manual line only once matched to an invoice
+                       SELECT CASE WHEN gl.ContainerLineId IS NOT NULL THEN gcl.LandedCostBase ELSE gl.UnitCostBase END,
+                              CASE WHEN gl.ContainerLineId IS NOT NULL THEN gcl.FobCostBase ELSE gl.FobCostBase END,
+                              gl.SupplierId, g.PostedAtUtc, gl.Id
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId AND g.Status = 2
+                       LEFT  JOIN logistics.ContainerLines gcl  ON gcl.Id = gl.ContainerLineId
+                       WHERE gl.ItemId = i.Id AND gl.QuantityBase > 0
+                         -- (79) a line without an order - manual, or from an invoice that does not change item
+                         --      costs - counts once matched to an invoice that does: its cost is not a purchase price
+                         AND NOT (gl.PoLineId IS NULL
+                                  AND (gl.InvoiceLineId IS NULL
+                                       OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines p
+                                                  INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = p.DocumentId
+                                                  WHERE p.Id = gl.InvoiceLineId AND pd.AffectsCost = 0))
+                                  AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceiptInvoiceMatches x
+                                                  INNER JOIN purchase.PurchaseDocumentLines p ON p.Id = x.InvoiceLineId
+                                                  INNER JOIN purchase.PurchaseDocuments pd    ON pd.Id = p.DocumentId
+                                                  WHERE x.GoodsReceiptLineId = gl.Id AND pd.AffectsCost = 1))) r
                  ORDER BY r.ReceivedAtUtc DESC, r.Tie DESC) x
     WHERE (@ItemId IS NULL OR i.Id = @ItemId);
 END

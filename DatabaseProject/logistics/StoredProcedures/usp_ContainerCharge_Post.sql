@@ -1,3 +1,14 @@
+/* ================================================================== 24. Container charges: the container's status read under lock */
+
+-- Re-created (65) from the body of script 27. A charge posted while its container is being received: goods receipt Post
+-- holds the container (UPDLOCK) and re-spreads and freezes the posted charges, then sets the container Offloaded; an
+-- update lock does not stop a plain read, so this procedure read "Cleared" and posted the charge as one before the
+-- receipt - after the receipt had frozen the others - leaving it neither frozen in the goods' cost nor adjusted after
+-- (no CNTCHARGE rows): it entered no cost at all. Now the containers of the charges are read WITH (UPDLOCK, HOLDLOCK),
+-- all of them first and in Id order (two postings never cross, and no charge is written before every container is
+-- held): during a receipt this posting waits, then sees Offloaded and posts a late charge (usp_ContainerCharge_ApplyCost);
+-- the other way round the receipt waits and freezes the posted charge itself. Nothing else changes.
+-- Posts one draft (@Id) or several (@Ids, e.g. a whole group) in one transaction.
 -- Before the offload: the charge joins the provisional cost of the lines. After the offload: cost adjustment
 -- (the part still in stock -> average cost, the part already sold -> COGS).
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
@@ -30,6 +41,10 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
+        -- (65) the containers of the charges, held until the commit, before anything is written (see above)
+        DECLARE @HeldContainers INT = (SELECT COUNT(*) FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK)
+                                       WHERE c.Id IN (SELECT ch.ContainerId FROM @List x INNER JOIN logistics.ContainerCharges ch ON ch.Id = x.Id));
+
         DECLARE @ChargeId INT, @ContainerId INT, @CtStatus TINYINT, @Method NVARCHAR(10), @InLanded BIT,
                 @AmountBase DECIMAL(18,2), @Ref NVARCHAR(30), @Label NVARCHAR(200), @After BIT;
         DECLARE posts CURSOR LOCAL FAST_FORWARD FOR
@@ -38,11 +53,12 @@ BEGIN
         FETCH NEXT FROM posts INTO @ChargeId;
         WHILE @@FETCH_STATUS = 0
         BEGIN
+            -- (65) the container's status as committed: a goods receipt of it has finished (or not begun)
             SELECT @ContainerId = ch.ContainerId, @CtStatus = c.Status, @Method = ch.AllocationMethod, @InLanded = ch.IncludeInLandedCost,
                    @AmountBase = ch.AmountBase, @Ref = c.ContainerRef,
                    @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
             FROM logistics.ContainerCharges ch
-            INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+            INNER JOIN logistics.Containers c WITH (UPDLOCK, HOLDLOCK) ON c.Id = ch.ContainerId
             INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
             INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
             WHERE ch.Id = @ChargeId;
@@ -69,7 +85,7 @@ BEGIN
 
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@ContainerId, N'Updated', LEFT(N'Charge posted: ' + @Label
-                                                   + CASE WHEN @After = 1 THEN N' (after the offload: item costs adjusted)' ELSE N'' END, 500), @UserId);
+                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END, 500), @UserId);
 
             FETCH NEXT FROM posts INTO @ChargeId;
         END

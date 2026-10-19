@@ -1,3 +1,7 @@
+/* ================================================================== 7. Container charges: their files say "Other" */
+
+-- Re-created (67) from the body of script 47: + IsOther on the charge's files (the container list's expression: no
+-- type, or Other / Other, General / Other).
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
     @Id INT
 AS
@@ -38,6 +42,7 @@ BEGIN
     ORDER BY cl.LineNumber;
 
     SELECT a.Id, a.ContainerId, a.MovementId, a.AttachmentTypeId, at.Category, at.SubType,
+           IsOther = CAST(CASE WHEN at.Id IS NULL OR (at.SubType = N'Other' AND at.Category IN (N'Other', N'General')) THEN 1 ELSE 0 END AS BIT),   -- (67)
            a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.CreatedAtUtc, u.FullName AS CreatedByName
     FROM logistics.ContainerAttachments a
     INNER JOIN logistics.Files f ON f.Id = a.FileId

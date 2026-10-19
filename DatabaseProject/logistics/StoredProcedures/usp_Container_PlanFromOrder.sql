@@ -1,8 +1,8 @@
-/* ================================================================== 4. Auto-plan: pieces per container from the item */
+/* ================================================================== 2. Auto-plan: any number of containers */
 
--- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only
--- (logistics.fn_ItemPcsPerContainer); @Capacities and the container type's MaxUnits are no longer read; an item without
--- a Container unit stops the plan (69000).
+-- Re-created (78) from the body of script 65: (78) NO CEILING ON THE NUMBER OF CONTAINERS. The two refusals above 200
+-- (before packing and after) are gone: an order needing 2,000 containers is proposed in under a second. Nothing else
+-- changes.
 CREATE   PROCEDURE logistics.usp_Container_PlanFromOrder
     @PurchaseOrderId INT,
     @ContainerTypeId INT,
@@ -24,7 +24,9 @@ BEGIN
         THROW 69000, 'Container type not found or inactive.', 1;
     DECLARE @Msg NVARCHAR(400);
 
-    -- order lines: what can still be loaded (ordered - invoiced without container - loaded in other containers)
+    -- order lines: what can still be loaded (ordered - committed outside containers - loaded in other containers).
+    -- (65) Committed outside = MAX(invoiced outside containers, received + on draft receipts outside containers): an
+    -- invoiced piece and a received piece outside containers are the same goods (they are matched), never added up.
     DECLARE @Lines TABLE
     (
         PoLineId      INT          NOT NULL PRIMARY KEY,
@@ -49,9 +51,7 @@ BEGIN
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN inventory.Items i ON i.Id = l.ItemId
     LEFT  JOIN purchase.fn_PurchaseInvoice_Unlinked(@ForInvoiceId) inv ON inv.PoLineId = l.Id
-    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
-                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
+    OUTER APPLY purchase.fn_PoLine_CommittedOutside(l.Id, NULL) dir
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8) oth
@@ -63,9 +63,6 @@ BEGIN
     WHERE l.AvailableBase > 0 AND l.Cap IS NULL
     ORDER BY l.PoLineNumber;
     IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
-
-    IF (SELECT SUM(AvailableBase / Cap) FROM @Lines WHERE AvailableBase > 0) > 200
-        THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
 
     DECLARE @Plan TABLE (Seq INT NOT NULL, PoLineId INT NOT NULL, QuantityBase INT NOT NULL, PRIMARY KEY (Seq, PoLineId));
     DECLARE @Seq INT = 0, @PoLineId INT, @Avail INT, @Cap INT, @Full INT, @k INT, @Rem INT;
@@ -173,9 +170,6 @@ BEGIN
         ELSE
             INSERT INTO @Plan (Seq, PoLineId, QuantityBase) SELECT Seq, PoLineId, QuantityBase FROM @RestA;
     END
-
-    IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
-        THROW 69000, 'The plan would need more than 200 containers. Check the pieces per container, or plan the order in parts.', 1;
 
     -- 1: containers, with their fill from the items' Container units (no MaxUnits any more, script 54).
     SELECT x.Seq, x.ItemCount, x.Units,

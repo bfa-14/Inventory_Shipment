@@ -1,6 +1,9 @@
-/* ================================================================== 2. Save: one item per supplier invoice */
+/* ================================================================== 7. Returns from an invoice that does not change item costs */
 
--- Re-created (45) from the body of script 43: a purchase invoice with lines of several items is refused (65029).
+-- Re-created (79) from the body of script 65: a return from an invoice that does not change item costs carries the
+-- base cost of the receipt lines matched to its invoice line (what its pieces entered stock at: the order price, plus a
+-- container line's charges), not the invoice's landed cost nor the lines' current cost, which may blend in another
+-- invoice's price; its price - the supplier's credit - is still the invoice's. Worked out again when it is posted.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @Id                  INT            = NULL,
     @DocumentTypeCode    NVARCHAR(20),
@@ -23,7 +26,8 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_Save
     @ExporterReference   NVARCHAR(50)   = NULL,
     @CommercialInvoiceNo NVARCHAR(50)   = NULL,
     @LineContainers      purchase.tvp_LineContainer READONLY,   -- invoice from containers: the container line of every line
-    @NewId               INT OUTPUT
+    @NewId               INT OUTPUT,
+    @OneItemOnly         BIT            = NULL     -- (63) a NEW supplier invoice: 1 one item, 0 several; NULL = the setting. Kept on update.
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -47,8 +51,17 @@ BEGIN
          @CurrencyId, @RateType, @ExchangeRate, @MaxDiscountPercent, @SourceDocumentId, @Lines,
          @TypeId OUTPUT, @Direction OUTPUT, @Cur OUTPUT, @Rate OUTPUT;
 
-    -- (45) A supplier invoice holds ONE item: any number of lines, all of the same item.
-    IF @DocumentTypeCode = N'PINV' AND (SELECT COUNT(DISTINCT ItemId) FROM @Lines) > 1
+    -- (63) ONE ITEM OR SEVERAL IS THE INVOICE'S OWN MODE: chosen when it is created (@OneItemOnly, NULL = the setting
+    --      Purchase.OneItemPerInvoice) and kept by every later save. An invoice saved before script 63 has none: it
+    --      follows the setting as it is now. Orders and returns have no mode.
+    DECLARE @OneItem BIT = NULL;
+    IF @DocumentTypeCode = N'PINV'
+        SET @OneItem = COALESCE(CASE WHEN @Id IS NULL THEN @OneItemOnly
+                                     ELSE (SELECT OneItemOnly FROM purchase.PurchaseDocuments WHERE Id = @Id) END,
+                                configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice'));
+
+    -- (45) A supplier invoice holds ONE item: any number of lines, all of the same item. (63) When its mode says so.
+    IF @OneItem = 1 AND (SELECT COUNT(DISTINCT ItemId) FROM @Lines) > 1
     BEGIN
         DECLARE @ItemCount INT = (SELECT COUNT(DISTINCT ItemId) FROM @Lines), @ItemCodes NVARCHAR(400);
         SELECT @ItemCodes = STRING_AGG(x.ItemCode, N', ') WITHIN GROUP (ORDER BY x.FirstLine)
@@ -95,10 +108,13 @@ BEGIN
         IF @Id IS NOT NULL AND EXISTS (SELECT 1 FROM purchase.PurchaseCharges WHERE DocumentKind = N'PINV' AND DocumentId = @Id)
             THROW 65020, 'This invoice has its own charges. Remove them: the charges of an import are entered on its containers.', 1;
 
+        -- (65) A container received with a goods receipt can still be invoiced (the goods may arrive first): only a
+        --      cancelled container, or one offloaded before goods receipts, is refused.
         DECLARE @CtMsg NVARCHAR(400);
         SELECT TOP (1) @CtMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
             CASE WHEN cl.Id IS NULL THEN N'the container line no longer exists.'
-                 WHEN c.Status IN (6, 7, 8) THEN N'container ' + c.ContainerRef + N' is already offloaded, closed or cancelled.'
+                 WHEN c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload')
+                      THEN N'container ' + c.ContainerRef + N' is cancelled or was offloaded before goods receipts.'
                  WHEN cl.PurchaseOrderId <> @SourceDocumentId THEN N'the container line belongs to another purchase order.'
                  WHEN cl.ItemId <> l.ItemId THEN N'the item differs from the container line.'
                  ELSE N'the order line differs from the container line.' END
@@ -106,7 +122,8 @@ BEGIN
         INNER JOIN @LineContainers x          ON x.LineNumber = l.LineNumber
         LEFT  JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
         LEFT  JOIN logistics.Containers c      ON c.Id = cl.ContainerId
-        WHERE cl.Id IS NULL OR c.Status IN (6, 7, 8) OR cl.PurchaseOrderId <> @SourceDocumentId
+        OUTER APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+        WHERE cl.Id IS NULL OR c.Status = 8 OR (c.Status IN (6, 7) AND rb.ReceivedBy = N'Offload') OR cl.PurchaseOrderId <> @SourceDocumentId
            OR cl.ItemId <> l.ItemId OR ISNULL(l.SourceLineId, 0) <> cl.PoLineId
         ORDER BY l.LineNumber;
         IF @CtMsg IS NOT NULL THROW 65019, @CtMsg, 1;
@@ -149,6 +166,9 @@ BEGIN
     BEGIN
         -- received on posting: what the containers of the order hold plus what is invoiced outside containers cannot
         -- exceed the order line, or the same goods would be received twice
+        -- (65) Outside containers = MAX(invoiced outside containers, this invoice included; received outside containers +
+        --      on draft goods receipts outside containers) - fn_PoLine_CommittedOutside, without this invoice. A maximum,
+        --      not a sum: goods received from the order and the invoice that pays for them are the same pieces.
         SELECT TOP (1) @ModeMsg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): the containers of the order hold '
                                   + CAST(ct.Qty AS NVARCHAR(20)) + N' of the ' + CAST(pol.QuantityBase AS NVARCHAR(20))
                                   + N' ordered. Keep Shipped in containers on and link the invoice to them.'
@@ -160,11 +180,11 @@ BEGIN
         CROSS APPLY (SELECT Qty = ISNULL(SUM(cl.QuantityBase), 0) FROM logistics.ContainerLines cl
                      INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                      WHERE cl.PoLineId = pol.Id AND c.Status <> 8) ct
-        OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
-                     INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                     WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2
-                       AND (@Id IS NULL OR xd.Id <> @Id)) dir
-        WHERE ct.Qty > 0 AND l.Qty + ISNULL(dir.Qty, 0) + ct.Qty > pol.QuantityBase
+        CROSS APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, @Id) co
+        CROSS APPLY (SELECT Qty = CASE WHEN l.Qty + co.InvoicedOutsideBase >= co.ReceivedOutsideBase + co.InDraftReceiptsOutsideBase
+                                       THEN l.Qty + co.InvoicedOutsideBase
+                                       ELSE co.ReceivedOutsideBase + co.InDraftReceiptsOutsideBase END) dir
+        WHERE ct.Qty > 0 AND dir.Qty + ct.Qty > pol.QuantityBase
         ORDER BY l.LineNumber;
         IF @ModeMsg IS NOT NULL THROW 65026, @ModeMsg, 1;
     END
@@ -180,10 +200,11 @@ BEGIN
 
             INSERT INTO purchase.PurchaseDocuments (DocumentTypeId, DocumentNumber, DocumentDate, ExpectedDate, BranchId, WarehouseId, SupplierId,
                                                     CurrencyId, RateType, ExchangeRate, SupplierReference, Notes, Status, SourceDocumentId,
-                                                    ReceiptMode, ExporterReference, CommercialInvoiceNo, CreatedBy)
+                                                    ReceiptMode, ExporterReference, CommercialInvoiceNo, CreatedBy, OneItemOnly)
             VALUES (@TypeId, @Number, @DocumentDate, @ExpectedDate, @BranchId, @WarehouseId, @SupplierId,
                     @Cur, @RateType, @Rate, @SupplierReference, @Notes, 1, @SourceDocumentId,
-                    ISNULL(@ReceiptMode, 1), @ExporterReference, @CommercialInvoiceNo, @UserId);
+                    ISNULL(@ReceiptMode, 1), @ExporterReference, @CommercialInvoiceNo, @UserId,
+                    @OneItem);   -- (63) the mode of a new supplier invoice, stored once (NULL on orders and returns)
             SET @Id = SCOPE_IDENTITY();
 
             INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
@@ -216,14 +237,54 @@ BEGIN
         SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
                ISNULL(l.UnitPrice, ROUND(ISNULL(i.LastCost, 0) * iu.PackingFormula * @Rate, 4)),
                ISNULL(l.DiscountPercent, 0),
-               CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.LandedCostBase, src.UnitCostBase) END,   -- returns carry the LANDED cost (the container's for imports)
-               CASE WHEN @DocumentTypeCode = N'PRET' THEN COALESCE(scl.FobCostBase, src.FobCostBase) END,
+               -- returns carry the LANDED cost (the container's for imports). (65) From an invoice that uses goods receipts,
+               -- or is shipped in containers, the invoice line's OWN current cost: its landed cost, or for a container
+               -- line its FOB + the container line's charges per piece received (the container line's FOB mixes the
+               -- prices of every invoice and of the order). A line NOT linked to a container whose pieces are matched to
+               -- goods received in containers (pass 2 of the matching) takes those containers' charges the same way, per
+               -- matched piece; its pieces matched outside containers keep its landed cost. Worked out again when the
+               -- return is posted.
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN
+                    CASE WHEN sd.AffectsCost = 0 THEN COALESCE(rc.Unit, i.AverageCost)          -- (79)
+                         WHEN sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2
+                         THEN CASE WHEN scl.Id IS NOT NULL THEN src.FobCostBase + ISNULL(scl.ChargesBase / NULLIF(scl.ReceivedQuantityBase, 0), 0)
+                                   WHEN mc.CtPcs > 0 THEN (mc.CtPcs * src.FobCostBase + mc.CtCharges + (mc.Pcs - mc.CtPcs) * src.UnitCostBase) / mc.Pcs
+                                   ELSE src.UnitCostBase END
+                         ELSE COALESCE(scl.LandedCostBase, src.UnitCostBase) END END,
+               CASE WHEN @DocumentTypeCode = N'PRET' THEN
+                    CASE WHEN sd.AffectsCost = 0 THEN rc.Fob                                       -- (79)
+                         WHEN sd.UsesGoodsReceipts = 1 OR sd.ReceiptMode = 2 THEN src.FobCostBase
+                         ELSE COALESCE(scl.FobCostBase, src.FobCostBase) END END,
                l.ImportRowNumber, NULLIF(LTRIM(RTRIM(l.Notes)), N''), l.SourceLineId
         FROM @Lines l
         INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
         INNER JOIN inventory.Items i ON i.Id = l.ItemId
         LEFT  JOIN purchase.PurchaseDocumentLines src ON src.Id = l.SourceLineId
-        LEFT  JOIN logistics.ContainerLines scl       ON scl.Id = src.ContainerLineId;
+        LEFT  JOIN purchase.PurchaseDocuments sd      ON sd.Id = src.DocumentId     -- (65) the source invoice
+        LEFT  JOIN logistics.ContainerLines scl       ON scl.Id = src.ContainerLineId
+        -- (65) an unlinked invoice line: its matched pieces, those received in containers and their containers' charges
+        OUTER APPLY (SELECT Pcs       = SUM(m.QuantityBase),
+                            CtPcs     = SUM(CASE WHEN gl.ContainerLineId IS NOT NULL THEN m.QuantityBase ELSE 0 END),
+                            CtCharges = SUM(CASE WHEN gl.ContainerLineId IS NOT NULL
+                                                 THEN m.QuantityBase * ISNULL(mcl.ChargesBase / NULLIF(mcl.ReceivedQuantityBase, 0), 0)
+                                                 ELSE 0 END)
+                     FROM purchase.GoodsReceiptInvoiceMatches m
+                     INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                     LEFT  JOIN logistics.ContainerLines mcl  ON mcl.Id = gl.ContainerLineId
+                     WHERE @DocumentTypeCode = N'PRET' AND m.InvoiceLineId = src.Id AND src.ContainerLineId IS NULL) mc
+        -- (79) an invoice that does not change item costs: its pieces entered stock at their receipt line's BASE cost (the
+        --      order price, or a manual line's cost; a container line adds its container's charges per piece), so they
+        --      go back at that cost - never at the line's current cost, which blends in the price of any invoice that
+        --      does change costs matched to the same line (that difference would stay in stock for good: the later
+        --      true-ups work per line, on its net received pieces)
+        OUTER APPLY (SELECT Unit = SUM(m.QuantityBase * (t.BaseFobBase + CASE WHEN t.IsContainerLine = 1 THEN t.TargetChargesBase
+                                                                               ELSE t.BaseChargesBase END))
+                                   / NULLIF(SUM(m.QuantityBase), 0),
+                            Fob  = SUM(m.QuantityBase * t.BaseFobBase) / NULLIF(SUM(m.QuantityBase), 0)
+                     FROM purchase.GoodsReceiptInvoiceMatches m
+                     INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                     CROSS APPLY purchase.fn_GoodsReceiptLine_TargetCost(gl.GoodsReceiptId) t
+                     WHERE @DocumentTypeCode = N'PRET' AND sd.AffectsCost = 0 AND m.InvoiceLineId = src.Id AND t.GoodsReceiptLineId = gl.Id) rc;
 
         UPDATE pl SET ContainerLineId = x.ContainerLineId
         FROM purchase.PurchaseDocumentLines pl

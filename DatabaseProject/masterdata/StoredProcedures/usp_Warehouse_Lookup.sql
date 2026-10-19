@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE masterdata.usp_Warehouse_Lookup
     @ActiveOnly BIT = 1,
     @BranchId   INT = NULL,

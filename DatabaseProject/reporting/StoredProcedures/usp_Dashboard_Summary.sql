@@ -1,3 +1,10 @@
+/* ================================================================== 13. Dashboard: what is still on order, and the goods receipt drafts */
+
+-- Re-created (72) from the body of script 68 (Ali's dashboard, written before goods receipts): "on the way" counts
+-- what the orders and the invoices without an order still have to RECEIVE (5), the drafts list counts the draft goods
+-- receipts (6), and the free-time alarms stop at the Delivery (9, 10), since a delivered container now waits Cleared
+-- for its goods receipt. Every other result set and column stays as it was; BIVAC Out drafts were already counted
+-- (they are stock documents).
 CREATE   PROCEDURE reporting.usp_Dashboard_Summary
     @BranchId INT  = NULL,
     @From     DATE,
@@ -76,18 +83,45 @@ BEGIN
     INNER JOIN inventory.Items i ON i.Id = s.ItemId;
 
     /* 5 ---------------------------------------------------------------------------- on the way */
-    SELECT OnOrderPieces = (SELECT ISNULL(SUM(l.QuantityBase - l.ReceivedQuantityBase), 0)
-                            FROM purchase.PurchaseDocumentLines l
-                            INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
-                            INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PO'
-                            WHERE d.Status = 2 AND l.QuantityBase > l.ReceivedQuantityBase
-                              AND (@BranchId IS NULL OR d.BranchId = @BranchId)),
-           OpenOrders    = (SELECT COUNT(DISTINCT d.Id)
-                            FROM purchase.PurchaseDocumentLines l
-                            INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
-                            INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PO'
-                            WHERE d.Status = 2 AND l.QuantityBase > l.ReceivedQuantityBase
-                              AND (@BranchId IS NULL OR d.BranchId = @BranchId)),
+    -- (72) STILL TO RECEIVE, THE GOODS RECEIPTS' WAY (script 65), in the three parts of the "Outstanding order" and
+    --      "Transit" of Shortages (rule 25), each for the reader who may see where it comes from (the API trims them):
+    --      OnOrderPieces    the order lines' OutstandingBase (ordered - received - settled short on an open order,
+    --                       invoiced - received - short on a closed one; ReceivedQuantityBase is what was INVOICED, which
+    --                       no longer brings goods in), less the pieces of the line travelling in containers that left
+    --                       the supplier (In Transit, At Port, Cleared), which InTransitPieces counts: the two add up
+    --                       without counting a piece twice. The orders only, like the item's "still to come".
+    --      OutstandingPieces the same, the travelling pieces included: the "on order" the API shows instead to a reader
+    --                       who may not see the containers, so those pieces do not drop out of sight with InTransitPieces.
+    --      InvoicedNotReceivedPieces the posted invoices WITHOUT an order whose goods come with goods receipts, invoiced -
+    --                       received (InvPending of fn_Shortage_Live): before the switch they were stock as soon as the
+    --                       invoice was posted; now they wait for a goods receipt. Never in a container (an invoice
+    --                       without an order cannot have one), so nothing to take off.
+    --      OpenOrders       the orders with something still to receive; the invoices are not orders.
+    --      The branch filter takes a document's branch, and a container's for the pieces it carries (where they will be
+    --      received): over every branch each piece counts once.
+    DECLARE @OnOrder TABLE (OrderId INT NOT NULL, Outstanding INT NOT NULL, Pieces INT NOT NULL);
+    INSERT INTO @OnOrder (OrderId, Outstanding, Pieces)
+    SELECT d.Id, p.OutstandingBase, CASE WHEN p.OutstandingBase > tr.Travelling THEN p.OutstandingBase - tr.Travelling ELSE 0 END
+    FROM purchase.PurchaseDocuments d
+    INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PO'
+    CROSS APPLY purchase.fn_PoLine_Progress(d.Id) p
+    CROSS APPLY (SELECT Travelling = ISNULL((SELECT SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0))
+                                             FROM logistics.ContainerLines cl
+                                             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
+                                             WHERE cl.PoLineId = p.PoLineId AND c.Status IN (3, 4, 5)), 0)) tr
+    WHERE d.Status IN (2, 4) AND p.OutstandingBase > 0   -- a closed order still brings what was invoiced and not received
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId);
+
+    SELECT OnOrderPieces = (SELECT ISNULL(SUM(o.Pieces), 0) FROM @OnOrder o),
+           OpenOrders    = (SELECT COUNT(DISTINCT o.OrderId) FROM @OnOrder o),
+           OutstandingPieces = (SELECT ISNULL(SUM(o.Outstanding), 0) FROM @OnOrder o),
+           InvoicedNotReceivedPieces = (SELECT ISNULL(SUM(l.QuantityBase - l.ReceivedQuantityBase), 0)
+                                        FROM purchase.PurchaseDocumentLines l
+                                        INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+                                        INNER JOIN inventory.DocumentTypes t    ON t.Id = d.DocumentTypeId AND t.Code = N'PINV'
+                                        WHERE d.Status IN (2, 4) AND d.UsesGoodsReceipts = 1 AND l.SourceLineId IS NULL
+                                          AND l.QuantityBase > l.ReceivedQuantityBase
+                                          AND (@BranchId IS NULL OR d.BranchId = @BranchId)),
            InTransitPieces = (SELECT ISNULL(SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0)), 0)
                             FROM logistics.ContainerLines cl
                             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
@@ -113,6 +147,10 @@ BEGIN
         FROM inventory.StockDocuments d INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId
         WHERE d.Status = 1 AND (@BranchId IS NULL OR d.BranchId = @BranchId)
         GROUP BY t.Code
+        UNION ALL
+        -- (72) goods receipts (script 64): a draft holds goods not in stock yet
+        SELECT N'Purchase', N'GRN', COUNT(*) FROM purchase.GoodsReceipts g
+        WHERE g.Status = 1 AND (@BranchId IS NULL OR g.BranchId = @BranchId)
         UNION ALL
         SELECT N'Receipt', N'RCPT', COUNT(*) FROM sales.Receipts r
         WHERE r.Status = 1 AND (@BranchId IS NULL OR r.BranchId = @BranchId)
@@ -144,25 +182,40 @@ BEGIN
     ORDER BY i.MinQuantity - x.OnHand DESC, i.ItemCode;
 
     /* 9 ---------------------------------------------------------------------------- containers */
+    -- (72) THE FREE TIME STOPS AT THE DELIVERY (edge case 29), as on the container's own page: since goods receipts a
+    --      delivered container stays Cleared until its receipt is posted, and the shipping line counts no demurrage once
+    --      the box left the port. FreeOver = the last free day passed before the Delivery's end (else before today):
+    --      demurrage really ran. FreeNear = not delivered yet, and the last free day is within the week.
     DECLARE @Soon DATE = DATEADD(DAY, 14, @Today), @FreeDayWarning DATE = DATEADD(DAY, 7, @Today);
     SELECT ArrivingSoon    = ISNULL(SUM(CASE WHEN c.Status IN (2, 3) AND c.Eta BETWEEN @Today AND @Soon THEN 1 END), 0),
            AtPort          = ISNULL(SUM(CASE WHEN c.Status = 4 THEN 1 END), 0),
-           NearLastFreeDay = ISNULL(SUM(CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND c.LastFreeDay <= @FreeDayWarning THEN 1 END), 0)
+           NearLastFreeDay = ISNULL(SUM(CASE WHEN f.FreeOver = 1 OR f.FreeNear = 1 THEN 1 END), 0)   -- near or past
     FROM logistics.Containers c
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl
+    CROSS APPLY (SELECT FreeOver = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL
+                                             AND c.LastFreeDay < ISNULL(dl.EndDate, @Today) THEN 1 ELSE 0 END,
+                        FreeNear = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND dl.MovementId IS NULL
+                                             AND c.LastFreeDay BETWEEN @Today AND @FreeDayWarning THEN 1 ELSE 0 END) f
     WHERE @BranchId IS NULL OR c.BranchId = @BranchId;
 
     /* 10 --------------------------------------------------------------------------- container list */
+    -- (72) the free-time reasons with the flags of 9
     SELECT TOP (8) c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS StatusCode, c.Eta, c.LastFreeDay,
-           Reason = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND c.LastFreeDay <= @FreeDayWarning
-                              THEN CASE WHEN c.LastFreeDay < @Today THEN N'PastLastFreeDay' ELSE N'NearLastFreeDay' END
+           Reason = CASE WHEN f.FreeOver = 1 THEN N'PastLastFreeDay'
+                         WHEN f.FreeNear = 1 THEN N'NearLastFreeDay'
                          WHEN c.Status = 4 THEN N'AtPort'
                          ELSE N'ArrivingSoon' END
     FROM logistics.Containers c
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl
+    CROSS APPLY (SELECT FreeOver = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL
+                                             AND c.LastFreeDay < ISNULL(dl.EndDate, @Today) THEN 1 ELSE 0 END,
+                        FreeNear = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND dl.MovementId IS NULL
+                                             AND c.LastFreeDay BETWEEN @Today AND @FreeDayWarning THEN 1 ELSE 0 END) f
     WHERE (@BranchId IS NULL OR c.BranchId = @BranchId)
       AND ((c.Status IN (2, 3) AND c.Eta BETWEEN @Today AND @Soon)
         OR c.Status = 4
-        OR (c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND c.LastFreeDay <= @FreeDayWarning))
-    ORDER BY CASE WHEN c.LastFreeDay IS NOT NULL AND c.Status IN (4, 5) THEN c.LastFreeDay ELSE ISNULL(c.Eta, '9999-12-31') END, c.ContainerRef;
+        OR f.FreeOver = 1 OR f.FreeNear = 1)
+    ORDER BY CASE WHEN f.FreeOver = 1 OR f.FreeNear = 1 THEN c.LastFreeDay ELSE ISNULL(c.Eta, '9999-12-31') END, c.ContainerRef;
 
     /* 11 --------------------------------------------------------------------------- overdue */
     SELECT TOP (5) d.Id AS DocumentId, d.DocumentNumber, p.PartyName AS ClientName, d.DueDate,

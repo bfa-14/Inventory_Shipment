@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE sales.usp_Receipt_Save
     @Id           INT            = NULL,           -- NULL = create
     @ReceiptDate  DATE,

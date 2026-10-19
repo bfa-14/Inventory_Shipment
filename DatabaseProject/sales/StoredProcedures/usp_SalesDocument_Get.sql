@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE sales.usp_SalesDocument_Get
     @Id INT
 AS

@@ -1,9 +1,12 @@
-/* ================================================================== 6. Container documents (CONTAINER) */
+/* ================================================================== 6. Container documents: re-link to a movement */
 
-/* One upload may be shared by several containers (attached to them together). @AllShared = 1 edits the
-   upload and the type / date / note of every one of them, like deleting it everywhere; 0 edits this
-   container's record only - and a new name or file then becomes this container's own copy, leaving the
-   others on the upload as it was. Answers the record. */
+/* Re-created (67) from the body of script 55: + @MovementId / @SetMovement. One upload may be shared by several
+   containers (attached to them together). @AllShared = 1 edits the upload and the type / date / note of every one of
+   them, like deleting it everywhere; 0 edits this container's record only - and a new name or file then becomes this
+   container's own copy, leaving the others on the upload as it was. (67) @SetMovement = 1 files the records edited
+   (this one, or every one of the upload with @AllShared = 1) under @MovementId - NULL = General, not tied to a
+   movement -, with the upload's check: every container of those records must be on that movement (70000). 0 (the
+   default) leaves the link as it is. The charge link never changes here. Answers the record. */
 CREATE   PROCEDURE logistics.usp_ContainerAttachment_Update
     @Id               INT,
     @AllShared        BIT            = 0,
@@ -14,13 +17,16 @@ CREATE   PROCEDURE logistics.usp_ContainerAttachment_Update
     @ContentType      NVARCHAR(100)  = NULL,
     @SizeBytes        INT            = NULL,
     @Content          VARBINARY(MAX) = NULL,
-    @UserId           INT            = NULL
+    @UserId           INT            = NULL,
+    @MovementId       INT            = NULL,   -- (67) with @SetMovement = 1: the movement, NULL = General
+    @SetMovement      BIT            = 0       -- (67) 1 = change the movement link
 AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
     SET @Note = NULLIF(LTRIM(RTRIM(@Note)), N'');
     SET @AllShared = ISNULL(@AllShared, 0);
+    SET @SetMovement = ISNULL(@SetMovement, 0);
 
     DECLARE @FileId INT, @Old NVARCHAR(255), @OldType INT;
     SELECT @FileId = a.FileId, @Old = f.FileName, @OldType = a.AttachmentTypeId
@@ -36,6 +42,27 @@ BEGIN
     DECLARE @Rows TABLE (Id INT PRIMARY KEY, ContainerId INT NOT NULL);
     INSERT INTO @Rows (Id, ContainerId)
     SELECT Id, ContainerId FROM logistics.ContainerAttachments WHERE Id = @Id OR (@AllShared = 1 AND FileId = @FileId);
+
+    -- (67) the movement link: the upload's checks and message (usp_ContainerAttachment_Add)
+    DECLARE @Msg NVARCHAR(400), @Moved BIT = 0, @MovementText NVARCHAR(60) = NULL;
+    IF @SetMovement = 1
+    BEGIN
+        IF @MovementId IS NOT NULL
+        BEGIN
+            IF NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @MovementId) THROW 70006, 'Movement not found.', 1;
+            SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is not part of this movement.'
+            FROM @Rows r INNER JOIN logistics.Containers c ON c.Id = r.ContainerId
+            WHERE NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @MovementId AND mc.ContainerId = r.ContainerId)
+            ORDER BY c.ContainerRef;
+            IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+        END
+        IF EXISTS (SELECT 1 FROM logistics.ContainerAttachments a INNER JOIN @Rows r ON r.Id = a.Id
+                   WHERE ISNULL(a.MovementId, -1) <> ISNULL(@MovementId, -1))
+        BEGIN
+            SET @Moved = 1;
+            SET @MovementText = ISNULL(N' (movement ' + (SELECT MovementNo FROM logistics.Movements WHERE Id = @MovementId) + N')', N' (General)');
+        END
+    END
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -59,13 +86,15 @@ BEGIN
                 Content     = ISNULL(@Content, Content)
             WHERE Id = @FileId;
 
-        UPDATE a SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, DocumentDate = @DocumentDate
+        UPDATE a SET AttachmentTypeId = @AttachmentTypeId, Note = @Note, DocumentDate = @DocumentDate,
+                     MovementId = CASE WHEN @SetMovement = 1 THEN @MovementId ELSE a.MovementId END   -- (67)
         FROM logistics.ContainerAttachments a INNER JOIN @Rows r ON r.Id = a.Id;
 
         INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
         SELECT DISTINCT r.ContainerId, N'Updated',
                LEFT(N'Attachment edited: ' + CASE WHEN @Old = @FileName THEN @FileName ELSE @Old + N' -> ' + @FileName END
-                    + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END, 500), @UserId
+                    + CASE WHEN @Content IS NOT NULL THEN N' (new file)' ELSE N'' END
+                    + CASE WHEN @Moved = 1 THEN @MovementText ELSE N'' END, 500), @UserId   -- (67)
         FROM @Rows r;
 
         COMMIT TRANSACTION;

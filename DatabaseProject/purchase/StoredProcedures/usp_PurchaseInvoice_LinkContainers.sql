@@ -1,14 +1,7 @@
-/* ================================================================== 7. LinkContainers: the check first */
+/* ================================================================== 3. Lists that grew with the containers (9829) */
 
--- Re-created (51) from the body of script 43: + the rules of the invoice first (usp_PurchaseInvoice_CheckContainers);
--- a draft is no longer switched to "shipped in containers" here: rule 4 has it turned on first.
--- A draft, or a posted invoice shipped in containers (receipt mode 2), takes container lines of its own order. Its
--- lines of that order line outside containers are SPLIT: the linked part becomes a line of its own (same item, unit,
--- price, discount, warehouse), the rest stays unlinked. A part that is not a whole number of the line's unit is put in
--- the base unit (price per base unit), as usp_PurchaseDocument_CreateFromSource does. The document total is kept: a
--- rounding difference goes on the last line split. A draft still received on posting becomes "shipped in containers".
--- Nothing else needs writing: the order lines count invoiced quantities by the invoice lines, and
--- logistics.ContainerInvoices is the unused table of the old model (script 27).
+-- Re-created (78) from the body of script 65: the audit row of the invoice names at most 20 containers (9829 above
+-- about 190 before). Nothing else changes.
 CREATE   PROCEDURE purchase.usp_PurchaseInvoice_LinkContainers
     @InvoiceId  INT,
     @RowVersion BINARY(8) = NULL,
@@ -22,19 +15,63 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
-        DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @OrderId INT, @Mode TINYINT, @Number NVARCHAR(30);
+        DECLARE @TypeCode NVARCHAR(20), @Status TINYINT, @OrderId INT, @Mode TINYINT, @Number NVARCHAR(30), @UsesGrn BIT;
         SELECT @TypeCode = dt.Code, @Status = d.Status, @OrderId = d.SourceDocumentId, @Mode = d.ReceiptMode,
-               @Number = ISNULL(d.DocumentNumber, N'draft #' + CAST(d.Id AS NVARCHAR(10)))
+               @Number = ISNULL(d.DocumentNumber, N'draft #' + CAST(d.Id AS NVARCHAR(10))), @UsesGrn = d.UsesGoodsReceipts
         FROM purchase.PurchaseDocuments d WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
         WHERE d.Id = @InvoiceId;
 
         IF @Status IS NULL THROW 65006, 'Document not found.', 1;
-        -- (51) the invoice's rules 1-6 first: the same sentences as the state of the page
+
+        -- (65) RULE 28: AN INVOICE LINE A GOODS RECEIPT REFERS TO STAYS OUTSIDE CONTAINERS (65028, as Unlink answers it).
+        -- Linking moves or splits the invoice's lines outside containers: none of them may be the line a draft or posted
+        -- receipt was made from (Receive goods... on the invoice), or a line a posted receipt's pieces are matched to, or
+        -- carry pieces received or returned. Rule 6 of purchase.fn_PurchaseInvoice_ContainerState fails for the same
+        -- lines - the card's reason, and the 65030 of Add container and Auto-plan from the invoice - so this is checked
+        -- before usp_PurchaseInvoice_CheckContainers raises it: a Link refused for them names the line and its receipt
+        -- (65028). The invoice's rules 1-5 still come first, with their 65030. Document-wide, as rule 6 is: a receipt on
+        -- any line outside containers stops the link (a posted one is named first, as the card does).
+        DECLARE @Msg NVARCHAR(400), @Rule TINYINT;
+        SELECT @Rule = s.FailedRule FROM purchase.fn_PurchaseInvoice_ContainerState(@InvoiceId) s;
+        IF @Rule IS NULL OR @Rule >= 6
+        BEGIN
+            SELECT TOP (1) @Msg = N'Line ' + CAST(pil.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                                  + CASE WHEN g.Status = 2 THEN N'goods receipt ' + g.DocumentNumber ELSE N'a draft goods receipt' END
+                                  + N' refers to this invoice line: delete or cancel it first.'
+            FROM purchase.PurchaseDocumentLines pil
+            INNER JOIN inventory.Items i ON i.Id = pil.ItemId
+            CROSS APPLY (SELECT TOP (1) r.Status, r.DocumentNumber
+                         FROM (SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a receipt made from the line, draft or posted
+                               FROM purchase.GoodsReceiptLines gl
+                               INNER JOIN purchase.GoodsReceipts gr ON gr.Id = gl.GoodsReceiptId
+                               WHERE gl.InvoiceLineId = pil.Id AND gr.Status < 3
+                               UNION ALL
+                               SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a posted receipt whose pieces are matched to it
+                               FROM purchase.GoodsReceiptInvoiceMatches m
+                               INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                               INNER JOIN purchase.GoodsReceipts gr     ON gr.Id = gl.GoodsReceiptId
+                               WHERE m.InvoiceLineId = pil.Id AND gr.Status = 2) r
+                         ORDER BY r.Status DESC, r.Id) g
+            WHERE pil.DocumentId = @InvoiceId AND pil.ContainerLineId IS NULL
+            ORDER BY CASE WHEN g.Status = 2 THEN 0 ELSE 1 END, pil.LineNumber;
+            IF @Msg IS NOT NULL THROW 65028, @Msg, 1;
+
+            IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
+                       WHERE DocumentId = @InvoiceId AND ContainerLineId IS NULL AND (ReceivedQuantityBase > 0 OR ReturnedQuantityBase > 0))
+                THROW 65028, 'Goods of this invoice outside containers were already received or returned: it can no longer be linked.', 1;
+        END
+
+        -- (51) the invoice's rules 1-6: the same sentences as the state of the page
         EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @InvoiceId, @Action = N'Link';
         IF @TypeCode <> N'PINV' OR @OrderId IS NULL
             THROW 65028, 'Only a purchase invoice created from a purchase order can be linked to containers.', 1;
         IF @Status NOT IN (1, 2) THROW 65010, 'A cancelled invoice cannot be linked to containers.', 1;
+        IF @Status = 2 AND @Mode <> 2 AND @UsesGrn = 1      -- (65) posted after the switch: its goods come with goods receipts
+        BEGIN
+            SET @Msg = N'This invoice was posted without "Shipped in containers": its goods are received with Receive goods' + NCHAR(8230) + N', not with containers.';
+            THROW 65028, @Msg, 1;
+        END
         IF @Status = 2 AND @Mode <> 2
             THROW 65028, 'This invoice was received when it was posted: it cannot be linked to containers.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId AND RowVersion = @RowVersion)
@@ -46,8 +83,6 @@ BEGIN
             THROW 65028, 'This invoice has a landed cost adjustment: cancel or delete it before linking the invoice to containers.', 1;
         IF EXISTS (SELECT 1 FROM purchase.PurchaseDocuments r WHERE r.SourceDocumentId = @InvoiceId AND r.Status <> 3)
             THROW 65028, 'This invoice has purchase returns: it can no longer be linked to containers.', 1;
-
-        DECLARE @Msg NVARCHAR(400);
 
         -- the containers: still Draft or Confirmed
         SELECT TOP (1) @Msg = CASE WHEN c.Status = 8 THEN N'Container ' + c.ContainerRef + N' is cancelled.'
@@ -93,10 +128,6 @@ BEGIN
         WHERE t.Qty > ISNULL(u.UnlinkedBase, 0)
         ORDER BY pol.LineNumber;
         IF @Msg IS NOT NULL THROW 65019, @Msg, 1;
-
-        IF EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines
-                   WHERE DocumentId = @InvoiceId AND ContainerLineId IS NULL AND (ReceivedQuantityBase > 0 OR ReturnedQuantityBase > 0))
-            THROW 65028, 'Goods of this invoice outside containers were already received or returned: it can no longer be linked.', 1;
 
         DECLARE @OldTotal DECIMAL(18,2) = (SELECT ISNULL(SUM(LineTotal), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
         DECLARE @NextNo INT = (SELECT ISNULL(MAX(LineNumber), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
@@ -217,15 +248,25 @@ BEGIN
         CLOSE cts;
         DEALLOCATE cts;
 
+        -- (78) THE AUDIT NAMES AT MOST 20 CONTAINERS, THEN "and N more"; aggregated as NVARCHAR(MAX). Over NVARCHAR(30)
+        -- refs STRING_AGG returned NVARCHAR(4000) and failed (9829) from about 190 containers - the LEFT came too late -
+        -- rolling back the whole link (Link containers, Add container and Auto-plan from the invoice). The text is cut
+        -- to the 500 characters of PurchaseDocumentAudit.Details (the old LEFT(..., 1000) failed with 2628 once 20 long
+        -- refs and quantities passed 500), keeping its "and N more"; the refs in number order (KTG-2026-9999 before
+        -- KTG-2026-10000).
         INSERT INTO purchase.PurchaseDocumentAudit (DocumentId, Action, Details, UserId)
-        SELECT @InvoiceId, N'Updated',
-               LEFT(N'Linked to containers ' + STRING_AGG(x.Ref + N' (' + CAST(x.Qty AS NVARCHAR(20)) + N')', N', ')
-                    WITHIN GROUP (ORDER BY x.Ref), 1000), @UserId
-        FROM (SELECT Ref = c.ContainerRef, Qty = SUM(k.QuantityBase)
-              FROM @Links k
-              INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
-              INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
-              GROUP BY c.ContainerRef) x;
+        SELECT @InvoiceId, N'Updated', LEFT(a.Head + a.Names, 500 - LEN(a.Tail)) + a.Tail, @UserId
+        FROM (SELECT Head  = CASE WHEN MAX(x.N) <= 20 THEN N'Linked to containers '
+                                  ELSE N'Linked to ' + CAST(MAX(x.N) AS NVARCHAR(10)) + N' containers: ' END,
+                     Names = STRING_AGG(CASE WHEN x.Rn <= 20 THEN CAST(x.Ref AS NVARCHAR(MAX)) + N' (' + CAST(x.Qty AS NVARCHAR(20)) + N')' END, N', ')
+                               WITHIN GROUP (ORDER BY LEN(x.Ref), x.Ref),
+                     Tail  = CASE WHEN MAX(x.N) > 20 THEN N' and ' + CAST(MAX(x.N) - 20 AS NVARCHAR(10)) + N' more' ELSE N'' END
+        FROM (SELECT g.Ref, g.Qty, Rn = ROW_NUMBER() OVER (ORDER BY LEN(g.Ref), g.Ref), N = COUNT(*) OVER ()
+              FROM (SELECT Ref = c.ContainerRef, Qty = SUM(k.QuantityBase)
+                    FROM @Links k
+                    INNER JOIN logistics.ContainerLines cl ON cl.Id = k.ContainerLineId
+                    INNER JOIN logistics.Containers c      ON c.Id = cl.ContainerId
+                    GROUP BY c.ContainerRef) g) x) a;
 
         COMMIT TRANSACTION;
     END TRY

@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE sales.usp_SalesDocument_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),

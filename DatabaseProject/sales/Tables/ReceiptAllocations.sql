@@ -22,15 +22,15 @@ CREATE TABLE [sales].[ReceiptAllocations] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ReceiptAllocations_Invoice]
-    ON [sales].[ReceiptAllocations]([SalesDocumentId] ASC)
-    INCLUDE([ReceiptId], [AmountInvoiceCurrency], [RemovedAtUtc]);
+CREATE NONCLUSTERED INDEX [IX_ReceiptAllocations_Receipt]
+    ON [sales].[ReceiptAllocations]([ReceiptId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ReceiptAllocations_Receipt]
-    ON [sales].[ReceiptAllocations]([ReceiptId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ReceiptAllocations_Invoice]
+    ON [sales].[ReceiptAllocations]([SalesDocumentId] ASC)
+    INCLUDE([ReceiptId], [AmountInvoiceCurrency], [RemovedAtUtc]);
 
 
 GO

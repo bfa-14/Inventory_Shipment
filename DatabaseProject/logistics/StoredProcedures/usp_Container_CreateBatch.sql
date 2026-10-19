@@ -1,7 +1,17 @@
-/* ================================================================== 5. Create from a plan */
-
--- Re-created (54) from the body of script 51: pieces per container = the item's Container unit only; an item without
--- one stops the batch (69000); the containers get no MaxUnits; the answer gives their fill.
+-- refusal above 200 is gone). Still all or nothing, one container after the other, but:
+--   - the invoice's rules and the room on the order lines are checked once for the whole plan, under the lock on the
+--     order, not again for each container (usp_Container_Save @PlanChecked): a check per container read a total that
+--     grew with every container made, so N containers cost N x N;
+--   - THE CNT NUMBERS ARE TAKEN AT THE END. Each container is created with a placeholder ref ('~' + session + '-' +
+--     its place in the plan) and gets its real number, in plan order, just before the commit: the CNT counter row is
+--     locked only for that moment, not for the whole plan (every other Add Container... or Auto-plan in the company
+--     waited for it). A plan that fails takes no number at all.
+-- The plan's transaction still holds its new containers' rows until it commits: readers that scan the containers
+-- (the Containers page, another order's page) wait for it (the database does not use read-committed snapshot).
+-- So a plan blocks those readers for as long as it runs. Measured in the sandbox (a database of up to 50,000
+-- containers), confirmed at once: 3,000 containers in about 5.5 s, 5,000 in 9.5 s, 10,000 in 18 s (before these two
+-- changes: 2,500 took 18 s, 5,000 75 s, 10,000 52 s on a smaller database). The API gives this call a timeout of its own
+-- (Database:BatchCommandTimeoutSeconds, 600 s).
 CREATE   PROCEDURE logistics.usp_Container_CreateBatch
     @PurchaseOrderId     INT,
     @ContainerTypeId     INT,
@@ -51,8 +61,6 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM @Plan) THROW 69009, 'The plan has no container to create.', 1;
     IF EXISTS (SELECT 1 FROM @Plan WHERE Seq < 1 OR QuantityBase <= 0)
         THROW 69000, 'Every planned quantity must be greater than zero.', 1;
-    IF (SELECT COUNT(DISTINCT Seq) FROM @Plan) > 200
-        THROW 69000, 'At most 200 containers can be created at once.', 1;
 
     DECLARE @Msg NVARCHAR(400);
     IF EXISTS (SELECT 1 FROM @Plan p LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = p.PoLineId
@@ -77,9 +85,9 @@ BEGIN
     INSERT INTO @Seqs (Seq, Ord)
     SELECT x.Seq, ROW_NUMBER() OVER (ORDER BY x.Seq) FROM (SELECT DISTINCT Seq FROM @Plan) x;
 
-    DECLARE @Created TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
+    DECLARE @Created TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL, Placeholder NVARCHAR(30) NOT NULL);
     DECLARE @L logistics.tvp_ContainerLoadLine;
-    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @NewId INT, @Lock INT;
+    DECLARE @Total INT = (SELECT COUNT(*) FROM @Seqs), @Ord INT = NULL, @Seq INT, @NewId INT, @Lock INT, @Placeholder NVARCHAR(30);
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -87,7 +95,8 @@ BEGIN
         -- one plan at a time for an order
         SELECT @Lock = Id FROM purchase.PurchaseDocuments WITH (UPDLOCK, HOLDLOCK) WHERE Id = @PurchaseOrderId;
 
-        -- the whole plan must fit in what the order lines still allow
+        -- the whole plan must fit in what the order lines still allow. (65) Committed outside containers = the larger of
+        -- invoiced and received (or on draft goods receipts) outside containers.
         SELECT TOP (1) @Msg = N'Order line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
                             + CAST(t.Planned AS NVARCHAR(20)) + N' pieces planned but only '
                             + CAST(pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) AS NVARCHAR(20))
@@ -95,9 +104,7 @@ BEGIN
         FROM (SELECT PoLineId, Planned = SUM(QuantityBase) FROM @Plan GROUP BY PoLineId) t
         INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = t.PoLineId
         INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
-        OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
-                     INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                     WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
+        OUTER APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, NULL) dir
         OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                      INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                      WHERE cl.PoLineId = pol.Id AND c.Status <> 8) oth
@@ -136,6 +143,7 @@ BEGIN
             WHERE p.Seq = @Seq;
 
             SET @NewId = NULL;
+            SET @Placeholder = N'~' + CAST(@@SPID AS NVARCHAR(10)) + N'-' + CAST(@Ord AS NVARCHAR(10));
             EXEC logistics.usp_Container_Save
                  @PurchaseOrderId     = @PurchaseOrderId,
                  @ContainerTypeId     = @ContainerTypeId,
@@ -155,17 +163,43 @@ BEGIN
                  @AllowOverCapacity   = @AllowOverCapacity,
                  @UserId              = @UserId,
                  @ForInvoiceId        = @ForInvoiceId,
+                 @PlanChecked         = 1,               -- (78) checked above for the whole plan
+                 @ContainerRef        = @Placeholder,    -- (78) the real number at the end
                  @NewId               = @NewId OUTPUT;
 
             IF ISNULL(@Confirm, 0) = 1
                 EXEC logistics.usp_Container_Confirm @Id = @NewId, @UserId = @UserId;
 
-            INSERT INTO @Created (Seq, ContainerId) VALUES (@Seq, @NewId);
+            INSERT INTO @Created (Seq, ContainerId, Placeholder) VALUES (@Seq, @NewId, @Placeholder);
             FETCH NEXT FROM plan_cur INTO @Seq, @Ord;
         END
         CLOSE plan_cur;
         DEALLOCATE plan_cur;
         SET @Ord = NULL;
+
+        -- (78) THE REAL NUMBERS, in plan order, now: from here to the commit the CNT counter is locked (one short loop
+        -- and two updates), not while the containers were made. The placeholder is replaced in the ref and in the
+        -- "Draft ... from order" history row Save wrote.
+        DECLARE @Numbers TABLE (Seq INT NOT NULL PRIMARY KEY, ContainerRef NVARCHAR(30) NOT NULL);
+        DECLARE @NumSeq INT = (SELECT MIN(Seq) FROM @Created), @Number NVARCHAR(30);
+        WHILE @NumSeq IS NOT NULL
+        BEGIN
+            SET @Number = NULL;
+            EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Number OUTPUT, @BranchId;
+            INSERT INTO @Numbers (Seq, ContainerRef) VALUES (@NumSeq, @Number);
+            SET @NumSeq = (SELECT MIN(Seq) FROM @Created WHERE Seq > @NumSeq);
+        END
+
+        UPDATE c SET ContainerRef = n.ContainerRef
+        FROM logistics.Containers c
+        INNER JOIN @Created x ON x.ContainerId = c.Id
+        INNER JOIN @Numbers n ON n.Seq = x.Seq;
+
+        UPDATE a SET Details = REPLACE(a.Details, x.Placeholder, n.ContainerRef)
+        FROM logistics.ContainerAudit a
+        INNER JOIN @Created x ON x.ContainerId = a.ContainerId
+        INNER JOIN @Numbers n ON n.Seq = x.Seq
+        WHERE a.Details LIKE N'%~%';
 
         COMMIT TRANSACTION;
     END TRY

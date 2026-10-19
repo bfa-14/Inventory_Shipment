@@ -23,6 +23,9 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
     [FobCostBase]          DECIMAL (18, 6) NULL,
     [AllocatedChargesBase] DECIMAL (18, 2) CONSTRAINT [DF_PurchaseDocumentLines_Charges] DEFAULT ((0)) NOT NULL,
     [ContainerLineId]      INT             NULL,
+    [GoodsReceivedBase]    INT             CONSTRAINT [DF_PurchaseDocumentLines_GoodsReceived] DEFAULT ((0)) NOT NULL,
+    [GoodsShortBase]       INT             CONSTRAINT [DF_PurchaseDocumentLines_GoodsShort] DEFAULT ((0)) NOT NULL,
+    [ClosedShortBase]      INT             CONSTRAINT [DF_PurchaseDocumentLines_ClosedShortBase] DEFAULT ((0)) NOT NULL,
     CONSTRAINT [PK_PurchaseDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_PurchaseDocumentLines_Discount] CHECK ([DiscountPercent]>=(0) AND [DiscountPercent]<=(100)),
     CONSTRAINT [CK_PurchaseDocumentLines_Formula] CHECK ([PackingFormula]>=(1)),
@@ -46,6 +49,12 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_ContainerLine]
 
 GO
 
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
+    ON [purchase].[PurchaseDocumentLines]([SourceLineId] ASC) WHERE ([SourceLineId] IS NOT NULL);
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
     ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
 
@@ -54,12 +63,6 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Item]
     ON [purchase].[PurchaseDocumentLines]([ItemId] ASC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
-    ON [purchase].[PurchaseDocumentLines]([SourceLineId] ASC) WHERE ([SourceLineId] IS NOT NULL);
 
 
 GO

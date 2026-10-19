@@ -1,8 +1,7 @@
-/* ================================================================== 6. A charge copied to other containers */
+/* ================================================================== 4. Apply to other containers: every candidate */
 
--- Containers that can receive a copy of the charge (not closed, not cancelled). HasThisCharge = the original container
--- or a container that already carries a (not cancelled) charge of the same group. @SameOrder = 1: only the containers
--- created from the same purchase order as the original's container.
+-- Re-created (78) from the body of script 28: no TOP (500) any more, and the refs in number order (a ref past the
+-- type's NumberLength, KTG-2026-10000, after KTG-2026-9999). Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_CopyCandidates
     @ChargeId  INT,
     @Search    NVARCHAR(100) = NULL,    -- container ref / no.
@@ -19,8 +18,8 @@ BEGIN
     WHERE ch.Id = @ChargeId;
     IF @SourceContainer IS NULL THROW 70006, 'Charge not found.', 1;
 
-    SELECT TOP (500)
-           c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, c.Status, c.CurrentLocation,
+    -- (78) every candidate: TOP (500) cut the list silently, and the newest containers were the ones missing
+    SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, c.Status, c.CurrentLocation,
            c.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber, c.TotalAllocatedBase,
            ItemSummary = CASE WHEN ISNULL(ln.ItemCount, 0) = 0 THEN NULL
                               WHEN ln.ItemCount = 1 THEN ln.FirstItem
@@ -40,7 +39,7 @@ BEGIN
     WHERE c.Status NOT IN (7, 8)
       AND (ISNULL(@SameOrder, 1) = 0 OR c.PurchaseOrderId = @SourceOrder OR c.Id = @SourceContainer)
       AND (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%')
-    ORDER BY c.ContainerRef;
+    ORDER BY LEN(c.ContainerRef), c.ContainerRef;   -- (78) number order: KTG-2026-9999 before KTG-2026-10000
 END
 
 GO

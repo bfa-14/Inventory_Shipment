@@ -1,4 +1,3 @@
-
 /* ================================================================== 2. A purchase invoice, container by container */
 
 /* ONE ROW PER CONTAINER OF A PURCHASE INVOICE, plus one row ContainerKey 0 "Unlinked items" for its lines in no

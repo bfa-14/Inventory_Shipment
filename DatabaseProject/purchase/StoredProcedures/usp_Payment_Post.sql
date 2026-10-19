@@ -1,4 +1,3 @@
-
 CREATE   PROCEDURE purchase.usp_Payment_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
