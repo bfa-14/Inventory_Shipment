@@ -67,6 +67,14 @@ public sealed class SaveItemRequest
     [Range(0, 9999999)]
     public decimal? VolumeCbm { get; init; }
 
+    /// <summary>Free text, several lines. Blank clears it.</summary>
+    [StringLength(2000)]
+    public string? Note { get; init; }
+
+    /// <summary>An absolute http:// or https:// address without spaces (checked by the service). Blank clears it.</summary>
+    [StringLength(500)]
+    public string? Link { get; init; }
+
     /// <summary>Base64 ROWVERSION read with the item (update only). Null skips the concurrency check.</summary>
     public string? RowVersion { get; init; }
 }

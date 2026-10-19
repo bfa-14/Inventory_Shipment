@@ -157,9 +157,9 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> CreateAsync(
         SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
     {
-        if (ValidateQuantities(request) is { } quantityError)
+        if ((ValidateQuantities(request) ?? ValidateLink(request)) is { } validationError)
         {
-            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, quantityError, "VALIDATION");
+            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, validationError, "VALIDATION");
         }
 
         var item = ToEntity(request);
@@ -171,6 +171,8 @@ public sealed class ItemService : IItemService
             // The purchasing fields live in their own procedure (script 19); same call, same caller.
             await _items.SetPurchasingAsync(
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
+            // So do the note and the link (script 87).
+            await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -185,9 +187,9 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> UpdateAsync(
         int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
     {
-        if (ValidateQuantities(request) is { } quantityError)
+        if ((ValidateQuantities(request) ?? ValidateLink(request)) is { } validationError)
         {
-            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, quantityError, "VALIDATION");
+            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, validationError, "VALIDATION");
         }
 
         if (!TryReadRowVersion(request.RowVersion, out var rowVersion))
@@ -204,6 +206,7 @@ public sealed class ItemService : IItemService
             await _items.UpdateAsync(item, rowVersion, userId, cancellationToken);
             await _items.SetPurchasingAsync(
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
+            await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -535,6 +538,8 @@ public sealed class ItemService : IItemService
         WeightKg = request.WeightKg,
         VolumeCbm = request.VolumeCbm,
         Description = Normalize(request.Description),
+        Note = Normalize(request.Note),
+        Link = Normalize(request.Link),
         WarrantyMonths = request.WarrantyMonths,
         MinQuantity = request.MinQuantity,
         MaxQuantity = request.MaxQuantity,
@@ -566,6 +571,24 @@ public sealed class ItemService : IItemService
         => request.MaxQuantity is { } max && max < request.MinQuantity
             ? "Minimum Quantity cannot exceed Maximum Quantity."
             : null;
+
+    /* THE PAGE OPENS THE LINK IN A NEW TAB, so only an absolute http(s) address with a host is accepted: no
+       javascript:, no file path, no spaces. usp_Item_SetNotes refuses the same, as the last guard. */
+    private static string? ValidateLink(SaveItemRequest request)
+    {
+        var link = Normalize(request.Link);
+        if (link is null)
+        {
+            return null;
+        }
+
+        var valid = !link.Any(char.IsWhiteSpace)
+            && Uri.TryCreate(link, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrEmpty(uri.Host);
+
+        return valid ? null : "Link must be a web address starting with http:// or https://, for example https://www.tvsmotor.com.";
+    }
 
     private static bool TryReadRowVersion(string? value, out byte[]? rowVersion)
     {

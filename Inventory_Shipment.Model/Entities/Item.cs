@@ -83,6 +83,12 @@ public class Item
     public string? LastSupplierName { get; set; }
     public DateTime? LastPurchaseAtUtc { get; set; }
 
+    /// <summary>Free text, several lines (script 87).</summary>
+    public string? Note { get; set; }
+
+    /// <summary>An http(s) web address, e.g. the maker's product page (script 87).</summary>
+    public string? Link { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
     public int? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }

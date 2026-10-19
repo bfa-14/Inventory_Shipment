@@ -76,6 +76,8 @@ public static class ItemMapper
         LastSupplierId = item.LastSupplierId,
         LastSupplierName = item.LastSupplierName,
         LastPurchaseAtUtc = item.LastPurchaseAtUtc.AsUtc(),
+        Note = item.Note,
+        Link = item.Link,
         CreatedAtUtc = item.CreatedAtUtc.AsUtc(),
         CreatedByName = item.CreatedByName,
         UpdatedAtUtc = item.UpdatedAtUtc.AsUtc(),

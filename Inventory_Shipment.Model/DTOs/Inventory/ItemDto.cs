@@ -124,6 +124,12 @@ public sealed class ItemDetailsDto
     public string? LastSupplierName { get; init; }
     public DateTime? LastPurchaseAtUtc { get; init; }
 
+    /// <summary>Free text, several lines. Only the item's own Get returns it.</summary>
+    public string? Note { get; init; }
+
+    /// <summary>An http(s) web address the page opens in a new tab. Only the item's own Get returns it.</summary>
+    public string? Link { get; init; }
+
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }

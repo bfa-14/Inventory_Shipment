@@ -52,6 +52,9 @@ public interface IItemRepository
         int id, int? defaultSupplierId, int? leadTimeDays, int? pcPerContainer, decimal? weightKg,
         decimal? volumeCbm, int? userId, CancellationToken cancellationToken = default);
 
+    /// <summary>inventory.usp_Item_SetNotes (script 87) - the note and the link; throws 56000.</summary>
+    Task SetNotesAsync(int id, string? note, string? link, int? userId, CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_Item_SetActive - throws 56006.</summary>
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);
 
