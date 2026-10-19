@@ -43,9 +43,10 @@ order's and the invoice's Containers cards got a row "…" menu with the next st
 follows the cost rule and the matching of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7, 5.4).*
 
 *Updated on 19 October 2026: the prompt statuses were checked against the code - prompts 35, 38, 39, 42, 44, 45
-and 46 are built (4.2, 4.3, 4.5, 4.6, 4.10, 5.1, 5.2, 6.1, 6.4); and an environment is deployed only when someone
+and 46 are built (4.2, 4.3, 4.5, 4.6, 4.10, 5.1, 5.2, 6.1, 6.4); an environment is deployed only when someone
 presses the **Deploy to server** button, on GitHub, in VS Code or in Visual Studio - a push deploys nothing (8.2;
-`deploy/README.md`, "Deploying with a button").*
+`deploy/README.md`, "Deploying with a button"); and a movement that cannot be cancelled says why before the click
+(script 83: "Cancel…" disabled with the reason, 4.6, 5.4).*
 
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
@@ -927,7 +928,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - **Only the last leg is cancelled** (`usp_Movement_SetStatus`, 70010): "MOV-… is not the last leg of KTG-…: cancel
     MOV-… first." Cancelling an older leg silently broke the chain of places. A planned leg that a later leg already
     passed (started or completed after it, data of before script 80) never happened and may be cancelled. (Script 82:
-    cancelling a movement split off another undoes the split, below.)
+    cancelling a movement split off another undoes the split, below. Script 83: the movement page disables "Cancel…"
+    with this reason before the click, below.)
   - **No port of loading**: a container that never moved and has none leaves from any From (prompt 45): its dialog asks
     for the From ("Not moved yet, and no port of loading: choose where it leaves from."); the bulk dialog lists it under
     "No port of loading: open the container to choose where it leaves from".
@@ -1033,6 +1035,24 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     MOV-2026-000044, still in progress." / "…are back on MOV-2026-000044, arrived at Dar es Salaam on 17/10/2026 with
     it." (a Delivery adds "Delivered, not received: use Receive goods… on each container.") / "…, which is cancelled:
     they are back where they were before it."
+- **A movement that cannot be cancelled says why before the click** **[Implemented – script 83]** (the end-to-end test
+  of shipment phase 3: the Cancel dialog opened, and even said where a split-off movement's containers would go back,
+  when the Cancel was then refused):
+  - **One place for the refusals of a movement's Cancel** (`logistics.fn_Movement_CancelBlock`), in the Cancel's own
+    order and words, all 70010: "The movement is already cancelled."; "Container KTG-2026-0041 is already offloaded: its
+    route can no longer change." (a container received or closed on a movement in progress or completed; a planned
+    movement goes through); "MOV-2026-000091 is not the last leg of KTG-2026-0133: cancel MOV-2026-000092 first." (the
+    last-leg rule of script 81, with its exception for a planned leg a later leg already passed). The Cancel
+    (`usp_Movement_SetStatus`) throws the function's answer; the movement's GET carries it (`canCancel` false,
+    `cancelBlockedReason`).
+  - **The movement page keeps "Cancel…" on every movement that is not cancelled, disabled with that reason**: a tooltip
+    on a wide screen; on a phone the entry of the "More actions" menu, the reason under its label (a completed
+    movement's bar is then Back, with Cancel… in the menu). Its dialog - the reason, the split-undo sentence, a
+    Delivery's drafts - opens only when the Cancel will go through; a refusal that still comes (someone changed the
+    movement meanwhile) is shown as it comes.
+  - The Cancel still needs a reason (70000 "A cancellation reason is required.", asked by the dialog and checked by the
+    API first); a Cancel that can never go through says so before it asks for one. The Movements list offers no Cancel
+    and is unchanged.
 - **Place rule:** **[Implemented – prompt 43; errors 70015 / 70016 as planned, check the numbers]**
   - A movement only takes containers **at its From** = the To of each container's previous movement (cancelled
     movements don't count; previous = the latest one created before this one).
@@ -1520,6 +1540,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `80_Logistics_ShipFromTheContainer.sql` | Shipment phase 1, ship from the container: `logistics.fn_Container_ShipState` (where a container is, its movement in progress, its next planned one, its last completed one) on `usp_Container_Search` / `_Get`; `logistics.fn_Movement_StartBlock` (why a planned movement cannot start yet, its earliest start) on `usp_Movement_Search` / `_Get`; `usp_Movement_SetStatus` refuses a date in the future (70000) and a start before the previous leg ended (70018), and `usp_Movement_Save` the same for the start date of a movement in progress; `fn_ContainerFitForMovement` refuses a container on a movement older than a leg it already made; `usp_Movement_ShipContainers` leaves from where moved containers are; new `usp_Movement_JoinCandidates` |
 | `81_Logistics_NextStep.sql` | Shipment phase 2, Next step everywhere: `logistics.fn_Container_NextStepKind`, `fn_Movement_NextLegHistory` (the usual next leg from a place), `fn_Container_NextLegProposal` (history, else the container's ports, else the stages), `fn_Container_NextStep`, `fn_Container_PreviousMovement`; `usp_Container_NextStepPreview` (the ticked containers grouped by step, the blocked ones by reason); `usp_Movement_AddLeg` (a new leg for a group, one movement or one per container, with `tvp_LegContainer`); `usp_Container_Search` (the next step of the page's rows and the `@NextStep` filter; the page found first, then its rows worked out) and `usp_Container_Get`; `usp_Movement_SetStatus` refuses cancelling a leg that is not a container's last (70010; a planned leg already passed by a later one may be cancelled); `usp_Movement_AddLeg` refuses a vessel or truck leg from a place to itself (70000); `fn_Movement_StartBlock` and the 70016 / 70018 checks read each container's previous leg for itself (a list and a Start were slow on 50,000 containers) |
 | `82_Logistics_ShipmentsBoard.sql` | Shipment phase 3: `logistics.fn_Container_BoardPhase` (a container's column on the Shipments board) and `usp_Shipment_Board` (the board, set-based for its rows, the usual next leg once per place and last stage); the permission `containers.shipments.view` (granted once); only part of a movement arriving: `logistics.Movements.SplitFromMovementId`, `logistics.MovementAudit`, `fn_Movement_SplitBlock`, `usp_Movement_SplitContainers`; `usp_Container_NextStepPreview` and `usp_Movement_Get` say whether a container can be split off and why not (`usp_Movement_Get` also gives the movement's history and the movement it was split from); the container page's estimated FOB follows the cost rule and the matching of the goods receipt (`fn_ContainerLine_FobEstimate`, read by `usp_Container_Get`); a container followed by typed dates in the column of its status; a voyage split in two counted once in the usual next leg (`fn_Movement_Voyage`; `fn_Movement_NextLegHistory` re-created from 81); cancelling a split-off movement undoes the split, its containers back on the movement they came from with their charges and documents (`usp_Movement_SetStatus` re-created from 81, `fn_Movement_SplitUndoTarget`; `usp_Movement_Get` says where they go back, for the Cancel dialog) |
+| `83_Logistics_CancelBlock.sql` | A movement that cannot be cancelled says why before the click: new `logistics.fn_Movement_CancelBlock` (whether a movement can be cancelled now and the first refusal of its Cancel, its number and words: already cancelled, a container received or closed, not the last leg of a container); `usp_Movement_SetStatus` re-created from 82, its Cancel refusals the function's answer, said before "A cancellation reason is required."; `usp_Movement_Get` re-created from 82, + `CanCancel` and `CancelBlockedReason` (the movement page disables "Cancel…" with the reason) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
