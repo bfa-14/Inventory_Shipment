@@ -9,8 +9,8 @@
 # restarts what changed. The API applies Schema.sql as it starts, so database changes need no step
 # of their own. Users see a short "server not reachable" message while the API restarts.
 #
-# The GitHub "Deploy to server" workflow runs this same script (README.md, "Deploying automatically from
-# GitHub"). Two updates (or restores) of the same environment never run at once: the second waits.
+# The GitHub "Deploy to server" button runs this same script (README.md, "Deploying with a button"). Two updates
+# (or restores) of the same environment never run at once: the second waits.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh

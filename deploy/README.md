@@ -31,7 +31,7 @@ page shows an orange **TESTING** badge, and **emails are never sent to real peop
 | `setup.sh` | First-time installation; `setup.sh testing` adds the testing environment |
 | `update.sh` | Deploys the latest code of an environment: backup, `git pull`, rebuild, restart |
 | `copy-production-to-testing.sh` | Refreshes testing's database with a copy of production's |
-| `enable-github-deploy.sh` | One-time setup so a push to `main` or `production` deploys by itself (`../.github/workflows/deploy.yml`) |
+| `enable-github-deploy.sh` | One-time setup of the **Deploy to server** button on GitHub, in VS Code and in Visual Studio (`../.github/workflows/deploy.yml`; a push deploys nothing) |
 | `backup.sh` / `restore.sh` | Database backup (scheduled nightly) and restore |
 | `reset-database.sh` | Empties an environment's database, keeping only your admin account |
 | `../Dockerfile` | The API image |
@@ -186,11 +186,13 @@ Every email then goes to that one address only, with the subject starting with `
 
 The everyday cycle:
 
-1. **Work** is pushed to `main`, and **testing** is updated with it (automatically, or `sudo ./update.sh` in
-   `/opt/inventory-test/Inventory_Shipment/deploy`).
+1. **Work** is pushed to `main`. **Testing** is updated with it when someone presses the **Deploy to server**
+   button with testing ([Deploying with a button](#deploying-with-a-button-one-time-setup)), or runs `sudo
+   ./update.sh` in `/opt/inventory-test/Inventory_Shipment/deploy`.
 2. **Test** it on `https://test.<domain>`.
 3. **Release**: merge `main` into `production`, in **both** repositories, and push. **Production** is updated
-   with it (automatically, or `sudo ./update.sh` in `/opt/inventory/Inventory_Shipment/deploy`).
+   with it when someone presses the button with production (and types `production` in its confirm box), or runs
+   `sudo ./update.sh` in `/opt/inventory/Inventory_Shipment/deploy`.
 
    On GitHub: **Pull requests > New pull request**, base `production`, compare `main`, then **Merge pull
    request** (keep "Create a merge commit"), in both repositories. Or on your PC, in **both** repositories
@@ -226,10 +228,38 @@ switched with `git remote set-url origin <the address above>`, then `git fetch o
 main`. Someone joining the team needs to be added on GitHub (**Settings > Collaborators** in each repository)
 before they can clone or push.
 
-### Deploying automatically from GitHub (one-time setup)
+### Deploying with a button (one-time setup)
 
-A push to `main` or `production`, in either repository, then deploys the matching environment by itself. You
-can also deploy by hand: **Actions > Deploy to server > Run workflow**, choosing the environment.
+Testing and production change only when someone presses the **Deploy to server** button: a push to `main` or
+`production` deploys nothing. The button runs the environment's `update.sh` on the server (backup, pull of both
+repositories, rebuild, restart), so nobody has to sign in to the server to deploy. The same workflow is in both
+repositories: pressing it in either one deploys both.
+
+**The button**, in three places, always the same workflow (`.github/workflows/deploy.yml`):
+
+- **GitHub**, in any browser: **Actions > Deploy to server > Run workflow**, keep the branch `main`, choose the
+  environment, then **Run workflow**.
+- **VS Code**: install the extension **GitHub Actions** (by GitHub, `github.vscode-github-actions`; the
+  repositories recommend it) and sign in to GitHub when it asks. In its view (the GitHub Actions icon on the
+  left), under **Workflows**, hover **Deploy to server** and press its **Run workflow** button (or right-click it >
+  Run Workflow): it asks for the branch (`main`), the environment and the confirm box. The run and its log show
+  in the same view.
+- **Visual Studio** (Windows): install the GitHub CLI once (in a terminal: `winget install --id GitHub.cli`, then
+  `gh auth login`). Then **Tools > External Tools... > Add**:
+  - Title: `Deploy testing`
+  - Command: `C:\Program Files\GitHub CLI\gh.exe`
+  - Arguments: `workflow run deploy.yml --repo bfa-14/Inventory_Shipment -f environment=testing`
+  - tick **Use Output window**, then **OK**.
+
+  **Tools > Deploy testing** then starts it; follow the run on GitHub (**Actions**). Deploy production from GitHub
+  or VS Code, where the confirm box is asked.
+
+**Production** also asks you to type `production` in the confirm box: anything else stops before reaching the
+server ("Not deployed: to deploy production, type production in the confirm box of Run workflow."), so a click
+meant for testing never updates production. Releasing is still a pull request `main` > `production` first
+([Branches and deploying](#branches-and-deploying)); the button then deploys what `production` holds.
+
+**One-time setup**, before the button works:
 
 1. **On the server**, in the production folder, after `setup.sh testing`:
 
@@ -249,8 +279,10 @@ can also deploy by hand: **Actions > Deploy to server > Run workflow**, choosing
    - `DEPLOY_SSH_KEY`: the whole key, `BEGIN` and `END` lines included.
 3. **Try it:** Actions > Deploy to server > Run workflow > testing.
 
-Until the secrets are there, pushes skip the deployment (with a note in the Actions log). The key is shown only
-once: run the script again to make a new one (the old one stops working).
+Until the secrets are there, the button stops at once ("The secret DEPLOY_HOST is missing. …"). The key is shown
+only once: run the script again to make a new one (the old one stops working). GitHub connects to the server's SSH
+port from its own machines: if the server's firewall lets SSH in only from your own address, the button fails with
+a connection timeout.
 
 Each deployment is also written to `/var/log/inventory-deploy-production.log` (or `-testing.log`) on the
 server. A deployment runs to its end even if its GitHub job is cancelled or times out: cancelling only stops
@@ -442,7 +474,7 @@ Run these on the server, in the deploy folder of the environment concerned. Sign
 
 | To | Run |
 |----|-----|
-| Deploy the latest code from GitHub | `sudo ./update.sh` (or automatically: [Branches and deploying](#branches-and-deploying)) |
+| Deploy the latest code from GitHub | `sudo ./update.sh` (or the **Deploy to server** button: [Deploying with a button](#deploying-with-a-button-one-time-setup)) |
 | Back up now | `sudo ./backup.sh` |
 | Restore a backup | `sudo ./restore.sh backups/Inventory_Shipment-20261005-023000.bak.gz` |
 | Refresh testing with production's data | `sudo ./copy-production-to-testing.sh` (testing folder) |
@@ -580,7 +612,8 @@ one. To change one, edit the file (`sudo nano .env`) and run `sudo docker compos
   security updates (`apt-get install -y unattended-upgrades`).
 - The GitHub deploy key can only start `inventory-deploy production|testing` (a forced command with `restrict`
   in `authorized_keys`); it cannot open a shell or reach anything else. `update.sh` runs the code it pulls, so
-  whoever can push to `main` or `production` decides what the server runs: keep that list short.
+  whoever can push to `main` or `production` decides what the server runs, and whoever has write access to a
+  repository can press the button: keep that list short.
 - **Protect `production` on GitHub**, in both repositories: **Settings > Branches > Add branch protection rule**
   (or **Rules > Rulesets**), branch `production`: *Require a pull request before merging*, and *Restrict who can
   push* to the people who release. Releases then go through a pull request (see

@@ -42,6 +42,11 @@ the same start - cancelling that movement undoes the split, its containers back 
 order's and the invoice's Containers cards got a row "…" menu with the next step; the container page's estimated cost
 follows the cost rule and the matching of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7, 5.4).*
 
+*Updated on 19 October 2026: the prompt statuses were checked against the code - prompts 35, 38, 39, 42, 44, 45
+and 46 are built (4.2, 4.3, 4.5, 4.6, 4.10, 5.1, 5.2, 6.1, 6.4); and an environment is deployed only when someone
+presses the **Deploy to server** button, on GitHub, in VS Code or in Visual Studio - a push deploys nothing (8.2;
+`deploy/README.md`, "Deploying with a button").*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -53,7 +58,8 @@ follows the cost rule and the matching of the goods receipt (glossary, 3.1, 3.5,
 
 *Status marks used in section 4:*
 - ***[Implemented]***: built and verified.
-- ***[Decided – prompt NN]***: a prompt is written but not run yet, as far as I know.
+- ***[Decided – prompt NN]***: a prompt is written but not run yet, as far as I know (none left on 19 October 2026:
+  every written prompt is built).
 - ***[Ali – details unknown]***: built by Ali; I only know the commit title.
 
 **Contents:** 1. The business · 2. Glossary · 3. Modules and workflows · 4. Business rules · 5. The prompts so far ·
@@ -200,7 +206,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Container** | A shipping container, created **from a purchase order**. App reference `KTG-2026-0031` (document type CNT: prefix KTG, year, 4-digit number). |
 | **Container No.** | The real box number: 4 letters + 7 digits, for example `MSKU1234565`. Typed when the forwarder sends the list. Unique among open containers (69013). |
 | **Seal No.** | The number of the seal closing the doors. |
-| **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is being removed (prompt 46). |
+| **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is no longer used (script 54, prompt 46): capacity comes from the item's Container unit. |
 | **Container unit** | In Item Definition › units: the unit whose unit type is a container unit (`masterdata.UnitTypes.IsContainer = 1`). Its packing formula is the pieces of this item per container (for example 84). **The only source of container capacity** (prompt 46). |
 | **Base unit / pieces** | The smallest unit of an item (`PC`). Container quantities are always in base units. Other units have a packing formula. |
 | **Auto-plan** | On an approved PO: choose the container type and the app proposes all containers, filled from the order lines; edit, then create them all at once (all or nothing, **any number of containers** since script 78; 200 at most before). The supplier is shown from the order and the forwarder filled in (4.5). |
@@ -615,16 +621,18 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - A PI not created from a PO cannot have containers. A container line can never be invoiced twice.
 - **Add container / Auto-plan from the PI:** creates containers on the PI's order, linked at once, holding the PI's
   item only. Mixed containers are planned on the order. **[Implemented – script 43]**
-- **The PI's Containers card always explains itself:** **[Decided – prompt 44]**
+- **The PI's Containers card always explains itself:** **[Implemented – script 51, prompt 44]**
   - Shown on every PI.
   - Disabled buttons give the reason, for example "Every piece of this invoice is already in a container." or "This
     invoice was posted without 'Shipped in containers': its goods are already in stock." (since goods receipts: "…its
     goods are received with Receive goods…, not with containers.").
-  - A draft with the switch off gets "Turn it on".
-  - Quantity ≤ min(pieces not in a container, what the order lines still allow); the order may be approved or closed.
+  - A draft with the switch off gets "Turn on 'Shipped in containers'".
+  - Quantity ≤ min(pieces not in a container, what the order lines still allow); the order must be approved (no
+    order is closed since script 77).
   - No orange "Not linked" on invoices not shipped in containers.
-- **"+ Add charge" on an invoice in every status:** **[Decided – prompt 38]**
-  - **Local draft:** the invoice's own charges, as today.
+- **"+ Add charge" on an invoice in every status:** **[Implemented – prompt 38]** (`PostedInvoiceChargesCard`,
+  `InvoiceContainerChargesCard`)
+  - **Local draft:** the invoice's own charges, as before.
   - **Local posted:** a late charge in a draft adjustment. "Post late charges" adjusts the cost (stock on hand →
     average cost; already sold → COGS); it is stored as the invoice's LCA.
   - **Imported (draft or posted):** the container charge dialog, with the invoice's containers preselected.
@@ -637,8 +645,11 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     Inventory Out.
   - Older local invoices keep the limit invoiced − returned.
 - **Discounts:** "Disc %" per purchase line. **[Implemented]** Sales discounts **[Ali – details unknown]**.
-- **"The request field is required." on PINV / PRET save:** prompt 35. **(status unknown)**
-- **One purchase-order page wherever it is opened from:** **[Decided – prompt 39]**
+- **"The request field is required." on PINV / PRET save** (prompt 35): gone. The API no longer adds an implicit
+  [Required] to non-nullable properties (`Program.cs`, `SuppressImplicitRequiredAttributeForNonNullableReferenceTypes`),
+  so a body that cannot be read gets only its real error. **[Implemented – prompt 35]**
+- **One purchase-order page wherever it is opened from:** **[Implemented – prompt 39]**
+  (`src/components/purchase/orderAbilities.ts`)
   - The page decides from the order itself, never from the route.
   - The Containers card is on every PO.
   - Buttons are visible but disabled with a tooltip:
@@ -699,13 +710,14 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     - 65024 approval settings
     - 65025 email settings
 
-**Follow-ups** **[Decided – prompt 42]**
+**Follow-ups** **[Implemented – script 44, prompt 42]**
 - 65016 only while "Email the approved order to the supplier" is on.
 - The withdraw reason is stored and shown in the history.
 - Create-and-approve returns the same warnings as approve-now.
 - Every `*Utc` timestamp leaves the API with "Z"; dates without time are unchanged. The web formats a "Z" time in
   local time once, without double corrections.
-- The ~40 Pending test emails are marked failed ("Test email - not sent").
+- The ~40 Pending test emails of the first tests were to be marked failed ("Test email - not sent"): a one-off
+  clean-up of a local Email log, in no script (nothing to do on the servers).
 - Approve on the order page asks "Approve this order? It will be posted and sent to the supplier."
 
 ### 4.4 Email **[Implemented – prompt 36]**
@@ -799,18 +811,15 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   9829 from about 267 containers, as Link containers did from about 190). **[Implemented – script 78]**
 - **Bulk actions:** Confirm, Container numbers (paste list), Start shipment, Add charge, Delete drafts.
   **[Implemented – script 28]**
-- **Capacity today:**
-  - Pieces per container = typed in the Auto-plan dialog, else the item's Container unit, else the container type's
-    Max Units.
-  - A container's Max Units = typed, else the type's.
+- **Capacity:** **[Implemented – script 54, prompt 46]**
+  - **One source: the item's Container unit.** (Before script 54: typed in the Auto-plan dialog, else the item's
+    Container unit, else the container type's Max Units.)
   - Over capacity = warning 69007, confirmable with "Load Above Capacity".
-- **Capacity decided:** **[Decided – prompt 46]**
-  - **One source: the item's Container unit.**
-  - Fill % = Σ quantity ÷ pieces per container. A 40HC with 84 motorcycles of an 84-piece item = 100% (today it
-    shows 70%).
+  - Fill % = Σ quantity ÷ pieces per container. A 40HC with 84 motorcycles of an 84-piece item = 100% (it showed
+    70% before).
   - An item without a Container unit: fill unknown ("—", with a link to set it), no warning, Auto-plan refuses it.
-  - Max Units goes from Container Types and every container form (the database column stays, unread). Max Weight and
-    Max Volume stay.
+  - Max Units is gone from Container Types and every container form (the database column and the procedures'
+    parameters stay, unread). Max Weight and Max Volume stay.
   - The over-capacity message names the item: "This container would be 112 % full: 94 pcs of TEST38-A (84 per
     container)."
 
@@ -1031,13 +1040,13 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     Beira. Change the From, or record the movement that brings it here first."
   - Start refuses while a container's previous movement is not completed, or no longer ends at the From (70016).
   - Planning ahead is allowed: a container still on its way to Beira can go on a planned movement from Beira.
-- **Never-moved containers:** **[Decided – prompt 45; not explicitly confirmed by Bilal]**
+- **Never-moved containers:** **[Implemented – script 53, prompt 45]**
   - Prompt 43 let them start anywhere.
   - Prompt 45: they are at their **port of loading**. They can start from there, or go on an Origin-stage ("Loading
     at the supplier") movement whose To is their port of loading.
   - No port of loading → any From, with a note.
   - An Origin-stage movement takes only containers that have never moved.
-- **The Containers card is the list:** **[Decided – prompt 45]**
+- **The Containers card is the list:** **[Implemented – script 53, prompt 45]**
   - Checkboxes, ticked = on this movement. It reloads at once when the From changes; containers not at the new From
     are unticked, with a message.
   - No "Add containers…" dialog.
@@ -1048,7 +1057,7 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     and slashes are ignored; never creates containers.
   - Results: Will be added / Already on this movement / Not found / Cannot be added (reason) / Found twice /
     Duplicate. At most 10,000 numbers a call (500 before script 78); the page sends a longer file in parts.
-  - **[Decided – prompt 45]:**
+  - **[Implemented – prompt 45]:**
     - Only valid numbers can be ticked, with no forcing.
     - "Download the result" gives sheets Result and Summary.
     - The template `Movement_Containers_Import_Template.xlsx` (sheet Containers with "Container no." in A1, sheet
@@ -1193,7 +1202,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 ### 4.10 Dates and times
 - Timestamps are stored in `*Utc` columns; dates without time (document date, order date, ETA) have no time zone.
   **[Implemented]**
-- The API sends `*Utc` values with "Z" and the web shows local time once. **[Decided – prompt 42]**
+- The API sends `*Utc` values with "Z" and the web shows local time once. **[Implemented – prompt 42]**
+  (`Inventory_Shipment.API/Extensions/UtcDateTimeJson.cs`)
 - Date tolerance on sales invoices. **[Ali – details unknown]**
 
 ### 4.11 Security and data
@@ -1412,9 +1422,13 @@ steps A1, A2… (API project) and B1, B2… (Web project), run in order, each ve
 - **Prompt 30:** the approval UI / email outbox worker for script 26. **Replaced by prompt 36** ("Do not run prompt
   30").
 
-**What I don't know**
-- The titles of prompts 1–29 and 31 **(unsure)**.
-- The files should be in the API repository under `docs/prompts/`. List them there.
+**The prompt files in `docs/prompts/`** (checked on 19 October 2026): 02 security-rbac, 03 schema-security, 04
+masterdata-branches, 05 masterdata-warehouses, 06 mantine-migration, 07 dev-startup-502, 08 roles-permissions-split,
+09 auto-apply-filters, 10 masterdata-currencies, 11 masterdata-itemfamilies, 14 masterdata-pricelists, 15
+masterdata-parties, 16 frontend-enhancements-1, 17 sales-invoice-import, 18 inventory-stock-in, 19
+inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventory-docs, 23 document-engine, 24
+sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
+28–31 have no file there; prompts 32–46 were given outside the repositories (5.2 and section 4 say what they asked).
 
 ### 5.2 Prompts 32–46
 
@@ -1423,18 +1437,18 @@ steps A1, A2… (API project) and B1, B2… (Web project), run in order, each ve
 | **32** | Batch 8 — Containers at the centre (script 27): containers from the PO, invoices from containers, movements, container charges and per-item cost, documents, tracking board (A1–A4, B1–B5) | Done |
 | **33** | Batch 9 — Many containers per order (script 28): Auto-plan, bulk actions, Start shipment for the chosen containers, charge copied to other containers, "Create & send" | Done, except its approval steps A4 / B3 (replaced by 36) |
 | **34** | Batch 10 — Purchase approval: who approves (in the app / by email), email settings, the whole cycle | A1 done: VS Code wrote the spec as **script 42** (not 29). A2–B3 replaced by 36 |
-| **35** | Fix "The request field is required." when saving / posting PINV and PRET | Unknown. The 37 checks saved and posted invoices and a return without it, so probably done or no longer needed. Check by saving a draft PRET |
+| **35** | Fix "The request field is required." when saving / posting PINV and PRET | Done: the API no longer adds the implicit [Required] (`Program.cs`); invoices and returns save and post in every test since |
 | **36** | Batch 10 final — Email and approval layer: email core (encrypted password, queue, worker, Email log, test), approval endpoints, approval emails, reminders, Settings › Email / Email log / Purchase approval, approval on the PO, Approvals page and badge, public approval page (A1–A3, B1–B4) | Done (leftovers → 42) |
 | **37** | Batch 11 — One item per supplier invoice (script 44, error 65029): auto split, refusal, Split by item, Post selected, import | Done (A1, A2, B1 verified 2 Oct) |
-| **38** | Charges on a purchase invoice, draft or posted: one "+ Add charge" | Not started |
-| **39** | One purchase-order page from everywhere; disabled buttons with reasons | Not started |
+| **38** | Charges on a purchase invoice, draft or posted: one "+ Add charge" | Done (`PostedInvoiceChargesCard`: the late charges of a posted local invoice, posted as its LCA; `InvoiceContainerChargesCard` on an imported one) |
+| **39** | One purchase-order page from everywhere; disabled buttons with reasons | Done (`orderAbilities.ts`: the order itself decides, a disabled button says why) |
 | **40** | Attachment types on every document (updated 4 Oct: one dialog, no direct upload, 20 MB); then documents on every page like Containers (script 67): Documents cards, item documents, a container file re-linked to a movement | Done |
 | **41** | Containers from the purchase invoice (script 43): "Shipped in containers", Link / Unlink, Add container / Auto-plan from the PI, container counts | Done. It ran **before** 37, so 37 was adapted |
-| **42** | Approval follow-ups after 36: 65016 rule, withdraw reason, create-and-approve warnings, UTC "Z", test emails, Approve confirmation | Not started. "Prompt 42" ≠ "script 42" |
+| **42** | Approval follow-ups after 36: 65016 rule, withdraw reason, create-and-approve warnings, UTC "Z", test emails, Approve confirmation | Done: script 44 (the 65016 rule, the withdraw reason), UTC "Z" (`UtcDateTimeJson.cs`), the create-and-approve warnings, the Approve confirmation. "Prompt 42" ≠ "script 42" |
 | **43** | Movement: add containers with checkboxes, Excel / paste list, the place rule (Save / Start checks) | Done, partly superseded by 45. Bilal then saw 404 / 405 (stale API: restart) and a movement started with a never-moved container |
-| **44** | Create containers from a purchase invoice: CHECK what exists, then make it work with every validation; Containers card on every PI with reasons | Not started (or unknown). The "missing button" Bilal reported was explained: invoice 1227 fully linked; invoice 1322 posted without the switch |
-| **45** | Movement: one list with checkboxes that follows the From; Save / Start guards; never-moved rule; validated Excel import, result download, template file | Not started |
-| **46** | Container capacity from one place, the item's Container unit; Max Units removed | Not started |
+| **44** | Create containers from a purchase invoice: CHECK what exists, then make it work with every validation; Containers card on every PI with reasons | Done: script 51 and the PI's Containers card with its reasons ("Turn on 'Shipped in containers'"). The "missing button" reported earlier was explained: invoice 1227 fully linked; invoice 1322 posted without the switch |
+| **45** | Movement: one list with checkboxes that follows the From; Save / Start guards; never-moved rule; validated Excel import, result download, template file | Done: script 53; the movement's container list, the never-moved rule, the validated import ("Tick the {n} valid containers", "Download the result") and the template in `public/templates/` |
+| **46** | Container capacity from one place, the item's Container unit; Max Units removed | Done: script 54; capacity from the item's Container unit only, Max Units gone from the screens |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -1523,22 +1537,17 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 ---
 ## 6. What's next
 
-### 6.1 Planned prompts, in the order I recommend (Bilal decides)
-1. **45 — the movement's container list, Save / Start guards, the validated import.** Bilal's latest complaints:
-   - he could start MOV-2026-000046 (LOAD, Dar es Salaam → Chennai) with a container that had never moved;
-   - he wants the list itself with checkboxes, reloading when the From changes;
-   - he wants a template and a validated import.
-   - Before running it, save `Movement_Containers_Import_Template.xlsx` in the Web project's `public/templates/`.
-2. **46 — capacity from the item's Container unit only.** It removes wrong percentages and messages like "321
-   containers needed" (item TEST38-A has Container unit 1).
-3. **44 — the PI Containers card with reasons and all validations.** Bilal was confused on invoices 1227 and 1322.
-   When VS Code asks which invoice, give it 1227 (fully linked) and 1322 (posted without the switch).
-4. **42 — approval follow-ups:** UTC "Z" times, the 65016 rule, the withdraw reason, the Approve confirmation.
-   Sending is already switched on, so its test-email cleaning may find nothing left.
-5. **38 — "+ Add charge" on posted invoices.**
-6. **39 — one purchase-order page.** Optionally add the "Create Invoice" count fix (6.4).
-- **40 — attachment types everywhere** is done (script 67, see 4.8).
-- **35**, only if it was never run: save a draft purchase return; no "request field" error means skip it.
+### 6.1 What's next (19 October 2026; the developer decides)
+Every written prompt (32–46) is built, and so is every script up to the last one in 5.4. What is left:
+1. **Release the scripts after 72 to production** (production runs up to 72): on testing first (the Deploy to
+   server button, or `sudo ./update.sh`; `copy-production-to-testing.sh` to rehearse on production's data), then a
+   pull request `main` → `production` in both repositories, and the button with production. Script 77 changes data
+   once (closed orders back to approved); `update.sh` backs the database up first.
+2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
+3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
+   `enable-github-deploy.sh` on the server and its secrets in both repositories.
+4. **Optional:** let the movement-types lookup accept Manage Shipment Movements, so a reader without View Containers
+   could use Next step… from the Shipments board (today the board leaves the step out for such a reader, 4.6).
 
 ### 6.2 Open requirements not yet in a prompt
 - Update the **Containers User Guide** (Word, 31 pages, v1.0, September 2026, delivered to Bilal outside the repos).
@@ -1583,12 +1592,8 @@ before trusting the statuses of 5.2. The next script takes the next free number 
   supplier invoices stop moving stock. He should save his work before that pull (`git pull --no-rebase`).
 
 ### 6.4 Decisions still pending (with the options considered)
-- **Never-moved containers on a movement:**
-  - (a) any From (prompt 43);
-  - (b) **default in prompt 45**: from their port of loading, or on an Origin movement ending at their port of
-    loading;
-  - (c) port of loading only.
-  - I stated (b) twice; Bilal didn't object but didn't confirm.
+- **Never-moved containers on a movement:** settled - (b), built by script 53 (prompt 45): from their port of
+  loading, or on an Origin movement ending at it; a container without a port of loading leaves from any From.
 - **Container units per container type,** if 20GP comes back into use:
   - (a) one Container unit per item (decided for now);
   - (b) container unit types linked to a container type.
@@ -1596,7 +1601,8 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 - **"Create Invoice" preview count** when the order already has draft invoices (it can announce one invoice too
   many; the result is right):
   - (a) leave it;
-  - (b) an API preview that excludes quantities in drafts (fold into 39).
+  - (b) an API preview that excludes quantities in drafts **(check the code: prompt 39 is built; whether this came
+    with it is not checked)**.
 - **Script numbering with Ali:**
   - (a) pull before numbering, and tell each other (advised);
   - (b) separate number ranges.
@@ -1925,14 +1931,17 @@ every step that did not behave as described.
   - pull with `git pull --no-rebase`;
   - **never force-push `main`** without warning (the others' commits);
   - save your work before any `git reset --hard`;
-  - `main` deploys **testing**, `production` deploys **production**; a release is a pull request `main` →
-    `production` in both repositories (`deploy/README.md`).
+  - `main` is what **testing** runs, `production` what **production** runs; a release is a pull request `main` →
+    `production` in both repositories. An environment changes only when someone presses the **Deploy to server**
+    button (GitHub, VS Code or Visual Studio; production asks to type "production") or runs `update.sh` on the
+    server: a push deploys nothing (`deploy/README.md`, "Deploying with a button").
 - **After a push**, Ali pulls and restarts his API (new scripts apply by themselves). He keeps his own
   `appsettings.Development.json`.
 - **Files delivered outside the repos:**
   - `Containers_User_Guide.docx`;
-  - `Movement_Containers_Import_Template.xlsx` (to put in the Web project's `public/templates/`);
-  - prompt files 32–46: they should be in `docs/prompts/`, but whether all are committed is **unknown**.
+  - `Movement_Containers_Import_Template.xlsx` (now in the Web project's `public/templates/`);
+  - prompt files 32–46: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
+    section 4.
 
 ### 8.3 Security rules to keep
 - Never print or commit passwords: the sa password, the SMTP or app password, the test logins.

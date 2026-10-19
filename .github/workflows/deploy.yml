@@ -1,21 +1,25 @@
 name: Deploy to server
 
-# Deploys to the server over SSH, in the environment that matches the branch:
+# DEPLOYS ONLY WHEN SOMEONE PRESSES THE BUTTON: a push deploys nothing, so testing and production change only when
+# a person decides. The button is this workflow's "Run workflow", in three places (Inventory_Shipment's
+# deploy/README.md, "Deploying with a button"):
 #
-#   push to main         -> testing      (https://test.<domain>, the main branch)
-#   push to production   -> production   (https://<domain>, the production branch)
+#   GitHub          Actions > "Deploy to server" > Run workflow
+#   VS Code         the GitHub Actions view (extension "GitHub Actions" by GitHub) > Workflows > Deploy to server > Run
+#   Visual Studio   Tools > Deploy testing (an External Tools entry that calls the GitHub CLI)
 #
-# or by hand: Actions > "Deploy to server" > Run workflow, choosing the environment.
+# choosing the environment:
 #
-# The server runs that environment's deploy/update.sh: backup, pull of BOTH repositories (API and
-# frontend), rebuild, restart. The same workflow is in both repositories, so a push to either deploys.
-# One-time setup: deploy/enable-github-deploy.sh on the server, then the secrets it prints, in both
-# repositories (Inventory_Shipment's deploy/README.md, "Deploying automatically from GitHub"). Until then,
-# pushes skip the deployment. The server also logs each deployment: /var/log/inventory-deploy-<environment>.log.
+#   testing      https://test.<domain>, the main branch
+#   production   https://<domain>, the production branch - "production" must also be typed in the confirm box, so
+#                a click meant for testing never updates production
+#
+# The server runs that environment's deploy/update.sh: backup, pull of BOTH repositories (API and frontend),
+# rebuild, restart. The same workflow is in both repositories: either one's button deploys both. One-time setup:
+# deploy/enable-github-deploy.sh on the server, then the secrets it prints, in both repositories. The server also
+# logs each deployment: /var/log/inventory-deploy-<environment>.log.
 
 on:
-  push:
-    branches: [main, production]
   workflow_dispatch:
     inputs:
       environment:
@@ -23,10 +27,15 @@ on:
         type: choice
         options: [testing, production]
         default: testing
+      confirm:
+        description: To deploy production, type production here (leave it empty for testing)
+        type: string
+        required: false
+        default: ''
 
 # One deployment per environment at a time from this repository (the server also queues them).
 concurrency:
-  group: deploy-${{ inputs.environment || (github.ref_name == 'production' && 'production') || 'testing' }}
+  group: deploy-${{ inputs.environment }}
   cancel-in-progress: false
 
 permissions: {}
@@ -38,22 +47,31 @@ jobs:
     steps:
       - name: Run update.sh on the server
         env:
-          TARGET: ${{ inputs.environment || (github.ref_name == 'production' && 'production') || 'testing' }}
-          EVENT: ${{ github.event_name }}
+          # Inputs reach the script as variables, never pasted into it: a typed value cannot become a command.
+          TARGET: ${{ inputs.environment }}
+          CONFIRM: ${{ inputs.confirm }}
           DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
           DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
           DEPLOY_PORT: ${{ secrets.DEPLOY_PORT }}
           DEPLOY_KNOWN_HOSTS: ${{ secrets.DEPLOY_KNOWN_HOSTS }}
           DEPLOY_SSH_KEY: ${{ secrets.DEPLOY_SSH_KEY }}
         run: |
+          case "$TARGET" in
+            testing) ;;
+            production)
+              typed=$(printf '%s' "$CONFIRM" | tr -d '[:space:]' | tr '[:upper:]' '[:lower:]')
+              if [ "$typed" != "production" ]; then
+                echo "::error::Not deployed: to deploy production, type production in the confirm box of Run workflow."
+                exit 1
+              fi ;;
+            *)
+              echo "::error::Not deployed: the environment must be testing or production."
+              exit 1 ;;
+          esac
+
           for name in DEPLOY_HOST DEPLOY_USER DEPLOY_KNOWN_HOSTS DEPLOY_SSH_KEY; do
             if [ -z "${!name}" ]; then
-              message="The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (Inventory_Shipment repository, deploy/README.md, \"Deploying automatically from GitHub\")."
-              if [ "$EVENT" = "push" ]; then
-                echo "::notice::Not deployed to $TARGET. $message"
-                exit 0
-              fi
-              echo "::error::$message"
+              echo "::error::The secret $name is missing. Run deploy/enable-github-deploy.sh on the server and save what it prints (Inventory_Shipment repository, deploy/README.md, \"Deploying with a button\")."
               exit 1
             fi
           done

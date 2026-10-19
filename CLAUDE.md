@@ -67,10 +67,12 @@ Conventions worth keeping:
   - **testing**: `https://test.188-245-17-182.sslip.io`, the `main` branch, `/opt/inventory-test`
 - A proxy (Caddy, `deploy/proxy/Caddyfile`) serves both addresses with HTTPS. The sign-in page's "Test
   environment" switch moves between them; testing shows a TESTING badge and never emails real people.
-- New work goes to `main` (deploys testing); a tested version is merged into `production` (deploys production),
-  in both repositories. Never commit straight to `production`.
-- Deploy: a push to `main` / `production` (GitHub Actions "Deploy to server", once set up), or on the server
-  `sudo ./update.sh` in that environment's `deploy/` folder. Each API applies Schema.sql as it starts.
+- New work goes to `main` (what testing runs); a tested version is merged into `production` (what production
+  runs), in both repositories. Never commit straight to `production`.
+- Deploy: only by hand. The "Deploy to server" button (GitHub Actions, run from GitHub, VS Code or Visual Studio,
+  once set up; production also asks to type "production"), or on the server `sudo ./update.sh` in that
+  environment's `deploy/` folder. A push deploys nothing (`deploy/README.md`, "Deploying with a button"). Each API
+  applies Schema.sql as it starts.
 - Both repositories live on GitHub (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`): the team
   pushes and merges there, and the server pulls from there (`deploy/README.md`, "The repositories: GitHub").
 - Never commit `deploy/.env`, and never ask for or repeat passwords, keys or server credentials.
