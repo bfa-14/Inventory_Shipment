@@ -39,6 +39,7 @@ CREATE TABLE [sales].[SalesDocuments] (
     [ReceiptAccountId]     INT             NULL,
     [PaymentReference]     NVARCHAR (100)  NULL,
     [PriceListRate]        DECIMAL (18, 6) NULL,
+    [CancelDate]           DATE            NULL,
     CONSTRAINT [PK_SalesDocuments] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_SalesDocuments_DueDate] CHECK ([DueDate] IS NULL OR [DueDate]>=[DocumentDate]),
     CONSTRAINT [CK_SalesDocuments_PaymentType] CHECK ([PaymentType] IS NULL OR ([PaymentType]=(2) OR [PaymentType]=(1))),

@@ -1,6 +1,8 @@
+
 CREATE   PROCEDURE sales.usp_SalesDocument_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
+    @CancelDate DATE      = NULL,   -- script 84: the day it is cancelled (default today)
     @RowVersion BINARY(8) = NULL,
     @UserId     INT       = NULL
 AS
@@ -10,6 +12,23 @@ BEGIN
 
     SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
     IF @Reason IS NULL THROW 64000, 'A cancellation reason is required.', 1;
+
+    /* THE CANCELLATION DATE (script 84): the day the reversal counts on, today unless typed. A day of
+       tolerance as everywhere else (the date is the reader's local one, the check is UTC); never before
+       the invoice it cancels. */
+    IF @CancelDate IS NULL SET @CancelDate = CAST(SYSUTCDATETIME() AS DATE);
+    IF @CancelDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 64000, 'The cancellation date cannot be in the future.', 1;
+    DECLARE @InvoiceDate DATE = (SELECT DocumentDate FROM sales.SalesDocuments WHERE Id = @Id);
+    IF @InvoiceDate IS NOT NULL AND @CancelDate < @InvoiceDate
+    BEGIN
+        DECLARE @DateMsg NVARCHAR(200) = N'The cancellation date cannot be before the document date ('
+                                         + CONVERT(NVARCHAR(10), @InvoiceDate, 120) + N').';
+        THROW 64000, @DateMsg, 1;
+    END
+    -- The reversal movements are dated on that day, at the time it is done (as a posting dates its own).
+    DECLARE @ReversalAt DATETIME2(3) =
+        DATEADD(SECOND, DATEDIFF(SECOND, CAST(SYSUTCDATETIME() AS DATE), SYSUTCDATETIME()), CAST(@CancelDate AS DATETIME2(3)));
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -64,7 +83,7 @@ BEGIN
 
         INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
                                               DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
-        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+        SELECT @ReversalAt, m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
                m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
         FROM inventory.StockMovements m
         WHERE m.DocumentFamily = N'Sales' AND m.DocumentId = @Id AND m.IsReversal = 0;
@@ -75,11 +94,11 @@ BEGIN
             INNER JOIN (SELECT SourceLineId, SUM(QuantityBase) AS Qty FROM sales.SalesDocumentLines WHERE DocumentId = @Id AND SourceLineId IS NOT NULL GROUP BY SourceLineId) x ON x.SourceLineId = s.Id;
 
         UPDATE sales.SalesDocuments
-        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason, CancelDate = @CancelDate,
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
         WHERE Id = @Id;
 
-        INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+        INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', N'On ' + CONVERT(NVARCHAR(10), @CancelDate, 120) + N': ' + @Reason, @UserId);
 
         -- A cancelled return was a receipt: replay the cost history of its items.
         IF @Direction = 1

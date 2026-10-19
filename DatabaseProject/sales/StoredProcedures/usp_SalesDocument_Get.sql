@@ -1,3 +1,4 @@
+
 CREATE   PROCEDURE sales.usp_SalesDocument_Get
     @Id INT
 AS
@@ -22,7 +23,7 @@ BEGIN
            TotalGrossProfitPct = CASE WHEN d.TotalAmountBase > 0 THEN ROUND(100.0 * d.TotalGrossProfitBase / d.TotalAmountBase, 2) END,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
            d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
-           d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason,
+           d.CancelledAtUtc, d.CancelledBy, xu.FullName AS CancelledByName, d.CancelReason, d.CancelDate,
            d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
            d.RowVersion
     FROM sales.SalesDocuments d

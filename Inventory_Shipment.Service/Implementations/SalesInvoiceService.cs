@@ -425,7 +425,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
 
         return await ChangeAsync(id, cancellationToken,
-            version => _invoices.CancelAsync(id, request.Reason, version, userId, cancellationToken),
+            version => _invoices.CancelAsync(id, request.Reason, request.CancelDate, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled", permissions);
     }
 

@@ -355,6 +355,10 @@ public sealed class SalesInvoiceDto
     public DateTime? CancelledAtUtc { get; init; }
     public string? CancelledByName { get; init; }
     public string? CancelReason { get; init; }
+
+    /// <summary>The day it was cancelled on (script 84); null on documents cancelled before the date existed.</summary>
+    public DateTime? CancelDate { get; init; }
+
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
@@ -700,6 +704,12 @@ public sealed class CancelSalesInvoiceRequest
     [Required]
     [StringLength(300, MinimumLength = 1)]
     public string Reason { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The day the cancellation counts on (script 84): its reversal stock movements are dated on it.
+    /// Null = today. Never in the future, never before the document date.
+    /// </summary>
+    public DateOnly? CancelDate { get; init; }
 
     public string? RowVersion { get; init; }
 }
