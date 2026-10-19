@@ -160,7 +160,14 @@ public abstract record MovementStatusFlags
 
     public bool CanStart => Status == MovementStatus.Planned;
     public bool CanComplete => Status == MovementStatus.InProgress;
-    public bool CanCancel => Status is >= MovementStatus.Planned and <= MovementStatus.Completed;
+
+    /// <summary>
+    /// The status allows it (planned, in progress or completed). (83) The details (<see cref="MovementDto"/>) also ask the
+    /// database whether its Cancel would refuse it now, and say why (<see cref="MovementDto.CancelBlockedReason"/>); the
+    /// list row stays the status alone: the Movements list offers no Cancel.
+    /// </summary>
+    public virtual bool CanCancel => Status is >= MovementStatus.Planned and <= MovementStatus.Completed;
+
     public bool CanDelete => Status == MovementStatus.Planned;
 
     /* (80) A PLANNED MOVEMENT SAYS WHY IT CANNOT START YET (logistics.fn_Movement_StartBlock), on the list row and the
@@ -519,6 +526,20 @@ public sealed record MovementDto : MovementStatusFlags
 
     /// <summary>The stage of its type: a completed Delivery leaves them delivered, not received (no draft goods receipt).</summary>
     public string? SplitUndoStage { get; init; }
+
+    /* (83) A MOVEMENT THAT CANNOT BE CANCELLED SAYS WHY BEFORE THE CLICK (logistics.fn_Movement_CancelBlock, the one place of
+       the refusals of its Cancel, which throws the same words): the page disables its "Cancel..." with the reason instead
+       of opening a dialog that is refused after the reason is typed. */
+
+    /// <summary>
+    /// The refusal its Cancel would give now, word for word: "The movement is already cancelled.", "Container KTG-2026-0041
+    /// is already offloaded: its route can no longer change.", "MOV-2026-000091 is not the last leg of KTG-2026-0133: cancel
+    /// MOV-2026-000092 first."; null when it can be cancelled.
+    /// </summary>
+    public string? CancelBlockedReason { get; init; }
+
+    /// <summary>(83) The status allows it and its Cancel would not refuse it now (the procedure's CanCancel says the same).</summary>
+    public override bool CanCancel => base.CanCancel && CancelBlockedReason is null;
 
     /// <summary>(82) Its history beyond its own stamps (created, started, completed, cancelled): its splits, newest first.</summary>
     public IReadOnlyList<MovementAuditDto> History { get; init; } = [];
