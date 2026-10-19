@@ -15,6 +15,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     private const string ShippedLineTypeName = "purchase.tvp_ShippedLine";
     private const string LineContainerTypeName = "purchase.tvp_LineContainer";
     private const string ContainerLineQtyTypeName = "logistics.tvp_ContainerLineQty";
+    private const string SourceLineSelectionTypeName = "purchase.tvp_SourceLineSelection";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the document date.</summary>
     private static readonly string[] SortColumns =
@@ -811,14 +812,19 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         return ExecuteAsync("purchase.usp_PurchaseDocument_MarkShipped", parameters, cancellationToken);
     }
 
-    /// <summary>From an order: one invoice per item (or one of every item), and their rows; from an invoice: one return, no rows.</summary>
+    /// <summary>
+    /// From an order: one invoice per item (or one of every item), and their rows; from an invoice: one return, no rows.
+    /// An EMPTY selection is the procedure's "everything still available"; the table is sent either way.
+    /// </summary>
     public async Task<CreatedFromSource> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
-        bool? onePerItem, int userId, CancellationToken cancellationToken = default)
+        bool? onePerItem, int userId, IReadOnlyList<SourceLineQuantityRequest>? selection = null,
+        CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@SourceId", sourceId, DbType.Int32);
         parameters.Add("@TargetTypeCode", targetTypeCode, DbType.String, size: 20);
+        parameters.Add("@Selection", ToSourceLineSelectionTable(selection ?? []).AsTableValuedParameter(SourceLineSelectionTypeName));
         parameters.Add("@DocumentDate", documentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@ExporterReference", exporterReference, DbType.String, size: 50);
@@ -828,6 +834,22 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
         var invoices = await QueryCreatedAsync("purchase.usp_PurchaseDocument_CreateFromSource", parameters, cancellationToken);
         return new CreatedFromSource(parameters.Get<int>("@NewId"), invoices);
+    }
+
+    public async Task<IReadOnlyList<OrderInvoiceCandidateDto>> GetOrderInvoiceCandidatesAsync(
+        int purchaseOrderId, bool includeAll, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<OrderInvoiceCandidateDto>(new CommandDefinition(
+                "purchase.usp_PurchaseOrder_InvoiceCandidates", new { PurchaseOrderId = purchaseOrderId, IncludeAll = includeAll },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
     }
 
     /// <summary>An EMPTY selection is the procedure's "everything loaded and not yet invoiced"; the table is sent either way.</summary>
@@ -1067,6 +1089,19 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         foreach (var line in lines)
         {
             table.Rows.Add(line.ContainerLineId, line.QuantityBase);
+        }
+
+        return table;
+    }
+
+    private static DataTable ToSourceLineSelectionTable(IReadOnlyList<SourceLineQuantityRequest> lines)
+    {
+        var table = new DataTable();
+        table.Columns.Add("SourceLineId", typeof(int));
+        table.Columns.Add("QuantityBase", typeof(int));
+        foreach (var line in lines)
+        {
+            table.Rows.Add(line.SourceLineId, line.QuantityBase);
         }
 
         return table;

@@ -70,9 +70,17 @@ public interface IPurchaseDocumentService
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The order's lines still to invoice (script 86; <paramref name="includeAll"/> = every line): ordered, invoiced by
+    /// posted invoices, in draft invoices and available, for "Create Purchase Invoice". Needs seeing the order.
+    /// </summary>
+    Task<Result<IReadOnlyList<OrderInvoiceCandidateDto>>> GetOrderInvoiceCandidatesAsync(
+        int orderId, bool includeAll, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// "Create invoice" on an order: one draft per item of what remains (a supplier invoice holds one item), or one
     /// draft of every item (request.OnePerItem false; null = the setting Purchase.OneItemPerInvoice), the references
-    /// copied to each. Needs purchase.invoices.create, and seeing the order.
+    /// copied to each; only the chosen lines and quantities when request.Lines holds any (script 86). Needs
+    /// purchase.invoices.create, and seeing the order.
     /// </summary>
     Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,

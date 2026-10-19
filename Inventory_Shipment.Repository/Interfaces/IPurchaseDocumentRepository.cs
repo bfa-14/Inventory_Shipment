@@ -55,7 +55,16 @@ public interface IPurchaseDocumentRepository
     /// </summary>
     Task<CreatedFromSource> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
-        bool? onePerItem, int userId, CancellationToken cancellationToken = default);
+        bool? onePerItem, int userId, IReadOnlyList<SourceLineQuantityRequest>? selection = null,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// purchase.usp_PurchaseOrder_InvoiceCandidates (script 86): the order's lines still to invoice, in line order, with
+    /// what each ordered, what posted invoices took, what draft invoices hold and what is still available
+    /// (<paramref name="includeAll"/> = the fully invoiced lines too). 65006 when the id is not a purchase order.
+    /// </summary>
+    Task<IReadOnlyList<OrderInvoiceCandidateDto>> GetOrderInvoiceCandidatesAsync(
+        int purchaseOrderId, bool includeAll, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// purchase.usp_PurchaseDocument_CreateFromContainers — draft invoices from container lines of one order, one per

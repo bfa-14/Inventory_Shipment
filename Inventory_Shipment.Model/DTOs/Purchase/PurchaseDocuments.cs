@@ -1084,6 +1084,37 @@ public sealed class ContainerLineQuantityRequest
     public int QuantityBase { get; init; }
 }
 
+/// <summary>One line of purchase.tvp_SourceLineSelection: a line of the source document and the base units to take from it.</summary>
+public sealed class SourceLineQuantityRequest
+{
+    [Range(1, int.MaxValue)]
+    public int SourceLineId { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int QuantityBase { get; init; }
+}
+
+/// <summary>
+/// A line of a purchase order that can still be invoiced (purchase.usp_PurchaseOrder_InvoiceCandidates, script 86): what
+/// "Create Purchase Invoice" offers, line by line. Available = ordered - invoiced by posted invoices - in draft invoices,
+/// the most Create takes from the line. Base units.
+/// </summary>
+public sealed class OrderInvoiceCandidateDto
+{
+    public int LineId { get; init; }
+    public int LineNumber { get; init; }
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public int WarehouseId { get; init; }
+    public string WarehouseCode { get; init; } = string.Empty;
+    public string WarehouseName { get; init; } = string.Empty;
+    public int OrderedBase { get; init; }
+    public int InvoicedBase { get; init; }
+    public int InDraftsBase { get; init; }
+    public int AvailableBase { get; init; }
+}
+
 /// <summary>
 /// Draft purchase invoices from container lines of one order — ONE PER ITEM (script 45), or one invoice holding
 /// every item (<see cref="OnePerItem"/> false, script 63). NO LINES = everything loaded and not yet invoiced.
@@ -1115,6 +1146,12 @@ public sealed class CreateFromSourceRequest
 {
     /// <summary>Null = today.</summary>
     public DateOnly? DocumentDate { get; init; }
+
+    /// <summary>
+    /// The lines of the source to take and the base units of each (script 86: the order's "Create Purchase Invoice"
+    /// ticks its lines); EMPTY = everything still available. The database refuses more than a line still has (65011).
+    /// </summary>
+    public IReadOnlyList<SourceLineQuantityRequest> Lines { get; init; } = [];
 
     /// <summary>Order → invoices: copied to every invoice created. Ignored for a return.</summary>
     [StringLength(50)]

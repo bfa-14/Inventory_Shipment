@@ -48,6 +48,12 @@ presses the **Deploy to server** button, on GitHub, in VS Code or in Visual Stud
 `deploy/README.md`, "Deploying with a button"); and a movement that cannot be cancelled says why before the click
 (script 83: "Cancel…" disabled with the reason, 4.6, 5.4).*
 
+*Updated on 19 October 2026 for **Create Purchase Invoice line by line** (script 86, the owner: "the same way must be
+when creating the purchase invoice from purchase order"): on an approved order the dialog works like Create Invoice from
+Containers - the date, the exporter's ref. and the commercial invoice no., and the order's lines still to invoice with
+Ordered, Invoiced, In drafts and Available, each ticked with its available quantity, which the user may lower or untick
+(3.4, 4.2, 5.4).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -317,7 +323,8 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   or without an order. See 4.12.
 - **PINV:**
   - created from a PO with "Create Invoice", or from containers with "Create Invoice from Containers…" (received
-    containers too: goods may arrive before their invoice);
+    containers too: goods may arrive before their invoice); both dialogs list what is still to invoice line by line,
+    each ticked with its available quantity, which may be lowered or unticked (the order's since script 86);
   - **one item per invoice**: several items give several drafts at once (optional since script 63, see 4.2);
   - each line may take at most what remains on its source line;
   - posting makes it payable and moves no stock; it sets the cost of the goods received against it.
@@ -591,6 +598,19 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     goods receipts: when fully invoiced), or was closed by hand.
 - **An invoice made from a PO** takes the PO's supplier and branch; each line may take at most what remains on its
   source line. **[Implemented]**
+  - **Line by line** (script 86, the owner: "this is when creating purchase invoice from container, the same way must
+    be when creating the purchase invoice from purchase order"): "Create Purchase Invoice" (the order page and the order
+    list's row action) shows the Document Date, the Exporter's ref. and the Commercial invoice no. ("copied to every
+    invoice"), then the order's lines still to invoice - #, Item, Warehouse, Ordered, Invoiced (posted invoices), In
+    drafts (draft invoices made from the line, from the order or its containers), Available = ordered − invoiced − in
+    drafts - each ticked with its available quantity in pcs, which may be lowered ("Max 60" above it, Create disabled)
+    or unticked; then "One invoice per item" and its line ("One invoice per item: 2 invoices will be created (TEST86-A,
+    TEST86-B)" / "One invoice with 2 items"). Lines with nothing available are left out; none left: "Everything ordered
+    is already invoiced." or "The rest of this order is already in draft invoices: post or delete them first."
+    (`purchase.usp_PurchaseOrder_InvoiceCandidates`, `GET api/purchase/documents/{id}/invoice-candidates`; Create sends
+    the ticked lines as `lines`, which `usp_PurchaseDocument_CreateFromSource` already took as its selection - more than
+    a line has is refused 65011 "Line 2: 61 base units selected but only 60 are still available (the rest is in posted
+    or draft documents)."). **[Implemented – script 86]**
 - **One item per supplier invoice:** **[Implemented – prompt 37, script 45]**
   - A PINV holds one item. It may have several lines of that item (several containers, warehouses or expiry dates),
     never two different items. Purchase orders and returns are not concerned; posted invoices are unchanged.
@@ -1543,6 +1563,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `83_Logistics_CancelBlock.sql` | A movement that cannot be cancelled says why before the click: new `logistics.fn_Movement_CancelBlock` (whether a movement can be cancelled now and the first refusal of its Cancel, its number and words: already cancelled, a container received or closed, not the last leg of a container); `usp_Movement_SetStatus` re-created from 82, its Cancel refusals the function's answer, said before "A cancellation reason is required."; `usp_Movement_Get` re-created from 82, + `CanCancel` and `CancelBlockedReason` (the movement page disables "Cancel…" with the reason) |
 | `84_Sales_Cancel_Date.sql` | Cancelling a posted sales invoice or return asks for a date next to the reason (today by default, not in the future, not before the document date): stored as `CancelDate`, the date of its reversal stock movements |
 | `85_Shortage_Max_Monthly_Sales.sql` | Shortages: Expected Monthly Sales is the busiest month of the months of history (net sales per one-month block counted back from today), no longer the average |
+| `86_Purchase_InvoiceFromOrderLines.sql` | Create Purchase Invoice on an order, line by line like Create Invoice from Containers: new `purchase.usp_PurchaseOrder_InvoiceCandidates` (per order line ordered, invoiced, in draft invoices, available - the rule of `usp_PurchaseDocument_CreateFromSource`'s selection, which the API now sends) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

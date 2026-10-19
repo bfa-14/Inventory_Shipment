@@ -503,9 +503,40 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     }
 
     /// <summary>
+    /// What "Create Purchase Invoice" offers on an order, line by line (script 86): ordered, invoiced by posted
+    /// invoices, in draft invoices and still available. Reading it is seeing the order; anything but a purchase order
+    /// is not found.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<OrderInvoiceCandidateDto>>> GetOrderInvoiceCandidatesAsync(
+        int orderId, bool includeAll, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        var order = await AllowAsync(orderId, s => s.View, permissions, cancellationToken);
+        if (order.IsFailure)
+        {
+            return Result<IReadOnlyList<OrderInvoiceCandidateDto>>.Failure(order.ErrorType, order.Error ?? string.Empty, order.Code ?? "ERROR");
+        }
+
+        if (PurchaseDocumentTypes.Normalize(order.Value!.DocumentTypeCode) != PurchaseDocumentTypes.Order)
+        {
+            return Result<IReadOnlyList<OrderInvoiceCandidateDto>>.Failure(ErrorType.NotFound, "Purchase order not found.", "NOT_FOUND");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<OrderInvoiceCandidateDto>>.Success(
+                await _documents.GetOrderInvoiceCandidatesAsync(orderId, includeAll, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<OrderInvoiceCandidateDto>>(ex);
+        }
+    }
+
+    /// <summary>
     /// "Create invoice" on an order: ONE DRAFT PER ITEM of what remains (script 45 — a supplier invoice holds one
     /// item), or one draft of every item when the request says so (OnePerItem false, script 63; null = the setting),
-    /// the exporter's reference and the commercial invoice number copied to each.
+    /// the exporter's reference and the commercial invoice number copied to each. (86) Only the lines and quantities
+    /// the dialog chose when it sends them (request.Lines).
     /// </summary>
     public async Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,
@@ -536,6 +567,14 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Forbidden<CreatedFromSource>(set.Create);
         }
 
+        // The procedure's selection table is keyed by the source line: a line twice would be a SQL error, not a message.
+        var duplicate = request.Lines.GroupBy(l => l.SourceLineId).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            return Result<CreatedFromSource>.Failure(
+                ErrorType.Validation, $"Source line {duplicate.Key} appears more than once.", "VALIDATION");
+        }
+
         var source = await AllowAsync(sourceId, s => s.View, permissions, cancellationToken);
         if (source.IsFailure)
         {
@@ -546,9 +585,10 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         try
         {
             // One invoice per item or one of every item is a choice of PO -> PINV only: a return is one document.
+            // (86) The lines and quantities chosen in the dialog; none = everything still available, as before.
             created = await _documents.CreateFromSourceAsync(
                 sourceId, target!, request.DocumentDate, Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo),
-                target == PurchaseDocumentTypes.Invoice ? request.OnePerItem : null, userId, cancellationToken);
+                target == PurchaseDocumentTypes.Invoice ? request.OnePerItem : null, userId, request.Lines, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
