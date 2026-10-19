@@ -112,6 +112,71 @@ says `http`. Closing the SSH window closes the tunnel.
 The server serves these ports on its own `127.0.0.1` only, so nobody can reach them from the internet. If a
 port is already taken on your PC, use another local one: `-L 9090:localhost:8080` and http://localhost:9090.
 
+## SQL Server from SSMS on your PC
+
+SQL Server is reachable only inside its environment's Docker network. To open one environment's database to SSMS
+on your PC, as `188.245.17.182,50555`:
+
+> **A database port open to everyone is attacked.** Robots try logins on every open SQL Server port all day,
+> whatever its number. It stays safe only with long random passwords: never replace the `sa` password `setup.sh`
+> generated (27 random characters) with a simpler one, and give SSMS a login of its own (step 4). Better still, ask
+> the provider to let in only your own addresses. Docker's published ports go around ufw: the provider's rule is the
+> only filter.
+
+1. **At the provider:** allow inbound TCP **50555** to the server - from any address, or only from your office and
+   home addresses.
+2. **On the server**, in the folder of the environment to open: production `/opt/inventory/Inventory_Shipment/deploy`
+   or testing `/opt/inventory-test/Inventory_Shipment/deploy`. One port serves one environment; open the other one
+   the same way on another port (50556):
+
+   ```bash
+   cd /opt/inventory/Inventory_Shipment/deploy
+   sudo tee db-port.local.yml > /dev/null <<'EOF'
+   # SQL Server for SSMS from outside the server (README.md, "SQL Server from SSMS on your PC").
+   services:
+     db:
+       ports:
+         - "50555:1433"
+   EOF
+   echo "deploy/db-port.local.yml" | sudo tee -a ../.git/info/exclude > /dev/null
+   echo "COMPOSE_FILE=docker-compose.yml:db-port.local.yml" | sudo tee -a .env > /dev/null
+   sudo docker compose up -d db
+   ```
+
+   The file stays out of Git (`deploy/.gitignore` ignores `*.local.yml`; the `exclude` line does the same for a
+   checkout older than that), so `update.sh` pulls as before, and the `COMPOSE_FILE` line of `.env` makes every
+   `docker compose` use it, `update.sh` included. Restarting SQL Server pauses the app for about half a minute: do it
+   at a quiet moment.
+3. **Check it:** on the server `sudo docker compose port db 1433` answers `0.0.0.0:50555`; from a Windows PC, in
+   PowerShell, `Test-NetConnection 188.245.17.182 -Port 50555` (TcpTestSucceeded : True); from Ubuntu
+   `nc -vz 188.245.17.182 50555`. If it already succeeds before you asked the provider, the provider does not block it.
+4. **A login for SSMS**, not `sa` (the app's). In the same folder, open sqlcmd in the database container:
+
+   ```bash
+   sudo docker compose exec db bash -c 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa'
+   ```
+
+   and create it, with a new password of 20 characters or more (`db_datareader` only reads; add `db_datawriter`
+   only if SSMS must change data):
+
+   ```sql
+   CREATE LOGIN ssms_user WITH PASSWORD = '<a long new password>', CHECK_POLICY = ON;
+   GO
+   USE Inventory_Shipment;
+   CREATE USER ssms_user FOR LOGIN ssms_user;
+   ALTER ROLE db_datareader ADD MEMBER ssms_user;
+   GO
+   EXIT
+   ```
+
+5. **In SSMS:** Server name `188.245.17.182,50555` (a comma before the port), Authentication *SQL Server
+   Authentication*, Login `ssms_user` and its password, Encryption *Mandatory* with **Trust server certificate**
+   ticked (the server's certificate is its own), Connect.
+
+**Who knocks:** `sudo docker compose logs db | grep -c "Login failed"` counts the failed logins. **Close it again:**
+`sudo sed -i '/^COMPOSE_FILE=docker-compose.yml:db-port.local.yml$/d' .env`, then `sudo docker compose up -d db`, and
+ask the provider to close 50555.
+
 ## Two environments: production and testing
 
 Production is what the company uses. Testing is where new work is tried first, on a copy of production's data,
@@ -600,14 +665,16 @@ one. To change one, edit the file (`sudo nano .env`) and run `sudo docker compos
 ## Security
 
 - Only ports 80 and 443 (the proxy) are open to the internet. Each environment's API and web app listen on the
-  server's `127.0.0.1` only. SQL Server is reachable only from inside its environment's Docker network.
+  server's `127.0.0.1` only. SQL Server is reachable only from inside its environment's Docker network, unless you
+  open it to SSMS ([SQL Server from SSMS on your PC](#sql-server-from-ssms-on-your-pc)).
 - The two environments share nothing but the proxy: separate containers, databases, volumes, secrets and
   images (`inventory-*` and `inventory-test-*`).
 - HTTPS everywhere: `http://` redirects to `https://`, with HSTS.
 - Each server gets its own secrets in `.env`, which `.gitignore` keeps out of Git. The values in
   `appsettings.Development.json` are public development defaults and are not used on the server.
 - The API connects as `sa` because it creates the database on the first start. That is acceptable only
-  because SQL Server is not exposed to the internet. Keep it that way: do not publish port 1433.
+  because SQL Server is not exposed to the internet. Keep it that way: do not publish port 1433. Opening a port to
+  SSMS is the one exception, and then only with the generated `sa` password kept and a login of its own for SSMS.
 - Recommended for the server itself: sign in with an SSH key instead of a password, and turn on automatic
   security updates (`apt-get install -y unattended-upgrades`).
 - The GitHub deploy key can only start `inventory-deploy production|testing` (a forced command with `restrict`
