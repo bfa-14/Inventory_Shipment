@@ -679,5 +679,9 @@
     <Build Include="security\Tables\Roles.sql" />
     <Build Include="security\Tables\UserRoles.sql" />
     <Build Include="security\Tables\Users.sql" />
+    <Folder Include="inventory\Stored Procedures\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Build Include="inventory\Stored Procedures\usp_Item_SetNotes.sql" />
   </ItemGroup>
 </Project>

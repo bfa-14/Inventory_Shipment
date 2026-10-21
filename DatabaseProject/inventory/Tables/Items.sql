@@ -1,4 +1,4 @@
-CREATE TABLE [inventory].[Items] (
+﻿CREATE TABLE [inventory].[Items] (
     [Id]                 INT             IDENTITY (1, 1) NOT NULL,
     [ItemCode]           NVARCHAR (30)   NOT NULL,
     [ItemName]           NVARCHAR (200)  NOT NULL,
@@ -29,6 +29,8 @@ CREATE TABLE [inventory].[Items] (
     [WeightKg]           DECIMAL (18, 3) NULL,
     [VolumeCbm]          DECIMAL (18, 4) NULL,
     [OilQtyPerUnit]      DECIMAL (9, 2)  NULL,
+    [Note]               NVARCHAR (2000) NULL,
+    [Link]               NVARCHAR (500)  NULL,
     CONSTRAINT [PK_Items] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_Items_ItemCode_NotBlank] CHECK (len(ltrim(rtrim([ItemCode])))>(0)),
     CONSTRAINT [CK_Items_ItemName_NotBlank] CHECK (len(ltrim(rtrim([ItemName])))>(0)),
@@ -50,6 +52,8 @@ CREATE TABLE [inventory].[Items] (
     CONSTRAINT [FK_Items_Warehouse] FOREIGN KEY ([DefaultWarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]),
     CONSTRAINT [UQ_Items_ItemCode] UNIQUE NONCLUSTERED ([ItemCode] ASC)
 );
+
+
 
 
 GO

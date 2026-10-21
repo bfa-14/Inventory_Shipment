@@ -1,3 +1,5 @@
+﻿/* ================================================================== 2. usp_Item_Get (+ Note, Link) */
+
 CREATE   PROCEDURE inventory.usp_Item_Get
     @Id INT
 AS
@@ -19,6 +21,7 @@ BEGIN
            PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
            i.WeightKg, i.VolumeCbm, i.OilQtyPerUnit,
            i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
+           i.Note, i.Link,                           -- (87)
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
            i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
     FROM inventory.Items i
