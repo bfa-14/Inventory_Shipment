@@ -275,10 +275,10 @@ public sealed class ContainerChargeImportContainer
     /// <summary>Lines with pieces (received once offloaded, loaded before).</summary>
     public int LineCount { get; init; }
 
-    /// <summary>The first item on board without a weight (kg): a Weight charge cannot be posted.</summary>
+    /// <summary>The first item on board without a weight (kg): a Weight charge cannot be posted (one line takes it all, script 88).</summary>
     public string? ItemWithoutWeight { get; init; }
 
-    /// <summary>The first item on board without a volume (CBM): a Volume charge cannot be posted.</summary>
+    /// <summary>The first item on board without a volume (CBM): a Volume charge cannot be posted (one line takes it all, script 88).</summary>
     public string? ItemWithoutVolume { get; init; }
 }
 

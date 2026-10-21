@@ -738,6 +738,8 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
     /// <summary>
     /// What the procedures accept but the person should know: a charge that cannot be posted yet (no items, an
     /// item without weight or volume — _Post refuses it, _Create does not), a late charge, the same charge twice.
+    /// A container with one line takes the whole charge whatever the method (script 88): no weight or volume is
+    /// needed for it, so only a container of several lines is warned about.
     /// </summary>
     private static void WarnAboutContainer(
         ContainerChargeImportContainer container, ChargeTypeLookupDto type, Lookups lookups, Verdict verdict)
@@ -752,12 +754,12 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
                 warnings.Add($"Container {container.ContainerRef} has no items yet: the charge can be created as a draft, "
                              + "but not posted until it has some.");
             }
-            else if (v.AllocationMethod == ChargeAllocationMethods.Weight && container.ItemWithoutWeight is not null)
+            else if (container.LineCount > 1 && v.AllocationMethod == ChargeAllocationMethods.Weight && container.ItemWithoutWeight is not null)
             {
                 warnings.Add($"Item {container.ItemWithoutWeight} on {container.ContainerRef} has no weight (kg): the charge can be created as a draft, "
                              + "but not posted until the weight is set in Item Definition (or the allocation changed).");
             }
-            else if (v.AllocationMethod == ChargeAllocationMethods.Volume && container.ItemWithoutVolume is not null)
+            else if (container.LineCount > 1 && v.AllocationMethod == ChargeAllocationMethods.Volume && container.ItemWithoutVolume is not null)
             {
                 warnings.Add($"Item {container.ItemWithoutVolume} on {container.ContainerRef} has no volume (CBM): the charge can be created as a draft, "
                              + "but not posted until the volume is set in Item Definition (or the allocation changed).");

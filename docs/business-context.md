@@ -54,6 +54,13 @@ Containers - the date, the exporter's ref. and the commercial invoice no., and t
 Ordered, Invoiced, In drafts and Available, each ticked with its available quantity, which the user may lower or untick
 (3.4, 4.2, 5.4).*
 
+*Updated on 21 October 2026 for **a charge on a container of one item** (script 88, reported on testing: a Customs
+charge allocated By Item Value on KTG-2026-0151 was refused at Post, "the allocation basis (Value) is zero for every line
+of the container", its price being 0): a container line that is the only one with pieces takes the whole charge,
+whatever the allocation method - no price, weight or volume is needed for it; on a container of several lines all at
+price 0 a charge by value is still refused, and the refusal names each line, where its price comes from and the way
+out; every refusal of the allocation names the container (glossary, 4.7, 5.4).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -205,7 +212,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Charge** | A cost of the import or purchase (freight, insurance, clearing, port fees, transport, storage, demurrage). Imports: on **containers**. Local: on the invoice. |
 | **Charge type** | Master data (Purchase › Charge Types). Gives the default **allocation method** and whether the charge enters the cost ("include in landed cost"). |
 | **Split rule** | How one charge typed for several containers is divided between them: **Same** (each container gets the full amount), **Equal**, **Pieces** (default), **Value**. |
-| **Allocation method** | How a container's charge is divided over its items: **Value, Quantity, Weight, Volume, Manual**. Rounded to the cent; leftover cents go to the largest remainders. |
+| **Allocation method** | How a container's charge is divided over its items: **Value, Quantity, Weight, Volume, Manual**. Rounded to the cent; leftover cents go to the largest remainders. A container with one line (with pieces) puts the whole charge on it, whatever the method (script 88). |
 | **Charge group** | Charges created together, or copied with "Apply to other containers", share a `GroupId`. The provider's invoice is attached once for the group. |
 | **Late charge / cost adjustment** | A charge posted (or cancelled) after the container's goods are received (badge "after receipt"), or on a posted local invoice (LCA). Recorded in `inventory.CostAdjustments`, SourceKind `CNTCHARGE` for containers. The cost of received goods following their invoices is a cost adjustment too (`GRNCOST`). |
 | **COGS** | Cost of goods sold. Sales take stock out at average cost. |
@@ -1140,14 +1147,32 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Allocation over items:**
   - Value: order price → invoice price → final FOB.
   - Quantity: pieces, received after the goods receipt.
-  - Weight / Volume: needs the item's weight / volume, else "…: item … has no weight (kg)".
+  - Weight / Volume: needs the item's weight / volume, else "…: item … has no weight (kg)" (on a container of several
+    lines, below).
   - Manual: the amounts must add up exactly.
   - Rounded to cents; the leftover cents go to the largest remainders.
+  - **One line takes the whole charge** (script 88): a container whose only line with pieces is one item - the usual
+    container, 84 pcs of one model - gets the whole charge on that line, whatever the method: there is nothing to
+    divide, so no price, weight or volume is needed, the way a charge on one container needs no split basis. Its basis
+    is shown as computed (0.00 without a price, "—" without a weight). Before, by value with the price at 0 (an order
+    line at 0 or 100% discount, or an invoice line linked to the container line at 0 - a draft too, which then hides
+    the order price) refused at Post "Customs: the allocation basis (Value) is zero for every line of the container.
+    Use another method or a manual allocation.", and by weight or volume without the item's figure refused too; a goods
+    receipt re-spreading the posted charges refused the same way. **[Implemented – script 88]**
+  - **Several lines, every one at price 0, by value**: still refused - there is no value to divide by - with each line
+    named and where its price comes from: "Customs on KTG-2026-0151: By Item Value needs a price, and every line is at
+    0 - line 1 TVS-APACHE-160 on the order PO-BR-002-000042, line 2 TVS-XL100 on a draft invoice. Type the price on the
+    supplier invoice, or allocate the charge By Quantity or Manual." (three lines at most, then "and n more"; a received
+    line "as received (GRN-…)", a posted invoice "on PINV-…"). Typing the price on the draft invoice is enough: the
+    value reads draft invoices too. Every refusal of the allocation names the container ("Customs on KTG-2026-0151:
+    item TVS-XL100 has no weight (kg). …"): Post posts the ticked charges together, all or nothing, so the message says
+    which container stops them. **[Implemented – script 88]**
 - **Import from Excel:** Logistics › Containers › "Import charges from Excel…" (template with the charge types and
   currencies, `Import_Container_Charges_Template.xlsx`). One row = one charge on one container (found by container
   number or ref), divided over its items by the row's allocation method (Manual refused). Every row is checked first
   (Valid / Warning / Error, with an error report to download); rows of one provider invoice become one charge group;
-  "Post the charges" (with the post permission) posts them, else they stay drafts. **[Implemented]**
+  "Post the charges" (with the post permission) posts them, else they stay drafts. An item without weight or volume is
+  warned about only on a container of several lines (script 88: one line takes the whole charge). **[Implemented]**
 - **Copy to other containers:** drafts of the same group, or posted at once with the permission. A container that
   already has a charge of the group is refused. Manual allocation is copied with the charge type's method.
 - **Late charge after the goods receipt** (or cancelled after it): a cost adjustment (in stock in the receiving
@@ -1565,6 +1590,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `85_Shortage_Max_Monthly_Sales.sql` | Shortages: Expected Monthly Sales is the busiest month of the months of history (net sales per one-month block counted back from today), no longer the average |
 | `86_Purchase_InvoiceFromOrderLines.sql` | Create Purchase Invoice on an order, line by line like Create Invoice from Containers: new `purchase.usp_PurchaseOrder_InvoiceCandidates` (per order line ordered, invoiced, in draft invoices, available - the rule of `usp_PurchaseDocument_CreateFromSource`'s selection, which the API now sends) |
 | `87_Item_Note_Link.sql` | Item Definition: a Note (several lines, 2,000 characters) and a Link (an http/https address opened in a new tab) on the item: columns `inventory.Items.Note` / `Link`, `usp_Item_Get` re-created from 61 with both, new `inventory.usp_Item_SetNotes` (called after create / update, like `usp_Item_SetPurchasing`; refuses a link that is not http/https or has a space, 56000). The item page also gets a sticky header with Previous / Next through the Items list as filtered |
+| `88_Logistics_ChargeOneLine.sql` | A charge on a container of one line takes it whole: `logistics.usp_ContainerCharge_Allocate` re-created from 27 - the only line with pieces gets the whole charge whatever the method (no price, weight or volume needed); several lines all at price 0 by value are refused naming each line and the source of its price (order, draft or posted invoice, goods receipt); every refusal names the container (70013 as before). The charge import warns about a missing weight or volume only on a container of several lines |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
