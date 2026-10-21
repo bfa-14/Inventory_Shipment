@@ -114,8 +114,11 @@ port is already taken on your PC, use another local one: `-L 9090:localhost:8080
 
 ## SQL Server from SSMS on your PC
 
-SQL Server is reachable only inside its environment's Docker network. To open one environment's database to SSMS
-on your PC, as `188.245.17.182,50555`:
+SQL Server is reachable only inside its environment's Docker network. **Each environment has its own SQL Server**,
+with its own database (both called `Inventory_Shipment`) and its own logins: a port shows one environment's
+database only. To open one environment's database to SSMS on your PC, as `188.245.17.182,50555`, follow the steps
+below; for **production**, prefer [Production through SSH only](#production-through-ssh-only), which opens nothing to
+the internet.
 
 > **A database port open to everyone is attacked.** Robots try logins on every open SQL Server port all day,
 > whatever its number. It stays safe only with long random passwords: never replace the `sa` password `setup.sh`
@@ -176,6 +179,40 @@ on your PC, as `188.245.17.182,50555`:
 **Who knocks:** `sudo docker compose logs db | grep -c "Login failed"` counts the failed logins. **Close it again:**
 `sudo sed -i '/^COMPOSE_FILE=docker-compose.yml:db-port.local.yml$/d' .env`, then `sudo docker compose up -d db`, and
 ask the provider to close 50555.
+
+### Production through SSH only
+
+Production holds the company's real data: rather than a port open to everyone, publish its SQL Server on the
+server's own `127.0.0.1` and reach it through your SSH connection, like [Open the app through
+SSH](#open-the-app-through-ssh). No provider rule is needed, and robots cannot reach it.
+
+1. **On the server**, in production's folder (SQL Server restarts: the app pauses for about half a minute):
+
+   ```bash
+   cd /opt/inventory/Inventory_Shipment/deploy
+   sudo tee db-port.local.yml > /dev/null <<'EOF'
+   # Production's SQL Server for SSMS, on the server only: reach it through SSH (README.md).
+   services:
+     db:
+       ports:
+         - "127.0.0.1:50556:1433"
+   EOF
+   echo "deploy/db-port.local.yml" | sudo tee -a ../.git/info/exclude > /dev/null
+   sudo grep -q '^COMPOSE_FILE=' .env || echo "COMPOSE_FILE=docker-compose.yml:db-port.local.yml" | sudo tee -a .env > /dev/null
+   sudo docker compose up -d db
+   sudo docker compose port db 1433
+   ```
+
+   The last command answers `127.0.0.1:50556`.
+2. **A login for SSMS** in production's SQL Server: step 4 above, in this folder (testing's `ssms_user` does not
+   exist here).
+3. **On your PC**, open the tunnel and leave the window open: `ssh -N -L 50556:127.0.0.1:50556 <user>@<server-ip>`.
+4. **In SSMS:** Server name `localhost,50556` (in VS Code: Server `localhost`, Port `50556`), the production login,
+   Trust server certificate. Name the connection "Production" and the other one "Testing": both databases have the
+   same name.
+
+Testing can work the same way (`127.0.0.1:50555:1433` in its `db-port.local.yml`); then ask the provider to close
+50555.
 
 ## Two environments: production and testing
 
