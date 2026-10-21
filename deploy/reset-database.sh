@@ -39,7 +39,7 @@ domain=$(env_get DOMAIN)
 keep=${KEEP_USER:-admin}
 [[ "$keep" =~ ^[A-Za-z0-9._@-]+$ ]] || die "Not a user name: $keep"
 [[ "$db" =~ ^[A-Za-z0-9_]+$ ]] || die "Unexpected DB_NAME in deploy/.env: $db"
-[ -n "$(docker compose ps -q --status running db)" ] || die "The db container is not running (sudo docker compose up -d)."
+sql_running || die "The SQL Server of $env_name is not running (sudo docker compose up -d in $(sql_home))."
 
 # ONE VALUE FROM SQL SERVER, without headers or "rows affected".
 sql_value() { sql_exec -h -1 -W -Q "SET NOCOUNT ON; $1" | tr -d '[:space:]'; }
@@ -158,6 +158,11 @@ fi
 # "up" recreates the API only when its settings changed (the new key of a fresh run) and starts it when it is stopped.
 # A resumed run changes nothing, so an API still building the new database is never stopped in the middle of it.
 say "Creating the new database (the API builds it as on a first installation)"
+# Testing on production's SQL Server: its API's login may create no database, so the empty one is made here, owned by
+# that login (README.md, "One SQL Server for both environments"). Again after an interruption: it only checks.
+if shared_sql; then
+    ensure_shared_database
+fi
 docker compose up -d --no-build api
 wait_for_api
 

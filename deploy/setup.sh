@@ -3,7 +3,8 @@
 #
 #   sudo ./setup.sh            production: the first installation, in /opt/inventory
 #   sudo ./setup.sh testing    then, from that same production folder: adds the testing environment
-#                              (/opt/inventory-test, main branch, its own database, test.<domain>)
+#                              (/opt/inventory-test, main branch, test.<domain>), its database in production's SQL
+#                              Server (README.md, "One SQL Server for both environments"; SHARED_SQL=no: its own)
 #
 # Production: installs Docker when it is missing, checks out the frontend next to this repository, writes
 # deploy/.env with fresh secrets (asking for the domain and an email address), builds and starts the stack
@@ -13,7 +14,7 @@
 # Without a terminal (or to skip the questions) pass the answers in the environment:
 #   sudo DOMAIN=erp.example.com ACME_EMAIL=me@example.com ./setup.sh
 #   sudo COPY_PRODUCTION_DATA=yes ./setup.sh testing
-# ALLOW_LOW_MEMORY=yes lets "setup.sh testing" run on a server with less than about 6 GB of memory.
+# ALLOW_LOW_MEMORY=yes lets "setup.sh testing" run on a server with less memory than two environments need.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
@@ -113,11 +114,17 @@ if [ "$mode" = "testing" ]; then
     api_repo=$(git -C .. remote get-url origin)
     web_repo=$(git -C "$(web_dir)" remote get-url origin 2>/dev/null || echo "$FRONTEND_REPO")
 
-    # Two SQL Servers, and testing's builds next to production: below about 6 GB the kernel would end up
-    # stopping a process to free memory, possibly production's SQL Server.
-    if [ "$mem_mb" -lt 5500 ]; then
+    # A new testing environment keeps its database in production's SQL Server unless SHARED_SQL=no (an existing one
+    # keeps what its .env says). Its builds run next to production: below about 4 GB (6 GB with a second SQL Server)
+    # the kernel would end up stopping a process to free memory, possibly production's SQL Server.
+    shared=${SHARED_SQL:-yes}
+    if [ -f "$test_dir/Inventory_Shipment/deploy/.env" ]; then
+        shared=$(cd "$test_dir/Inventory_Shipment/deploy" && env_get SHARED_SQL no)
+    fi
+    [ "$shared" = "yes" ] && need_mb=3800 || need_mb=5500
+    if [ "$mem_mb" -lt "$need_mb" ]; then
         [ "${ALLOW_LOW_MEMORY:-}" = "yes" ] \
-            || die "Two environments need about 6 GB of memory; this server has ${mem_mb} MB. Add memory, or run again with ALLOW_LOW_MEMORY=yes to accept the risk (sudo ALLOW_LOW_MEMORY=yes ./setup.sh testing)."
+            || die "Two environments need about $(( (need_mb + 500) / 1000 )) GB of memory; this server has ${mem_mb} MB. Add memory, or run again with ALLOW_LOW_MEMORY=yes to accept the risk (sudo ALLOW_LOW_MEMORY=yes ./setup.sh testing)."
         warn "Only ${mem_mb} MB of memory for two environments (ALLOW_LOW_MEMORY=yes)."
         add_swap
     fi
@@ -163,6 +170,18 @@ ADMIN_PASSWORD=$(random 12)-Aa1
 # docker compose up -d (in this folder).
 TEST_EMAIL_REDIRECT_TO=
 ENV
+        if [ "$shared" = "yes" ]; then
+            cat >> "$test_deploy/.env" <<ENV
+# Its database lives in production's SQL Server (README.md, "One SQL Server for both environments"), as its own login
+# that owns that database and nothing else. MSSQL_SA_PASSWORD above is then unused.
+SHARED_SQL=yes
+COMPOSE_FILE=docker-compose.yml:$SHARED_SQL_FILE
+DB_NAME=$SHARED_TEST_DB
+DB_SERVER=$SQL_HOST_ALIAS
+DB_USER=$SHARED_TEST_LOGIN
+DB_PASSWORD=$(random 24)Aa1
+ENV
+        fi
         umask 022
     else
         fresh_test_env=0
@@ -173,6 +192,11 @@ ENV
     # Production learns where testing is: the sign-in page's switch, and update / deploy commands.
     env_set SWITCH_URL "https://$test_domain"
     env_set TEST_DIR "$test_dir"
+
+    # Testing's database in production's SQL Server: production answers it on the shared network first.
+    if [ "$(cd "$test_deploy" && env_get SHARED_SQL no)" = "yes" ]; then
+        host_testing_sql
+    fi
 
     "$test_deploy/setup.sh"
 
@@ -296,6 +320,14 @@ fi
 # ----- Start -----------------------------------------------------------------------------------
 
 ensure_backup_dir
+
+# Testing on production's SQL Server: its login and database there, before its API first starts.
+if shared_sql; then
+    require_compose 2.24
+    ensure_sql_network
+    sql_host_ready || die "Production's SQL Server does not answer on the network $SQL_NETWORK yet: run sudo ./setup.sh testing in production's deploy folder."
+    ensure_shared_database
+fi
 
 say "Building and starting (the first build takes several minutes)..."
 docker compose up -d --build

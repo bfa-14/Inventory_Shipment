@@ -61,6 +61,12 @@ whatever the allocation method - no price, weight or volume is needed for it; on
 price 0 a charge by value is still refused, and the refusal names each line, where its price comes from and the way
 out; every refusal of the allocation names the container (glossary, 4.7, 5.4).*
 
+*Updated on 21 October 2026 for **one SQL Server for both environments**: testing's database can live in production's
+SQL Server, `Inventory_Shipment_Test` next to production's `Inventory_Shipment`, reached by testing's own login
+`inventory_test` (which owns it and has no access to production's), so one SSMS connection shows both. Moved once
+with `share-sql-server.sh` on the server; `copy-testing-to-production.sh` takes testing's data into production when it
+goes live (8.2; `deploy/README.md`, "One SQL Server for both environments").*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -2006,6 +2012,11 @@ every step that did not behave as described.
     `production` in both repositories. An environment changes only when someone presses the **Deploy to server**
     button (GitHub, VS Code or Visual Studio; production asks to type "production") or runs `update.sh` on the
     server: a push deploys nothing (`deploy/README.md`, "Deploying with a button").
+  - testing's database can live in **production's SQL Server** (`Inventory_Shipment_Test`, login `inventory_test`,
+    which owns it and nothing else): `share-sql-server.sh` moves it there once, `--undo` moves it back, and
+    `copy-testing-to-production.sh` copies testing's data into production for the go-live (`deploy/README.md`, "One
+    SQL Server for both environments"). The scripts of `Database/` say `USE [Inventory_Shipment];`: the API points
+    that line at its own database.
 - **After a push**, Ali pulls and restarts his API (new scripts apply by themselves). He keeps his own
   `appsettings.Development.json`.
 - **Files delivered outside the repos:**

@@ -61,8 +61,9 @@ Conventions worth keeping:
 
 ## Environments and branches
 
-- One Ubuntu server runs two environments with Docker, each with its own web app, API and SQL Server database
-  (`deploy/README.md`):
+- One Ubuntu server runs two environments with Docker, each with its own web app, API and database
+  (`deploy/README.md`); testing's, `Inventory_Shipment_Test`, can live in production's SQL Server, as its own login
+  `inventory_test` (`deploy/README.md`, "One SQL Server for both environments"):
   - **production**: `https://188-245-17-182.sslip.io`, the `production` branch, `/opt/inventory`
   - **testing**: `https://test.188-245-17-182.sslip.io`, the `main` branch, `/opt/inventory-test`
 - A proxy (Caddy, `deploy/proxy/Caddyfile`) serves both addresses with HTTPS. The sign-in page's "Test

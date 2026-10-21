@@ -1,7 +1,8 @@
 # Deploying to a Linux server
 
-The application runs on one Linux server in **two environments**, each with its own web app, API and SQL
-Server database:
+The application runs on one Linux server in **two environments**, each with its own web app, API and database
+(testing's can live in production's SQL Server: [One SQL Server for both
+environments](#one-sql-server-for-both-environments)):
 
 | Environment | Address | Code | On the server |
 |-------------|---------|------|---------------|
@@ -18,7 +19,8 @@ browser ──https──► proxy                                     (/api goe
   addresses and sends each one to its environment. Production runs it.
 - **web**: the React app, from the Inventory_Shipment_Frontend repository.
 - **api**: Inventory_Shipment.API (ASP.NET Core 10). It applies `Schema.sql` to its own database at start-up.
-- **db**: SQL Server 2025 Express. It is never reachable from the internet.
+- **db**: SQL Server 2025 Express. It is never reachable from the internet. With one SQL Server for both
+  environments, testing runs none: its database `Inventory_Shipment_Test` is in production's.
 
 The **sign-in page has a "Test environment" switch** that moves between the two addresses. In testing, every
 page shows an orange **TESTING** badge, and **emails are never sent to real people**.
@@ -114,11 +116,13 @@ port is already taken on your PC, use another local one: `-L 9090:localhost:8080
 
 ## SQL Server from SSMS on your PC
 
-SQL Server is reachable only inside its environment's Docker network. **Each environment has its own SQL Server**,
-with its own database (both called `Inventory_Shipment`) and its own logins: a port shows one environment's
-database only. To open one environment's database to SSMS on your PC, as `188.245.17.182,50555`, follow the steps
-below; for **production**, prefer [Production through SSH only](#production-through-ssh-only), which opens nothing to
-the internet.
+SQL Server is reachable only inside Docker. With [One SQL Server for both
+environments](#one-sql-server-for-both-environments), **one port shows both databases**, `Inventory_Shipment`
+(production) and `Inventory_Shipment_Test` (testing): it is opened on production's SQL Server, in production's
+folder. With a SQL Server per environment, a port shows one environment's database only (both are called
+`Inventory_Shipment`), opened in that environment's folder. To open it to SSMS on your PC, as
+`188.245.17.182,50555`, follow the steps below; when it holds **production's** data, prefer [Production through SSH
+only](#production-through-ssh-only), which opens nothing to the internet.
 
 > **A database port open to everyone is attacked.** Robots try logins on every open SQL Server port all day,
 > whatever its number. It stays safe only with long random passwords: never replace the `sa` password `setup.sh`
@@ -128,9 +132,9 @@ the internet.
 
 1. **At the provider:** allow inbound TCP **50555** to the server - from any address, or only from your office and
    home addresses.
-2. **On the server**, in the folder of the environment to open: production `/opt/inventory/Inventory_Shipment/deploy`
-   or testing `/opt/inventory-test/Inventory_Shipment/deploy`. One port serves one environment; open the other one
-   the same way on another port (50556):
+2. **On the server**, in the folder of the SQL Server to open: production `/opt/inventory/Inventory_Shipment/deploy`
+   (with one SQL Server for both, the only one) or testing `/opt/inventory-test/Inventory_Shipment/deploy`. One port
+   serves one SQL Server; open the other one the same way on another port (50556):
 
    ```bash
    cd /opt/inventory/Inventory_Shipment/deploy
@@ -142,13 +146,15 @@ the internet.
          - "50555:1433"
    EOF
    echo "deploy/db-port.local.yml" | sudo tee -a ../.git/info/exclude > /dev/null
-   echo "COMPOSE_FILE=docker-compose.yml:db-port.local.yml" | sudo tee -a .env > /dev/null
+   sudo grep -q '^COMPOSE_FILE=' .env || echo "COMPOSE_FILE=docker-compose.yml" | sudo tee -a .env > /dev/null
+   sudo grep -q '^COMPOSE_FILE=.*db-port\.local\.yml' .env || sudo sed -i '/^COMPOSE_FILE=/s/$/:db-port.local.yml/' .env
    sudo docker compose up -d db
    ```
 
    The file stays out of Git (`deploy/.gitignore` ignores `*.local.yml`; the `exclude` line does the same for a
    checkout older than that), so `update.sh` pulls as before, and the `COMPOSE_FILE` line of `.env` makes every
-   `docker compose` use it, `update.sh` included. Restarting SQL Server pauses the app for about half a minute: do it
+   `docker compose` use it, `update.sh` included (the two `COMPOSE_FILE` commands add it to that line and keep what
+   it already lists, such as `sql-host.local.yml`). Restarting SQL Server pauses the app for about half a minute: do it
    at a quiet moment.
 3. **Check it:** on the server `sudo docker compose port db 1433` answers `0.0.0.0:50555`; from a Windows PC, in
    PowerShell, `Test-NetConnection 188.245.17.182 -Port 50555` (TcpTestSucceeded : True); from Ubuntu
@@ -172,13 +178,17 @@ the internet.
    EXIT
    ```
 
+   With one SQL Server for both, the same login reads testing's database once it has a user there too: run the two
+   lines after `USE Inventory_Shipment_Test;` as well (`share-sql-server.sh` does it for the logins it brings over).
+   A reset (`reset-database.sh`) makes the database anew, without that user: run the lines again for it.
+
 5. **In SSMS:** Server name `188.245.17.182,50555` (a comma before the port), Authentication *SQL Server
    Authentication*, Login `ssms_user` and its password, Encryption *Mandatory* with **Trust server certificate**
    ticked (the server's certificate is its own), Connect.
 
 **Who knocks:** `sudo docker compose logs db | grep -c "Login failed"` counts the failed logins. **Close it again:**
-`sudo sed -i '/^COMPOSE_FILE=docker-compose.yml:db-port.local.yml$/d' .env`, then `sudo docker compose up -d db`, and
-ask the provider to close 50555.
+`sudo sed -i '/^COMPOSE_FILE=/s/:db-port\.local\.yml//' .env` (only that file leaves the line), then
+`sudo docker compose up -d db`, and ask the provider to close 50555.
 
 ### Production through SSH only
 
@@ -198,7 +208,8 @@ SSH](#open-the-app-through-ssh). No provider rule is needed, and robots cannot r
          - "127.0.0.1:50556:1433"
    EOF
    echo "deploy/db-port.local.yml" | sudo tee -a ../.git/info/exclude > /dev/null
-   sudo grep -q '^COMPOSE_FILE=' .env || echo "COMPOSE_FILE=docker-compose.yml:db-port.local.yml" | sudo tee -a .env > /dev/null
+   sudo grep -q '^COMPOSE_FILE=' .env || echo "COMPOSE_FILE=docker-compose.yml" | sudo tee -a .env > /dev/null
+   sudo grep -q '^COMPOSE_FILE=.*db-port\.local\.yml' .env || sudo sed -i '/^COMPOSE_FILE=/s/$/:db-port.local.yml/' .env
    sudo docker compose up -d db
    sudo docker compose port db 1433
    ```
@@ -235,7 +246,9 @@ sudo ./setup.sh testing
 It does everything in one go:
 
 1. Checks out both repositories on `main` into `/opt/inventory-test`.
-2. Writes testing's `.env`, with its own secrets and its own database.
+2. Writes testing's `.env`, with its own secrets and its own database, in production's SQL Server ([One SQL Server
+   for both environments](#one-sql-server-for-both-environments); `sudo SHARED_SQL=no ./setup.sh testing` gives it
+   a SQL Server of its own).
 3. Builds and starts testing.
 4. Turns on the switch on production's sign-in page.
 5. Offers to copy production's database into testing. Run again later, it keeps testing's data unless you
@@ -278,6 +291,92 @@ To see them anyway:
 3. Type the SMTP password again in testing's *Configuration > Settings > Email*.
 
 Every email then goes to that one address only, with the subject starting with `[TEST]`.
+
+## One SQL Server for both environments
+
+Testing's database can live in **production's SQL Server**, next to production's: one SQL Server on the server
+(about 2 GB of memory less), and one SSMS connection that shows both databases, `Inventory_Shipment` (production) and
+`Inventory_Shipment_Test` (testing). Testing then runs no SQL Server of its own. A new testing environment is set up
+so (`setup.sh testing`; `SHARED_SQL=no` gives it one of its own); one set up before is moved once with
+`share-sql-server.sh` (below).
+
+What keeps production's data safe from testing:
+
+- **Testing's API signs in as a login of its own**, `inventory_test`, which owns testing's database and has no user
+  in production's: whatever the code under test does, SQL Server refuses it production's data. The login and its
+  password are in testing's `.env` (`DB_USER`, `DB_PASSWORD`), set again at every update of testing.
+- **The API applies its schema to its own database only.** The scripts of `Database/` start with
+  `USE [Inventory_Shipment];` for sqlcmd on a PC; the API points that line at its own database, and refuses to start
+  on any other `USE`.
+- **Testing's scripts act on testing's database only** (backup, restore, copy, reset): a `DB_NAME` missing from
+  testing's `.env`, or equal to production's, stops them before they touch anything.
+- **Production's SQL Server answers testing on a network of its own**: `inventory-sql`, as `inventory-db`
+  (`sql-host.local.yml` in production's folder, written by the scripts), never on production's own network.
+
+What it costs: production's SQL Server is testing's too. Restarting it pauses testing as well; heavy work in testing
+(an import, a test with thousands of containers) slows production; testing's updates, restores and copies wait for
+production's, and the other way round. When memory runs out, testing's processes are still stopped first.
+
+### Move testing's database into production's SQL Server (once)
+
+First deploy `main` to testing as usual (the **Deploy to server** button with `testing`, or `sudo ./update.sh` in
+testing's folder). Then, on the server:
+
+```bash
+cd /opt/inventory-test/Inventory_Shipment/deploy
+sudo ./share-sql-server.sh
+```
+
+After "Type YES" it stops testing's API, backs up testing's database, stops testing's SQL Server, puts production's
+on the shared network, restores the backup into it as `Inventory_Shipment_Test` (owned by `inventory_test`), writes
+testing's `.env`, and starts testing on it. Testing stops for a few minutes; **production's SQL Server restarts once**
+(the production app pauses for about half a minute): do it at a quiet moment. It ends by comparing a few figures
+(users, items, documents, stock movements, containers) before and after.
+
+- **SSMS:** the SSMS port of testing's SQL Server (its `db-port.local.yml`) moves to production's, and the SQL logins
+  of testing's database come along with their passwords (`ssms_user`); a read-only one may read production's
+  database too. The same connection then shows both databases. If production has an SSMS port of its own already,
+  it keeps it, and testing's port closes.
+- **Testing's old SQL Server** is only stopped, its volume kept. Once all is well:
+  `sudo docker volume rm inventory-test_sqldata`.
+- **Back to a SQL Server of testing's own**, with testing's data as it is then: `sudo ./share-sql-server.sh --undo`
+  in testing's folder.
+
+### Production with testing's data
+
+To go live with what was entered in testing, **after** releasing `main` to production (production must run the same
+code as testing: the script compares both repositories and refuses otherwise):
+
+```bash
+cd /opt/inventory/Inventory_Shipment/deploy
+sudo ./copy-testing-to-production.sh
+```
+
+It asks you to type production's address, backs up production into `deploy/backups/before-copy-from-testing` (kept,
+not pruned), backs up testing (only read), and restores that into production. The users and passwords become
+testing's, everyone signs in again, the emails testing still had to send are closed instead of being sent, and the
+SMTP password must be typed again in *Configuration > Settings > Email*. To undo: `sudo ./restore.sh` with the file it
+names.
+
+### Removing testing later
+
+When testing is no longer needed (copy its data into production first if production should keep it: [Production with
+testing's data](#production-with-testings-data)), on the server:
+
+```bash
+cd /opt/inventory-test/Inventory_Shipment/deploy
+sudo docker compose down -v
+sudo rm -f /etc/cron.d/inventory-shipment-backup-testing
+cd /opt/inventory/Inventory_Shipment/deploy
+sudo docker compose exec -T db bash -c 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b -Q "ALTER DATABASE [Inventory_Shipment_Test] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [Inventory_Shipment_Test]; DROP LOGIN [inventory_test];"'
+sudo sed -i -e '/^COMPOSE_FILE=/s/:sql-host\.local\.yml//' -e '/^SWITCH_URL=/d' .env
+sudo docker compose up -d
+```
+
+`down -v` deletes testing's containers and volumes; its backups stay in
+`/opt/inventory-test/Inventory_Shipment/deploy/backups` (copy them off, then `sudo rm -rf /opt/inventory-test`). The
+last two lines take the Production / Testing switch off the sign-in page and restart production's SQL Server once
+(the app pauses for about half a minute). The testing address then shows an error page.
 
 ## Branches and deploying
 
@@ -661,6 +760,10 @@ Any SQL Server version up to 2025 can be restored.
 | Production | 02:30 | `/opt/inventory/Inventory_Shipment/deploy/backups` | `/var/log/inventory-shipment-backup.log` |
 | Testing | 02:45 | `/opt/inventory-test/Inventory_Shipment/deploy/backups` | `/var/log/inventory-shipment-backup-testing.log` |
 
+With [one SQL Server for both environments](#one-sql-server-for-both-environments), production's SQL Server makes
+testing's backups too (through `deploy/backups/testing` in production's folder), and they still land in testing's
+`deploy/backups`.
+
 Each backup is two files:
 
 - `Inventory_Shipment-<date>.bak.gz`: the database.
@@ -704,8 +807,10 @@ one. To change one, edit the file (`sudo nano .env`) and run `sudo docker compos
 - Only ports 80 and 443 (the proxy) are open to the internet. Each environment's API and web app listen on the
   server's `127.0.0.1` only. SQL Server is reachable only from inside its environment's Docker network, unless you
   open it to SSMS ([SQL Server from SSMS on your PC](#sql-server-from-ssms-on-your-pc)).
-- The two environments share nothing but the proxy: separate containers, databases, volumes, secrets and
-  images (`inventory-*` and `inventory-test-*`).
+- The two environments share nothing but the proxy, and, with [one SQL Server for
+  both](#one-sql-server-for-both-environments), production's SQL Server: separate containers, databases, volumes,
+  secrets and images (`inventory-*` and `inventory-test-*`). Testing's API then signs in to production's SQL Server
+  as `inventory_test`, which owns testing's database only.
 - HTTPS everywhere: `http://` redirects to `https://`, with HSTS.
 - Each server gets its own secrets in `.env`, which `.gitignore` keeps out of Git. The values in
   `appsettings.Development.json` are public development defaults and are not used on the server.
