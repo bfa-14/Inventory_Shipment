@@ -33,14 +33,14 @@ CREATE TABLE [inventory].[ItemUnits] (
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_BaseUnit]
-    ON [inventory].[ItemUnits]([ItemId] ASC) WHERE ([IsBaseUnit]=(1));
+CREATE NONCLUSTERED INDEX [IX_ItemUnits_Item]
+    ON [inventory].[ItemUnits]([ItemId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ItemUnits_Item]
-    ON [inventory].[ItemUnits]([ItemId] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemUnits_BaseUnit]
+    ON [inventory].[ItemUnits]([ItemId] ASC) WHERE ([IsBaseUnit]=(1));
 
 
 GO

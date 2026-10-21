@@ -65,26 +65,26 @@ CREATE TABLE [sales].[SalesDocuments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeDate]
-    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Salesman]
-    ON [sales].[SalesDocuments]([SalesmanId] ASC) WHERE ([SalesmanId] IS NOT NULL);
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Client]
     ON [sales].[SalesDocuments]([ClientId] ASC, [DocumentDate] DESC);
 
 
 GO
 
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeDate]
+    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
+
+
+GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_SalesDocuments_Number]
     ON [sales].[SalesDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Salesman]
+    ON [sales].[SalesDocuments]([SalesmanId] ASC) WHERE ([SalesmanId] IS NOT NULL);
 
 
 GO

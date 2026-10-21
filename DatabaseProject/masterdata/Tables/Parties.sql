@@ -40,8 +40,15 @@ CREATE TABLE [masterdata].[Parties] (
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Parties_UserId]
-    ON [masterdata].[Parties]([UserId] ASC) WHERE ([UserId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_Parties_PartyName]
+    ON [masterdata].[Parties]([PartyName] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Parties_Types]
+    ON [masterdata].[Parties]([IsSupplier] ASC, [IsClient] ASC, [IsSalesman] ASC, [IsEmployee] ASC)
+    INCLUDE([PartyCode], [PartyName], [IsActive]);
 
 
 GO
@@ -52,15 +59,8 @@ CREATE NONCLUSTERED INDEX [IX_Parties_Branch]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Parties_PartyName]
-    ON [masterdata].[Parties]([PartyName] ASC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_Parties_Types]
-    ON [masterdata].[Parties]([IsSupplier] ASC, [IsClient] ASC, [IsSalesman] ASC, [IsEmployee] ASC)
-    INCLUDE([PartyCode], [PartyName], [IsActive]);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Parties_UserId]
+    ON [masterdata].[Parties]([UserId] ASC) WHERE ([UserId] IS NOT NULL);
 
 
 GO

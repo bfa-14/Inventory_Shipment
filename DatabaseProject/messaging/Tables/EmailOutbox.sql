@@ -24,14 +24,14 @@ CREATE TABLE [messaging].[EmailOutbox] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_EmailOutbox_Document]
-    ON [messaging].[EmailOutbox]([RelatedDocumentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_EmailOutbox_Due]
+    ON [messaging].[EmailOutbox]([Status] ASC, [NextAttemptAtUtc] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_EmailOutbox_Due]
-    ON [messaging].[EmailOutbox]([Status] ASC, [NextAttemptAtUtc] ASC);
+CREATE NONCLUSTERED INDEX [IX_EmailOutbox_Document]
+    ON [messaging].[EmailOutbox]([RelatedDocumentId] ASC);
 
 
 GO

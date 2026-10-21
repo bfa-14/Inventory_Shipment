@@ -30,14 +30,14 @@ CREATE TABLE [masterdata].[Warehouses] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
-    ON [masterdata].[Warehouses]([WarehouseName] ASC);
+CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
+    ON [masterdata].[Warehouses]([ParentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
-    ON [masterdata].[Warehouses]([ParentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
+    ON [masterdata].[Warehouses]([WarehouseName] ASC);
 
 
 GO

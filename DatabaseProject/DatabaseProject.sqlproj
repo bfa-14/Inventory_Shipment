@@ -137,6 +137,7 @@
     <Build Include="inventory\StoredProcedures\usp_Item_RebuildCosts.sql" />
     <Build Include="inventory\StoredProcedures\usp_Item_Search.sql" />
     <Build Include="inventory\StoredProcedures\usp_Item_SetActive.sql" />
+    <Build Include="inventory\StoredProcedures\usp_Item_SetNotes.sql" />
     <Build Include="inventory\StoredProcedures\usp_Item_SetPurchasing.sql" />
     <Build Include="inventory\StoredProcedures\usp_Item_StockBalance.sql" />
     <Build Include="inventory\StoredProcedures\usp_Item_StockStatement.sql" />
@@ -679,9 +680,5 @@
     <Build Include="security\Tables\Roles.sql" />
     <Build Include="security\Tables\UserRoles.sql" />
     <Build Include="security\Tables\Users.sql" />
-    <Folder Include="inventory\Stored Procedures\" />
-  </ItemGroup>
-  <ItemGroup>
-    <Build Include="inventory\Stored Procedures\usp_Item_SetNotes.sql" />
   </ItemGroup>
 </Project>

@@ -61,16 +61,15 @@ CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_PoLine]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_ContainerLine]
-    ON [purchase].[GoodsReceiptLines]([ContainerLineId] ASC)
-    INCLUDE([GoodsReceiptId]) WHERE ([ContainerLineId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_SupplierItem]
+    ON [purchase].[GoodsReceiptLines]([SupplierId] ASC, [ItemId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_InvoiceLine]
-    ON [purchase].[GoodsReceiptLines]([InvoiceLineId] ASC)
-    INCLUDE([GoodsReceiptId], [QuantityBase]) WHERE ([InvoiceLineId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_ContainerLine]
+    ON [purchase].[GoodsReceiptLines]([ContainerLineId] ASC)
+    INCLUDE([GoodsReceiptId]) WHERE ([ContainerLineId] IS NOT NULL);
 
 
 GO
@@ -81,8 +80,9 @@ CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_Item]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_SupplierItem]
-    ON [purchase].[GoodsReceiptLines]([SupplierId] ASC, [ItemId] ASC);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_InvoiceLine]
+    ON [purchase].[GoodsReceiptLines]([InvoiceLineId] ASC)
+    INCLUDE([GoodsReceiptId], [QuantityBase]) WHERE ([InvoiceLineId] IS NOT NULL);
 
 
 GO

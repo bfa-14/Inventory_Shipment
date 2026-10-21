@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. usp_Item_SetNotes */
+/* ================================================================== 3. usp_Item_SetNotes */
 
 CREATE   PROCEDURE inventory.usp_Item_SetNotes
     @Id     INT,
@@ -26,3 +26,6 @@ BEGIN
         UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
     WHERE Id = @Id;
 END
+
+GO
+

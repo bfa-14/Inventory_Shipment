@@ -1,4 +1,4 @@
-﻿CREATE TABLE [inventory].[Items] (
+CREATE TABLE [inventory].[Items] (
     [Id]                 INT             IDENTITY (1, 1) NOT NULL,
     [ItemCode]           NVARCHAR (30)   NOT NULL,
     [ItemName]           NVARCHAR (200)  NOT NULL,
@@ -54,12 +54,10 @@
 );
 
 
-
-
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Items_Warehouse]
-    ON [inventory].[Items]([DefaultWarehouseId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Items_Family]
+    ON [inventory].[Items]([ItemFamilyId] ASC);
 
 
 GO
@@ -76,8 +74,8 @@ CREATE NONCLUSTERED INDEX [IX_Items_ItemName]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Items_Family]
-    ON [inventory].[Items]([ItemFamilyId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Items_Warehouse]
+    ON [inventory].[Items]([DefaultWarehouseId] ASC);
 
 
 GO

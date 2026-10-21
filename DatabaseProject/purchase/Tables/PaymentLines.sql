@@ -31,14 +31,14 @@ CREATE TABLE [purchase].[PaymentLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PaymentLines_Method]
-    ON [purchase].[PaymentLines]([PaymentMethodId] ASC);
+CREATE NONCLUSTERED INDEX [IX_PaymentLines_Account]
+    ON [purchase].[PaymentLines]([CashBankAccountId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PaymentLines_Account]
-    ON [purchase].[PaymentLines]([CashBankAccountId] ASC);
+CREATE NONCLUSTERED INDEX [IX_PaymentLines_Method]
+    ON [purchase].[PaymentLines]([PaymentMethodId] ASC);
 
 
 GO
