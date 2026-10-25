@@ -164,11 +164,12 @@ warehouses changes no cost (the owner's decision 3 of the transfer feedback).
 
 - **Where the goods are.** A dispatch (TRD) writes, per line, the source −q and the On the way warehouse of the
   destination branch +q (reason `TRF_OUT`); a transfer receipt (TRR) writes the On the way warehouse −q and the
-  destination +q (`TRF_IN`). Each posting nets to zero for the company. Family `Transfer`, never `Sales` (Shortages
-  read that family as sales).
+  destination +q (`TRF_IN`). Each posting nets to zero for the company, but a receipt's write-off (Losses, below).
+  Family `Transfer`, never `Sales` (Shortages read that family as sales).
 - **The frozen average, for information.** Each dispatch line and its two rows carry `Items.AverageCost` at the
   dispatch (`inventory.TransferPostingLines.UnitCostBase`; the posting's `ValueBase` = Σ pieces × it); a receipt line
-  and its rows carry its dispatch line's. Nothing reads them as a cost: no transfer calls `usp_Item_ApplyReceipts`, and
+  and its two rows carry its dispatch line's (its write-off row the average at the receipt, below). Nothing reads them
+  as a cost: no transfer calls `usp_Item_ApplyReceipts`, and
   the average, last and FOB cost never move. The values show only with `inventory.valuation.view`.
 - **The replay** (`inventory.usp_Item_RebuildCosts`, re-created from script 79's body). An incoming leg of a transfer
   (family `Transfer`, quantity above 0: the On the way warehouse at a dispatch, the destination at a receipt) enters
@@ -194,8 +195,9 @@ warehouses changes no cost (the owner's decision 3 of the transfer feedback).
 - **What transfers leave alone.** The goods receipt true-up, the late container charge and the LCA of an old invoice
   already split on the company's stock (script 89), so goods moved out of the receiving warehouse still count as in
   stock. The cost adjustment rows keep the receiving warehouse and branch: Sales Profit's COGS adjustments stay in the
-  branch that received the goods (no per-piece tracking follows them). Stock Valuation's company total does not move;
-  by warehouse, the On the way warehouses hold the goods on the road at the average, in the destination branch.
+  branch that received the goods (no per-piece tracking follows them). Stock Valuation's company total does not move
+  but by a write-off; by warehouse, the On the way warehouses hold the goods on the road at the average, in the
+  destination branch.
 
 Example: 84 pcs of an item in LKS-01 at an average of 985.00. Dispatch 40 to LUB-01: LKS-01 −40 and OTW-BR-002 +40,
 both at 985.00; the company still holds 84 at 985.00 (82,740.00). A goods receipt of 10 at 1,000.00 then brings the

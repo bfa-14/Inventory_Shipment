@@ -80,8 +80,8 @@ orders and Expected Monthly Sales corrected (glossary, 3.3, 3.7, 4.5, 4.7, 4.12,
 between two warehouses of any branch without changing its cost - a dispatch (TRD) puts it on the destination branch's
 hidden On the way warehouse, a transfer receipt (TRR) into the destination - with partial postings, losses ("Nothing
 more will arrive"), "Nothing more will be sent", Cancel order, Reverse (receipt first), Dispatch and receive, returns,
-Late, and an approval switch on the TRO type with its emails; Shortages count "Transfers in" (glossary, 1.4, 3.1,
-3.3, 3.7, 3.8, 3.10, 4.1, 4.13, 5.2, 5.4, 6.1).*
+Late, and an approval switch on the TRO type with its emails; Shortages count "Transfers in" (glossary, 1.4, 1.6,
+3.1, 3.3, 3.7, 3.8, 3.10, 4.1, 4.11, 4.13, 5.1, 5.2, 5.4, 6.1, 8.2; `docs/notes/costing-rules.md`, "Transfers").*
 
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
@@ -170,8 +170,8 @@ after them it charges **demurrage**.
   of the tree).
 - **Each branch also has one hidden "On the way" warehouse** (script 90, `OTW-BR-002` "On the way to BR-002
   (transfers)"): the goods a transfer order dispatched to one of the branch's warehouses sit there until they are
-  received. It is made and kept by the system, never a line's warehouse, and offered only by Stock Valuation's filter
-  (4.13).
+  received or written off. It is made and kept by the system, never a line's warehouse, and offered only by Stock
+  Valuation's filter (4.13).
 
 ### 1.5 Currencies
 - **Base currency: USD.** A USD document shows "Exchange Rate 1 (base currency)".
@@ -186,8 +186,8 @@ after them it charges **demurrage**.
 | Role | What it does (as designed) |
 |---|---|
 | **System administrator** (system role, `IsSystem = 1`; user "Admin", shown "System Administrator") | Holds every permission. Sets up master data, users, roles, settings (email, purchase approval), document types. |
-| **Owner** | Approver candidate. Receives a copy of approved purchase orders (setting). **No user has this role in Bilal's local database yet.** |
-| **Manager** | By default: view, create and confirm containers; view, create and post goods receipts (it offloaded containers before them); manage movements and documents; view and create container charges. Approver candidate. Test user `manager1` ("Manager One"). |
+| **Owner** | Approver candidate. Receives a copy of approved purchase orders (setting). Views and approves transfer orders by default (script 90). **No user has this role in Bilal's local database yet.** |
+| **Manager** | By default: view, create and confirm containers; view, create and post goods receipts (it offloaded containers before them); manage movements and documents; view and create container charges; view and approve transfer orders (script 90). Approver candidate. Test user `manager1` ("Manager One"). |
 | Purchasing / buyer | Creates purchase orders and sends them for approval. Test user `buyer1`. The real role name is **(unsure)**. |
 | Logistics | Plans containers (Auto-plan), types container and seal numbers from the forwarder's list, starts shipments, records movements (completing the Delivery drafts the goods receipts), enters charges, attaches documents (B/L, packing list...). |
 | Accounting | Posts supplier invoices (payable; they adjust the cost of goods already received) and charges, landed cost adjustments; follows costs, stock valuation, sales profit. |
@@ -289,7 +289,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Nothing more will be sent** | "Nothing more will be sent…" on a released transfer order that has dispatched something (a reason): what is left to dispatch becomes **Not sent**, Ordered stays as it is, goods on the way can still be received; the order is shown Closed once they have. A stamp, not a status; no reopen. The transfer's "Nothing more will come". |
 | **Nothing more will arrive / Lost** | On a transfer receipt line that receives less than is on the way: "Still coming" (the rest stays on the way) or "Nothing more will arrive" with a reason (Damaged, Missing / stolen, Wrongly counted at dispatch, Other + a note). The rest is **Lost**: written off from the On the way warehouse at the item's average cost (stock reason `TRF_LOSS`), the only part of a transfer that changes the company's stock. An orange "{n} lost" badge on the order. |
 | **Reverse (a transfer posting)** | "Reverse…" on a dispatch or a transfer receipt: undoes the whole posting in place, with a reason and a "Reversal date" - opposite rows (`IsReversal = 1`) under its own number, status Reversed, "Reversed on {date} by {name}: {reason}". The receipt first: a dispatch whose goods were received or written off waits for that receipt's reversal (62013). No partial reversal. |
-| **Return (of a transfer order)** | "Create return…": a new draft transfer order the other way (From = the original's To), "Return of TRO-…", linked both ways, proposing what was received less what earlier returns already order. The original never changes. |
+| **Return (of a transfer order)** | "Create return…": a new draft transfer order the other way (From = the original's To), "Return of TRO-…", linked both ways, proposing what was received less what its returns not cancelled (drafts included) already order. The original never changes. |
 | **Needs approval before release** | The TRO type's switch in Configuration › Document Types (script 90, default off). On: a transfer order is sent for approval and released when a user holding Approve Transfer Orders approves it (an approver may Approve & release a draft at once). Off: Release releases it. |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
@@ -538,7 +538,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     | Code | Sort | What it allows | Granted once, when first created, to the roles holding |
     |---|---|---|---|
     | `inventory.transfers.view` | 855 | see transfer orders, their dispatches and receipts | `inventory.stockin.view` or `inventory.stockout.view`; and the roles named Manager and Owner |
-    | `inventory.transfers.create` | 860 | drafts (lines, scan, import), their documents, returns | `inventory.stockout.create` |
+    | `inventory.transfers.create` | 860 | drafts (lines, scan, import), Save details once released, the orders' documents, returns | `inventory.stockout.create` |
     | `inventory.transfers.delete` | 862 | delete drafts | `inventory.stockout.delete` |
     | `inventory.transfers.release` | 870 | Release, Send for approval, Withdraw, Back to draft | `inventory.stockout.post` |
     | `inventory.transfers.approve` | 872 | Approve, Reject, Approve & release (when the TRO type asks for approval) | the roles named Manager and Owner |
@@ -551,7 +551,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     The system role gets all ten. A role unticked afterwards is never re-granted. Dispatch and receive needs dispatch
     and receive. The values on a transfer (on the way, a posting's value, a loss's value, the frozen costs) need
     `inventory.valuation.view`: the server sends them empty to others. Adding lines also needs View Items
-    (`inventory.items.view`) for the item search, as on Inventory In / Out.
+    (`inventory.items.view`) for the item search and the item's units, as on Inventory In / Out.
 
 ### 3.9 End-to-end flows
 
@@ -658,7 +658,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Transfers** (script 90), per branch, the prefix TRO- / TRD- / TRR-, the length and the year segment Inventory Out's
   when the types were made: **[Implemented – script 90]**
   - the order `TRO-BR-003-000012` **at its first save**, by From's branch then (it keeps that number when From changes
-    on the draft); when the TRO type's Number on post is turned on, at Release instead ("Assigned on release");
+    on the draft); when the TRO type's Number on post is turned on, at Release (or Approve) instead ("Assigned on
+    release");
   - a dispatch `TRD-BR-003-000004` **at posting**, by the source branch;
   - a transfer receipt `TRR-BR-002-000007` **at posting**, by the destination branch, as a goods receipt is numbered by
     the branch that receives;
@@ -1721,9 +1722,11 @@ are pcs unless said; only posted, not reversed dispatches and receipts count.
     else qualifies - the requester left out: "Approval needed: transfer order {No} ({From} → {To})", the lines and
     "Open the transfer order". Approve tells the requester "Approved: …" ("It is released: the goods can be
     dispatched."), Reject "Rejected: …" with the reason ("It is a draft again: change it and send it for approval
-    again."). They are queued only when Settings › Email has an "Address of the application" (else the action is done
-    and says "The approvers were not emailed: the address of the application is not set in Settings › Email."; a queue
-    failure: "The approvers could not be emailed: see the API log."), and leave only while "Send emails" is on.
+    again."); a requester who decided themselves is not emailed. They are queued only when there is an address of the
+    application (Settings › Email "Address of the application", else `App:PublicBaseUrl`, as in 4.4; without either the
+    action is done and says "The approvers were not emailed: the address of the application is not set in Settings ›
+    Email."; a queue failure: "The approvers could not be emailed: see the API log."), and leave only while "Send
+    emails" is on.
 
 **Stock and cost**
 29. **One On the way warehouse per branch** (`OTW-{branch code}`, "On the way to {branch} (transfers)"; another free code
@@ -1743,10 +1746,10 @@ are pcs unless said; only posted, not reversed dispatches and receipts count.
 31. **The ledger:** family `Transfer`, types TRD / TRR, the posting's id and number; reasons TRF_OUT (dispatch legs),
     TRF_IN (receipt legs), TRF_LOSS (losses; inactive, so Inventory Out never offers it). Never family Sales, which
     Shortages read as sales. An Inventory In / Out cancel never touches a transfer row.
-32. **Elsewhere:** Stock Valuation's company total never changes during a transfer, and its filter offers
-    "OTW-BR-002 - On the way to BR-002 (transfers)"; the item card's stock per warehouse lists the On the way warehouse and its
-    statement the TRD / TRR rows ("LKS-01 → LUB-01", linked to the order); sales and Inventory Out cannot use goods on
-    the way; the Dashboard of the destination branch counts them in its inventory value ("Includes goods on the way to
+32. **Elsewhere:** Stock Valuation's company total never changes during a transfer, but by a write-off, and its
+    filter offers "OTW-BR-002 - On the way to BR-002 (transfers)"; the item card's stock per warehouse lists the On the
+    way warehouse and its statement the TRD / TRR rows ("LKS-01 → LUB-01", linked to the order); sales and Inventory
+    Out cannot use goods on the way; the Dashboard of the destination branch counts them in its inventory value ("Includes goods on the way to
     this branch's warehouses (transfer orders)."; the source branch's drops at the dispatch) and its "Stock value by
     warehouse" shows an On the way slice; Inventory In / Out show a hint under the reasons Transfer In / Transfer Out:
     "Moving stock between your own warehouses? Inventory › Transfer Orders moves it without changing its cost and
@@ -1770,15 +1773,15 @@ are pcs unless said; only posted, not reversed dispatches and receipts count.
   receipt, reversed or not ("{No} has dispatches ({list}): an order that has moved goods cannot go back to draft. Use
   Nothing more will be sent… or Cancel order… instead."): a draft's Save replaces its lines, and a posting's lines must
   never lose their order line.
-- **Approval** (decision 18 recommended Release behind a permission only, for now): the owner asked for approval now;
-  built as the TRO type's switch, off by default, so nothing changes until someone turns it on.
-- **The On the way warehouse is never deactivated** (rule 32: not while it holds stock): inactive, it would only break
-  the next dispatch to its branch.
-- **The cost replay** (rule 35) needs no restart at the frozen cost when the stock reaches zero: an incoming leg with no
-  cost leaves the average where it is, whatever the running balance.
-- **Purchase returns keep their stock refusal** (rule 39 named them too): only the goods receipt and Inventory In
-  cancels name the transfer; the purchase posting (orders, invoices and returns in one procedure) was not re-created
-  for one sentence. Cancel Offload, the sales return cancel and the old invoice cancel keep theirs.
+- **Approval** (feedback decision 18 recommended Release behind a permission only, for now): the owner asked for
+  approval now; built as the TRO type's switch, off by default, so nothing changes until someone turns it on.
+- **The On the way warehouse is never deactivated** (feedback rule 32: not while it holds stock): inactive, it would
+  only break the next dispatch to its branch.
+- **The cost replay** (feedback rule 35) needs no restart at the frozen cost when the stock reaches zero: an incoming
+  leg with no cost leaves the average where it is, whatever the running balance.
+- **Purchase returns keep their stock refusal** (feedback rule 39 named them too): only the goods receipt and
+  Inventory In cancels name the transfer; the purchase posting (orders, invoices and returns in one procedure) was not
+  re-created for one sentence. Cancel Offload, the sales return cancel and the old invoice cancel keep theirs.
 - **The approvers emailed** hold Approve and View Transfer Orders and are outside the Admin role first: Admin holds
   every permission and would get every request.
 
@@ -1807,10 +1810,11 @@ document types gains TRO, TRD and TRR.
 | 62015 (new) | not an approver | 403 |
 | 52009 (new) | an On the way warehouse is managed by the system | 409 |
 
-Every refusal and every disabled button's reason comes from one place, `inventory.fn_TransferOrder_Blocks` (and
-`fn_TransferPosting_ReverseBlock` for a posting), as the movement's Cancel (script 83). The API also refuses a row
-version that cannot be one ("The row version is not valid. Reload the page and try again.") and an empty line of a
-request ("Line {n} of the request is empty."), 400.
+What an action is refused for in the order's present state, and every disabled button's reason, comes from one place,
+`inventory.fn_TransferOrder_Blocks` (and `fn_TransferPosting_ReverseBlock` for a posting), as the movement's Cancel
+(script 83); what a dialog sends (dates, pieces, loss reasons, a reason) is checked by the action's own procedure
+after it. The API also refuses a row version that cannot be one ("The row version is not valid. Reload the page and
+try again.") and an empty line of a request ("Line {n} of the request is empty."), 400.
 
 ---
 
@@ -1836,7 +1840,7 @@ masterdata-branches, 05 masterdata-warehouses, 06 mantine-migration, 07 dev-star
 masterdata-parties, 16 frontend-enhancements-1, 17 sales-invoice-import, 18 inventory-stock-in, 19
 inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventory-docs, 23 document-engine, 24
 sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
-28–31 have no file there; prompts 32–46 were given outside the repositories (5.2 and section 4 say what they asked).
+28–31 have no file there; prompts 32–47 were given outside the repositories (5.2 and section 4 say what they asked).
 
 ### 5.2 Prompts 32–47
 
@@ -1936,7 +1940,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `87_Item_Note_Link.sql` | Item Definition: a Note (several lines, 2,000 characters) and a Link (an http/https address opened in a new tab) on the item: columns `inventory.Items.Note` / `Link`, `usp_Item_Get` re-created from 61 with both, new `inventory.usp_Item_SetNotes` (called after create / update, like `usp_Item_SetPurchasing`; refuses a link that is not http/https or has a space, 56000). The item page also gets a sticky header with Previous / Next through the Items list as filtered |
 | `88_Logistics_ChargeOneLine.sql` | A charge on a container of one line takes it whole: `logistics.usp_ContainerCharge_Allocate` re-created from 27 - the only line with pieces gets the whole charge whatever the method (no price, weight or volume needed); several lines all at price 0 by value are refused naming each line and the source of its price (order, draft or posted invoice, goods receipt); every refusal names the container (70013 as before). The charge import warns about a missing weight or volume only on a container of several lines |
 | `89_Fixes_CostsCancelsShortageDocumentTypes.sql` | Fixes: `logistics.usp_ContainerCharge_ApplyCost` (from 27) and `purchase.usp_LandedCostAdjustment_Post` (from 79) split a late charge on the company's stock, per item, as GRNCOST (a cancel never takes more out of stock than its posting put in); `inventory.usp_StockDocument_Cancel` (from 15) reverses only its own type and, like `sales.usp_SalesDocument_Cancel` (from 84), replays its items under the matching lock (the items of documents cancelled before replayed once, `inventory.OneTimeSteps`); `inventory.usp_ShortageDocument_CreatePurchaseOrder` (from 22): a plan for a parent warehouse puts each line in a leaf of its tree, in one transaction (66000 when there is none); the five per-start seeds of Document Types narrowed to types nobody saved; script 19's per-start backfill of item costs no longer counts a posting that was reversed (edited in place, like the seeds); the two cancels give way in a deadlock (`DEADLOCK_PRIORITY LOW`: the API runs them again, a posting has no retry) |
-| `90_Inventory_TransferOrders.sql` | Transfer orders, dispatch and receipt, with approval (prompt 47): new tables `inventory.TransferOrders`, `TransferOrderLines`, `TransferPostings`, `TransferPostingLines`, `TransferOrderAudit`, `TransferOrderFiles`; `masterdata.Warehouses.IsTransit` and one On the way warehouse per branch (`masterdata.usp_Warehouse_EnsureTransit`, run for every branch at each start); document types TRO, TRD, TRR and `inventory.DocumentTypes.NeedsApproval`; stock reason TRF_LOSS (inactive); `inventory.fn_TransferPosition`, `fn_TransferOrder_State` (the shown status, Late), `fn_TransferOrder_Blocks` (every refusal and disabled reason), `fn_TransferPosting_ReverseBlock`, `fn_Transfer_MovedOutNote`; the procedures of the order, its approval (`usp_TransferOrder_Approvers`), dispatch, receipt, Dispatch and receive, Nothing more will be sent, cancel, reverse, ETA, return and files; ten permissions `inventory.transfers.*` (855-890) granted once; re-created: the warehouse, branch and item procedures (the On the way rules), `masterdata.fn_Warehouse_IsLeaf` / `_IsUsed`, `inventory.usp_DocumentType_List` / `_Update`, `usp_Item_RebuildCosts` (incoming transfer legs at the running average), `usp_Item_StockStatement`, `fn_Shortage_Live` and the three shortage procedures (Transfers in; `ShortageDocumentLines.TransfersInBase`, its four formula columns re-added), `purchase.fn_GoodsReceipt_CancelCheck` and `inventory.usp_StockDocument_Cancel` (the refusal names the transfer). Script 19's per-start backfill of item costs no longer counts transfer rows (edited in place, as 89 did) |
+| `90_Inventory_TransferOrders.sql` | Transfer orders, dispatch and receipt, with approval (prompt 47): new tables `inventory.TransferOrders`, `TransferOrderLines`, `TransferPostings`, `TransferPostingLines`, `TransferOrderAudit`, `TransferOrderFiles`; `masterdata.Warehouses.IsTransit` and one On the way warehouse per branch (`masterdata.usp_Warehouse_EnsureTransit`, run at each start for every branch that has none, and by a new branch); document types TRO, TRD, TRR and `inventory.DocumentTypes.NeedsApproval`; stock reason TRF_LOSS (inactive); `inventory.fn_TransferPosition`, `fn_TransferOrder_State` (the shown status, Late), `fn_TransferOrder_Blocks` (an action's refusal in the order's state, every disabled reason), `fn_TransferPosting_ReverseBlock`, `fn_Transfer_MovedOutNote`; the procedures of the order, its approval (`usp_TransferOrder_Approvers`), dispatch, receipt, Dispatch and receive, Nothing more will be sent, cancel, reverse, ETA, return and files; ten permissions `inventory.transfers.*` (855-890) granted once; re-created: the warehouse, branch and item procedures (the On the way rules), `masterdata.fn_Warehouse_IsLeaf` / `_IsUsed`, `inventory.usp_DocumentType_List` / `_Update`, `usp_Item_RebuildCosts` (incoming transfer legs at the running average), `usp_Item_StockStatement`, `fn_Shortage_Live` and the three shortage procedures (Transfers in; `ShortageDocumentLines.TransfersInBase`, its four formula columns re-added), `purchase.fn_GoodsReceipt_CancelCheck` and `inventory.usp_StockDocument_Cancel` (the refusal names the transfer). Script 19's per-start backfill of item costs no longer counts transfer rows (edited in place, as 89 did) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -1959,7 +1963,9 @@ Every written prompt (32–47) is built, and so is every script up to the last o
 1. **Release the scripts after 72 to production** (production runs up to 72): on testing first (the Deploy to
    server button, or `sudo ./update.sh`; `copy-production-to-testing.sh` to rehearse on production's data), then a
    pull request `main` → `production` in both repositories, and the button with production. Script 77 changes data
-   once (closed orders back to approved); `update.sh` backs the database up first.
+   once (closed orders back to approved); script 90 adds an On the way warehouse to every branch, the TRO / TRD / TRR
+   document types and the ten transfer permissions with their one-time grants (3.8); `update.sh` backs the database
+   up first.
 2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
 3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
    `enable-github-deploy.sh` on the server and its secrets in both repositories.
@@ -2364,7 +2370,7 @@ every step that did not behave as described.
 - **Files delivered outside the repos:**
   - `Containers_User_Guide.docx`;
   - `Movement_Containers_Import_Template.xlsx` (now in the Web project's `public/templates/`);
-  - prompt files 32–46: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
+  - prompt files 32–47: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
     section 4.
 
 ### 8.3 Security rules to keep
