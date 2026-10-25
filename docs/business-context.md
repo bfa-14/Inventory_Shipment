@@ -83,6 +83,16 @@ more will arrive"), "Nothing more will be sent", Cancel order, Reverse (receipt 
 Late, and an approval switch on the TRO type with its emails; Shortages count "Transfers in" (glossary, 1.4, 1.6,
 3.1, 3.3, 3.7, 3.8, 3.10, 4.1, 4.11, 4.13, 5.1, 5.2, 5.4, 6.1, 8.2; `docs/notes/costing-rules.md`, "Transfers").*
 
+*Updated on 25 October 2026 for **stock levels per warehouse and Fill to Max** (script 91, prompt 48): each warehouse
+keeps its own Min / Max per item - on Item Definition's "Stock levels per warehouse" card, on Inventory › Stock Levels
+and by an Excel import and export - and stands at a **Projected** stock (on hand + what released transfer orders bring −
+what they take); a draft transfer order is topped up to its destination's Max with "Fill to Max…" and "Add items below
+Min…", or made from ticked rows of Stock Levels, and its lines show Min, Max and Projected at {To}, red while the
+destination stays below Min after the order; Item Definition's Minimum / Maximum Quantity stay the company's (the view
+"Company (Item Definition)", which the Dashboard's "Items below their minimum" now opens, beside a new line "Warehouse
+levels below Min"); a warehouse with levels cannot become a parent, and deleting an item or a warehouse takes its levels
+(glossary, 1.4, 3.1, 3.3, 3.8, 4.9, 4.14, 5.1, 5.2, 5.4, 6.1, 8.2).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -172,6 +182,9 @@ after them it charges **demurrage**.
   (transfers)"): the goods a transfer order dispatched to one of the branch's warehouses sit there until they are
   received or written off. It is made and kept by the system, never a line's warehouse, and offered only by Stock
   Valuation's filter (4.13).
+- **Each warehouse at the bottom of the tree may keep its own Min / Max per item** (script 91, "stock levels per
+  warehouse"; never an On the way warehouse): what a transfer order's Fill to Max tops it up to. A warehouse with stock
+  levels counts as used, so it cannot become a parent either (4.14).
 
 ### 1.5 Currencies
 - **Base currency: USD.** A USD document shows "Exchange Rate 1 (base currency)".
@@ -291,6 +304,11 @@ per user in Settings › Purchase approval (see 4.3).
 | **Reverse (a transfer posting)** | "Reverse…" on a dispatch or a transfer receipt: undoes the whole posting in place, with a reason and a "Reversal date" - opposite rows (`IsReversal = 1`) under its own number, status Reversed, "Reversed on {date} by {name}: {reason}". The receipt first: a dispatch whose goods were received or written off waits for that receipt's reversal (62013). No partial reversal. |
 | **Return (of a transfer order)** | "Create return…": a new draft transfer order the other way (From = the original's To), "Return of TRO-…", linked both ways, proposing what was received less what its returns not cancelled (drafts included) already order. The original never changes. |
 | **Needs approval before release** | The TRO type's switch in Configuration › Document Types (script 90, default off). On: a transfer order is sent for approval and released when a user holding Approve Transfer Orders approves it (an approver may Approve & release a draft at once). Off: Release releases it. |
+| **Minimum / Maximum Quantity (company)** | Item Definition's Minimum Quantity and Maximum Quantity (Inventory Parameters, `inventory.Items.MinQuantity` / `MaxQuantity`): how much the **whole company** should hold of the item, never where. The Dashboard's "Items below their minimum" counts the active items whose stock in every warehouse of the branch (or of the company), inactive and On the way warehouses included, is below their Minimum Quantity; Inventory › Stock Levels shows the same figure in its view "Company (Item Definition)" (script 91). Not a warehouse's Min: see Stock level. |
+| **Stock level (per warehouse)** | Script 91 (`inventory.ItemWarehouseLevels`): an item's **Min** (required, a whole number of pcs, 0 or more) and **Max** (optional, not below Min; empty: Fill to Max fills up to Min) in ONE warehouse at the bottom of the tree, never an On the way warehouse; each at most 1,000,000,000 pcs. Set on Item Definition's "Stock levels per warehouse" card, on Inventory › Stock Levels or from an Excel file; every change is recorded (Added / Changed / Removed, old → new, who, when, from where, the file). Its status, the first that applies: **Below Min** (red: Projected below Min), **Below Min, covered** (orange: on hand below Min, Projected at Min or more), **Above Max** (blue: Projected above Max), **OK** (green); "No level" without one (4.14). |
+| **Projected (stock levels)** | Where a warehouse stands for an item once the released transfer orders have moved: **On hand + On the way in + To come in − To go out**. On the way in = dispatched to it and not yet received or written off; To come in = still to dispatch to it; To go out = still to dispatch from it (promised, still on the shelf). Drafts, orders waiting for approval and purchases still to come are not counted; it may be below 0. **To reach Max** = (Max, else Min) − Projected, when Projected is below Min. On a transfer order's lines, "Projected at {To}" is the destination's AFTER the order (4.14). |
+| **Fill to Max** | "Fill to Max…" on a saved draft transfer order (script 91, Create Transfer Orders): for each item of the order the server SETS the item's first line so that the destination reaches its Max (its Min when it has no Max): Need = (Max, else Min) − Projected at To without this order − what the item's other lines order, rounded UP to whole units of the line's unit, capped at the whole units From has available for the line. Items without a Min at To, inactive items, items already at or above Min, items their other lines cover and items with nothing available at From are left as they are. A preview first (nothing written); a second run changes nothing (4.14). |
+| **Add items below Min** | "Add items below Min…" on a saved draft transfer order: a drawer of the items with a level at the destination (by default only those below Min), with the server's proposal per unit ("2 BOX = 24 pcs"), the ones below Min that are not on the order and can be filled ticked at first; the ticked items become new lines at the end, worked out as Fill to Max does. An item already on the order is left to Fill to Max (4.14). |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
 | **Payment type** | On sales invoices (Ali: "Payment Type and auto…"), probably cash / credit **(unsure)**. |
@@ -313,7 +331,8 @@ per user in Settings › Purchase approval (see 4.3).
 - **Home** (the first landing page, renamed when Ali's new Dashboard came) and **Dashboard** (Ali, script 68: key
   figures, "needs attention" lists and charts per branch and period; each part shown only to who may open its screen)
 - **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, BIVAC Out, **Transfer Orders** (script 90:
-  with a red count of the orders waiting for approval, shown to approvers), Stock Valuation, Shortages
+  with a red count of the orders waiting for approval, shown to approvers), **Stock Levels** (script 91: each
+  warehouse's Min / Max and where it stands, and the company view; View Stock Levels), Stock Valuation, Shortages
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
@@ -327,7 +346,8 @@ per user in Settings › Purchase approval (see 4.3).
 Web routes seen: `/purchase/invoices/:id`, `/purchase/goods-receipts`, `/purchase/goods-receipts/:id` (and `/new`,
 `/:id/print`), `/logistics/movements/new`, `/logistics/movements/:id`, `/setup/master-data/container-types`,
 `/configuration/email`, `/purchase-approval/:token` (public), `/inventory/transfers`, `/inventory/transfers/:id` (and
-`/new`, `/:id/dispatches/:postingId/print`, the dispatch note).
+`/new`, `/:id/dispatches/:postingId/print`, the dispatch note), `/inventory/stock-levels` (a link may preset
+`view=company`, `status`, `branchId`, `warehouseId`, `itemId`, read once when the page opens).
 
 ### 3.2 Master Data
 Reference lists used everywhere:
@@ -346,6 +366,8 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 - **Item Definition:** code, name, family, brand, units with packing formulas (base unit PC; packaging units; the
   **Container unit**), weight (kg) and volume (CBM), which charge allocation by weight or volume needs. The item also
   shows average cost, last cost and FOB cost (last and FOB from the latest goods receipt, after its cost adjustments).
+  Its Inventory Parameters hold the company's Minimum / Maximum Quantity (glossary); since script 91 the card "Stock
+  levels per warehouse" below them holds each warehouse's own Min / Max (4.14).
 - **Price Lists:** selling prices **(details unsure)**. Document types carry `DefaultPricing` and `PriceEditable`,
   which suggests each document type says where its default price comes from and whether it can be changed
   **(check the code)**.
@@ -357,6 +379,12 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   (TRR) puts it into To; partial postings, losses, Nothing more will be sent, Cancel order, Reverse, Dispatch and
   receive, returns, Late and an optional approval (see 4.13). It replaces an Inventory Out in one warehouse and an
   Inventory In in the other, which moved the average cost twice and showed nothing while the truck was on its way.
+- **Stock Levels** (script 91): each warehouse's own Min / Max per item and where the warehouse stands for it (on hand,
+  what released transfer orders bring and take, Projected, the status), kept by hand - on the page or on Item
+  Definition's card - or from an Excel file, which an export of the page round-trips. A second view, "Company (Item
+  Definition)", is the Dashboard's "Items below their minimum". Ticked rows of one warehouse become a draft transfer
+  order, and on a draft "Fill to Max…" and "Add items below Min…" top its destination up (see 4.14). Levels reserve
+  nothing and move no stock.
 - **Stock Valuation:** stock × average cost per item and warehouse; the export calls it "Total Cost". Its warehouse
   filter also offers the On the way warehouses (script 90).
 - **Shortages:** see the glossary.
@@ -552,6 +580,16 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     and receive. The values on a transfer (on the way, a posting's value, a loss's value, the frozen costs) need
     `inventory.valuation.view`: the server sends them empty to others. Adding lines also needs View Items
     (`inventory.items.view`) for the item search and the item's units, as on Inventory In / Out.
+  - Stock levels per warehouse (script 91, module Inventory): `inventory.stocklevels.view` (432, "View Stock Levels":
+    Inventory › Stock Levels and Item Definition's "Stock levels per warehouse" card) and `inventory.stocklevels.edit`
+    (434, "Edit Stock Levels": set, change and remove levels, by hand or from an Excel file). Granted once, when first
+    created, to the system role and to the roles holding View Items (`inventory.items.view`) / Edit Items
+    (`inventory.items.edit`) - on a new database: Admin both, Manager View; a role unticked afterwards is never
+    re-granted. The levels are kept by the people whose roles the owner gives Edit Stock Levels (Role Permissions). Fill
+    to Max and Add items below Min come with Create Transfer Orders (`inventory.transfers.create`), without View Stock
+    Levels: their dialog and drawer show that user the destination's levels. "Create transfer order…" on Stock Levels
+    needs Create Transfer Orders and View Stock Levels. The Dashboard's "Warehouse levels below Min" needs View Items
+    and View Stock Levels: the server sends it empty to others and does not work it out for them.
 
 ### 3.9 End-to-end flows
 
@@ -1326,7 +1364,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Customer receipts** with payment methods and cash / bank accounts. **[Ali – details unknown]**
 - **Warehouses** can stand under another warehouse. **[Ali]**
   - **Lines take a warehouse at the bottom of the tree, of any branch** (Ali, scripts 69–70; goods receipts too,
-    script 72; see 1.4). A warehouse already used cannot become a parent (script 71; goods receipts count, 72).
+    script 72; see 1.4). A warehouse already used cannot become a parent (script 71; goods receipts count, 72;
+    transfer orders, 90; stock levels, 91, with their own sentence: 4.14).
     **[Implemented]**
 - **Document import:** one document whatever the warehouse; no Expiry Date in the import template. **[Ali]**
   - On Sales Invoice and Inventory In, a file naming several warehouses can instead become **one document per
@@ -1816,6 +1855,258 @@ What an action is refused for in the order's present state, and every disabled b
 after it. The API also refuses a row version that cannot be one ("The row version is not valid. Reload the page and
 try again.") and an empty line of a request ("Line {n} of the request is empty."), 400.
 
+### 4.14 Stock levels and Fill to Max **[Implemented – script 91, prompt 48]**
+
+Item Definition's Minimum / Maximum Quantity say how much the whole company should hold of an item, never where. Each
+warehouse now keeps its own Min / Max per item, and a draft transfer order tops its destination up to them, worked out
+by the server. Both of the feedback's decisions are built as its option (a) - the levels kept by the people given Edit
+Stock Levels; Fill to Max on the order's lines plus a drawer of the items below Min - with three refinements ("Changed
+from the feedback", below). Quantities are pcs (the item's base unit).
+
+**The levels**
+1. **A stock level** is an item's **Min** (required, a whole number, 0 or more) and **Max** (optional, not below Min) in
+   ONE warehouse, each at most 1,000,000,000 pcs. With no Max, Fill to Max fills up to Min. Rounded up to whole units of
+   a line's unit, a fill may pass Max by less than one unit (a box).
+2. **Which warehouses:** at the bottom of the tree, of any branch, never an On the way warehouse. An inactive warehouse
+   takes no new or changed level, but its levels may be removed; Stock Levels lists them only with "Inactive warehouses
+   too", the item's card always. Refused (56000), the first row that fails by warehouse code: "A warehouse was not
+   found." / "{code} is an On the way warehouse: it holds goods travelling between warehouses and cannot have stock
+   levels." / "Warehouse {code} has warehouses under it. Choose one of those: stock is kept only in the warehouses at
+   the bottom of the tree." / "Warehouse {code} is inactive: activate it to change its levels." / "{code}: Min must be a
+   whole number, 0 or more." / "{code}: Min and Max can be at most 1,000,000,000 pcs." / "{code}: Max cannot be less
+   than Min."
+3. **One dialog sets them**, for one item in one or more warehouses at once ("Set levels…" on the item's card, "Add
+   levels…" on Stock Levels with the item first, "Set level…" / "Add level…" on a row): Warehouses (active, at the
+   bottom of the tree, of every branch, never On the way; "Each gets the same Min and Max."), "Min (pcs)", "Max (pcs)"
+   ("No maximum"). It says first which level it replaces ("LUB-01 already has Min 10 / Max 40: it is replaced.") and
+   saves all of them or none: "2 stock levels saved for TVS-APACHE-160." "Remove level" asks "Remove the Min / Max of
+   {item} at {code}? Fill to Max then leaves this item alone there." and answers "Stock level removed."
+4. **Two users at once:** a level changed, removed or added by someone else since the page read it is refused (56004,
+   409): "The stock level of {item} at {code} was changed by another user. Reload and try again." / "… was removed by
+   another user. …" / "… was added by another user. …" (a level saved as new where someone has just set one with other
+   figures; the same Min and Max go through); removing one already removed: "This stock level no longer exists. Reload
+   the page." (56006, 404). The page or the dialog then reads the levels again.
+5. **Every change is recorded:** Added, Changed or Removed, old → new, who, when, and from where - Item Definition,
+   Stock Levels, or "Import ({file})". An unchanged level is neither rewritten nor recorded. "History" lists them newest
+   first (When, By, What, Min "10 → 20", Max, From); it outlives the level, its item and its warehouse.
+6. **The company figures stay the company's.** Item Definition's Minimum / Maximum Quantity keep their fields, checks
+   and meaning (glossary). Under them, in both modes: "Minimum and Maximum Quantity are for the whole company: the
+   Dashboard's Items below their minimum." (+ " Each warehouse's own Min / Max are in Stock levels per warehouse
+   below." for a reader of the levels). The levels card keeps them in view - "Company: Minimum Quantity 50 · Maximum
+   Quantity 80. The warehouses' Min add up to 95 pcs, above the company Maximum Quantity (80)." (orange when the sum is
+   above) - so the two Min / Max are never read as one. Copy Item copies no level.
+
+**Where a warehouse stands**
+7. **On hand** is the ledger's balance; **On the way in**, **To come in** and **To go out** count released transfer
+   orders only (glossary "Projected"). **Projected = On hand + On the way in + To come in − To go out**, one formula on
+   the server (`inventory.fn_StockLevelState`) for every screen. Drafts, orders waiting for approval and purchases still
+   to come are not counted.
+8. **The status**, the first that applies: no level **No level** (gray); Projected below Min **Below Min** (red); on
+   hand below Min **Below Min, covered** (orange, "On hand is below Min, but transfers on the way or released bring it
+   to Min or more.": not counted as Below Min, as nobody fills twice what is already on a truck); Max set and Projected
+   above it **Above Max** (blue); else **OK** (green). **To reach Max** = (Max, else Min) − Projected when Below Min:
+   "What Fill to Max would ask for".
+
+**Item Definition and Inventory › Stock Levels**
+9. **"Stock levels per warehouse"** on Item Definition (View Stock Levels), below Inventory Parameters: "This item's Min
+   and Max in each warehouse, in pcs. Fill to Max on a transfer order tops a warehouse up to them." Each warehouse with
+   a level of the item, inactive ones too: On hand, Coming in ("{a} on the way · {b} still to dispatch"), Going out,
+   Projected, Min, Max, Status · Updated, then the pencil (disabled on an inactive warehouse, with rule 2's sentence),
+   the trash and the history. The card saves on its own, in view mode too and without Edit Item; a new item reads "Save
+   the item first to set its stock levels per warehouse."; none yet: "No warehouse has a Min / Max for this item yet."
+10. **Inventory › Stock Levels** ("Each warehouse's Min / Max and where it stands: on hand, and what released transfer
+    orders bring or take."), two views:
+    - **Per warehouse:** every level the filters keep, with where its warehouse stands, Below Min first, then Below Min
+      covered, Above Max, OK. Filters: Search (item code or name, or a unit's barcode typed whole), Branch, Warehouse
+      ("A parent shows the warehouses under it."), Family, Brand, Status (Below Min, Below Min covered, Above Max, OK,
+      Every level, and **Without a level**: the item and warehouse pairs with no level that hold stock or are on a
+      released transfer order), "Active items only" (on), "Inactive warehouses too" (off); the tiles Levels, Below Min,
+      "Below Min, covered by transfers" and Above Max set the status. "Add levels…" and "Import from Excel…" (Edit Stock
+      Levels), "Export to Excel"; each row's "…": "Set level…" / "Add level…", "Remove level", "History", "Open item".
+    - **Company (Item Definition):** the items with a company Minimum Quantity above 0 or a Maximum Quantity, against
+      the stock of every warehouse of the branch, or of the company, goods on the way to it included - the Dashboard's
+      figure: On hand, Minimum / Maximum Quantity, Missing, Status (Below Min, Above Max, OK) and Warehouse levels ("3
+      warehouses" opens Per warehouse for that item, on the same branch); the tiles "Items with a company Min or Max"
+      and "Below their minimum".
+
+**The import and the export**
+11. **"Import from Excel…"** (`Import_Stock_Levels_Template.xlsx`, the steps of the container charges import): the
+    columns Item Code / Barcode (the item's code, or the barcode of one of its units), Warehouse (its code, or its name
+    when no other warehouse has it), Min (pcs), Max (pcs) and Remove (Yes or empty), found by their heading; other
+    columns are ignored; an .xlsx up to 5 MB and 20,000 rows, the sheet "Levels" or else the first. "Check" judges every
+    row and writes nothing - a Status (Valid, Warning, Error, Unchanged), an Action ("Set", "Remove", "No change") and a
+    message, the first that applies:
+    - **Error**: a cell that does not read ("Min must be a whole number, 0 or more (the file has '{text}').", the same
+      for Max, "Remove must be Yes or empty (the file has '{text}').") / "Item Code / Barcode is required." / "Item
+      {text} not found." / "Warehouse is required." / "Warehouse {text} not found." / "Warehouse name {text} matches {n}
+      warehouses: use the code." / an On the way warehouse or a parent (rule 2's sentences) / "Item {code} at
+      {warehouse} is on rows {list} of the file: keep one row." (on each of those rows);
+    - **Remove = Yes**: no level there, Unchanged "No level to remove."; a Min or Max typed, Warning, removed all the
+      same ("Remove is Yes: Min and Max are ignored."); else Valid ("Was Min {a} / Max {b}.");
+    - Min and Max both empty: Unchanged "Nothing to change: Min and Max are empty."; Min empty with a Max ("Min is
+      required (a whole number, 0 or more), or put Yes in Remove."), Min or Max above 1,000,000,000 pcs, or Max below
+      Min: Error;
+    - the level as it is stored: Unchanged "No change."; an inactive warehouse: Error ("Warehouse {code} is inactive:
+      activate it to change its levels."); an inactive item: Warning, set all the same ("Item {code} is inactive: Fill
+      to Max skips it."); else Valid ("Was Min {a} / Max {b}." when it changes a level).
+12. **"Import {n} changes"** saves every Valid and Warning row in ONE transaction, judged again by the same rule; Error
+    and Unchanged rows are skipped: "Stock levels imported: 40 added, 12 changed, 3 removed; 5 rows without a change and
+    2 rows with errors skipped." (a part at 0 left out; nothing to save: "Nothing was imported: every row is unchanged
+    or has an error."). "Download the error report" gives the Warning and Error rows with their Status and Message
+    (`Import_Stock_Levels_Errors.xlsx`).
+13. **"Export to Excel"** (Per warehouse, as filtered: `Stock_Levels.xlsx`) writes the five import columns first, then,
+    grey with the comment "Information: the import ignores this column", Item Name, Branch, On hand, On the way in, To
+    come in, To go out, Projected, Status, Updated. An export can be edited and imported back; imported back unchanged
+    it is "Nothing was imported: every row is unchanged or has an error."
+
+**Fill to Max** ("Fill to Max…", Create Transfer Orders)
+14. **On a saved draft only**, worked out by the server. Disabled with "Save your changes first." while the page holds
+    changes, else with the server's reason: "This transfer order is waiting for approval: withdraw it to change it."
+    (62010), "{No} is released: its quantities are locked. Fill to Max works on a draft." / "{No} is cancelled."
+    (62005), the TRO type switched off (62008), a warehouse the order cannot hold (62000), "The order has no lines: add
+    items, or use Add items below Min…." / "{To} has no stock levels: set them on Item Definition (Stock levels per
+    warehouse) or import them on Inventory › Stock Levels." (62009; only levels of active items count).
+15. **Per ITEM of the order**, the first that applies:
+    - no level at To: left as it is ("without a Min at {To}"); an inactive item: left ("inactive");
+    - **Projected before** - To's Projected without this order - at or above Min: left ("at or above Min");
+    - **Need** = (Max, else Min) − Projected before − what the item's OTHER lines order; 0 or less: left ("covered by
+      other lines of the item");
+    - **Available at {From}** = From's on hand − what the other released orders still have to dispatch from it, never
+      below 0; for the line, less what the item's other lines order, never below 0;
+    - **Units** = Need rounded UP to whole units of the line's unit, capped at the whole units available (rounded down);
+      none: "not filled (nothing available at {From})".
+16. **The item's FIRST line** gets Ordered = Units, in its unit's packing as it is now: set, never added to. Its other
+    lines never change; Fill to Max deletes and adds nothing; a second run changes nothing.
+17. **Preview, then apply.** "Fill to Max - {No} ({From} → {To})" shows the server's plan and writes nothing: each
+    item's line with Now, Fill to (bold when it changes), Projected at {To} ("18 → 60"), Min, Max, Available at {From}
+    and the result - "Filled" (with "capped: {From} has {n} pcs available"), "No change", or why it is left ("At or
+    above Min: left as it is", "No Min at {To}: left as it is", "Inactive item: left as it is", "Covered by its other
+    lines: left as it is", "Nothing available at {From}: left as it is") - and, dimmed under a row, what purchase orders
+    and containers still bring to To ("{p} pcs also on purchase orders or in containers for {To} (not counted)."); then
+    "If you apply it: {sentence}" and the warnings. **"Fill {n} lines"** (disabled "Every quantity is already at its
+    fill.") sends the order's row version: the server works the plan out again under the order's lock and records "Fill
+    to Max" with its sentence in the order's activity. Changed by someone since: "Someone else changed this transfer
+    order. Reload the page." (62004, and the page reads the order again); no row version: "The row version is missing.
+    Reload the page and try again." (400). When nothing changes no line is written and the row version stays valid.
+18. **The sentence:** "Fill to Max: {F} lines filled ({C} capped by what {From} has available), {S} skipped ({parts}),
+    {N} not filled (nothing available at {From})." - each part only when above 0, the skipped ones in this order: at or
+    above Min, without a Min at {To}, covered by other lines of the item, inactive, already on the order; " No quantity
+    changed." after an apply that filled lines and changed none.
+19. **Warnings** (orange): for each filled item that takes From below its own Min, "{From} goes below its own Min for
+    {item}: {n} pcs left after this order, Min {min}."; once, when other drafts or orders waiting for approval to the
+    same To hold some of the same items, "Other draft or waiting transfer orders to {To} hold some of these items too
+    ({up to 3, oldest first; a draft without a number "draft #{Id}"}{ and n more}): Fill to Max does not count them."
+20. **Not counted:** drafts and orders waiting for approval (the warning names them) and purchases still to come (shown,
+    dimmed). Fill to Max reserves nothing: the dispatch checks the real stock (4.13 rule 12).
+
+**Worked example** (the tests' data, codes shortened; From LKS-01, To LUB-01; a BOX is 10 pcs):
+
+| Line | Item, unit, Ordered | LUB-01 Min / Max | LUB-01 on hand / in / out | Projected before | Other lines | Available at LKS-01 (for the line) | Need | Result |
+|---|---|---|---|---|---|---|---|---|
+| 1 | A, PC, 5 | 20 / 60 | 12 / 10 on the way / 4 to go out | 18 | 0 | 100 (100) | 42 | **42** filled (LKS-01's own Min 70: 58 left, a warning) |
+| 2 | B, BOX, 1 | 20 / 55 | 12 / 0 / 0 | 12 | 0 | 38 (38) | 43 → 5 BOX | **3 BOX**, capped |
+| 3 | C, PC, 8 | 10 / 30 | 15 / 0 / 0 | 15 | 0 | 50 | - | at or above Min: stays 8 |
+| 4 | D, PC, 3 | none | 9 / 0 / 0 | - | - | 40 | - | without a Min: stays 3 |
+| 5 | E, PC, 6 | 5 / - | 2 / 0 / 0 | 2 | 0 | 0 (0) | 3 | nothing available: stays 6 |
+| 6 | F, BOX, 2 | 30 / 50 | 4 / 0 / 0 | 4 | 7 (line 7) | 45 (38) | 39 → 4 BOX | **3 BOX**, capped |
+| 7 | F, PC, 7 | | | | | | | the item's second line: never changed |
+| 8 | G, PC, 1 | 0 / 10 | 1 / 0 / 4 to go out | −3 | 0 | 20 (20) | 13 | **13** filled |
+
+"Fill to Max: 4 lines filled (2 capped by what LKS-01 has available), 2 skipped (1 at or above Min, 1 without a Min at
+LUB-01), 1 not filled (nothing available at LKS-01)." and "LKS-01 goes below its own Min for A: 58 pcs left after this
+order, Min 70." Projected at LUB-01 after: A 60, B 42, F 41, G 10, none red; before the fill only G was (−3 + 1 = −2,
+below its Min of 0). Run again: the same quantities, and "… No quantity changed."
+
+**Add items below Min** ("Add items below Min…", Create Transfer Orders; rule 14 without the lines: an order with none
+may use it)
+21. The drawer "Add items below Min - {To}" lists the items with a level at To (active items): On hand at {To}, Coming
+    in, Going out, Projected, Min, Max, Need, Available at {From}, the proposal in the unit chosen (base by default; "2
+    BOX = 24 pcs") and a note ("capped", "nothing available at {From}", "at or above Min", "on the order: use Fill to
+    Max", "{From} goes below its own Min"). Filters Family, Brand, Search and "Only items below Min" (on; off: every
+    item with a level at To); an item the order already covers is not below Min. Ticked at first: the items below Min,
+    not on the order, whose base unit fills; an item on the order, or a unit that does not fill, cannot be ticked.
+    Empty: "No item is below its Min at {To}." / "No item has a level at {To}."
+22. **"Add {n} items"** works each ticked item out as Fill to Max does, in the unit chosen, with the order's row
+    version, and adds each one that fills as a new line at the end, in item code order; the order's activity reads
+    "Items below Min added". "Add items below Min: 1 item added, 1 skipped (1 at or above Min)." An item on the order by
+    then is skipped ("already on the order").
+
+**Create transfer order from Stock Levels**
+23. On Per warehouse, with Create Transfer Orders, the rows with a level can be ticked; "Create transfer order…" is
+    disabled with "Tick rows of one warehouse: a transfer order goes to one warehouse." while they are of several
+    warehouses. "New transfer order to {To}": "{n} items, {b} below Min. Each is filled to its Max (else Min) from the
+    warehouse you choose, in pcs, capped at what it has available." (in orange: "{k} of the ticked items are not below
+    Min: Fill to Max skips them."), From warehouse (active, at the bottom of the tree, of any branch, not On the way,
+    not To), Order date (today, not in the future), Expected arrival (optional, not before the order date). **"Create
+    draft"**: the server works each item out in its base unit as Add items below Min does and saves ONE draft through
+    the transfer order's own Save, noted "Created from Inventory › Stock Levels: items below Min at {To}."; the draft
+    opens, with "TRO-BR-003-000015 created. Add items below Min: 2 items added (1 capped by what LKS-01 has available),
+    1 not added (nothing available at LKS-01)." ("Draft transfer order #{Id} created. …" while TRO is numbered at
+    release) and Fill to Max's warnings in orange: a second click for the same shortage is told about the first draft.
+    Nothing to fill: no draft, no number taken, and the dialog says why (62009): "Nothing to transfer: {From} has none
+    of these items available." / "Nothing to transfer: none of these items is below its Min at {To}."
+
+**On the transfer order**
+24. While the order still moves something to To (a draft, an order waiting for approval, a released one not yet Received
+    or Closed), its lines show To's **Min** and **Max** ("—" without a level) and **Projected at {To}** AFTER this
+    order: "What {To} will have once this order and the other released transfer orders have arrived: on hand + coming in
+    − going out." The order brings its Ordered while a draft or waiting, and its To dispatch + On the way once released
+    (what arrived is in the on hand already); on a draft being typed, a quantity counts as soon as it is typed.
+25. **Red means "after this order":** a line is red - the row tinted, Projected bold red, "Still below {To}'s Min of
+    {min} with this order." - while To stays below its Min with the order, so a line Fill to Max filled stops being red
+    and a capped one stays red. "Available at {From}" is **orange** when From goes below its own Min with the order
+    ("{From} keeps {n} pcs after this order; its own Min is {min}."). Red wins: a cell red for 4.13 rule 4's reason
+    (less available than the line still has to dispatch) stays red, and both reasons are joined. A phone reads "Min 20 ·
+    Max 60 · Projected 60 at LUB-01".
+
+**What changes elsewhere**
+26. **The Dashboard.** "Items below their minimum" keeps its count and top five (the company Minimum Quantity), gains
+    the sub-line "Company Minimum Quantity (Item Definition)", and opens Stock Levels on the view Company (Item
+    Definition), status Below Min, on the Dashboard's branch, which counts the same items (it opened Shortages, which
+    show other figures); without View Stock Levels it opens Item Definition. A new line **"Warehouse levels below Min"**
+    ("Projected stock below a warehouse's own Min", shown when above 0) counts the levels of active items at active
+    warehouses of the branch, or of the company, that are Below Min - Stock Levels' Below Min tile for the same branch,
+    with the page's default filters - and opens Per warehouse, Below Min, on that branch; it adds to the Stock alerts
+    card's count.
+27. **A warehouse with stock levels counts as used:** it cannot become a parent, with its own sentence when the levels
+    are all it holds (52000): "Warehouse {code} has stock levels for {n} item(s), so it cannot become a parent: stock
+    levels, like stock, are kept only in the warehouses at the bottom of the tree. Remove its levels (Inventory › Stock
+    Levels), or choose another parent warehouse." One also used in transactions keeps the old "… is already used in
+    transactions, so it cannot become a parent: …". The Parent picker reads " - has stock levels, cannot be a parent".
+    Once its levels are removed it may become a parent.
+28. **Levels belong to their item and their warehouse:** deleting either deletes its levels, and levels never stop the
+    delete (an item or a warehouse still referenced is refused as before). The confirmations say so: "Its units, image,
+    documents and stock levels per warehouse go with it." / "Its stock levels go with it." The history stays: an item
+    deleted adds a "Removed" row for each of its levels (from Item Definition, by the user who deleted it); a warehouse
+    deleted adds none.
+
+**Changed from the feedback, and why**
+- **Projected also subtracts what released orders take OUT of the destination** (feedback rule 48 counted its on hand
+  plus what released orders bring): pieces a released order still has to dispatch from it are promised but still on its
+  shelf - a released return LUB-01 → LKS-01 of 10 pcs is still in LUB-01's on hand - and counting them would make Fill
+  to Max fill too little. "Available at {From}" subtracts the same promises.
+- **The item's other lines are taken from what is available for the filled line** (feedback rule 48: Available at From):
+  they leave the same source, so the filled line can only take what they leave.
+- **A line is red while the destination stays below Min AFTER this order** (feedback rule 49: while Projected < Min): a
+  line Fill to Max filled stops being red, a capped one stays red; read without the order, the line of an item just
+  filled would stay red.
+
+**What does not change:** Item Definition's Minimum / Maximum Quantity (columns, checks, messages, fields: a hint line
+added); every other Dashboard figure; Shortages (Fill to Max only reads them for the purchases still to come); transfer
+orders (every column, row and sentence of script 90; Fill to Max writes a draft's lines only); the ledger, item costs,
+cost adjustments and stock valuation (nothing here writes them); the warehouses' other rules and numbers; the item's
+read, save, units, files and copy. Levels reserve nothing and move no stock.
+
+**Errors:** no new number. Levels: 56000 (400, validation), 56004 (409, changed, removed or added by another user),
+56006 (404, not found). Fill to Max, Add items below Min and Create transfer order: script 90's 62000, 62004, 62005,
+62006, 62008, 62009, 62010. Warehouses: 52000. The API also refuses, 400: "Each warehouse once.", "Each item once.",
+"Each row once.", "Level {n} of the request is empty." / "Row {n} of the request is empty.", an unknown status ("Unknown
+status: choose Below Min, Below Min covered, Above Max, OK or Without a level."; the company view's "… choose Below Min,
+Above Max or OK."), and a file it cannot import (INVALID_FILE): "The file must be an Excel workbook (.xlsx)." / "The
+file is larger than 5 MB." / "The file has more than 20,000 rows: split it." / "The file does not have the template's
+columns: Item Code / Barcode, Warehouse, Min (pcs), Max (pcs). Download the template and copy your rows into it." / "The
+file has no rows." / "The file could not be read: open it in Excel, save it and try again."
+
 ---
 
 ## 5. The prompts so far
@@ -1840,9 +2131,9 @@ masterdata-branches, 05 masterdata-warehouses, 06 mantine-migration, 07 dev-star
 masterdata-parties, 16 frontend-enhancements-1, 17 sales-invoice-import, 18 inventory-stock-in, 19
 inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventory-docs, 23 document-engine, 24
 sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
-28–31 have no file there; prompts 32–47 were given outside the repositories (5.2 and section 4 say what they asked).
+28–31 have no file there; prompts 32–48 were given outside the repositories (5.2 and section 4 say what they asked).
 
-### 5.2 Prompts 32–47
+### 5.2 Prompts 32–48
 
 | Prompt | Title / what it does | Status |
 |---|---|---|
@@ -1862,6 +2153,7 @@ sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-type
 | **45** | Movement: one list with checkboxes that follows the From; Save / Start guards; never-moved rule; validated Excel import, result download, template file | Done: script 53; the movement's container list, the never-moved rule, the validated import ("Tick the {n} valid containers", "Download the result") and the template in `public/templates/` |
 | **46** | Container capacity from one place, the item's Container unit; Max Units removed | Done: script 54; capacity from the item's Container unit only, Max Units gone from the screens |
 | **47** | Inventory transfer orders (script 90): Inventory › Transfer Orders, a dispatch (TRD) and a transfer receipt (TRR) through each branch's On the way warehouse, cost-neutral; losses, Nothing more will be sent, Cancel order, Reverse (receipt first), Dispatch and receive, returns, Late, the TRO approval switch and its emails, Transfers in on Shortages, the dispatch note (A1, A2, B1) | Done: 4.13 |
+| **48** | Stock levels per warehouse and Fill to Max (script 91): each warehouse's own Min / Max per item on Item Definition's "Stock levels per warehouse" card and on Inventory › Stock Levels (Per warehouse, and Company (Item Definition): the company Minimum / Maximum Quantity), the Excel import and export, Projected from released transfer orders, "Fill to Max…" and "Add items below Min…" on a draft transfer order, "Create transfer order…" from ticked rows, Min / Max / Projected at {To} on the order's lines, the Dashboard's "Warehouse levels below Min" and its "Items below their minimum" opening the company view (A1, A2, B1) | Done: 4.14 |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -1941,6 +2233,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `88_Logistics_ChargeOneLine.sql` | A charge on a container of one line takes it whole: `logistics.usp_ContainerCharge_Allocate` re-created from 27 - the only line with pieces gets the whole charge whatever the method (no price, weight or volume needed); several lines all at price 0 by value are refused naming each line and the source of its price (order, draft or posted invoice, goods receipt); every refusal names the container (70013 as before). The charge import warns about a missing weight or volume only on a container of several lines |
 | `89_Fixes_CostsCancelsShortageDocumentTypes.sql` | Fixes: `logistics.usp_ContainerCharge_ApplyCost` (from 27) and `purchase.usp_LandedCostAdjustment_Post` (from 79) split a late charge on the company's stock, per item, as GRNCOST (a cancel never takes more out of stock than its posting put in); `inventory.usp_StockDocument_Cancel` (from 15) reverses only its own type and, like `sales.usp_SalesDocument_Cancel` (from 84), replays its items under the matching lock (the items of documents cancelled before replayed once, `inventory.OneTimeSteps`); `inventory.usp_ShortageDocument_CreatePurchaseOrder` (from 22): a plan for a parent warehouse puts each line in a leaf of its tree, in one transaction (66000 when there is none); the five per-start seeds of Document Types narrowed to types nobody saved; script 19's per-start backfill of item costs no longer counts a posting that was reversed (edited in place, like the seeds); the two cancels give way in a deadlock (`DEADLOCK_PRIORITY LOW`: the API runs them again, a posting has no retry) |
 | `90_Inventory_TransferOrders.sql` | Transfer orders, dispatch and receipt, with approval (prompt 47): new tables `inventory.TransferOrders`, `TransferOrderLines`, `TransferPostings`, `TransferPostingLines`, `TransferOrderAudit`, `TransferOrderFiles`; `masterdata.Warehouses.IsTransit` and one On the way warehouse per branch (`masterdata.usp_Warehouse_EnsureTransit`, run at each start for every branch that has none, and by a new branch); document types TRO, TRD, TRR and `inventory.DocumentTypes.NeedsApproval`; stock reason TRF_LOSS (inactive); `inventory.fn_TransferPosition`, `fn_TransferOrder_State` (the shown status, Late), `fn_TransferOrder_Blocks` (an action's refusal in the order's state, every disabled reason), `fn_TransferPosting_ReverseBlock`, `fn_Transfer_MovedOutNote`; the procedures of the order, its approval (`usp_TransferOrder_Approvers`), dispatch, receipt, Dispatch and receive, Nothing more will be sent, cancel, reverse, ETA, return and files; ten permissions `inventory.transfers.*` (855-890) granted once; re-created: the warehouse, branch and item procedures (the On the way rules), `masterdata.fn_Warehouse_IsLeaf` / `_IsUsed`, `inventory.usp_DocumentType_List` / `_Update`, `usp_Item_RebuildCosts` (incoming transfer legs at the running average), `usp_Item_StockStatement`, `fn_Shortage_Live` and the three shortage procedures (Transfers in; `ShortageDocumentLines.TransfersInBase`, its four formula columns re-added), `purchase.fn_GoodsReceipt_CancelCheck` and `inventory.usp_StockDocument_Cancel` (the refusal names the transfer). Script 19's per-start backfill of item costs no longer counts transfer rows (edited in place, as 89 did) |
+| `91_Inventory_StockLevels_FillToMax.sql` | Stock levels per warehouse and Fill to Max (prompt 48): new tables `inventory.ItemWarehouseLevels` (an item's Min / Max in a warehouse at the bottom of the tree, at most 1,000,000,000 pcs, owned by the item and the warehouse: two cascading keys) and `inventory.ItemWarehouseLevelAudit`; four frozen table types (`tvp_ItemWarehouseLevel`, `tvp_ItemWarehouseLevelImport`, `tvp_TransferFillItem`, `tvp_TransferFillCandidate`); `inventory.fn_StockLevelState` (Projected, the status, To reach Max: the one formula), `fn_TransferPositions` (what released transfer orders bring to and take from every warehouse, every pair at once), `fn_StockPosition` (one pair, on 90's `fn_TransferPosition`), `fn_TransferFill_Plan` (the Fill to Max rule), `fn_TransferFill_Message`, `fn_TransferFill_FromWarning`, `fn_TransferFill_OtherOrdersWarning`, `fn_ItemWarehouseLevel_ImportJudge` (the import's judgement, read by the check and the import), `masterdata.fn_Warehouse_IsUsedInTransactions` (90's `fn_Warehouse_IsUsed` body, moved); the procedures `inventory.usp_StockLevel_Search` / `_CompanySearch`, `usp_ItemWarehouseLevel_Set` / `_Remove` / `_History` / `_ImportCheck` / `_Import`, `usp_TransferOrder_FillToMax` (preview and apply, Fill and Add) / `_BelowMinCandidates` / `_CreateFromLevels` (through 90's `usp_TransferOrder_Save`), `reporting.usp_Dashboard_StockLevels`; the permissions `inventory.stocklevels.view` / `.edit` (432, 434) granted once; re-created: `masterdata.fn_Warehouse_IsUsed` (+ stock levels), `inventory.fn_TransferOrder_Blocks` (+ FillToMax, AddBelowMin), `masterdata.usp_Warehouse_Create` / `_Update` (the levels sentence of 52000) and `_Lookup` (+ `IsUsedInTransactions`, `HasStockLevels`), `inventory.usp_Item_Delete` (from 11: the cascading keys are not references; + `@UserId` and a "Removed" history row per level), `inventory.usp_TransferOrder_Get` and `_Availability` (from 90: + To's and From's levels and Projected; Get also the two abilities). `reporting.usp_Dashboard_Summary` and `masterdata.usp_Warehouse_Delete` are not changed |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -1959,13 +2252,14 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 ## 6. What's next
 
 ### 6.1 What's next (19 October 2026; the developer decides)
-Every written prompt (32–47) is built, and so is every script up to the last one in 5.4. What is left:
+Every written prompt (32–48) is built, and so is every script up to the last one in 5.4. What is left:
 1. **Release the scripts after 72 to production** (production runs up to 72): on testing first (the Deploy to
    server button, or `sudo ./update.sh`; `copy-production-to-testing.sh` to rehearse on production's data), then a
    pull request `main` → `production` in both repositories, and the button with production. Script 77 changes data
    once (closed orders back to approved); script 90 adds an On the way warehouse to every branch, the TRO / TRD / TRR
-   document types and the ten transfer permissions with their one-time grants (3.8); `update.sh` backs the database
-   up first.
+   document types and the ten transfer permissions with their one-time grants (3.8); script 91 adds the two stock
+   level permissions with theirs - after it the owner ticks Edit Stock Levels (Role Permissions) for the roles of the
+   people who keep the levels; `update.sh` backs the database up first.
 2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
 3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
    `enable-github-deploy.sh` on the server and its secrets in both repositories.
@@ -2377,7 +2671,7 @@ every step that did not behave as described.
 - **Files delivered outside the repos:**
   - `Containers_User_Guide.docx`;
   - `Movement_Containers_Import_Template.xlsx` (now in the Web project's `public/templates/`);
-  - prompt files 32–47: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
+  - prompt files 32–48: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
     section 4.
 
 ### 8.3 Security rules to keep
