@@ -52,7 +52,7 @@ public static class TransferOrderWorkbooks
             ("Unit", "Optional",
                 "The unit type name (PC, Box) or the unit's SKU. Blank unit = the item's base unit."),
             ("Quantity", "Required",
-                "Quantity: a whole number in the unit, greater than zero."),
+                "Quantity: a whole number in the unit; blank unit = the item's base unit. It must be above 0."),
             ("Notes", "Optional",
                 "Free text kept on the line."),
         ];
