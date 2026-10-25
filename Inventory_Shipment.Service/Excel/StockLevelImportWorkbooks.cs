@@ -91,7 +91,7 @@ public static class StockLevelImportWorkbooks
             rowNumber++;
         }
 
-        sheet.Range(2, 4, Math.Max(rowNumber, 2), 5).Style.NumberFormat.Format = QuantityFormat;
+        sheet.Range(2, 4, Math.Max(rowNumber - 1, 2), 5).Style.NumberFormat.Format = QuantityFormat;
         sheet.SheetView.FreezeRows(1);
         sheet.Columns().AdjustToContents();
         sheet.Column(2).Width = Math.Max(sheet.Column(2).Width, 22);
