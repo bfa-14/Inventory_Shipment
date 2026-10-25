@@ -44,8 +44,8 @@ CREATE TABLE [inventory].[TransferPostings] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_TransferPostings_PostedWith]
-    ON [inventory].[TransferPostings]([PostedWithId] ASC) WHERE ([PostedWithId] IS NOT NULL);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_TransferPostings_Number]
+    ON [inventory].[TransferPostings]([DocumentNumber] ASC);
 
 
 GO
@@ -57,8 +57,8 @@ CREATE NONCLUSTERED INDEX [IX_TransferPostings_Order]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_TransferPostings_Number]
-    ON [inventory].[TransferPostings]([DocumentNumber] ASC);
+CREATE NONCLUSTERED INDEX [IX_TransferPostings_PostedWith]
+    ON [inventory].[TransferPostings]([PostedWithId] ASC) WHERE ([PostedWithId] IS NOT NULL);
 
 
 GO

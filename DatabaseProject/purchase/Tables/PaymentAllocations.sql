@@ -29,8 +29,9 @@ CREATE TABLE [purchase].[PaymentAllocations] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Payment]
-    ON [purchase].[PaymentAllocations]([PaymentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Charge]
+    ON [purchase].[PaymentAllocations]([ContainerChargeId] ASC)
+    INCLUDE([PaymentId], [AmountDocCurrency], [RemovedAtUtc]) WHERE ([ContainerChargeId] IS NOT NULL);
 
 
 GO
@@ -42,9 +43,8 @@ CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Invoice]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Charge]
-    ON [purchase].[PaymentAllocations]([ContainerChargeId] ASC)
-    INCLUDE([PaymentId], [AmountDocCurrency], [RemovedAtUtc]) WHERE ([ContainerChargeId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Payment]
+    ON [purchase].[PaymentAllocations]([PaymentId] ASC);
 
 
 GO

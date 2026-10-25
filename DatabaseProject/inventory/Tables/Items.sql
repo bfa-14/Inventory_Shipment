@@ -56,8 +56,8 @@ CREATE TABLE [inventory].[Items] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Items_ItemName]
-    ON [inventory].[Items]([ItemName] ASC);
+CREATE NONCLUSTERED INDEX [IX_Items_Brand]
+    ON [inventory].[Items]([BrandId] ASC);
 
 
 GO
@@ -74,8 +74,8 @@ CREATE NONCLUSTERED INDEX [IX_Items_Warehouse]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Items_Brand]
-    ON [inventory].[Items]([BrandId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Items_ItemName]
+    ON [inventory].[Items]([ItemName] ASC);
 
 
 GO

@@ -32,6 +32,18 @@ CREATE TABLE [masterdata].[Warehouses] (
 
 GO
 
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_ActiveMainWarehouse]
+    ON [masterdata].[Warehouses]([IsMainWarehouse] ASC) WHERE ([IsMainWarehouse]=(1) AND [IsActive]=(1));
+
+
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_TransitBranch]
+    ON [masterdata].[Warehouses]([BranchId] ASC) WHERE ([IsTransit]=(1));
+
+
+GO
+
 CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
     ON [masterdata].[Warehouses]([WarehouseName] ASC);
 
@@ -44,20 +56,8 @@ CREATE NONCLUSTERED INDEX [IX_Warehouses_BranchId]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_TransitBranch]
-    ON [masterdata].[Warehouses]([BranchId] ASC) WHERE ([IsTransit]=(1));
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
     ON [masterdata].[Warehouses]([ParentId] ASC);
-
-
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_ActiveMainWarehouse]
-    ON [masterdata].[Warehouses]([IsMainWarehouse] ASC) WHERE ([IsMainWarehouse]=(1) AND [IsActive]=(1));
 
 
 GO

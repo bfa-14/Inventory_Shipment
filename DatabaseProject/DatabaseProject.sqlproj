@@ -153,8 +153,6 @@
     <Build Include="inventory\StoredProcedures\usp_ItemFile_Get.sql" />
     <Build Include="inventory\StoredProcedures\usp_ItemFile_List.sql" />
     <Build Include="inventory\StoredProcedures\usp_ItemFile_Update.sql" />
-    <Build Include="inventory\StoredProcedures\usp_ItemImport_Commit.sql" />
-    <Build Include="inventory\StoredProcedures\usp_ItemImport_Validate.sql" />
     <Build Include="inventory\StoredProcedures\usp_ItemUnit_Create.sql" />
     <Build Include="inventory\StoredProcedures\usp_ItemUnit_Delete.sql" />
     <Build Include="inventory\StoredProcedures\usp_ItemUnit_ListByItem.sql" />
@@ -215,7 +213,6 @@
     <Build Include="inventory\Tables\DocumentSequences.sql" />
     <Build Include="inventory\Tables\DocumentTypes.sql" />
     <Build Include="inventory\Tables\ItemFiles.sql" />
-    <Build Include="inventory\Tables\ItemImportLogs.sql" />
     <Build Include="inventory\Tables\Items.sql" />
     <Build Include="inventory\Tables\ItemUnits.sql" />
     <Build Include="inventory\Tables\OneTimeSteps.sql" />
@@ -234,7 +231,6 @@
     <Build Include="inventory\Tables\TransferOrders.sql" />
     <Build Include="inventory\Tables\TransferPostingLines.sql" />
     <Build Include="inventory\Tables\TransferPostings.sql" />
-    <Build Include="inventory\UserDefinedTypes\tvp_ItemImportRow.sql" />
     <Build Include="inventory\UserDefinedTypes\tvp_ItemReceipt.sql" />
     <Build Include="inventory\UserDefinedTypes\tvp_ShortageLine.sql" />
     <Build Include="inventory\UserDefinedTypes\tvp_StockDocumentLine.sql" />

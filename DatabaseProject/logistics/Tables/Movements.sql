@@ -48,15 +48,15 @@ CREATE TABLE [logistics].[Movements] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Movements_FromPlace]
-    ON [logistics].[Movements]([FromPlaceId] ASC, [Status] ASC)
-    INCLUDE([MovementTypeId], [ToPlaceId], [PlannedDate], [StartDate], [CreatedAtUtc]);
+CREATE NONCLUSTERED INDEX [IX_Movements_Status]
+    ON [logistics].[Movements]([Status] ASC, [StartDate] DESC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Movements_Status]
-    ON [logistics].[Movements]([Status] ASC, [StartDate] DESC);
+CREATE NONCLUSTERED INDEX [IX_Movements_FromPlace]
+    ON [logistics].[Movements]([FromPlaceId] ASC, [Status] ASC)
+    INCLUDE([MovementTypeId], [ToPlaceId], [PlannedDate], [StartDate], [CreatedAtUtc]);
 
 
 GO

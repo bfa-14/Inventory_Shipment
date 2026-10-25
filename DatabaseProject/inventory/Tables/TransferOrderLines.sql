@@ -25,15 +25,15 @@ CREATE TABLE [inventory].[TransferOrderLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_TransferOrderLines_Item]
-    ON [inventory].[TransferOrderLines]([ItemId] ASC);
+CREATE NONCLUSTERED INDEX [IX_TransferOrderLines_Order]
+    ON [inventory].[TransferOrderLines]([TransferOrderId] ASC)
+    INCLUDE([ItemId], [DispatchedBase], [ReceivedBase], [LostBase], [NotSentBase]);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_TransferOrderLines_Order]
-    ON [inventory].[TransferOrderLines]([TransferOrderId] ASC)
-    INCLUDE([ItemId], [DispatchedBase], [ReceivedBase], [LostBase], [NotSentBase]);
+CREATE NONCLUSTERED INDEX [IX_TransferOrderLines_Item]
+    ON [inventory].[TransferOrderLines]([ItemId] ASC);
 
 
 GO
