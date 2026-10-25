@@ -1,10 +1,9 @@
-/* ================================================================== 21. Item stock statement: goods receipt rows */
+/* ================================================================== 15. Item stock statement: the transfer rows */
 
--- Re-created (65) from the body of script 58: a goods receipt (type GRN) is not a purchase document, so the
--- purchase-document join leaves it out (its id is a goods receipt id, not a document id). Its counterparty is the
--- supplier of the receipt line (a container of several suppliers has one per line), else of the receipt; and the new
--- column SourceReference names where the goods came from: the container, else the order, else the invoice (a receipt
--- made from an invoice without an order). NULL on every other row.
+-- Re-created (90) from the body of script 65: + a transfer row (family Transfer, a dispatch TRD or a receipt TRR) says
+-- where the goods went, "LKS-01 -> LUB-01" (the posting's From and To, both legs of it alike) in Counterparty, the
+-- transfer order's number in SourceReference, and the order's id in the new last column TransferOrderId (the page's
+-- link). NULL on every other row; every other column and row unchanged.
 CREATE   PROCEDURE inventory.usp_Item_StockStatement
     @ItemId      INT,
     @DateFrom    DATE = NULL,
@@ -28,10 +27,15 @@ BEGIN
            Balance     = @Opening + SUM(m.QuantityBase) OVER (ORDER BY m.MovementDate, m.Id ROWS UNBOUNDED PRECEDING),
            m.UnitCostBase,
            -- who the stock went to or came from: the client of a sale, the supplier of a purchase
-           Counterparty = COALESCE(cl.PartyName, sp.PartyName),
+           Counterparty = COALESCE(cl.PartyName, sp.PartyName,
+                                   -- (90) a transfer row: where the goods went, the posting's From -> To ("LKS-01 -> LUB-01")
+                                   CASE WHEN tp.Id IS NOT NULL THEN fw.WarehouseCode + N' ' + NCHAR(8594) + N' ' + tw.WarehouseCode END),
            -- (65) a goods receipt's source: its container, else its order, else its invoice
-           SourceReference = CASE WHEN gr.Id IS NOT NULL THEN COALESCE(gc.ContainerRef, gpo.DocumentNumber, gpi.DocumentNumber) END,
-           CreatedByName = u.FullName
+           --      (90) a transfer row's: its transfer order
+           SourceReference = CASE WHEN gr.Id IS NOT NULL THEN COALESCE(gc.ContainerRef, gpo.DocumentNumber, gpi.DocumentNumber)
+                                  WHEN tro.Id IS NOT NULL THEN tro.DocumentNumber END,
+           CreatedByName = u.FullName,
+           TransferOrderId = tro.Id                                         -- (90) a TRD / TRR row: its transfer order (the link)
     FROM inventory.StockMovements m
     INNER JOIN masterdata.Warehouses w ON w.Id = m.WarehouseId
     INNER JOIN masterdata.Branches br  ON br.Id = w.BranchId
@@ -46,6 +50,11 @@ BEGIN
     LEFT JOIN purchase.PurchaseDocuments gpo ON gpo.Id = COALESCE(grl.PurchaseOrderId, gr.PurchaseOrderId)
     LEFT JOIN purchase.PurchaseDocuments gpi ON gpi.Id = gr.PurchaseInvoiceId
     LEFT JOIN masterdata.Parties sp ON sp.Id = COALESCE(pd.SupplierId, grl.SupplierId, gr.SupplierId)
+    -- (90) a transfer row (family Transfer, TRD / TRR): its dispatch or receipt, the order, and the posting's From / To
+    LEFT JOIN inventory.TransferPostings tp ON m.DocumentFamily = N'Transfer' AND tp.Id = m.DocumentId
+    LEFT JOIN inventory.TransferOrders tro  ON tro.Id = tp.TransferOrderId
+    LEFT JOIN masterdata.Warehouses fw      ON fw.Id = tp.FromWarehouseId
+    LEFT JOIN masterdata.Warehouses tw      ON tw.Id = tp.ToWarehouseId
     LEFT JOIN security.Users u ON u.Id = m.CreatedBy
     WHERE m.ItemId = @ItemId
       AND (@DateFrom IS NULL OR m.MovementDate >= @DateFrom)

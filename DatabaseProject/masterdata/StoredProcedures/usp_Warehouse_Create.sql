@@ -1,3 +1,4 @@
+-- "used parent" test (it is used as soon as a transfer moved goods).
 CREATE   PROCEDURE masterdata.usp_Warehouse_Create
     @WarehouseCode        NVARCHAR(20),
     @WarehouseName        NVARCHAR(150),
@@ -36,6 +37,9 @@ BEGIN
     -- The parent need not share the branch: the tree and the branch answer different questions.
     IF @ParentId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @ParentId)
         THROW 52000, 'The selected parent warehouse does not exist.', 1;
+    -- (90) an On the way warehouse holds goods on the road, never other warehouses
+    IF @ParentId IS NOT NULL AND EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @ParentId AND IsTransit = 1)
+        THROW 52000, 'An On the way warehouse cannot hold other warehouses. Choose another parent warehouse.', 1;
     IF @ParentId IS NOT NULL AND masterdata.fn_Warehouse_IsUsed(@ParentId) = 1
     BEGIN
         DECLARE @UsedMsg NVARCHAR(400) = N'Warehouse ' + (SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @ParentId) + N' is already used in transactions, so it cannot become a parent: stock is kept only in the warehouses at the bottom of the tree. Choose another parent warehouse.';

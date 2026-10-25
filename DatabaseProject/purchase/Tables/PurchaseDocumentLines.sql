@@ -43,8 +43,14 @@ CREATE TABLE [purchase].[PurchaseDocumentLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
-    ON [purchase].[PurchaseDocumentLines]([SourceLineId] ASC) WHERE ([SourceLineId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
+    ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_ContainerLine]
+    ON [purchase].[PurchaseDocumentLines]([ContainerLineId] ASC) WHERE ([ContainerLineId] IS NOT NULL);
 
 
 GO
@@ -55,14 +61,8 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Item]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Document]
-    ON [purchase].[PurchaseDocumentLines]([DocumentId] ASC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_ContainerLine]
-    ON [purchase].[PurchaseDocumentLines]([ContainerLineId] ASC) WHERE ([ContainerLineId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentLines_Source]
+    ON [purchase].[PurchaseDocumentLines]([SourceLineId] ASC) WHERE ([SourceLineId] IS NOT NULL);
 
 
 GO

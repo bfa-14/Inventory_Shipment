@@ -25,14 +25,14 @@ CREATE TABLE [purchase].[GoodsReceiptCostChanges] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptCostChanges_Cause]
-    ON [purchase].[GoodsReceiptCostChanges]([CauseKind] ASC, [CauseId] ASC);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptCostChanges_Line]
+    ON [purchase].[GoodsReceiptCostChanges]([GoodsReceiptLineId] ASC, [ChangedAtUtc] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptCostChanges_Line]
-    ON [purchase].[GoodsReceiptCostChanges]([GoodsReceiptLineId] ASC, [ChangedAtUtc] ASC);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptCostChanges_Cause]
+    ON [purchase].[GoodsReceiptCostChanges]([CauseKind] ASC, [CauseId] ASC);
 
 
 GO

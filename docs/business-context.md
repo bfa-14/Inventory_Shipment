@@ -2343,7 +2343,14 @@ every step that did not behave as described.
   - `DatabaseProject` (SSDT .sqlproj) mirrors the database. It is refreshed only by `tools/refresh-dbproject.sh`,
     which stops when the branch is behind the remote.
   - `tools/compare-dbproject.sh` compares read-only.
-  - Bilal refreshes, commits and pushes; Ali runs `git checkout -- DatabaseProject` before pulling.
+  - **Refreshed from a clean database built by the API** (since 25 October 2026): the Claude Code session that pushes
+    a new script to `main` starts that commit's API on an empty database (the server's way: `DatabaseInitializer`
+    applies Schema.sql), runs `refresh-dbproject.sh` on it and pushes "DatabaseProject refreshed (up to script NN)".
+    The project then holds exactly what testing and production get. Before, it was refreshed from a developer's local
+    database, which also held 4 objects of `Database/16_Inventory_ItemImport.sql` never in Schema.sql nor used by the
+    code (`usp_ItemImport_Commit` / `_Validate`, `ItemImportLogs`, `tvp_ItemImportRow`) and listed some indexes in
+    another order. **The PCs only pull**: a refresh from a PC puts those back (`git checkout -- DatabaseProject` before
+    pulling if it was changed; on any PC `tools/compare-dbproject.sh` shows how the local database differs).
 - **Other files in the API repo:** `docs/notes/container-costing-rules.md`, `docs/notes/database-project-workflow.md`,
   `.githooks` (pre-commit check).
 - **`CLAUDE.md`** sits in `InventoryShipment-Project/`, the parent folder **outside both repositories**. It holds the

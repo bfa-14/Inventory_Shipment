@@ -1,8 +1,11 @@
-/* ================================================================== 5. The item's last cost */
+/* ================================================================== 14. The cost replay: a transfer moves no cost */
 
--- Re-created (79) from the body of script 65: a line received without an order counts for the last cost, FOB cost
--- and last supplier only once matched to an invoice that changes item costs - a manual line as before (its typed
--- cost is not a purchase price), and now a line of an order-less invoice that does not change item costs.
+-- Re-created (90) from the body of script 79: + the incoming legs of a transfer (family Transfer, quantity above 0: the
+-- On the way warehouse at a dispatch, the destination at a receipt) enter at the RUNNING AVERAGE, not at the cost frozen
+-- on the row (FB rule 34). The receipt branch reads ISNULL(@ECost, @Avg): a NULL cost leaves the average where it is,
+-- whatever the running balance. The outgoing legs and the losses (TRF_LOSS) are issues, as every out: the average does
+-- not move. A reversed posting is left out with its reversal, as every family's. Every other family reads
+-- m.UnitCostBase as before, so the replay of a database without transfers gives the same costs as before.
 CREATE   PROCEDURE inventory.usp_Item_RebuildCosts
     @ItemId INT = NULL
 AS
@@ -14,7 +17,10 @@ BEGIN
     SELECT x.ItemId, x.Qty, x.Cost, x.Amount
     FROM
     (
-        SELECT m.ItemId, EventDate = m.MovementDate, Src = 1, SrcId = m.Id, Qty = m.QuantityBase, Cost = m.UnitCostBase, Amount = CAST(NULL AS DECIMAL(18,2))
+        SELECT m.ItemId, EventDate = m.MovementDate, Src = 1, SrcId = m.Id, Qty = m.QuantityBase,
+               -- (90) A TRANSFER MOVES NO COST: its incoming legs (On the way, the destination) enter at the running average.
+               Cost = CASE WHEN m.DocumentFamily = N'Transfer' AND m.QuantityBase > 0 THEN NULL ELSE m.UnitCostBase END,
+               Amount = CAST(NULL AS DECIMAL(18,2))
         FROM inventory.StockMovements m
         WHERE (@ItemId IS NULL OR m.ItemId = @ItemId)
           AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode

@@ -1,9 +1,5 @@
-/* ================================================================== 1. Used warehouses: goods receipts count too */
-
--- Re-created (72) from the body of script 71: + purchase.GoodsReceipts and purchase.GoodsReceiptLines. A goods receipt
--- names its warehouse as surely as an invoice line does (and puts stock there once posted), so a warehouse it names
--- cannot become a parent either. Before the procedures below, which do not call it, and usp_Warehouse_Lookup /
--- _Create / _Update (71), which do.
+-- not tested: every posting writes ledger rows in From and in the On the way warehouse, which the ledger test already
+-- covers, and To is named on the order.
 CREATE   FUNCTION masterdata.fn_Warehouse_IsUsed (@WarehouseId INT)
 RETURNS BIT
 AS
@@ -22,6 +18,8 @@ BEGIN
                   -- (72) a goods receipt names it: "Receive into" (a draft too) or a line's warehouse
                   OR EXISTS (SELECT 1 FROM purchase.GoodsReceipts            WHERE WarehouseId = @WarehouseId)
                   OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines        WHERE WarehouseId = @WarehouseId)
+                  -- (90) a transfer order names it, as the source or the destination (a draft too)
+                  OR EXISTS (SELECT 1 FROM inventory.TransferOrders          WHERE FromWarehouseId = @WarehouseId OR ToWarehouseId = @WarehouseId)
                 THEN 1 ELSE 0 END;
 END
 

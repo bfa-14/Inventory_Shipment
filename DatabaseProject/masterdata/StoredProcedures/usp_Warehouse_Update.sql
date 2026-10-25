@@ -1,3 +1,5 @@
+-- value sent (code, branch, parent, main, active, out-of-stock override) must equal the stored one, else 52009; + an On
+-- the way warehouse cannot be a parent (52000), as on Create.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Update
     @Id                   INT,
     @WarehouseCode        NVARCHAR(20),
@@ -36,6 +38,23 @@ BEGIN
     IF @BranchId IS NULL
         THROW 52000, 'Branch / Site is required.', 1;
 
+    -- (90) THE BRANCH'S ON THE WAY WAREHOUSE belongs to transfers: its name and address may change, nothing else (the
+    --      code compared exactly, so not even its case changes).
+    IF EXISTS (SELECT 1 FROM masterdata.Warehouses w
+               WHERE w.Id = @Id AND w.IsTransit = 1
+                 AND (   @WarehouseCode COLLATE Latin1_General_BIN2 <> w.WarehouseCode COLLATE Latin1_General_BIN2
+                      OR @BranchId <> w.BranchId
+                      OR @ParentId IS NOT NULL
+                      OR @IsMainWarehouse <> w.IsMainWarehouse
+                      OR @IsActive <> w.IsActive
+                      OR ISNULL(CAST(@AllowOutOfStockOverride AS TINYINT), 2) <> ISNULL(CAST(w.AllowOutOfStockOverride AS TINYINT), 2)))
+    BEGIN
+        DECLARE @TransitMsg NVARCHAR(400) = (SELECT w.WarehouseCode + N' is the On the way warehouse of ' + b.BranchCode + N': transfers use it. Only its name and address can be changed.'
+                                             FROM masterdata.Warehouses w INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
+                                             WHERE w.Id = @Id);
+        THROW 52009, @TransitMsg, 1;
+    END
+
     IF @BranchId <> @CurrentBranchId AND NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1)
         THROW 52007, 'The selected Branch / Site does not exist or is inactive. Select an active branch.', 1;
 
@@ -56,6 +75,9 @@ BEGIN
         -- The move that would swallow the mover: the chosen parent stands under this warehouse.
         IF EXISTS (SELECT 1 FROM masterdata.fn_Warehouse_Subtree(@Id) WHERE Id = @ParentId)
             THROW 52008, 'This would create a circular hierarchy: the selected parent stands under this warehouse.', 1;
+        -- (90) an On the way warehouse holds goods on the road, never other warehouses
+        IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @ParentId AND IsTransit = 1)
+            THROW 52000, 'An On the way warehouse cannot hold other warehouses. Choose another parent warehouse.', 1;
         -- Only a NEW parent is checked: a warehouse already standing under a used one keeps its place.
         IF @ParentId <> ISNULL((SELECT ParentId FROM masterdata.Warehouses WHERE Id = @Id), 0)
            AND masterdata.fn_Warehouse_IsUsed(@ParentId) = 1

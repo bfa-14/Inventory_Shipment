@@ -1,3 +1,4 @@
+-- transaction (a transfer to one of its warehouses can be dispatched from the first day).
 CREATE   PROCEDURE masterdata.usp_Branch_Create
     @BranchCode        NVARCHAR(20),
     @BranchName        NVARCHAR(150),
@@ -53,6 +54,9 @@ BEGIN
         VALUES (@BranchCode, @BranchName, @Address, @IsMainBranch, @IsActive, @UserId);
 
         SET @NewId = SCOPE_IDENTITY();
+
+        -- (90) its On the way warehouse
+        EXEC masterdata.usp_Warehouse_EnsureTransit @BranchId = @NewId, @UserId = @UserId;
 
         COMMIT TRANSACTION;
     END TRY

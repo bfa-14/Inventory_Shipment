@@ -40,12 +40,6 @@ CREATE TABLE [inventory].[StockDocuments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_StockDocuments_TypeStatus]
-    ON [inventory].[StockDocuments]([DocumentTypeId] ASC, [Status] ASC);
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_StockDocuments_TypeDate]
     ON [inventory].[StockDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
 
@@ -54,6 +48,12 @@ GO
 
 CREATE UNIQUE NONCLUSTERED INDEX [UX_StockDocuments_Number]
     ON [inventory].[StockDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_StockDocuments_TypeStatus]
+    ON [inventory].[StockDocuments]([DocumentTypeId] ASC, [Status] ASC);
 
 
 GO

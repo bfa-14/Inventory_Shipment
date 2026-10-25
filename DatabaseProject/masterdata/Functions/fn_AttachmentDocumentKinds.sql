@@ -1,6 +1,3 @@
-/* ================================================================== 1. The document kinds: + ITEM */
-
--- Re-created (67) from the body of script 66: + ITEM (Item Definition's documents), after the stock documents.
 CREATE   FUNCTION masterdata.fn_AttachmentDocumentKinds ()
 RETURNS TABLE
 AS
@@ -19,6 +16,7 @@ FROM (VALUES (N'CONTAINER', N'Containers',        N'containers',              10
              (N'INV_IN',    N'Inventory In',      N'Inventory In documents',  90),
              (N'INV_OUT',   N'Inventory Out',     N'Inventory Out documents', 100),
              (N'BIV_OUT',   N'BIVAC Out',         N'BIVAC Out documents',     105),   -- (66)
+             (N'TRO',       N'Transfer orders',   N'transfer orders',         107),   -- (90)
              (N'ITEM',      N'Items',             N'items',                   120)) k (Code, Name, Noun, SortOrder);   -- (67)
 
 GO

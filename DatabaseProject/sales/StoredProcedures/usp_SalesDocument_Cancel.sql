@@ -1,3 +1,9 @@
+/* ================================================================== 5. sales.usp_SalesDocument_Cancel */
+
+-- Re-created (89) from the body of script 84: the matching lock first; EVERY cancelled sales document replays its items
+-- (a sale's reversal gives the stock back at its frozen COGS cost while the average may have moved since; a return was
+-- replayed already). It gives way in a deadlock (DEADLOCK_PRIORITY LOW, as the stock cancel): the replay can meet a
+-- posting of the same item, which has no retry; the cancel is rolled back and the API runs it again.
 CREATE   PROCEDURE sales.usp_SalesDocument_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
@@ -8,6 +14,7 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
+    SET DEADLOCK_PRIORITY LOW;      -- (89) the cancel is the one rolled back in a deadlock, and the API runs it again
 
     SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
     IF @Reason IS NULL THROW 64000, 'A cancellation reason is required.', 1;
@@ -31,6 +38,7 @@ BEGIN
 
     BEGIN TRY
         BEGIN TRANSACTION;
+        EXEC purchase.usp_GoodsReceipt_LockMatching;  -- (89) lock order: the matcher first, then rows (the replay reads the goods receipts)
 
         DECLARE @Status TINYINT, @Direction SMALLINT, @TypeCode NVARCHAR(20), @SourceId INT;
         SELECT @Status = d.Status, @Direction = dt.StockDirection, @TypeCode = dt.Code, @SourceId = d.SourceDocumentId
@@ -99,19 +107,16 @@ BEGIN
 
         INSERT INTO sales.SalesDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', N'On ' + CONVERT(NVARCHAR(10), @CancelDate, 120) + N': ' + @Reason, @UserId);
 
-        -- A cancelled return was a receipt: replay the cost history of its items.
-        IF @Direction = 1
+        -- (89) Every cancelled sales document: replay the cost history of its items.
+        DECLARE @ItemId INT;
+        DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM sales.SalesDocumentLines WHERE DocumentId = @Id;
+        OPEN items; FETCH NEXT FROM items INTO @ItemId;
+        WHILE @@FETCH_STATUS = 0
         BEGIN
-            DECLARE @ItemId INT;
-            DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM sales.SalesDocumentLines WHERE DocumentId = @Id;
-            OPEN items; FETCH NEXT FROM items INTO @ItemId;
-            WHILE @@FETCH_STATUS = 0
-            BEGIN
-                EXEC inventory.usp_Item_RebuildCosts @ItemId;
-                FETCH NEXT FROM items INTO @ItemId;
-            END
-            CLOSE items; DEALLOCATE items;
+            EXEC inventory.usp_Item_RebuildCosts @ItemId;
+            FETCH NEXT FROM items INTO @ItemId;
         END
+        CLOSE items; DEALLOCATE items;
 
         COMMIT TRANSACTION;
     END TRY

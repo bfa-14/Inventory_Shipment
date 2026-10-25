@@ -22,6 +22,7 @@ CREATE TABLE [inventory].[DocumentTypes] (
     [AffectsItemCost]      BIT            CONSTRAINT [DF_DocumentTypes_AffectsItemCost] DEFAULT ((1)) NOT NULL,
     [AffectsOnHand]        BIT            CONSTRAINT [DF_DocumentTypes_AffectsOnHand] DEFAULT ((0)) NOT NULL,
     [AutoCreateOnDelivery] BIT            CONSTRAINT [DF_DocumentTypes_AutoCreateOnDelivery] DEFAULT ((1)) NOT NULL,
+    [NeedsApproval]        BIT            CONSTRAINT [DF_DocumentTypes_NeedsApproval] DEFAULT ((0)) NOT NULL,
     CONSTRAINT [PK_DocumentTypes] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_DocumentTypes_DefaultPricing] CHECK ([DefaultPricing]=N'None' OR [DefaultPricing]=N'PriceList' OR [DefaultPricing]=N'Cost'),
     CONSTRAINT [CK_DocumentTypes_Direction] CHECK ([StockDirection]=(1) OR [StockDirection]=(0) OR [StockDirection]=(-1)),

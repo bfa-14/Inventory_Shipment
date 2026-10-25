@@ -42,8 +42,8 @@ CREATE TABLE [inventory].[ShortageDocuments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Supplier]
-    ON [inventory].[ShortageDocuments]([SupplierId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Date]
+    ON [inventory].[ShortageDocuments]([DocumentDate] DESC);
 
 
 GO
@@ -54,8 +54,8 @@ CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Warehouse]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Date]
-    ON [inventory].[ShortageDocuments]([DocumentDate] DESC);
+CREATE NONCLUSTERED INDEX [IX_ShortageDocuments_Supplier]
+    ON [inventory].[ShortageDocuments]([SupplierId] ASC);
 
 
 GO
