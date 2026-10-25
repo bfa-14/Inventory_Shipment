@@ -47,6 +47,9 @@ public sealed class WarehouseRepository : IWarehouseRepository
         public int ChildCount { get; init; }
         public bool? AllowOutOfStockOverride { get; init; }
 
+        // (90) An On the way warehouse (transfers): the list draws its badge and hides Delete / Deactivate from it.
+        public bool IsTransit { get; init; }
+
         public Warehouse ToWarehouse() => new()
         {
             Id = Id,
@@ -62,6 +65,7 @@ public sealed class WarehouseRepository : IWarehouseRepository
             Level = Level,
             ChildCount = ChildCount,
             AllowOutOfStockOverride = AllowOutOfStockOverride,
+            IsTransit = IsTransit,
             IsMainWarehouse = IsMainWarehouse,
             IsActive = IsActive,
             CreatedAtUtc = CreatedAtUtc,
