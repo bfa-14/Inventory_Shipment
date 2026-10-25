@@ -49,6 +49,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPurchaseDocumentService, PurchaseDocumentService>();
         // Goods receipts (scripts 64 and 65): the only way goods enter stock.
         services.TryAddScoped<IGoodsReceiptService, GoodsReceiptService>();
+        services.TryAddScoped<ITransferOrderService, TransferOrderService>();
         services.TryAddScoped<IShortageDocumentService, ShortageDocumentService>();
         services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
         services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();
@@ -84,6 +85,7 @@ public static class DependencyInjection
 
         // Purchase order approval: who approves is SQL's (Settings > Purchase approval); the mailer queues the emails.
         services.TryAddScoped<IPurchaseApprovalMailer, PurchaseApprovalMailer>();
+        services.TryAddScoped<ITransferApprovalMailer, TransferApprovalMailer>();
         services.TryAddScoped<IPurchaseApprovalService, PurchaseApprovalService>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

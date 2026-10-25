@@ -179,6 +179,31 @@ public static class Permissions
         public const string BivacOutCancel = "inventory.bivacout.cancel";
         public const string BivacOutDelete = "inventory.bivacout.delete";
 
+        /* TRANSFER ORDERS (script 90): stock moved between two warehouses of any branch, without changing its cost. TEN
+           VERBS, because they are different people's jobs: the branch that asks writes the order, a supervisor releases
+           it (or approves it, when Document Types asks for approval), the source's storekeeper dispatches, the
+           destination's receives, and closing, cancelling and reversing are rarer still. Each was granted once, when it
+           was first created, to the roles holding the matching Inventory In / Out right (FB table K). */
+        public const string TransfersView = "inventory.transfers.view";
+        public const string TransfersCreate = "inventory.transfers.create";
+        public const string TransfersDelete = "inventory.transfers.delete";
+        public const string TransfersRelease = "inventory.transfers.release";
+
+        /// <summary>
+        /// Approve or reject an order waiting for approval, or approve and release a draft, while the TRO type's "Needs
+        /// approval before release" is on. The one right the procedures check themselves (62015): the decision's rule.
+        /// </summary>
+        public const string TransfersApprove = "inventory.transfers.approve";
+
+        public const string TransfersDispatch = "inventory.transfers.dispatch";
+        public const string TransfersReceive = "inventory.transfers.receive";
+
+        /// <summary>"Nothing more will be sent…": what is left to dispatch becomes Not sent.</summary>
+        public const string TransfersClose = "inventory.transfers.close";
+
+        public const string TransfersCancel = "inventory.transfers.cancel";
+        public const string TransfersReverse = "inventory.transfers.reverse";
+
         /* Shortage plans: saved planning documents. A draft is a working sheet; posting freezes it
            into a historical snapshot. Creating the purchase order from a posted plan is NOT one of
            these — it is creating a purchase order, and needs purchase.orders.create. */
@@ -458,6 +483,28 @@ public static class Permissions
             "Cancel posted BIVAC Out documents (reversal).", 840),
         new(Inventory.BivacOutDelete, "Delete BIVAC Out", InventoryModule,
             "Delete draft BIVAC Out documents.", 850),
+
+        // Script 90: name, module, description and order exactly as its MERGE writes them (the sync copies these over).
+        new(Inventory.TransfersView, "View Transfer Orders", InventoryModule,
+            "See transfer orders, their dispatches and receipts.", 855),
+        new(Inventory.TransfersCreate, "Create Transfer Orders", InventoryModule,
+            "Create and edit draft transfer orders (lines, scan, import, Fill to Max), their documents, and returns.", 860),
+        new(Inventory.TransfersDelete, "Delete Transfer Orders", InventoryModule,
+            "Delete draft transfer orders.", 862),
+        new(Inventory.TransfersRelease, "Release Transfer Orders", InventoryModule,
+            "Release a transfer order, send it for approval, withdraw it, or take it back to draft.", 870),
+        new(Inventory.TransfersApprove, "Approve Transfer Orders", InventoryModule,
+            "Approve or reject transfer orders waiting for approval, or approve and release a draft (when Document Types asks for approval).", 872),
+        new(Inventory.TransfersDispatch, "Dispatch Transfers", InventoryModule,
+            "Dispatch goods of a released transfer order (stock leaves the source) and change a dispatch's ETA.", 875),
+        new(Inventory.TransfersReceive, "Receive Transfers", InventoryModule,
+            "Receive transferred goods into the destination, and write off what will not arrive.", 880),
+        new(Inventory.TransfersClose, "Close Transfer Orders", InventoryModule,
+            "Nothing more will be sent: settle what is left to dispatch.", 885),
+        new(Inventory.TransfersCancel, "Cancel Transfer Orders", InventoryModule,
+            "Cancel a released transfer order with nothing dispatched.", 888),
+        new(Inventory.TransfersReverse, "Reverse Transfers", InventoryModule,
+            "Reverse a posted dispatch or transfer receipt (stock reversal).", 890),
 
         new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
             "Change numbering and behaviour of document types.", 900),

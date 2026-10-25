@@ -136,14 +136,14 @@ public sealed class WarehouseRepository : IWarehouseRepository
     }
 
     public async Task<IReadOnlyList<Warehouse>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, CancellationToken cancellationToken = default)
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
         {
             var rows = await connection.QueryAsync<Warehouse>(new CommandDefinition(
                 "masterdata.usp_Warehouse_Lookup",
-                new { ActiveOnly = activeOnly, BranchId = branchId, IncludeId = includeId },
+                new { ActiveOnly = activeOnly, BranchId = branchId, IncludeId = includeId, IncludeTransit = includeTransit },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             return rows.AsList();
         }

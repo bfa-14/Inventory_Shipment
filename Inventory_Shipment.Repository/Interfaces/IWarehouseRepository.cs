@@ -22,9 +22,11 @@ public interface IWarehouseRepository
     /// <summary>
     /// masterdata.usp_Warehouse_Lookup - the warehouses a dropdown offers, optionally limited to one branch.
     /// <paramref name="includeId"/> keeps one extra warehouse in the list even when it is inactive.
+    /// (90) The "On the way" warehouses of transfer orders are left out unless <paramref name="includeTransit"/> (Stock
+    /// Valuation's filter) or one of them is the <paramref name="includeId"/>.
     /// </summary>
     Task<IReadOnlyList<Warehouse>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, CancellationToken cancellationToken = default);
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default);
 
     /// <summary>masterdata.usp_Warehouse_Create - returns the new id. Throws 52000-52002 / 52005 / 52007.</summary>
     Task<int> CreateAsync(Warehouse warehouse, bool replaceMainWarehouse, int? userId, CancellationToken cancellationToken = default);

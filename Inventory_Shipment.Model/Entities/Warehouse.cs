@@ -39,6 +39,13 @@ public class Warehouse
 
     public bool IsMainWarehouse { get; set; }
 
+    /// <summary>
+    /// (90) The hidden "On the way" warehouse of its branch: it holds the goods of transfer orders between their dispatch
+    /// and their receipt. One per branch, created with the branch, never a parent, a main warehouse or a line's
+    /// warehouse; only its name and address change.
+    /// </summary>
+    public bool IsTransit { get; set; }
+
     /// <summary>Out-of-stock sales: true allows, false disallows, null follows the global setting.</summary>
     public bool? AllowOutOfStockOverride { get; set; }
     public bool IsActive { get; set; } = true;

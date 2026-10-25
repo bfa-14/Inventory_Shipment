@@ -202,6 +202,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         public int CurrentInventoryBase { get; init; }
         public int TransitBase { get; init; }
         public int OutstandingOrderBase { get; init; }
+        public int TransfersInBase { get; init; }
         public int StockPlusTransitBase { get; init; }
         public int TotalExpectedStockBase { get; init; }
         public decimal ExpectedMonthlySalesBase { get; init; }
@@ -236,6 +237,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
             CurrentInventoryBase = CurrentInventoryBase,
             TransitBase = TransitBase,
             OutstandingOrderBase = OutstandingOrderBase,
+            TransfersInBase = TransfersInBase,
             StockPlusTransitBase = StockPlusTransitBase,
             TotalExpectedStockBase = TotalExpectedStockBase,
             ExpectedMonthlySalesBase = ExpectedMonthlySalesBase,

@@ -59,6 +59,8 @@ public sealed class StockDocumentRepository : IStockDocumentRepository
         parameters.Add("@AffectsItemCost", request.AffectsItemCost, DbType.Boolean);
         parameters.Add("@AffectsOnHand", request.AffectsOnHand, DbType.Boolean);
         parameters.Add("@AutoCreateOnDelivery", request.AutoCreateOnDelivery, DbType.Boolean);
+        // (90) The TRO type's approval switch; null = unchanged (and refused on another type when sent).
+        parameters.Add("@NeedsApproval", request.NeedsApproval, DbType.Boolean);
 
         await using var connection = _connectionFactory.Create();
         try

@@ -45,7 +45,7 @@ public sealed class CostingReportService : ICostingReportService
             // The name from the rows when there are any, else from the lookup: an empty warehouse
             // still has a name, and a page that says "Stock in —" reads as a bug.
             warehouseName = rows.FirstOrDefault()?.WarehouseName
-                            ?? (await _warehouses.LookupAsync(false, null, id, cancellationToken)).FirstOrDefault(w => w.Id == id)?.WarehouseName;
+                            ?? (await _warehouses.LookupAsync(false, null, id, cancellationToken: cancellationToken)).FirstOrDefault(w => w.Id == id)?.WarehouseName;
         }
 
         return Result<InventoryValuationResult>.Success(new InventoryValuationResult

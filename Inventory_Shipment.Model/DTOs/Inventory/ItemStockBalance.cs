@@ -86,6 +86,13 @@ public sealed class ItemStockMovementDto
     public int? SourceInvoiceId { get; set; }
 
     public string? CreatedByName { get; init; }
+
+    /// <summary>
+    /// (90) A transfer's row (family Transfer, type TRD or TRR): the transfer order it belongs to, so the page links the
+    /// row and its <see cref="SourceReference"/> (the order's number) to the order. Its <see cref="Counterparty"/> reads
+    /// "LKS-01 → LUB-01". Null on every other row.
+    /// </summary>
+    public int? TransferOrderId { get; init; }
 }
 
 /// <summary>

@@ -57,9 +57,9 @@ public sealed class WarehouseService : IWarehouseService
     }
 
     public async Task<Result<IReadOnlyList<WarehouseLookupDto>>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, CancellationToken cancellationToken = default)
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default)
     {
-        var warehouses = await _warehouses.LookupAsync(activeOnly, branchId, includeId, cancellationToken);
+        var warehouses = await _warehouses.LookupAsync(activeOnly, branchId, includeId, includeTransit, cancellationToken);
         return Result<IReadOnlyList<WarehouseLookupDto>>.Success(warehouses.Select(w => w.ToLookupDto()).ToList());
     }
 
@@ -225,6 +225,11 @@ public sealed class WarehouseService : IWarehouseService
             // the parent that was picked, which is the thing the reader has to change.
             case SqlErrors.WarehouseCircular:
                 return new RuleFailure(ErrorType.Validation, exception.Message, "CIRCULAR_HIERARCHY", null);
+
+            // (90) An "On the way" warehouse is the transfers': its code, branch, parent, flags and status are not
+            // the reader's to change, nor is it deleted on its own. The procedure's sentence names it and its branch.
+            case SqlErrors.WarehouseSystemManaged:
+                return new RuleFailure(ErrorType.Conflict, exception.Message, "SYSTEM_WAREHOUSE", null);
 
             case SqlErrors.WarehouseValidation:
             default:

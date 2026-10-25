@@ -12,9 +12,12 @@ public interface IWarehouseService
     /// <summary>The active main warehouse, or NotFound when no warehouse carries the flag.</summary>
     Task<Result<WarehouseDto>> GetMainAsync(CancellationToken cancellationToken = default);
 
-    /// <summary>Warehouses for a dropdown; <paramref name="includeId"/> keeps one inactive warehouse visible.</summary>
+    /// <summary>
+    /// Warehouses for a dropdown; <paramref name="includeId"/> keeps one inactive warehouse visible. (90) The "On the
+    /// way" warehouses of transfer orders only with <paramref name="includeTransit"/> (or as the includeId).
+    /// </summary>
     Task<Result<IReadOnlyList<WarehouseLookupDto>>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, CancellationToken cancellationToken = default);
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default);
 
     Task<Result<WarehouseDto>> CreateAsync(SaveWarehouseRequest request, int userId, CancellationToken cancellationToken = default);
 

@@ -12,4 +12,7 @@ public static class WebRoutes
     /// <summary>The public approval page of a personal link; <paramref name="approve"/> chooses the button the page puts first.</summary>
     public static string PurchaseApproval(string publicBaseUrl, string token, bool approve)
         => $"{publicBaseUrl}/purchase-approval/{token}?action={(approve ? "approve" : "reject")}";
+
+    /// <summary>(90) The transfer order page: /inventory/transfers/{id} (App.tsx, routes.transferOrder).</summary>
+    public static string TransferOrder(string publicBaseUrl, int id) => $"{publicBaseUrl}/inventory/transfers/{id}";
 }

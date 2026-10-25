@@ -36,15 +36,17 @@ public sealed class WarehousesController : ControllerBase
     /// <summary>
     /// Warehouses for a dropdown. Any signed-in user may read it: forms all over the application offer a
     /// warehouse to pick, not only the users who administer warehouses.
+    /// (90) includeTransit=true also lists the "On the way" warehouses of transfer orders (Stock Valuation's filter);
+    /// every other picker leaves it out, so none of them ever offers one.
     /// </summary>
     [HttpGet("lookup")]
     [Authorize]
     [ProducesResponseType<IReadOnlyList<WarehouseLookupDto>>(StatusCodes.Status200OK)]
     public async Task<ActionResult<IReadOnlyList<WarehouseLookupDto>>> Lookup(
         [FromQuery] bool activeOnly = true, [FromQuery] int? branchId = null, [FromQuery] int? includeId = null,
-        CancellationToken cancellationToken = default)
+        [FromQuery] bool includeTransit = false, CancellationToken cancellationToken = default)
     {
-        var result = await _warehouseService.LookupAsync(activeOnly, branchId, includeId, cancellationToken);
+        var result = await _warehouseService.LookupAsync(activeOnly, branchId, includeId, includeTransit, cancellationToken);
         return result.ToActionResult(this);
     }
 

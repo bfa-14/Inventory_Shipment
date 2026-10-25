@@ -198,7 +198,7 @@ public sealed class InvoiceImportParser
             }
 
             var (quantity, rawQuantity) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnQuantity));
-            var (price, _) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnPrice));
+            var (price, rawPrice) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnPrice));
             var (discount, _) = ReadNumber(Cell(sheet, rowNumber, columns, ColumnDiscount), allowPercent: true);
 
             rows.Add(new InvoiceImportRow
@@ -212,6 +212,7 @@ public sealed class InvoiceImportParser
                 Quantity = quantity,
                 RawQuantity = rawQuantity,
                 UnitPrice = price,
+                RawUnitPrice = rawPrice,
                 DiscountPercent = discount,
                 /* EXPIRY IS NOT READ ANY MORE, and leaving both of these null is what silences its
                    validation: the rules are "parsed to nothing but the cell had text" (an error)

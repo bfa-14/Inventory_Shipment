@@ -29,8 +29,8 @@ public static class ShortageDocumentStatus
 /// The figures every shortage row carries, live or saved. All quantities are BASE UNITS except
 /// RequiredQty, which is in the item's purchase unit because that is what gets ordered.
 ///
-///   Stock + Transit       = Current Inventory + Transit
-///   Total Expected Stock  = Current Inventory + Transit + Outstanding Order
+///   Stock + Transit       = Current Inventory + Transit + Transfers in                     (90: + Transfers in)
+///   Total Expected Stock  = Current Inventory + Transit + Transfers in + Outstanding Order
 ///   Expected Requirement  = Expected Monthly Sales × Lead Time (Month)
 ///   Shortage              = max(0, Requirement − Total Expected Stock)
 ///   Coverage (months)     = Total Expected Stock ÷ Expected Monthly Sales   (null when nothing sells)
@@ -52,6 +52,13 @@ public abstract class ShortageFiguresDto
 
     /// <summary>Still to receive on open purchase orders, EXCLUDING what is already in transit.</summary>
     public int OutstandingOrderBase { get; init; }
+
+    /// <summary>
+    /// (90) "Transfers in": goods on the way to the plan's warehouse (its tree) from other warehouses, dispatched by
+    /// released transfer orders and not received or written off yet. Counted in Stock + Transit, the expected stock,
+    /// the shortage and the coverage. 0 on a plan saved before script 90, whose figures are therefore unchanged.
+    /// </summary>
+    public int TransfersInBase { get; init; }
 
     public int StockPlusTransitBase { get; init; }
     public int TotalExpectedStockBase { get; init; }

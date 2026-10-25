@@ -43,6 +43,12 @@ public static class SqlErrors
     /// <summary>A warehouse moved under itself, or under one of its own descendants.</summary>
     public const int WarehouseCircular = 52008;
 
+    /// <summary>
+    /// (90) An "On the way" warehouse is the transfers' own: only its name and address change; it is never deactivated,
+    /// and it is deleted with its branch only. The sentence names it and its branch.
+    /// </summary>
+    public const int WarehouseSystemManaged = 52009;
+
     // ----- 53xxx: master data - currencies and exchange rates -----
     public const int CurrencyValidation = 53000;
     public const int CurrencyDuplicateCode = 53001;
@@ -138,6 +144,23 @@ public static class SqlErrors
 
     /// <summary>(52) The attachment type of a stock document file is missing, inactive or not used for its kind.</summary>
     public const int StockDocumentAttachmentType = 62011;
+
+    /* (90) TRANSFER ORDERS SHARE THE 62xxx BLOCK of the stock documents: 62000 validation, 62004 changed by another user,
+       62005 not a draft, 62006 not found, 62007 not enough stock, 62008 a document type switched off, 62009 nothing to
+       post, 62010 the status forbids it (or the dispatch lock timed out), 62011 the attachment type of a file. Four of
+       their own follow; TransferOrderService.Describe turns each into its HTTP status and code. */
+
+    /// <summary>(90) More dispatched than is left to dispatch, or more received than is on the way (400 MORE_THAN_REMAINS).</summary>
+    public const int TransferMoreThanRemains = 62012;
+
+    /// <summary>(90) A dispatch whose goods a receipt took: that receipt is reversed first (409 REVERSE_LATER_FIRST).</summary>
+    public const int TransferReverseLaterFirst = 62013;
+
+    /// <summary>(90) The TRO type asks for approval and the reader may not approve: Send for approval instead (409 NEEDS_APPROVAL).</summary>
+    public const int TransferNeedsApproval = 62014;
+
+    /// <summary>(90) Approve or reject by a user without Approve Transfer Orders (403 NOT_APPROVER).</summary>
+    public const int TransferNotApprover = 62015;
 
     // ----- 63xxx: purchase - goods receipts (scripts 64 and 65) -----
     // HTTP: 400 for what the request got wrong (63000, 63009, 63011, 63012), 404 for 63006, 409 for the state of

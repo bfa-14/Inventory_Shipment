@@ -117,6 +117,14 @@ public sealed class DocumentTypeDto
     /// </summary>
     public bool AutoCreateOnDelivery { get; init; } = true;
 
+    /// <summary>
+    /// The transfer order type (TRO) only (script 90): "Needs approval before release". True, a transfer order is sent
+    /// for approval and released when a user holding Approve Transfer Orders approves it (an approver may approve and
+    /// release at once); false, Release releases it. Turning it never changes an order already waiting or released.
+    /// False on every other type.
+    /// </summary>
+    public bool NeedsApproval { get; init; }
+
     public bool IsActive { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
     public byte[] RowVersion { get; init; } = [];
@@ -456,6 +464,12 @@ public sealed class UpdateDocumentTypeRequest
     public bool? AffectsOnHand { get; init; }
 
     public bool? AutoCreateOnDelivery { get; init; }
+
+    /// <summary>
+    /// (90) The transfer order type (TRO) only: "Needs approval before release". Null leaves it alone; sent for another
+    /// type, the database refuses it (62000).
+    /// </summary>
+    public bool? NeedsApproval { get; init; }
 
     public bool IsActive { get; init; } = true;
 
