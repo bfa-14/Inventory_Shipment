@@ -1,3 +1,4 @@
+-- four formulas of the table) and in the sum of the suggested RequiredQty. Nothing else.
 CREATE   PROCEDURE inventory.usp_ShortageDocument_WriteLines
     @Id     INT,
     @Lines  inventory.tvp_ShortageLine READONLY
@@ -21,11 +22,11 @@ BEGIN
 
     DELETE FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id;
 
-    INSERT INTO inventory.ShortageDocumentLines (DocumentId, LineNumber, ItemId, CurrentInventoryBase, TransitBase, OutstandingOrderBase,
+    INSERT INTO inventory.ShortageDocumentLines (DocumentId, LineNumber, ItemId, CurrentInventoryBase, TransitBase, TransfersInBase, OutstandingOrderBase,
                                                  ExpectedMonthlySalesBase, ExpectedMonthlySalesManual, LeadTimeMonths,
                                                  PurchaseItemUnitId, PurchasePackingFormula, RequiredQty, PcPerContainer, PcPerContainerFromUnit,
                                                  MinQuantity, MaxQuantity, LastCost, Notes)
-    SELECT @Id, l.LineNumber, l.ItemId, x.CurrentInventoryBase, x.TransitBase, x.OutstandingOrderBase,
+    SELECT @Id, l.LineNumber, l.ItemId, x.CurrentInventoryBase, x.TransitBase, x.TransfersInBase, x.OutstandingOrderBase,   -- (90)
            x.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, @LeadTime,
            x.PurchaseItemUnitId, x.PurchasePackingFormula,
            RequiredQty = ISNULL(l.RequiredQty,
@@ -35,8 +36,8 @@ BEGIN
            x.MinQuantity, x.MaxQuantity, x.LastCost, NULLIF(LTRIM(RTRIM(l.Notes)), N'')
     FROM @Lines l
     INNER JOIN inventory.fn_Shortage_Live(@WarehouseId, @Months) x ON x.ItemId = l.ItemId
-    CROSS APPLY (SELECT ShortageBase = CASE WHEN ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * @LeadTime - (x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase) > 0
-                                            THEN CONVERT(INT, CEILING(ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * @LeadTime - (x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase)))
+    CROSS APPLY (SELECT ShortageBase = CASE WHEN ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * @LeadTime - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) > 0
+                                            THEN CONVERT(INT, CEILING(ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * @LeadTime - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase)))
                                             ELSE 0 END) s
     WHERE x.PurchaseItemUnitId IS NOT NULL;
 

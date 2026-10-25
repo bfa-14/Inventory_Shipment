@@ -1,4 +1,5 @@
--- unchanged, like @YearInNumber). Changing them changes no document already posted: an invoice captured its values.
+-- + A TRANSFER DISPATCH OR RECEIPT IS NUMBERED WHEN IT IS POSTED: there is no draft posting to number at a first save,
+-- so Number on post stays on for TRD and TRR. Turning the switch never changes an order already waiting or released.
 CREATE   PROCEDURE inventory.usp_DocumentType_Update
     @Id              INT,
     @Name            NVARCHAR(100),
@@ -16,7 +17,8 @@ CREATE   PROCEDURE inventory.usp_DocumentType_Update
     -- (79) NULL = unchanged (an older form never turns one off); each is refused on a type it does not apply to
     @AffectsItemCost      BIT = NULL,     -- PINV
     @AffectsOnHand        BIT = NULL,     -- PINV
-    @AutoCreateOnDelivery BIT = NULL      -- GRN
+    @AutoCreateOnDelivery BIT = NULL,     -- GRN
+    @NeedsApproval        BIT = NULL      -- (90) TRO; NULL = unchanged
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -33,6 +35,10 @@ BEGIN
         THROW 62000, 'Affects item cost and Affects on-hand apply to the purchase invoice type (PINV) only.', 1;
     IF @AutoCreateOnDelivery IS NOT NULL AND @Code <> N'GRN'
         THROW 62000, 'Create goods receipts on Delivery applies to the goods receipt type (GRN) only.', 1;
+    IF @NeedsApproval IS NOT NULL AND @Code <> N'TRO'                                                   -- (90)
+        THROW 62000, 'Needs approval before release applies to the transfer order type (TRO) only.', 1;
+    IF @Code IN (N'TRD', N'TRR') AND ISNULL(@NumberOnPost, 0) = 0                                      -- (90)
+        THROW 62000, 'A transfer dispatch or receipt is numbered when it is posted: Number on post stays on.', 1;
     IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.DocumentTypes WHERE Id = @Id AND RowVersion = @RowVersion)
         THROW 62004, 'This document type was modified by another user. Reload the page and try again.', 1;
 
@@ -42,6 +48,7 @@ BEGIN
         NumberPerBranch = ISNULL(@NumberPerBranch, 1), YearInNumber = ISNULL(@YearInNumber, YearInNumber), IsActive = ISNULL(@IsActive, 1),
         AffectsItemCost = ISNULL(@AffectsItemCost, AffectsItemCost), AffectsOnHand = ISNULL(@AffectsOnHand, AffectsOnHand),
         AutoCreateOnDelivery = ISNULL(@AutoCreateOnDelivery, AutoCreateOnDelivery),
+        NeedsApproval = ISNULL(@NeedsApproval, NeedsApproval),                                         -- (90)
         UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
     WHERE Id = @Id;
 END

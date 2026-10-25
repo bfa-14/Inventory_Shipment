@@ -47,8 +47,8 @@ CREATE NONCLUSTERED INDEX [IX_Receipts_Status]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Receipts_Client]
-    ON [sales].[Receipts]([ClientId] ASC, [ReceiptDate] DESC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Receipts_SourceSalesDocument]
+    ON [sales].[Receipts]([SourceSalesDocumentId] ASC) WHERE ([SourceSalesDocumentId] IS NOT NULL);
 
 
 GO
@@ -59,8 +59,8 @@ CREATE UNIQUE NONCLUSTERED INDEX [UX_Receipts_Number]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Receipts_SourceSalesDocument]
-    ON [sales].[Receipts]([SourceSalesDocumentId] ASC) WHERE ([SourceSalesDocumentId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_Receipts_Client]
+    ON [sales].[Receipts]([ClientId] ASC, [ReceiptDate] DESC);
 
 
 GO

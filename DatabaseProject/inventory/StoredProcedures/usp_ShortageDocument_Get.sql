@@ -1,6 +1,3 @@
-/* ================================================================== 7. Shortage plan: its purchase orders */
-
--- Re-created (77) from the body of script 25: the purchase orders made from the plan carry InvoicingStatus.
 CREATE   PROCEDURE inventory.usp_ShortageDocument_Get
     @Id INT
 AS
@@ -24,7 +21,7 @@ BEGIN
     WHERE d.Id = @Id;
 
     SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName, br.BrandName, f.FamilyName, i.IsBivac,
-           l.CurrentInventoryBase, l.TransitBase, l.OutstandingOrderBase, l.StockPlusTransitBase, l.TotalExpectedStockBase,
+           l.CurrentInventoryBase, l.TransitBase, l.TransfersInBase, l.OutstandingOrderBase, l.StockPlusTransitBase, l.TotalExpectedStockBase,   -- (90)
            l.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, l.EffectiveMonthlySales, l.LeadTimeMonths,
            l.ExpectedRequirementBase, l.ShortageBase, l.CoverageMonths,
            l.PurchaseItemUnitId, ut.UnitTypeName AS PurchaseUnitName, l.PurchasePackingFormula,

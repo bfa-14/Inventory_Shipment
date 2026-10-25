@@ -1,4 +1,9 @@
--- afterwards keeps its cancel: it was posted on an invoice that changed item costs).
+/* ================================================================== 3. purchase.usp_LandedCostAdjustment_Post */
+
+-- Re-created (89) from the body of script 79: on an invoice posted before goods receipts THE PART STILL IN STOCK IS
+-- CAPPED BY THE COMPANY'S STOCK OF THE ITEM, per item over the adjusted lines (as the goods receipt true-up does), no
+-- longer by each line's warehouse; the lines' rounded Remaining add up to the item's. An invoice that uses goods
+-- receipts is unchanged (its true-up rewrites these figures).
 CREATE   PROCEDURE purchase.usp_LandedCostAdjustment_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -42,10 +47,31 @@ BEGIN
 
         DECLARE @Rate DECIMAL(18,6) = (SELECT ExchangeRate FROM purchase.PurchaseDocuments WHERE Id = @InvoiceId);
 
+        -- (89) WHAT IS STILL IN STOCK, PER ITEM, ON THE COMPANY'S STOCK (every warehouse), as the goods receipt true-up
+        --      (GRNCOST) does: Remaining = min(net received of the item's adjusted lines, company on hand), shared over those
+        --      lines by their net received. Was: each line capped by its own warehouse's stock, which sent to cost of sales
+        --      the share of goods moved to another warehouse and counted a warehouse's stock twice for two lines of one
+        --      item there. Only an invoice posted before goods receipts keeps these figures.
+        DECLARE @Rem TABLE (ItemId INT NOT NULL PRIMARY KEY, NetReceived DECIMAL(18,6) NOT NULL, OnHand DECIMAL(18,6) NOT NULL,
+                            Remaining DECIMAL(18,6) NOT NULL DEFAULT (0));
+        INSERT INTO @Rem (ItemId, NetReceived, OnHand)
+        SELECT l.ItemId,
+               SUM(CASE WHEN l.QuantityBase - l.ReturnedQuantityBase > 0 THEN l.QuantityBase - l.ReturnedQuantityBase ELSE 0 END),
+               inventory.fn_StockOnHand(l.ItemId, NULL)
+        FROM purchase.PurchaseDocumentLines l
+        CROSS APPLY (SELECT Allocated = ISNULL((SELECT SUM(x.AmountBase) FROM purchase.PurchaseChargeAllocations x
+                                                 INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
+                                                 WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'LCA' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1), 0)) a
+        WHERE l.DocumentId = @InvoiceId AND a.Allocated <> 0
+        GROUP BY l.ItemId;
+
+        UPDATE @Rem SET Remaining = CASE WHEN OnHand <= 0 OR NetReceived <= 0 THEN 0
+                                         WHEN OnHand < NetReceived THEN OnHand ELSE NetReceived END;
+
         DELETE FROM purchase.LandedCostAdjustmentLines WHERE AdjustmentId = @Id;
         INSERT INTO purchase.LandedCostAdjustmentLines (AdjustmentId, PurchaseLineId, ItemId, WarehouseId, ReceivedBase, NetReceivedBase, RemainingBase,
                                                         AllocatedBase, ExtraPerBaseUnit, InventoryPortionBase, CogsPortionBase, LandedCostBefore, LandedCostAfter)
-        SELECT @Id, l.Id, l.ItemId, l.WarehouseId, l.QuantityBase, n.NetReceived, r.Remaining,
+        SELECT @Id, l.Id, l.ItemId, l.WarehouseId, l.QuantityBase, n.NetReceived, CAST(ROUND(r.Remaining, 0) AS INT),   -- (89) re-rounded below
                a.Allocated, a.Allocated / l.QuantityBase,
                InvPortion = ROUND(a.Allocated / l.QuantityBase * r.Remaining, 2),
                CogsPortion = a.Allocated - ROUND(a.Allocated / l.QuantityBase * r.Remaining, 2),
@@ -56,10 +82,35 @@ BEGIN
                                                  INNER JOIN purchase.PurchaseCharges c ON c.Id = x.ChargeId
                                                  WHERE x.PurchaseLineId = l.Id AND c.DocumentKind = N'LCA' AND c.DocumentId = @Id AND c.IncludeInLandedCost = 1), 0)) a
         CROSS APPLY (SELECT NetReceived = l.QuantityBase - l.ReturnedQuantityBase) n
-        CROSS APPLY (SELECT Remaining = CASE WHEN inventory.fn_StockOnHand(l.ItemId, l.WarehouseId) < n.NetReceived
-                                             THEN CASE WHEN inventory.fn_StockOnHand(l.ItemId, l.WarehouseId) > 0 THEN inventory.fn_StockOnHand(l.ItemId, l.WarehouseId) ELSE 0 END
-                                             ELSE n.NetReceived END) r
+        INNER JOIN @Rem rm ON rm.ItemId = l.ItemId                                                                       -- (89)
+        CROSS APPLY (SELECT Remaining = CAST(CASE WHEN rm.Remaining <= 0 OR rm.NetReceived <= 0 OR n.NetReceived <= 0 THEN 0
+                                                  ELSE n.NetReceived * rm.Remaining / rm.NetReceived END AS DECIMAL(18,6))) r   -- (89)
         WHERE l.DocumentId = @InvoiceId AND a.Allocated <> 0;
+
+        -- (89) THE LINES' ROUNDED "REMAINING" ADD UP TO THE ITEM'S ROUNDED PIECES STILL HELD (largest remainder): three
+        --      lines sharing 10 pcs show 4 / 3 / 3, not 3 / 3 / 3. Display only: the portions above use the exact share.
+        IF @UsesGoodsReceipts = 0
+        BEGIN
+            ;WITH s AS
+            (
+                SELECT a.Id, a.ItemId,
+                       Share  = CASE WHEN rm.NetReceived > 0 AND a.NetReceivedBase > 0
+                                     THEN CAST(a.NetReceivedBase AS DECIMAL(18,6)) * rm.Remaining / rm.NetReceived ELSE 0 END,
+                       Target = CAST(ROUND(rm.Remaining, 0) AS INT)
+                FROM purchase.LandedCostAdjustmentLines a
+                INNER JOIN @Rem rm ON rm.ItemId = a.ItemId
+                WHERE a.AdjustmentId = @Id
+            ), r AS
+            (
+                SELECT s.Id, s.Target, Fl = CAST(FLOOR(s.Share) AS INT),
+                       SumFl = SUM(CAST(FLOOR(s.Share) AS INT)) OVER (PARTITION BY s.ItemId),
+                       Rk    = ROW_NUMBER() OVER (PARTITION BY s.ItemId ORDER BY s.Share - FLOOR(s.Share) DESC, s.Id)
+                FROM s
+            )
+            UPDATE a SET RemainingBase = r.Fl + CASE WHEN r.Rk <= r.Target - r.SumFl THEN 1 ELSE 0 END
+            FROM purchase.LandedCostAdjustmentLines a
+            INNER JOIN r ON r.Id = a.Id;
+        END
 
         -- Items with no stock at all: everything goes to COGS. (65) Older invoices only.
         UPDATE x SET CogsPortionBase = x.CogsPortionBase + x.InventoryPortionBase, InventoryPortionBase = 0

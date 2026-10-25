@@ -1,3 +1,5 @@
+-- branch); the generic reference scan moved to usp_Warehouse_IsReferenced (the same keys: none cascades), with today's
+-- sentence.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Delete
     @Id INT
 AS
@@ -6,6 +8,15 @@ BEGIN
 
     IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @Id)
         THROW 52006, 'Warehouse not found.', 1;
+
+    -- (90) THE BRANCH'S ON THE WAY WAREHOUSE is the system's: usp_Branch_Delete removes it with its branch.
+    IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @Id AND IsTransit = 1)
+    BEGIN
+        DECLARE @TransitMsg NVARCHAR(400) = (SELECT w.WarehouseCode + N' is the On the way warehouse of ' + b.BranchCode + N': it is removed with its branch.'
+                                             FROM masterdata.Warehouses w INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
+                                             WHERE w.Id = @Id);
+        THROW 52009, @TransitMsg, 1;
+    END
 
     IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @Id AND IsMainWarehouse = 1)
         THROW 52005, 'The Main Warehouse cannot be deleted. Designate another warehouse as the Main Warehouse first.', 1;
@@ -16,23 +27,9 @@ BEGIN
     IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE ParentId = @Id)
         THROW 52003, 'This warehouse has warehouses standing under it. Move or delete them first.', 1;
 
-    DECLARE @sql NVARCHAR(MAX) = N'';
-
-    SELECT @sql = @sql
-        + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
-        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
-    FROM sys.foreign_keys fk
-    INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
-    INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
-    INNER JOIN sys.columns c ON c.object_id = fkc.parent_object_id AND c.column_id = fkc.parent_column_id
-    WHERE fk.referenced_object_id = OBJECT_ID(N'masterdata.Warehouses')
-      -- ParentId is handled above, in its own words.
-      AND NOT (t.object_id = OBJECT_ID(N'masterdata.Warehouses') AND c.name = N'ParentId');
-
+    -- (90) the generic reference scan, held once (ParentId is handled above, in its own words)
     DECLARE @Referenced BIT = 0;
-
-    IF @sql <> N''
-        EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+    EXEC masterdata.usp_Warehouse_IsReferenced @Id, @Referenced OUTPUT;
 
     IF @Referenced = 1
         THROW 52003, 'This warehouse cannot be deleted because it contains inventory or is referenced by other records. You may deactivate the warehouse instead.', 1;

@@ -40,8 +40,8 @@ CREATE TABLE [masterdata].[Parties] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Parties_PartyName]
-    ON [masterdata].[Parties]([PartyName] ASC);
+CREATE NONCLUSTERED INDEX [IX_Parties_Branch]
+    ON [masterdata].[Parties]([BranchId] ASC);
 
 
 GO
@@ -53,8 +53,8 @@ CREATE NONCLUSTERED INDEX [IX_Parties_Types]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Parties_Branch]
-    ON [masterdata].[Parties]([BranchId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Parties_PartyName]
+    ON [masterdata].[Parties]([PartyName] ASC);
 
 
 GO

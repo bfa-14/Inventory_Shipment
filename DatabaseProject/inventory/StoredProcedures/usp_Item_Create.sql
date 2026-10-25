@@ -42,6 +42,9 @@ BEGIN
         THROW 56008, 'Item Family not found or inactive.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsActive = 1)
         THROW 56008, 'Default Warehouse not found or inactive.', 1;
+    -- (90) an On the way warehouse holds goods on the road between warehouses: never an item's default
+    IF EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @DefaultWarehouseId AND IsTransit = 1)
+        THROW 56008, 'An On the way warehouse cannot be an item''s default warehouse: choose a warehouse where stock is kept.', 1;
 
     IF EXISTS (SELECT 1 FROM inventory.Items WHERE ItemCode = @ItemCode)
         THROW 56001, 'An item with this Item Code already exists.', 1;

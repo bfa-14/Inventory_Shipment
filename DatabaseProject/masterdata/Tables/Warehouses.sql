@@ -14,10 +14,12 @@ CREATE TABLE [masterdata].[Warehouses] (
     [ParentId]                INT            NULL,
     [Level]                   INT            CONSTRAINT [DF_Warehouses_Level] DEFAULT ((1)) NOT NULL,
     [AllowOutOfStockOverride] BIT            NULL,
+    [IsTransit]               BIT            CONSTRAINT [DF_Warehouses_IsTransit] DEFAULT ((0)) NOT NULL,
     CONSTRAINT [PK_Warehouses] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_Warehouses_Level] CHECK ([Level]>=(1)),
     CONSTRAINT [CK_Warehouses_MainIsActive] CHECK ([IsMainWarehouse]=(0) OR [IsActive]=(1)),
     CONSTRAINT [CK_Warehouses_NotOwnParent] CHECK ([ParentId] IS NULL OR [ParentId]<>[Id]),
+    CONSTRAINT [CK_Warehouses_Transit] CHECK ([IsTransit]=(0) OR [IsMainWarehouse]=(0) AND [ParentId] IS NULL AND [IsActive]=(1)),
     CONSTRAINT [CK_Warehouses_WarehouseCode_NotBlank] CHECK (len(ltrim(rtrim([WarehouseCode])))>(0)),
     CONSTRAINT [CK_Warehouses_WarehouseName_NotBlank] CHECK (len(ltrim(rtrim([WarehouseName])))>(0)),
     CONSTRAINT [FK_Warehouses_Branches] FOREIGN KEY ([BranchId]) REFERENCES [masterdata].[Branches] ([Id]),
@@ -30,12 +32,6 @@ CREATE TABLE [masterdata].[Warehouses] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
-    ON [masterdata].[Warehouses]([ParentId] ASC);
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
     ON [masterdata].[Warehouses]([WarehouseName] ASC);
 
@@ -44,6 +40,18 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_Warehouses_BranchId]
     ON [masterdata].[Warehouses]([BranchId] ASC);
+
+
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_TransitBranch]
+    ON [masterdata].[Warehouses]([BranchId] ASC) WHERE ([IsTransit]=(1));
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
+    ON [masterdata].[Warehouses]([ParentId] ASC);
 
 
 GO

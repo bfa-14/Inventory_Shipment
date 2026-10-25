@@ -1,20 +1,6 @@
-/* ==================================================================================================
-   85: Shortages - Expected Monthly Sales is the busiest month of the history
-   --------------------------------------------------------------------------------------------------
-   "Load items" (and Calculate, Recalculate) worked out an item's Expected Monthly Sales as the AVERAGE:
-   what was sold in the last N months of history, divided by N. It is now the HIGHEST month: the history
-   is cut into N blocks of one month, counted back from today, and the block with the most net sales
-   (sales less returns) gives the figure. Example, 3 months of history with 10, 40 and 25 pieces sold:
-   40 (it was 25).
-
-     inventory.fn_Shortage_Live   ExpectedMonthlySalesBase = the highest month (SoldInPeriodBase unchanged:
-                                  the total of the whole history)
-
-   Plans already saved keep the figures they were written with until they are recalculated; a figure
-   typed by hand ("manual") is never touched. Re-created from its current body with only this change.
-   Idempotent.
-   ================================================================================================== */
-
+-- transfer orders to the plan's warehouse or a warehouse under it and neither received nor written off yet: they sit in
+-- an On the way warehouse, which no tree holds, so CurrentInventoryBase does not count them. Transfers OUT of the tree
+-- are not demand (decision D8). Every other column unchanged.
 CREATE   FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
 RETURNS TABLE
 AS
@@ -36,6 +22,7 @@ RETURN
            CurrentInventoryBase     = ISNULL((SELECT SUM(m.QuantityBase) FROM inventory.StockMovements m
                                               WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)), 0),
            TransitBase              = ISNULL(tr.Transit, 0),
+           TransfersInBase          = ISNULL(ti.TransfersIn, 0),            -- (90) goods on the way to the tree by transfers
            OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
                                            THEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) ELSE 0 END,
            -- (85) the HIGHEST month of the history, not the average: plan for the busiest month seen.
@@ -70,6 +57,17 @@ RETURN
           AND pl.WarehouseId IN (SELECT t.Id FROM tree t)                  -- the order's warehouse, like the open order / invoice quantities
           AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
     ) tr
+    OUTER APPLY
+    (
+        -- (90) GOODS ON THE WAY TO THE PLAN'S WAREHOUSE (its tree): dispatched by released transfer orders to it, not
+        --      received or written off yet. They sit in an On the way warehouse, which no tree holds. Transfers OUT
+        --      are not demand: the owner has not said the main warehouse buys for the branches (it would buy twice).
+        SELECT TransfersIn = SUM(l.DispatchedBase - l.ReceivedBase - l.LostBase)
+        FROM inventory.TransferOrderLines l
+        INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
+        WHERE l.ItemId = i.Id AND o.Status = 2 AND o.ToWarehouseId IN (SELECT t.Id FROM tree t)
+          AND l.DispatchedBase > l.ReceivedBase + l.LostBase
+    ) ti
     OUTER APPLY
     (
         SELECT Sold = SUM(-m.QuantityBase)

@@ -41,14 +41,14 @@ CREATE NONCLUSTERED INDEX [IX_ContainerLines_Container]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerLines_Order]
-    ON [logistics].[ContainerLines]([PurchaseOrderId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerLines_Item]
+    ON [logistics].[ContainerLines]([ItemId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerLines_Item]
-    ON [logistics].[ContainerLines]([ItemId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerLines_Order]
+    ON [logistics].[ContainerLines]([PurchaseOrderId] ASC);
 
 
 GO
