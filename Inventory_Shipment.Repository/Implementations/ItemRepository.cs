@@ -215,13 +215,13 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
-    public async Task DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(int id, int? userId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
         {
             await connection.ExecuteAsync(new CommandDefinition(
-                "inventory.usp_Item_Delete", new { Id = id },
+                "inventory.usp_Item_Delete", new { Id = id, UserId = userId },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

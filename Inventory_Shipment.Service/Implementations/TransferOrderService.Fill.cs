@@ -21,6 +21,8 @@ namespace Inventory_Shipment.Service.Implementations;
 /// </summary>
 public sealed partial class TransferOrderService
 {
+    private const string MissingRowVersionMessage = "The row version is missing. Reload the page and try again.";
+
     public Task<Result<TransferFillResult>> FillToMaxPreviewAsync(
         int id, TransferFillRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
@@ -47,6 +49,13 @@ public sealed partial class TransferOrderService
         if (BadRequest<TransferFillResult>(apply ? request.RowVersion : null, addItems) is { } bad)
         {
             return bad;
+        }
+
+        // The apply is made with the order's row version (L9): without one it would overwrite, unseen, a change another
+        // user saved since the preview. The page always sends it; the procedure refuses it too (62000).
+        if (apply && string.IsNullOrWhiteSpace(request.RowVersion))
+        {
+            return Result<TransferFillResult>.Failure(ErrorType.Validation, MissingRowVersionMessage, "VALIDATION");
         }
 
         // The table type's key is the item: an item ticked twice could never be one row.
@@ -132,7 +141,9 @@ public sealed partial class TransferOrderService
         try
         {
             // The warehouses, "Tick at least one item." and "Nothing to transfer: …" are the procedure's (62000 / 62009).
-            created = await _transfers.CreateFromLevelsAsync(request, userId, cancellationToken);
+            // One short command whose answer is read after its draft is saved: not cancelled with the request, so a caller
+            // gone meanwhile never turns a draft that was made into a 499 (and a second click into a second draft).
+            created = await _transfers.CreateFromLevelsAsync(request, userId, AfterCommit);
         }
         catch (BusinessRuleException ex)
         {

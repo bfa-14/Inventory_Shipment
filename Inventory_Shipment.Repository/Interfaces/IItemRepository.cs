@@ -59,10 +59,11 @@ public interface IItemRepository
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// inventory.usp_Item_Delete - removes the item with its units and files.
+    /// inventory.usp_Item_Delete - removes the item with its units and files (and its stock levels per warehouse, whose
+    /// history records the removal by <paramref name="userId"/>, script 91).
     /// Throws 56003 when anything else references the item or one of its units, 56006 when it is gone.
     /// </summary>
-    Task DeleteAsync(int id, CancellationToken cancellationToken = default);
+    Task DeleteAsync(int id, int? userId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// inventory.usp_Item_Lookup - the items an Item picker offers, each with the SKU of its base unit.

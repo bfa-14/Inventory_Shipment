@@ -237,11 +237,11 @@ public sealed class ItemService : IItemService
         return Result.Success();
     }
 
-    public async Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
     {
         try
         {
-            await _items.DeleteAsync(id, cancellationToken);
+            await _items.DeleteAsync(id, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -249,7 +249,7 @@ public sealed class ItemService : IItemService
             return Result.Failure(failure.Type, failure.Message, failure.Code);
         }
 
-        _logger.LogInformation("Item {ItemId} deleted", id);
+        _logger.LogInformation("Item {ItemId} deleted by user {UserId}", id, userId);
         return Result.Success();
     }
 

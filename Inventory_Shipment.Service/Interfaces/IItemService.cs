@@ -31,7 +31,7 @@ public interface IItemService
 
     Task<Result> SetActiveAsync(int id, bool isActive, int userId, CancellationToken cancellationToken = default);
 
-    Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default);
+    Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Items for a dropdown; <paramref name="includeId"/> keeps one inactive item visible,

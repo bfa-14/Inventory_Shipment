@@ -28,6 +28,9 @@ public sealed class StockLevelService : IStockLevelService
     private const string ForbiddenCode = "FORBIDDEN";
     private const string InvalidRowVersionMessage = "The row version is not valid. Reload the page and try again.";
 
+    /// <summary>The work after the commit never stops halfway (90's AfterCommit): the change took place.</summary>
+    private static readonly CancellationToken AfterCommit = CancellationToken.None;
+
     private static readonly CultureInfo Numbers = CultureInfo.InvariantCulture;
 
     /// <summary>The company view's statuses (the page offers Below Min and every item; the API takes the three).</summary>
@@ -133,6 +136,15 @@ public sealed class StockLevelService : IStockLevelService
 
         var levels = request.Levels ?? [];
 
+        // An empty row ("levels": [null]) passes the model binding (it checks properties, not the elements of a list):
+        // refused here, as 90's transfer lines are, instead of ending in a NullReferenceException and a 500.
+        var empty = levels.ToList().FindIndex(l => l is null);
+        if (empty >= 0)
+        {
+            return Result<SetStockLevelsResult>.Failure(
+                ErrorType.Validation, $"Level {(empty + 1).ToString(Numbers)} of the request is empty.", "VALIDATION");
+        }
+
         // The table type's key is the warehouse: one warehouse sent twice could never be one row.
         if (levels.GroupBy(l => l.WarehouseId).Any(g => g.Count() > 1))
         {
@@ -162,7 +174,9 @@ public sealed class StockLevelService : IStockLevelService
 
         _logger.LogInformation("Stock levels of item {ItemId} set in {Count} warehouse(s) by user {UserId}", itemId, inputs.Count, userId);
 
-        var rows = await ItemRowsAsync(itemId, cancellationToken);
+        // Read after the commit whatever the caller does (AfterCommit, 90's Sec5): a closed tab or a proxy's timeout must
+        // not turn a saved change into a 499, nor a failed read into a 500 - the person would type the change again.
+        var rows = await ItemRowsAsync(itemId, AfterCommit);
         var itemCode = rows.FirstOrDefault()?.ItemCode;
         var count = inputs.Count;
         var message = $"{count.ToString("N0", Numbers)} stock level{(count == 1 ? string.Empty : "s")} saved"
@@ -203,7 +217,8 @@ public sealed class StockLevelService : IStockLevelService
 
     /// <summary>
     /// The item's levels as its card reads them: every warehouse with a level, inactive warehouses and an inactive item
-    /// included. A read that fails after the write answers no rows: the change itself went through, and the card reloads.
+    /// included. A read that fails after the write - for any reason but a cancellation - answers no rows: the change
+    /// itself went through, and the card reloads.
     /// </summary>
     private async Task<IReadOnlyList<StockLevelRowDto>> ItemRowsAsync(int itemId, CancellationToken cancellationToken)
     {
@@ -217,7 +232,7 @@ public sealed class StockLevelService : IStockLevelService
             }, cancellationToken);
             return rows;
         }
-        catch (BusinessRuleException ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             _logger.LogWarning(ex, "Stock levels of item {ItemId} could not be read again after a change", itemId);
             return [];

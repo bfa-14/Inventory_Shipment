@@ -49,10 +49,27 @@ public sealed class StockLevelImportService : IStockLevelImportService
 
     public Result<(byte[] Content, string FileName)> GenerateErrorReport(
         IReadOnlyList<StockLevelImportRow> rows, IReadOnlySet<string> permissions)
-        => permissions.Contains(Permissions.Inventory.StockLevelsEdit)
-            ? Result<(byte[], string)>.Success(
-                (StockLevelImportWorkbooks.GenerateErrorReport(rows ?? []), StockLevelImportWorkbooks.ErrorReportFileName))
-            : Forbidden<(byte[], string)>();
+    {
+        if (!permissions.Contains(Permissions.Inventory.StockLevelsEdit))
+        {
+            return Forbidden<(byte[], string)>();
+        }
+
+        // The rows the check answered, posted back: never more than a file may hold, never an empty row.
+        rows ??= [];
+        if (rows.Count > StockLevelImportParser.MaxRows)
+        {
+            return Result<(byte[], string)>.Failure(ErrorType.Validation, StockLevelImportParser.TooManyRowsMessage, "VALIDATION");
+        }
+
+        if (EmptyRow(rows) is { } empty)
+        {
+            return Result<(byte[], string)>.Failure(ErrorType.Validation, empty, "VALIDATION");
+        }
+
+        return Result<(byte[], string)>.Success(
+            (StockLevelImportWorkbooks.GenerateErrorReport(rows), StockLevelImportWorkbooks.ErrorReportFileName));
+    }
 
     /* ── validation ───────────────────────────────────────────────────────────────────────────── */
 
@@ -148,6 +165,12 @@ public sealed class StockLevelImportService : IStockLevelImportService
             return Result<StockLevelImportResult>.Failure(ErrorType.Validation, StockLevelImportParser.TooManyRowsMessage, "VALIDATION");
         }
 
+        // "rows": [null] passes the model binding: refused here instead of a NullReferenceException and a 500.
+        if (EmptyRow(posted) is { } empty)
+        {
+            return Result<StockLevelImportResult>.Failure(ErrorType.Validation, empty, "VALIDATION");
+        }
+
         // The table type's key is the row number: one row sent twice could never be judged.
         if (posted.GroupBy(r => r.RowNumber).Any(g => g.Count() > 1))
         {
@@ -170,7 +193,9 @@ public sealed class StockLevelImportService : IStockLevelImportService
         StockLevelImportResult result;
         try
         {
-            result = await _levels.ImportAsync(rows, request.FileName, userId, cancellationToken);
+            // One short command whose answer is read after its COMMIT: it is not cancelled with the request, so a caller
+            // gone meanwhile never turns an import that took place into a 499 (and a second click into a second import).
+            result = await _levels.ImportAsync(rows, request.FileName, userId, CancellationToken.None);
         }
         catch (BusinessRuleException ex)
         {
@@ -287,6 +312,20 @@ public sealed class StockLevelImportService : IStockLevelImportService
     }
 
     private static string Number(int value) => value.ToString(Numbers);
+
+    /// <summary>"Row {n} of the request is empty." for the first null row posted, else null.</summary>
+    private static string? EmptyRow(IReadOnlyList<StockLevelImportRow?> rows)
+    {
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (rows[i] is null)
+            {
+                return $"Row {(i + 1).ToString(Numbers)} of the request is empty.";
+            }
+        }
+
+        return null;
+    }
 
     private static string Rows(int value) => value == 1 ? "row" : "rows";
 

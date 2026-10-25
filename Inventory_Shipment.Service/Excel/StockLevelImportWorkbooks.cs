@@ -78,7 +78,7 @@ public static class StockLevelImportWorkbooks
             SetQuantityOrText(sheet.Cell(rowNumber, 4), row.MinQuantityBase, row.RawMin);
             SetQuantityOrText(sheet.Cell(rowNumber, 5), row.MaxQuantityBase, row.RawMax);
             SetText(sheet.Cell(rowNumber, 6), row.Remove ? "Yes" : row.RawRemove);
-            sheet.Cell(rowNumber, 7).Value = row.Status;
+            SetText(sheet.Cell(rowNumber, 7), row.Status);
             SetText(sheet.Cell(rowNumber, 8), row.Message);
 
             var colour = string.Equals(row.Status, StockLevelImportStatus.Error, StringComparison.Ordinal)
@@ -314,11 +314,20 @@ public static class StockLevelImportWorkbooks
         sheet.Column(5).Width = Math.Max(sheet.Column(5).Width, 10);
     }
 
+    /// <summary>The most a cell holds (Excel's limit, which ClosedXML enforces with an exception).</summary>
+    private const int MaxCellText = 32_767;
+
+    /// <summary>
+    /// A text as a cell can hold it: the error report is built from rows the client posts back, so a value longer than a
+    /// cell takes is cut ("…") rather than failing the whole report with a 500.
+    /// </summary>
+    private static string Fit(string value) => value.Length <= MaxCellText ? value : value[..(MaxCellText - 1)] + "…";
+
     private static void SetText(IXLCell cell, string? value)
     {
         if (!string.IsNullOrEmpty(value))
         {
-            cell.Value = value;
+            cell.Value = Fit(value);
         }
     }
 
@@ -331,7 +340,7 @@ public static class StockLevelImportWorkbooks
         }
         else if (!string.IsNullOrEmpty(raw))
         {
-            cell.Value = raw;
+            cell.Value = Fit(raw);
         }
     }
 

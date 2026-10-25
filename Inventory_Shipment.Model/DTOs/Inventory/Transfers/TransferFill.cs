@@ -283,4 +283,10 @@ public sealed class CreateTransferFromLevelsResult
 
     /// <summary>"TRO-BR-003-000015 created. Add items below Min: 2 items added (…), 1 not added (…)."</summary>
     public string Message { get; init; } = string.Empty;
+
+    /// <summary>
+    /// Fill to Max's warnings for the new draft (3.3.6.3 step 5): "{From} goes below its own Min for {item}: …" and
+    /// "Other draft or waiting transfer orders to {To} hold some of these items too (…): Fill to Max does not count them."
+    /// </summary>
+    public IReadOnlyList<string> Warnings { get; init; } = [];
 }

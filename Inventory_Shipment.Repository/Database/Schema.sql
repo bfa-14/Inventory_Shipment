@@ -85121,11 +85121,15 @@ GO
      2. A LEVEL IS OWNED BY ITS ITEM AND ITS WAREHOUSE (cascading keys, decision M5): deleting either deletes its levels;
         their history stays (no key). A warehouse with levels counts as used: it cannot become a parent, with its own
         sentence. Script 90's usp_Warehouse_IsReferenced and the item delete skip the cascading keys.
-     3. ONE FORMULA (inventory.fn_StockPosition, on top of script 90's fn_TransferPosition, M6): Projected = On hand + On
-        the way in + To come in - To go out, released transfer orders only (drafts, orders waiting for approval and
+     3. ONE FORMULA (inventory.fn_StockLevelState, on top of script 90's fn_TransferPosition, M6): Projected = On hand +
+        On the way in + To come in - To go out, released transfer orders only (drafts, orders waiting for approval and
         purchases are not counted; L1: what released orders take OUT of the warehouse is subtracted). Status, the first
         that applies: No level; Below Min (Projected < Min); Below Min, covered (On hand < Min <= Projected, L4); Above
-        Max (Projected > Max); OK. To reach Max = (Max, else Min) - Projected when Below Min.
+        Max (Projected > Max); OK. To reach Max = (Max, else Min) - Projected when Below Min. One pair:
+        fn_StockPosition (fn_TransferPosition); many pairs - Stock Levels, the Dashboard, a transfer order's lines,
+        Fill to Max and its drawer - fn_TransferPositions, the same sums for every pair at once, so a reader never
+        reads the item's whole transfer history once per pair (Check 6 compares the two). A level is at most
+        1,000,000,000 pcs, and the figures derived from it are worked out so that nothing overflows.
      4. THE COMPANY FIGURES STAY THE COMPANY'S: Inventory > Stock Levels shows them in a second view, "Company (Item
         Definition)" (usp_StockLevel_CompanySearch), which computes the Dashboard's "Items below their minimum" exactly
         (reporting.usp_Dashboard_Summary, script 72, not touched). The Dashboard gains "Warehouse levels below Min"
@@ -85157,7 +85161,9 @@ GO
      New types         inventory.tvp_ItemWarehouseLevel, tvp_ItemWarehouseLevelImport, tvp_TransferFillItem,
                        tvp_TransferFillCandidate (frozen)
      New functions     masterdata.fn_Warehouse_IsUsedInTransactions (the body of fn_Warehouse_IsUsed as script 90 left it);
-                       inventory.fn_StockPosition, fn_TransferFill_Plan, fn_TransferFill_Message,
+                       inventory.fn_StockLevelState (Projected, the status, To reach Max), fn_TransferPositions (script
+                       90's fn_TransferPosition for every pair at once), fn_StockPosition (one pair), fn_TransferFill_Plan,
+                       fn_TransferFill_Message, fn_TransferFill_FromWarning, fn_TransferFill_OtherOrdersWarning,
                        fn_ItemWarehouseLevel_ImportJudge
      New procedures    inventory.usp_StockLevel_Search, _CompanySearch; inventory.usp_ItemWarehouseLevel_Set, _Remove,
                        _History, _ImportCheck, _Import; inventory.usp_TransferOrder_FillToMax, _BelowMinCandidates,
@@ -85170,7 +85176,8 @@ GO
                                                                     used-parent refusal (52000)
                        masterdata.usp_Warehouse_Lookup              from the body of script 90: + IsUsedInTransactions,
                                                                     HasStockLevels
-                       inventory.usp_Item_Delete                    from the body of script 11: the scans skip cascading keys
+                       inventory.usp_Item_Delete                    from the body of script 11: the scans skip cascading keys;
+                                                                    + @UserId, the levels' "Removed" audit rows
                        inventory.usp_TransferOrder_Get              from the body of script 90: + the order's levels, the
                                                                     lines' Min / Max / Projected, the two abilities
                        inventory.usp_TransferOrder_Availability     from the body of script 90: + the levels' figures
@@ -85220,6 +85227,7 @@ BEGIN
         CONSTRAINT PK_ItemWarehouseLevels PRIMARY KEY CLUSTERED (ItemId, WarehouseId),
         CONSTRAINT CK_ItemWarehouseLevels_Min CHECK (MinQuantityBase >= 0),
         CONSTRAINT CK_ItemWarehouseLevels_Max CHECK (MaxQuantityBase IS NULL OR MaxQuantityBase >= MinQuantityBase),
+        CONSTRAINT CK_ItemWarehouseLevels_Range CHECK (MinQuantityBase <= 1000000000 AND (MaxQuantityBase IS NULL OR MaxQuantityBase <= 1000000000)),
         CONSTRAINT FK_ItemWarehouseLevels_Items      FOREIGN KEY (ItemId)      REFERENCES inventory.Items (Id)       ON DELETE CASCADE,
         CONSTRAINT FK_ItemWarehouseLevels_Warehouses FOREIGN KEY (WarehouseId) REFERENCES masterdata.Warehouses (Id) ON DELETE CASCADE,
         CONSTRAINT FK_ItemWarehouseLevels_CreatedBy  FOREIGN KEY (CreatedBy)   REFERENCES security.Users (Id),
@@ -85228,6 +85236,22 @@ BEGIN
     CREATE NONCLUSTERED INDEX IX_ItemWarehouseLevels_Warehouse ON inventory.ItemWarehouseLevels (WarehouseId)
         INCLUDE (MinQuantityBase, MaxQuantityBase);
     PRINT 'Created inventory.ItemWarehouseLevels';
+END
+GO
+
+-- (91) MIN AND MAX AT MOST 1,000,000,000 PCS: far above any warehouse, and far enough below the INT ceiling that "Max -
+--      Projected" and Fill to Max's rounding never overflow (one level of 2,147,483,647 stopped the whole Stock Levels
+--      page, Fill to Max and its drawer). A table made by a copy of this script without the rule gets it here; rows it
+--      already holds are left as they are (WITH NOCHECK) rather than stopping the start-up.
+IF OBJECT_ID(N'inventory.CK_ItemWarehouseLevels_Range', N'C') IS NULL
+BEGIN
+    IF EXISTS (SELECT 1 FROM inventory.ItemWarehouseLevels WHERE MinQuantityBase > 1000000000 OR MaxQuantityBase > 1000000000)
+        ALTER TABLE inventory.ItemWarehouseLevels WITH NOCHECK ADD CONSTRAINT CK_ItemWarehouseLevels_Range
+            CHECK (MinQuantityBase <= 1000000000 AND (MaxQuantityBase IS NULL OR MaxQuantityBase <= 1000000000));
+    ELSE
+        ALTER TABLE inventory.ItemWarehouseLevels WITH CHECK ADD CONSTRAINT CK_ItemWarehouseLevels_Range
+            CHECK (MinQuantityBase <= 1000000000 AND (MaxQuantityBase IS NULL OR MaxQuantityBase <= 1000000000));
+    PRINT 'Added CK_ItemWarehouseLevels_Range';
 END
 GO
 
@@ -85350,8 +85374,75 @@ GO
 
 /* ================================================================== 5. Where a warehouse stands, Fill to Max, the import's judgement */
 
--- (91) ONE ROW: WHERE A WAREHOUSE STANDS FOR AN ITEM, WITH ITS LEVEL. Read by Stock Levels, the item card, the
---      Dashboard, Fill to Max, the drawer and the transfer order page (M6: one formula).
+/* (91) THE STATUS OF A LEVEL, from where its warehouse stands (S8, S9; M6: one formula, read by every reader below):
+     Projected  = On hand + On the way in + To come in - To go out
+     Status     = the first that applies: NoLevel (no Min); BelowMin (Projected < Min); Covered (On hand < Min <=
+                  Projected, L4); AboveMax (Max set and Projected > Max); Ok
+     ToReachMax = (Max, else Min) - Projected when Below Min, else 0 - worked out in BIGINT and capped at the INT
+                  ceiling, so no stored figure can make a reader fail (a level is at most 1,000,000,000 pcs anyway). */
+CREATE OR ALTER FUNCTION inventory.fn_StockLevelState
+(
+    @OnHandBase        INT,
+    @InOnTheWayBase    INT,
+    @InToDispatchBase  INT,
+    @OutToDispatchBase INT,
+    @MinBase           INT,
+    @MaxBase           INT
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT p.ProjectedBase,
+           Status         = CAST(CASE WHEN @MinBase IS NULL                                  THEN N'NoLevel'
+                                      WHEN p.ProjectedBase < @MinBase                        THEN N'BelowMin'
+                                      WHEN @OnHandBase < @MinBase                            THEN N'Covered'
+                                      WHEN @MaxBase IS NOT NULL AND p.ProjectedBase > @MaxBase THEN N'AboveMax'
+                                      ELSE N'Ok' END AS NVARCHAR(10)),
+           ToReachMaxBase = CAST(CASE WHEN @MinBase IS NULL OR p.ProjectedBase >= @MinBase THEN 0
+                                      WHEN CAST(ISNULL(@MaxBase, @MinBase) AS BIGINT) - p.ProjectedBase > 2147483647 THEN 2147483647
+                                      ELSE CAST(ISNULL(@MaxBase, @MinBase) AS BIGINT) - p.ProjectedBase END AS INT)
+    FROM (SELECT ProjectedBase = @OnHandBase + @InOnTheWayBase + @InToDispatchBase - @OutToDispatchBase) p
+);
+GO
+
+/* (91) WHAT RELEASED TRANSFER ORDERS STILL BRING TO AND TAKE FROM EVERY WAREHOUSE, per item: script 90's
+   fn_TransferPosition's three sums (the same CASE) for every item and warehouse at once. For the readers of MANY pairs -
+   Stock Levels, the Dashboard, Fill to Max, its drawer and Create transfer order - which called fn_TransferPosition
+   once per pair and so read the item's whole transfer history once per pair (4 to 7 s for 6,000 levels on 20,000
+   released orders). A transfer order's own page and a draft's availability call read a few dozen pairs: there
+   fn_StockPosition, once per pair, stays the cheaper. Only the OPEN lines are summed: a line still to dispatch or on
+   the way (a line received, written off or no longer sent adds 0 to every sum, so the figures are the same).
+   @ExcludeOrderId leaves one order out, as fn_TransferPosition. Grouped by the line's ItemId, so a reader's filter on
+   the item reaches the lines. Check 6 compares it with fn_TransferPosition. */
+CREATE OR ALTER FUNCTION inventory.fn_TransferPositions (@ExcludeOrderId INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    SELECT ItemId            = l.ItemId,
+           x.WarehouseId,
+           InOnTheWayBase    = SUM(x.InOnTheWay),
+           InToDispatchBase  = SUM(x.InToDispatch),
+           OutToDispatchBase = SUM(x.OutToDispatch)
+    FROM inventory.TransferOrderLines l
+    INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
+    CROSS APPLY (SELECT OnTheWay   = l.DispatchedBase - l.ReceivedBase - l.LostBase,
+                        ToDispatch = CASE WHEN o.NotSentAtUtc IS NULL AND l.OrderedBase - l.DispatchedBase - l.NotSentBase > 0
+                                          THEN l.OrderedBase - l.DispatchedBase - l.NotSentBase ELSE 0 END) v
+    CROSS APPLY (VALUES (o.ToWarehouseId,   v.OnTheWay, v.ToDispatch, 0),            -- what it brings to To
+                        (o.FromWarehouseId, 0,          0,            v.ToDispatch)) -- what it still takes from From
+                x (WarehouseId, InOnTheWay, InToDispatch, OutToDispatch)
+    WHERE o.Status = 2
+      AND (@ExcludeOrderId IS NULL OR o.Id <> @ExcludeOrderId)
+      AND (l.DispatchedBase - l.ReceivedBase - l.LostBase > 0 OR l.OrderedBase - l.DispatchedBase - l.NotSentBase > 0)
+    GROUP BY l.ItemId, x.WarehouseId
+);
+GO
+
+-- (91) ONE ROW: WHERE A WAREHOUSE STANDS FOR AN ITEM, WITH ITS LEVEL - for ONE pair (script 90's fn_TransferPosition
+--      and the level, the status of fn_StockLevelState). The readers of many pairs use fn_TransferPositions with the
+--      same fn_StockLevelState; Check 6 proves the two agree (M6: one formula).
 CREATE OR ALTER FUNCTION inventory.fn_StockPosition (@ItemId INT, @WarehouseId INT, @ExcludeOrderId INT)
 RETURNS TABLE
 AS
@@ -85363,29 +85454,30 @@ RETURN
            HasLevel       = CAST(CASE WHEN lv.MinQuantityBase IS NULL THEN 0 ELSE 1 END AS BIT),
            MinBase        = lv.MinQuantityBase,
            MaxBase        = lv.MaxQuantityBase,
-           Status         = CAST(CASE WHEN lv.MinQuantityBase IS NULL                                            THEN N'NoLevel'
-                                      WHEN p.ProjectedBase < lv.MinQuantityBase                                  THEN N'BelowMin'
-                                      WHEN p.OnHandBase < lv.MinQuantityBase                                     THEN N'Covered'
-                                      WHEN lv.MaxQuantityBase IS NOT NULL AND p.ProjectedBase > lv.MaxQuantityBase THEN N'AboveMax'
-                                      ELSE N'Ok' END AS NVARCHAR(10)),
-           ToReachMaxBase = CASE WHEN lv.MinQuantityBase IS NOT NULL AND p.ProjectedBase < lv.MinQuantityBase
-                                 THEN ISNULL(lv.MaxQuantityBase, lv.MinQuantityBase) - p.ProjectedBase ELSE 0 END
+           st.Status,
+           st.ToReachMaxBase
     FROM inventory.fn_TransferPosition(@ItemId, @WarehouseId, @ExcludeOrderId) p
     OUTER APPLY (SELECT v.MinQuantityBase, v.MaxQuantityBase FROM inventory.ItemWarehouseLevels v
                  WHERE v.ItemId = @ItemId AND v.WarehouseId = @WarehouseId) lv
+    CROSS APPLY inventory.fn_StockLevelState(p.OnHandBase, p.InOnTheWayBase, p.InToDispatchBase, p.OutToDispatchBase,
+                                             lv.MinQuantityBase, lv.MaxQuantityBase) st
 );
 GO
 
 /* (91) THE WHOLE FILL TO MAX RULE IN ONE PLACE (business-context 4.14, 3.4.3), one row per candidate: Fill to Max, Add
    items below Min, the drawer's proposals and Create transfer order all read it. The positions are worked out once per
-   ITEM (a unit is only a rounding). Outcome, the first that applies: OnOrder (Add: the item is on the order already),
-   Inactive, NoLevel (no level at To), AtOrAboveMin (Projected before this order >= Min), Covered (Need <= 0: the item's
-   other lines cover it), NothingAvailable (not one whole unit available at From for the line), Filled.
+   ITEM (a unit is only a rounding), for all the candidates' items at once: what released orders bring and take
+   (fn_TransferPositions, set-based) and the on hand of To and From, with fn_StockLevelState's Projected. Outcome, the
+   first that applies: OnOrder (Add: the item is on the order already), Inactive, NoLevel (no level at To),
+   AtOrAboveMin (Projected before this order >= Min), Covered (Need <= 0: the item's other lines cover it),
+   NothingAvailable (not one whole unit available at From for the line), Filled.
      Need             = (Max, else Min) - Projected before - Ordered on the item's other lines
      AvailableFrom    = From's on hand - what other released orders still take from it, >= 0
      AvailableForLine = AvailableFrom - the item's other lines, >= 0 (L18)
-     Units            = Need rounded UP to whole units of the line's unit ((n + f - 1) / f, f >= 1), capped at the whole
-                        units available (rounded down); rounding up may pass Max by less than one unit (L7).
+     Units            = Need rounded UP to whole units of the line's unit (((n - 1) / f) + 1, f >= 1), capped at the
+                        whole units available (rounded down); rounding up may pass Max by less than one unit (L7).
+   Need and the units needed are worked out in BIGINT (NeedBase and UnitsNeeded go out capped at the INT ceiling), so no
+   stored figure can make the plan fail; the units filled are capped by what is available, an INT.
    Min 0 needs no special case: a Projected of 0 or more is "at or above Min"; a negative Projected is filled to Max
    (else 0). @ExcludeOrderId = the order being filled, so its own lines are never counted against it. */
 CREATE OR ALTER FUNCTION inventory.fn_TransferFill_Plan
@@ -85400,25 +85492,64 @@ AS
 RETURN
 (
     WITH it AS (SELECT DISTINCT ItemId FROM @Candidates),
+    -- what released orders (this one left out) bring to and take from To and From, per item, in one pass
+    tr AS
+    (
+        SELECT t.ItemId,
+               ToIn         = SUM(CASE WHEN t.WarehouseId = @ToWarehouseId   THEN t.InOnTheWayBase    ELSE 0 END),
+               ToToDispatch = SUM(CASE WHEN t.WarehouseId = @ToWarehouseId   THEN t.InToDispatchBase  ELSE 0 END),
+               ToOut        = SUM(CASE WHEN t.WarehouseId = @ToWarehouseId   THEN t.OutToDispatchBase ELSE 0 END),
+               FromIn       = SUM(CASE WHEN t.WarehouseId = @FromWarehouseId THEN t.InOnTheWayBase    ELSE 0 END),
+               FromToDisp   = SUM(CASE WHEN t.WarehouseId = @FromWarehouseId THEN t.InToDispatchBase  ELSE 0 END),
+               FromOut      = SUM(CASE WHEN t.WarehouseId = @FromWarehouseId THEN t.OutToDispatchBase ELSE 0 END)
+        FROM inventory.fn_TransferPositions(@ExcludeOrderId) t
+        WHERE t.ItemId IN (SELECT it.ItemId FROM it) AND t.WarehouseId IN (@ToWarehouseId, @FromWarehouseId)
+        GROUP BY t.ItemId
+    ),
+    -- the on hand of To and From (the ledger), per item
+    oh AS
+    (
+        SELECT m.ItemId,
+               ToQty   = SUM(CASE WHEN m.WarehouseId = @ToWarehouseId   THEN m.QuantityBase ELSE 0 END),
+               FromQty = SUM(CASE WHEN m.WarehouseId = @FromWarehouseId THEN m.QuantityBase ELSE 0 END)
+        FROM inventory.StockMovements m
+        WHERE m.ItemId IN (SELECT it.ItemId FROM it) AND m.WarehouseId IN (@ToWarehouseId, @FromWarehouseId)
+        GROUP BY m.ItemId
+    ),
     pos AS
     (
         SELECT it.ItemId,
-               ToOnHandBase = pt.OnHandBase, ToInOnTheWayBase = pt.InOnTheWayBase, ToInToDispatchBase = pt.InToDispatchBase,
-               ToOutToDispatchBase = pt.OutToDispatchBase, ProjectedBeforeBase = pt.ProjectedBase,
-               ToHasLevel = pt.HasLevel, MinBase = pt.MinBase, MaxBase = pt.MaxBase,
-               FromOnHandBase = pf.OnHandBase, FromCommittedBase = pf.OutToDispatchBase,
-               FromHasLevel = pf.HasLevel, FromMinBase = pf.MinBase, FromProjectedBeforeBase = pf.ProjectedBase,
-               AvailableFromBase = CASE WHEN pf.OnHandBase - pf.OutToDispatchBase > 0 THEN pf.OnHandBase - pf.OutToDispatchBase ELSE 0 END
+               ToOnHandBase = ft.OnHand, ToInOnTheWayBase = ft.InOnTheWay, ToInToDispatchBase = ft.InToDispatch,
+               ToOutToDispatchBase = ft.OutToDispatch, ProjectedBeforeBase = st.ProjectedBase,
+               ToHasLevel = CAST(CASE WHEN lt.MinQuantityBase IS NULL THEN 0 ELSE 1 END AS BIT),
+               MinBase = lt.MinQuantityBase, MaxBase = lt.MaxQuantityBase,
+               FromOnHandBase = ff.OnHand, FromCommittedBase = ff.OutToDispatch,
+               FromHasLevel = CAST(CASE WHEN lf.MinQuantityBase IS NULL THEN 0 ELSE 1 END AS BIT),
+               FromMinBase = lf.MinQuantityBase, FromProjectedBeforeBase = sf.ProjectedBase,
+               AvailableFromBase = CASE WHEN ff.OnHand - ff.OutToDispatch > 0 THEN ff.OnHand - ff.OutToDispatch ELSE 0 END
         FROM it
-        CROSS APPLY inventory.fn_StockPosition(it.ItemId, @ToWarehouseId,   @ExcludeOrderId) pt
-        CROSS APPLY inventory.fn_StockPosition(it.ItemId, @FromWarehouseId, @ExcludeOrderId) pf
+        LEFT JOIN tr ON tr.ItemId = it.ItemId
+        LEFT JOIN oh ON oh.ItemId = it.ItemId
+        LEFT JOIN inventory.ItemWarehouseLevels lt ON lt.ItemId = it.ItemId AND lt.WarehouseId = @ToWarehouseId
+        LEFT JOIN inventory.ItemWarehouseLevels lf ON lf.ItemId = it.ItemId AND lf.WarehouseId = @FromWarehouseId
+        CROSS APPLY (SELECT OnHand = ISNULL(oh.ToQty, 0), InOnTheWay = ISNULL(tr.ToIn, 0),
+                            InToDispatch = ISNULL(tr.ToToDispatch, 0), OutToDispatch = ISNULL(tr.ToOut, 0)) ft
+        CROSS APPLY (SELECT OnHand = ISNULL(oh.FromQty, 0), InOnTheWay = ISNULL(tr.FromIn, 0),
+                            InToDispatch = ISNULL(tr.FromToDisp, 0), OutToDispatch = ISNULL(tr.FromOut, 0)) ff
+        CROSS APPLY inventory.fn_StockLevelState(ft.OnHand, ft.InOnTheWay, ft.InToDispatch, ft.OutToDispatch,
+                                                 lt.MinQuantityBase, lt.MaxQuantityBase) st
+        CROSS APPLY inventory.fn_StockLevelState(ff.OnHand, ff.InOnTheWay, ff.InToDispatch, ff.OutToDispatch,
+                                                 lf.MinQuantityBase, lf.MaxQuantityBase) sf
     )
     SELECT c.Seq, c.ItemId, i.ItemCode, i.ItemName, ItemIsActive = i.IsActive,
            c.ItemUnitId, c.PackingFormula, c.LineId, c.LineNumber, c.CurrentQuantity, c.CurrentQuantityBase, c.OtherLinesBase, c.OnOrder,
            p.ToOnHandBase, p.ToInOnTheWayBase, p.ToInToDispatchBase, p.ToOutToDispatchBase, p.ProjectedBeforeBase,
            p.ToHasLevel, p.MinBase, p.MaxBase, p.FromOnHandBase, p.FromCommittedBase,
            p.AvailableFromBase, AvailableForLineBase = av.ForLine,
-           NeedBase = nd.Need, UnitsNeeded = un.UnitsNeeded, UnitsAvailable = un.UnitsAvailable,
+           NeedBase        = CAST(CASE WHEN nd.Need > 2147483647 THEN 2147483647 WHEN nd.Need < -2147483647 THEN -2147483647
+                                       ELSE nd.Need END AS INT),
+           UnitsNeeded     = CAST(CASE WHEN un.UnitsNeeded > 2147483647 THEN 2147483647 ELSE un.UnitsNeeded END AS INT),
+           UnitsAvailable  = un.UnitsAvailable,
            Outcome = oc.Outcome,
            NewQuantity     = CASE WHEN oc.Outcome = N'Filled' THEN un.Units END,
            NewQuantityBase = CASE WHEN oc.Outcome = N'Filled' THEN un.Units * c.PackingFormula END,
@@ -85428,11 +85559,12 @@ RETURN
     INNER JOIN inventory.Items i ON i.Id = c.ItemId
     INNER JOIN pos p ON p.ItemId = c.ItemId
     CROSS APPLY (SELECT ForLine = CASE WHEN p.AvailableFromBase - c.OtherLinesBase > 0 THEN p.AvailableFromBase - c.OtherLinesBase ELSE 0 END) av   -- L18
-    CROSS APPLY (SELECT Need = CASE WHEN p.ToHasLevel = 1 THEN ISNULL(p.MaxBase, p.MinBase) - p.ProjectedBeforeBase - c.OtherLinesBase END) nd
-    CROSS APPLY (SELECT UnitsNeeded    = CASE WHEN nd.Need > 0 THEN (nd.Need + c.PackingFormula - 1) / c.PackingFormula ELSE 0 END,  -- round UP
-                        UnitsAvailable = av.ForLine / c.PackingFormula) u0                                                            -- whole units
+    CROSS APPLY (SELECT Need = CASE WHEN p.ToHasLevel = 1
+                                    THEN CAST(ISNULL(p.MaxBase, p.MinBase) AS BIGINT) - p.ProjectedBeforeBase - c.OtherLinesBase END) nd
+    CROSS APPLY (SELECT UnitsNeeded    = CASE WHEN nd.Need > 0 THEN (nd.Need - 1) / c.PackingFormula + 1 ELSE CAST(0 AS BIGINT) END,  -- round UP
+                        UnitsAvailable = av.ForLine / c.PackingFormula) u0                                                                 -- whole units
     CROSS APPLY (SELECT UnitsNeeded = u0.UnitsNeeded, UnitsAvailable = u0.UnitsAvailable,
-                        Units = CASE WHEN u0.UnitsNeeded < u0.UnitsAvailable THEN u0.UnitsNeeded ELSE u0.UnitsAvailable END) un
+                        Units = CAST(CASE WHEN u0.UnitsNeeded < u0.UnitsAvailable THEN u0.UnitsNeeded ELSE u0.UnitsAvailable END AS INT)) un
     CROSS APPLY (SELECT Outcome = CAST(CASE WHEN c.OnOrder = 1                        THEN N'OnOrder'
                                             WHEN i.IsActive = 0                       THEN N'Inactive'
                                             WHEN p.ToHasLevel = 0                     THEN N'NoLevel'
@@ -85495,6 +85627,57 @@ BEGIN
 END
 GO
 
+/* (91) THE TWO WARNINGS OF FILL TO MAX, ADD ITEMS BELOW MIN AND CREATE TRANSFER ORDER (3.3.6.3 step 5), each built in
+   one place: From goes below its own Min for a filled item; other drafts or orders waiting for approval to the same To
+   hold some of the same items (L10: Fill to Max does not count them, so a second draft for the same shortage is said). */
+CREATE OR ALTER FUNCTION inventory.fn_TransferFill_FromWarning
+(
+    @FromCode  NVARCHAR(20),
+    @ItemCode  NVARCHAR(30),
+    @AfterBase INT,
+    @MinBase   INT
+)
+RETURNS NVARCHAR(500)
+AS
+BEGIN
+    RETURN ISNULL(@FromCode, N'The source') + N' goes below its own Min for ' + ISNULL(@ItemCode, N'the item') + N': '
+           + CAST(@AfterBase AS NVARCHAR(12)) + N' pcs left after this order, Min ' + CAST(@MinBase AS NVARCHAR(12)) + N'.';
+END
+GO
+
+-- (91) "Other draft or waiting transfer orders to {To} hold some of these items too ({up to 3, oldest first; a draft
+--      without a number "draft #{Id}"}{ and n more}): Fill to Max does not count them." - one row, or none.
+CREATE OR ALTER FUNCTION inventory.fn_TransferFill_OtherOrdersWarning
+(
+    @ToWarehouseId  INT,
+    @ToCode         NVARCHAR(20),
+    @ExcludeOrderId INT,
+    @ItemIds        logistics.tvp_IdList READONLY
+)
+RETURNS TABLE
+AS
+RETURN
+(
+    WITH other AS
+    (
+        SELECT o.Id, Label = ISNULL(o.DocumentNumber, N'draft #' + CAST(o.Id AS NVARCHAR(12)))
+        FROM inventory.TransferOrders o
+        WHERE o.ToWarehouseId = @ToWarehouseId AND o.Status IN (1, 4)
+          AND (@ExcludeOrderId IS NULL OR o.Id <> @ExcludeOrderId)
+          AND EXISTS (SELECT 1 FROM inventory.TransferOrderLines l
+                      WHERE l.TransferOrderId = o.Id AND l.ItemId IN (SELECT x.Id FROM @ItemIds x))
+    )
+    SELECT Message = N'Other draft or waiting transfer orders to ' + ISNULL(@ToCode, N'the destination')
+                     + N' hold some of these items too (' + ISNULL(f.List, N'')
+                     + CASE WHEN c.N > 3 THEN N' and ' + CAST(c.N - 3 AS NVARCHAR(10)) + N' more' ELSE N'' END
+                     + N'): Fill to Max does not count them.'
+    FROM (SELECT N = COUNT(*) FROM other) c
+    CROSS APPLY (SELECT List = STRING_AGG(t.Label, N', ') WITHIN GROUP (ORDER BY t.Id)
+                 FROM (SELECT TOP (3) other.Id, other.Label FROM other ORDER BY other.Id) t) f
+    WHERE c.N > 0
+);
+GO
+
 /* (91) THE IMPORT'S WHOLE JUDGEMENT (3.4.5, S12), one row per file row, read by usp_ItemWarehouseLevel_ImportCheck AND
    usp_ItemWarehouseLevel_Import, so the check and the import never disagree. The item: its code equal to the trimmed
    text, else a unit whose barcode equals it (the code first). The warehouse: its code, else its name; a name that
@@ -85503,7 +85686,8 @@ GO
      2 item / warehouse missing or unknown, an ambiguous name, an On the way warehouse, a parent, the same item and
        warehouse on several rows (every such row; up to 20 row numbers, then "and n more")       Error
      3 Remove = Yes: no level -> Unchanged; Min or Max typed -> Warning (Remove); else Valid (Remove)
-     4 Min and Max empty -> Unchanged; Min empty with a Max -> Error; Min below 0 -> Error; Max < Min -> Error
+     4 Min and Max empty -> Unchanged; Min empty with a Max -> Error; Min below 0 -> Error; Min or Max above
+       1,000,000,000 pcs -> Error; Max < Min -> Error
      5 equal to the level stored -> Unchanged     6 an inactive warehouse -> Error
      7 an inactive item -> Warning (Set)            8 else Valid (Set)
    Every Error and Unchanged row has Action None. */
@@ -85552,7 +85736,7 @@ RETURN
         HAVING COUNT(*) > 1
     )
     SELECT x.RowNumber,
-           Status  = CAST(CASE WHEN k.R BETWEEN 1 AND 9 OR k.R IN (14, 15, 16, 18) THEN N'Error'
+           Status  = CAST(CASE WHEN k.R BETWEEN 1 AND 9 OR k.R IN (14, 15, 16, 18, 21) THEN N'Error'
                                WHEN k.R IN (10, 13, 17)                          THEN N'Unchanged'
                                WHEN k.R IN (11, 19)                              THEN N'Warning'
                                ELSE N'Valid' END AS NVARCHAR(10)),
@@ -85579,6 +85763,7 @@ RETURN
                               WHEN 17 THEN N'No change.'
                               WHEN 18 THEN N'Warehouse ' + w.WarehouseCode + N' is inactive: activate it to change its levels.'
                               WHEN 19 THEN N'Item ' + i.ItemCode + N' is inactive: Fill to Max skips it.'
+                              WHEN 21 THEN N'Min and Max can be at most 1,000,000,000 pcs.'
                               ELSE wm.Was END AS NVARCHAR(500)),   -- 20: NULL for a new level
            x.ItemInput, x.ItemId, i.ItemCode, i.ItemName, ItemIsActive = i.IsActive,
            x.WarehouseInput, x.WarehouseId, w.WarehouseCode, w.WarehouseName, b.BranchCode,
@@ -85612,6 +85797,7 @@ RETURN
             WHEN x.MinQuantityBase IS NULL AND x.MaxQuantityBase IS NULL                    THEN 13
             WHEN x.MinQuantityBase IS NULL                                                  THEN 14
             WHEN x.MinQuantityBase < 0                                                      THEN 15
+            WHEN x.MinQuantityBase > 1000000000 OR x.MaxQuantityBase > 1000000000            THEN 21
             WHEN x.MaxQuantityBase < x.MinQuantityBase                                      THEN 16
             WHEN lv.ItemId IS NOT NULL AND lv.MinQuantityBase = x.MinQuantityBase
                  AND ISNULL(lv.MaxQuantityBase, -1) = ISNULL(x.MaxQuantityBase, -1)         THEN 17
@@ -86144,11 +86330,14 @@ END
 GO
 
 /* (91) DELETE AN ITEM never transacted, with its units and files - and its stock levels, which the cascading key
-   deletes with it (L5; their history stays). Only a key that does NOT cascade is a reference: a cascading child (the
-   levels) is owned by the item. 56003 / 56006 unchanged. */
--- Re-created (91) from the body of script 11: both generic scans + AND fk.delete_referential_action = 0.
+   deletes with it (L5; their history stays, and says so: a "Removed" row per level, from Item Definition, by @UserId -
+   S4). Only a key that does NOT cascade is a reference: a cascading child (the levels) is owned by the item. 56003 /
+   56006 unchanged. */
+-- Re-created (91) from the body of script 11: both generic scans + AND fk.delete_referential_action = 0; + @UserId and
+-- the levels' "Removed" audit rows.
 CREATE OR ALTER PROCEDURE inventory.usp_Item_Delete
-    @Id INT
+    @Id     INT,
+    @UserId INT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -86196,6 +86385,11 @@ BEGIN
 
     BEGIN TRY
         BEGIN TRANSACTION;
+        -- (91) the levels go with the item (the cascading key): their history records it (S4)
+        INSERT INTO inventory.ItemWarehouseLevelAudit (ItemId, WarehouseId, Action, OldMinBase, OldMaxBase, NewMinBase, NewMaxBase, Source, UserId)
+        SELECT lv.ItemId, lv.WarehouseId, N'Removed', lv.MinQuantityBase, lv.MaxQuantityBase, NULL, NULL, N'ItemCard', @UserId
+        FROM inventory.ItemWarehouseLevels lv
+        WHERE lv.ItemId = @Id;
         DELETE FROM inventory.ItemFiles WHERE ItemId = @Id;
         DELETE FROM inventory.ItemUnits WHERE ItemId = @Id;
         DELETE FROM inventory.Items WHERE Id = @Id;
@@ -86267,7 +86461,50 @@ BEGIN
       AND (@Search IS NULL OR i.ItemCode LIKE N'%' + @Search + N'%' OR i.ItemName LIKE N'%' + @Search + N'%'
            OR EXISTS (SELECT 1 FROM inventory.ItemUnits u WHERE u.ItemId = i.Id AND u.Barcode = @Search));
 
-    -- Where each pair stands, worked out once
+    -- The pairs of the scope: every level, and (Without a level) the pairs without one that hold stock (a ledger balance
+    -- other than 0) or appear on a released transfer order (as To with goods on the way or to dispatch, as From with
+    -- goods to dispatch)
+    CREATE TABLE #pr (ItemId INT NOT NULL, WarehouseId INT NOT NULL, PRIMARY KEY (ItemId, WarehouseId));
+    INSERT INTO #pr (ItemId, WarehouseId)
+    SELECT lv.ItemId, lv.WarehouseId
+    FROM inventory.ItemWarehouseLevels lv
+    INNER JOIN #wh w ON w.Id = lv.WarehouseId
+    INNER JOIN #it i ON i.Id = lv.ItemId;
+
+    -- What released transfer orders bring to and take from the scope's warehouses, every pair at once
+    -- (fn_TransferPositions: fn_TransferPosition's sums, set-based - read once per pair they cost the item's whole
+    -- transfer history each time)
+    CREATE TABLE #tp
+    (
+        ItemId INT NOT NULL, WarehouseId INT NOT NULL, InOnTheWayBase INT NOT NULL, InToDispatchBase INT NOT NULL,
+        OutToDispatchBase INT NOT NULL, PRIMARY KEY (ItemId, WarehouseId)
+    );
+    INSERT INTO #tp (ItemId, WarehouseId, InOnTheWayBase, InToDispatchBase, OutToDispatchBase)
+    SELECT tp.ItemId, tp.WarehouseId, tp.InOnTheWayBase, tp.InToDispatchBase, tp.OutToDispatchBase
+    FROM inventory.fn_TransferPositions(NULL) tp
+    INNER JOIN #wh w ON w.Id = tp.WarehouseId
+    INNER JOIN #it i ON i.Id = tp.ItemId;
+
+    IF @Status = N'NoLevel'
+        INSERT INTO #pr (ItemId, WarehouseId)
+        SELECT x.ItemId, x.WarehouseId
+        FROM
+        (
+            SELECT m.ItemId, m.WarehouseId
+            FROM inventory.StockMovements m
+            INNER JOIN #wh w ON w.Id = m.WarehouseId
+            INNER JOIN #it i ON i.Id = m.ItemId
+            GROUP BY m.ItemId, m.WarehouseId
+            HAVING SUM(m.QuantityBase) <> 0
+            UNION
+            SELECT tp.ItemId, tp.WarehouseId
+            FROM #tp tp
+            WHERE tp.InOnTheWayBase + tp.InToDispatchBase > 0 OR tp.OutToDispatchBase > 0
+        ) x
+        WHERE NOT EXISTS (SELECT 1 FROM inventory.ItemWarehouseLevels lv WHERE lv.ItemId = x.ItemId AND lv.WarehouseId = x.WarehouseId);
+
+    -- Where each pair stands, worked out once for every pair: the ledger's on hand, what released transfer orders bring
+    -- and take (#tp), the level, and fn_StockLevelState's Projected and status (M6: the formula of fn_StockPosition)
     CREATE TABLE #pos
     (
         ItemId INT NOT NULL, WarehouseId INT NOT NULL, HasLevel BIT NOT NULL, MinQuantityBase INT NULL, MaxQuantityBase INT NULL,
@@ -86278,42 +86515,19 @@ BEGIN
 
     INSERT INTO #pos (ItemId, WarehouseId, HasLevel, MinQuantityBase, MaxQuantityBase, OnHandBase, InOnTheWayBase,
                       InToDispatchBase, OutToDispatchBase, ProjectedBase, ToReachMaxBase, Status)
-    SELECT lv.ItemId, lv.WarehouseId, p.HasLevel, p.MinBase, p.MaxBase, p.OnHandBase, p.InOnTheWayBase,
-           p.InToDispatchBase, p.OutToDispatchBase, p.ProjectedBase, p.ToReachMaxBase, p.Status
-    FROM inventory.ItemWarehouseLevels lv
-    INNER JOIN #wh w ON w.Id = lv.WarehouseId
-    INNER JOIN #it i ON i.Id = lv.ItemId
-    CROSS APPLY inventory.fn_StockPosition(lv.ItemId, lv.WarehouseId, NULL) p;
-
-    IF @Status = N'NoLevel'
-        INSERT INTO #pos (ItemId, WarehouseId, HasLevel, MinQuantityBase, MaxQuantityBase, OnHandBase, InOnTheWayBase,
-                          InToDispatchBase, OutToDispatchBase, ProjectedBase, ToReachMaxBase, Status)
-        SELECT x.ItemId, x.WarehouseId, p.HasLevel, p.MinBase, p.MaxBase, p.OnHandBase, p.InOnTheWayBase,
-               p.InToDispatchBase, p.OutToDispatchBase, p.ProjectedBase, p.ToReachMaxBase, p.Status
-        FROM
-        (
-            SELECT m.ItemId, m.WarehouseId
-            FROM inventory.StockMovements m
-            INNER JOIN #wh w ON w.Id = m.WarehouseId
-            GROUP BY m.ItemId, m.WarehouseId
-            HAVING SUM(m.QuantityBase) <> 0
-            UNION
-            SELECT l.ItemId, o.ToWarehouseId
-            FROM inventory.TransferOrderLines l
-            INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
-            WHERE o.Status = 2
-              AND (l.DispatchedBase - l.ReceivedBase - l.LostBase > 0
-                   OR (o.NotSentAtUtc IS NULL AND l.OrderedBase - l.DispatchedBase - l.NotSentBase > 0))
-            UNION
-            SELECT l.ItemId, o.FromWarehouseId
-            FROM inventory.TransferOrderLines l
-            INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
-            WHERE o.Status = 2 AND o.NotSentAtUtc IS NULL AND l.OrderedBase - l.DispatchedBase - l.NotSentBase > 0
-        ) x
-        INNER JOIN #wh w ON w.Id = x.WarehouseId
-        INNER JOIN #it i ON i.Id = x.ItemId
-        CROSS APPLY inventory.fn_StockPosition(x.ItemId, x.WarehouseId, NULL) p
-        WHERE NOT EXISTS (SELECT 1 FROM inventory.ItemWarehouseLevels lv WHERE lv.ItemId = x.ItemId AND lv.WarehouseId = x.WarehouseId);
+    SELECT pr.ItemId, pr.WarehouseId, CAST(CASE WHEN lv.ItemId IS NULL THEN 0 ELSE 1 END AS BIT), lv.MinQuantityBase, lv.MaxQuantityBase,
+           q.OnHandBase, q.InOnTheWayBase, q.InToDispatchBase, q.OutToDispatchBase, st.ProjectedBase, st.ToReachMaxBase, st.Status
+    FROM #pr pr
+    LEFT JOIN inventory.ItemWarehouseLevels lv ON lv.ItemId = pr.ItemId AND lv.WarehouseId = pr.WarehouseId
+    LEFT JOIN #tp tp ON tp.ItemId = pr.ItemId AND tp.WarehouseId = pr.WarehouseId
+    LEFT JOIN (SELECT m.ItemId, m.WarehouseId, Qty = SUM(m.QuantityBase)
+               FROM inventory.StockMovements m
+               INNER JOIN #pr x ON x.ItemId = m.ItemId AND x.WarehouseId = m.WarehouseId
+               GROUP BY m.ItemId, m.WarehouseId) oh ON oh.ItemId = pr.ItemId AND oh.WarehouseId = pr.WarehouseId
+    CROSS APPLY (SELECT OnHandBase = ISNULL(oh.Qty, 0), InOnTheWayBase = ISNULL(tp.InOnTheWayBase, 0),
+                        InToDispatchBase = ISNULL(tp.InToDispatchBase, 0), OutToDispatchBase = ISNULL(tp.OutToDispatchBase, 0)) q
+    CROSS APPLY inventory.fn_StockLevelState(q.OnHandBase, q.InOnTheWayBase, q.InToDispatchBase, q.OutToDispatchBase,
+                                             lv.MinQuantityBase, lv.MaxQuantityBase) st;
 
     -- 1: the rows
     SELECT p.ItemId, i.ItemCode, i.ItemName, ItemIsActive = i.IsActive, ItemFamilyName = f.FamilyName, b.BrandName,
@@ -86426,9 +86640,11 @@ GO
 
 /* (91) SET AN ITEM'S LEVELS IN ONE OR MORE WAREHOUSES (Item Definition's card, Stock Levels), all or nothing. The checks,
    the first failing row by warehouse code (56000): the warehouse exists, is not On the way, has no warehouses under
-   it, is active (a new or changed level only: L6), Min is a whole number 0 or more, Max is not below Min. Then, in the
-   transaction, each row sent with a RowVersion is compared with the level as it stands, read WITH (UPDLOCK, HOLDLOCK)
-   (56004: removed / changed by another user); a row without one is a new level, or replaces the level whatever it is.
+   it, is active (a new or changed level only: L6), Min is a whole number 0 or more, Min and Max are at most
+   1,000,000,000 pcs, Max is not below Min. Then, in the transaction, each row sent with a RowVersion is compared with
+   the level as it stands, read WITH (UPDLOCK, HOLDLOCK) (56004: removed / changed by another user); a row without one
+   is a NEW level: when somebody else has set one there meanwhile with another Min or Max, 56004 "... was added by
+   another user" - never a silent overwrite.
    An unchanged row is neither rewritten nor audited. @Source ItemCard | StockLevels (anything else: ItemCard). No
    result set. */
 CREATE OR ALTER PROCEDURE inventory.usp_ItemWarehouseLevel_Set
@@ -86466,6 +86682,8 @@ BEGIN
                 THEN N'Warehouse ' + w.WarehouseCode + N' is inactive: activate it to change its levels.'
             WHEN l.MinQuantityBase IS NULL OR l.MinQuantityBase < 0
                 THEN w.WarehouseCode + N': Min must be a whole number, 0 or more.'
+            WHEN l.MinQuantityBase > 1000000000 OR l.MaxQuantityBase > 1000000000
+                THEN w.WarehouseCode + N': Min and Max can be at most 1,000,000,000 pcs.'
             WHEN l.MaxQuantityBase < l.MinQuantityBase
                 THEN w.WarehouseCode + N': Max cannot be less than Min.' END) m
     WHERE m.Message IS NOT NULL
@@ -86482,14 +86700,19 @@ BEGIN
         FROM inventory.ItemWarehouseLevels lv WITH (UPDLOCK, HOLDLOCK)
         WHERE lv.ItemId = @ItemId AND lv.WarehouseId IN (SELECT l.WarehouseId FROM @Levels l);
 
-        -- Somebody else removed or changed a level the page read (the first by warehouse code)
+        -- Somebody else removed or changed a level the page read, or added one where the page read none - a row sent
+        -- without a RowVersion is a NEW level: it never replaces one somebody else has just set (unless it is the same
+        -- Min and Max, which loses nothing). The first by warehouse code.
         SELECT TOP (1) @Msg = N'The stock level of ' + @ItemCode + N' at ' + w.WarehouseCode
-                              + CASE WHEN c.WarehouseId IS NULL THEN N' was removed by another user. Reload and try again.'
+                              + CASE WHEN l.RowVersion IS NULL     THEN N' was added by another user. Reload and try again.'
+                                     WHEN c.WarehouseId IS NULL    THEN N' was removed by another user. Reload and try again.'
                                      ELSE N' was changed by another user. Reload and try again.' END
         FROM @Levels l
         INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
         LEFT  JOIN @Cur c ON c.WarehouseId = l.WarehouseId
-        WHERE l.RowVersion IS NOT NULL AND (c.WarehouseId IS NULL OR c.RowVersion <> l.RowVersion)
+        WHERE (l.RowVersion IS NOT NULL AND (c.WarehouseId IS NULL OR c.RowVersion <> l.RowVersion))
+           OR (l.RowVersion IS NULL AND c.WarehouseId IS NOT NULL
+               AND (c.MinQuantityBase <> l.MinQuantityBase OR ISNULL(c.MaxQuantityBase, -1) <> ISNULL(l.MaxQuantityBase, -1)))
         ORDER BY w.WarehouseCode;
         IF @Msg IS NOT NULL THROW 56004, @Msg, 1;
 
@@ -86768,6 +86991,27 @@ BEGIN
     WHERE l.TransferOrderId = @Id
     GROUP BY l.ItemId;
 
+    -- (91) WHERE From AND To STAND FOR THE ORDER'S ITEMS, this order left out: fn_StockPosition (script 90's five
+    --      figures + the level), ONCE per item and warehouse - read by the header (ItemsBelowMin) and by every line of
+    --      the item. (It ran once per line and once more per item for the header: the regression review's 2-3 times
+    --      script 90's reads.) A table variable: the order page's plan is kept between calls.
+    DECLARE @FromId INT, @ToId INT;
+    SELECT @FromId = FromWarehouseId, @ToId = ToWarehouseId FROM inventory.TransferOrders WHERE Id = @Id;
+
+    DECLARE @SP TABLE
+    (
+        ItemId INT NOT NULL, WarehouseId INT NOT NULL, OnHandBase INT NOT NULL, InOnTheWayBase INT NOT NULL,
+        InToDispatchBase INT NOT NULL, OutToDispatchBase INT NOT NULL, ProjectedBase INT NOT NULL, HasLevel BIT NOT NULL,
+        MinBase INT NULL, MaxBase INT NULL, PRIMARY KEY (ItemId, WarehouseId)
+    );
+    INSERT INTO @SP (ItemId, WarehouseId, OnHandBase, InOnTheWayBase, InToDispatchBase, OutToDispatchBase, ProjectedBase,
+                     HasLevel, MinBase, MaxBase)
+    SELECT bt.ItemId, w.WarehouseId, sp.OnHandBase, sp.InOnTheWayBase, sp.InToDispatchBase, sp.OutToDispatchBase,
+           sp.ProjectedBase, sp.HasLevel, sp.MinBase, sp.MaxBase
+    FROM @BT bt
+    CROSS JOIN (VALUES (@FromId), (@ToId)) w (WarehouseId)
+    CROSS APPLY inventory.fn_StockPosition(bt.ItemId, w.WarehouseId, @Id) sp;
+
     -- 1: header
     SELECT o.Id, o.DocumentTypeId, o.DocumentNumber, o.DocumentDate,
            o.BranchId, b.BranchCode, b.BranchName,
@@ -86868,7 +87112,7 @@ BEGIN
                  WHERE lv.WarehouseId = o.ToWarehouseId) lc
     CROSS APPLY (SELECT N = COUNT(*)
                  FROM @BT bt
-                 CROSS APPLY inventory.fn_StockPosition(bt.ItemId, o.ToWarehouseId, o.Id) sp
+                 INNER JOIN @SP sp ON sp.ItemId = bt.ItemId AND sp.WarehouseId = o.ToWarehouseId
                  WHERE sp.HasLevel = 1 AND sp.ProjectedBase + bt.BringsBase < sp.MinBase) bm
     WHERE o.Id = @Id;
 
@@ -86907,9 +87151,10 @@ BEGIN
     INNER JOIN inventory.ItemUnits iu     ON iu.Id = l.ItemUnitId
     INNER JOIN masterdata.UnitTypes ut    ON ut.Id = iu.UnitTypeId
     LEFT  JOIN @BT bt                     ON bt.ItemId = l.ItemId                                             -- (91)
-    -- (91) fn_StockPosition = script 90's fn_TransferPosition (the same five figures) + the warehouse's level
-    OUTER APPLY inventory.fn_StockPosition(l.ItemId, o.FromWarehouseId, @Id) pf
-    OUTER APPLY inventory.fn_StockPosition(l.ItemId, o.ToWarehouseId, @Id) pt
+    -- (91) fn_StockPosition's columns (script 90's fn_TransferPosition's five figures + the warehouse's level), worked
+    --      out once above for every item of the order (@SP)
+    LEFT  JOIN @SP pf ON pf.ItemId = l.ItemId AND pf.WarehouseId = o.FromWarehouseId
+    LEFT  JOIN @SP pt ON pt.ItemId = l.ItemId AND pt.WarehouseId = o.ToWarehouseId
     WHERE l.TransferOrderId = @Id
     ORDER BY l.LineNumber;
 
@@ -87033,7 +87278,7 @@ GO
 
 /* (91) FILL TO MAX (@AddItems empty) AND ADD ITEMS BELOW MIN (@AddItems = the drawer's ticked items), on a SAVED draft
    (business-context 4.14, 3.4.3; the rule is inventory.fn_TransferFill_Plan's). @Apply = 0: a preview, no lock,
-   nothing written. @Apply = 1: the order WITH (UPDLOCK, HOLDLOCK) and its RowVersion (62004), the plan worked out
+   nothing written. @Apply = 1: the order WITH (UPDLOCK, HOLDLOCK) and its RowVersion (62004; none sent: 62000), the plan worked out
    again, then Fill SETS the first line of each filled item (Ordered = the units, the unit's current packing formula),
    Add inserts one line per filled item at the end (line numbers in item code order), the order's totals follow, and
    one audit row (FillToMax / ItemsAddedBelowMin) is written. Nothing to change: no line and no header is written (the
@@ -87057,12 +87302,15 @@ BEGIN
     DECLARE @Mode NVARCHAR(10) = CASE WHEN EXISTS (SELECT 1 FROM @AddItems) THEN N'Add' ELSE N'Fill' END;
     DECLARE @ErrNo INT, @Msg NVARCHAR(400), @FromId INT, @ToId INT, @FromCode NVARCHAR(20), @ToCode NVARCHAR(20),
             @Message NVARCHAR(500), @Filled INT, @Capped INT, @Changed INT, @AtOrAboveMin INT, @NoLevel INT,
-            @Covered INT, @Inactive INT, @OnOrder INT, @NotFilled INT, @OtherN INT, @OtherList NVARCHAR(200), @MaxLine INT;
+            @Covered INT, @Inactive INT, @OnOrder INT, @NotFilled INT, @MaxLine INT;
     DECLARE @c inventory.tvp_TransferFillCandidate;
+    DECLARE @PlanItems logistics.tvp_IdList;
     DECLARE @W TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, Message NVARCHAR(500) NOT NULL);
 
-    -- 0. The order
+    -- 0. The order; an apply is made with the RowVersion the page read (L9): without one it could overwrite a change
+    --    it never saw
     IF NOT EXISTS (SELECT 1 FROM inventory.TransferOrders WHERE Id = @Id) THROW 62006, 'Transfer order not found.', 1;
+    IF @Apply = 1 AND @RowVersion IS NULL THROW 62000, 'The row version is missing. Reload the page and try again.', 1;
 
     BEGIN TRY
         -- 1. Apply: the order locked until the commit, and the RowVersion the page read. A preview reads without a lock.
@@ -87072,8 +87320,7 @@ BEGIN
             SELECT @FromId = FromWarehouseId, @ToId = ToWarehouseId
             FROM inventory.TransferOrders WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
             IF @FromId IS NULL THROW 62006, 'Transfer order not found.', 1;
-            IF @RowVersion IS NOT NULL
-               AND NOT EXISTS (SELECT 1 FROM inventory.TransferOrders WHERE Id = @Id AND RowVersion = @RowVersion)
+            IF NOT EXISTS (SELECT 1 FROM inventory.TransferOrders WHERE Id = @Id AND RowVersion = @RowVersion)
                 THROW 62004, 'This transfer order was modified by another user. Reload the page and try again.', 1;
         END
         ELSE
@@ -87104,7 +87351,9 @@ BEGIN
             WHERE f.Rn = 1;
         ELSE
         BEGIN
-            -- one per ticked item, in the unit given (it must be the item's) or its base unit
+            -- one per ticked item, in the unit given (it must be the item's) or its base unit; an item already on the order
+            -- (OnOrder, skipped) counts the order's lines of it in OtherLinesBase, as the drawer does, so its figures after
+            -- this order are Get's
             SELECT TOP (1) @Msg = CASE WHEN i.Id IS NULL THEN N'Item not found.'
                                        ELSE N'The unit does not belong to item ' + i.ItemCode + N'.' END
             FROM @AddItems a
@@ -87115,11 +87364,14 @@ BEGIN
             IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
 
             INSERT INTO @c (Seq, ItemId, ItemUnitId, PackingFormula, LineId, LineNumber, CurrentQuantity, CurrentQuantityBase, OtherLinesBase, OnOrder)
-            SELECT ROW_NUMBER() OVER (ORDER BY i.ItemCode), a.ItemId, u.Id, u.PackingFormula, NULL, NULL, NULL, NULL, 0,
-                   CASE WHEN EXISTS (SELECT 1 FROM inventory.TransferOrderLines l WHERE l.TransferOrderId = @Id AND l.ItemId = a.ItemId)
-                        THEN 1 ELSE 0 END
+            SELECT ROW_NUMBER() OVER (ORDER BY i.ItemCode), a.ItemId, u.Id, u.PackingFormula, NULL, NULL, NULL, NULL,
+                   ISNULL(ol.Pcs, 0),
+                   CASE WHEN ol.N > 0 THEN 1 ELSE 0 END
             FROM @AddItems a
             INNER JOIN inventory.Items i ON i.Id = a.ItemId
+            CROSS APPLY (SELECT N = COUNT(*), Pcs = SUM(l.OrderedBase)
+                         FROM inventory.TransferOrderLines l
+                         WHERE l.TransferOrderId = @Id AND l.ItemId = a.ItemId) ol
             CROSS APPLY (SELECT TOP (1) iu.Id, iu.PackingFormula
                          FROM inventory.ItemUnits iu
                          WHERE iu.ItemId = a.ItemId AND (iu.Id = a.ItemUnitId OR a.ItemUnitId IS NULL)
@@ -87147,7 +87399,8 @@ BEGIN
         INTO #plan
         FROM inventory.fn_TransferFill_Plan(@FromId, @ToId, @Id, @c) p
         INNER JOIN inventory.ItemUnits iu  ON iu.Id = p.ItemUnitId
-        INNER JOIN masterdata.UnitTypes ut ON ut.Id = iu.UnitTypeId;
+        INNER JOIN masterdata.UnitTypes ut ON ut.Id = iu.UnitTypeId
+        OPTION (RECOMPILE);   -- the candidates' real count: a drawer's 2,000 items read the history once, not per item
 
         -- what purchase orders and containers still bring to To, shown dimmed (not counted, L11): a preview only
         IF @Apply = 0
@@ -87174,32 +87427,16 @@ BEGIN
                                                          CASE WHEN @Apply = 1 AND @Filled > 0 AND @Changed = 0 THEN 1 ELSE 0 END);
 
         -- 5. The warnings: From below its own Min after this order, per filled item; other drafts / waiting orders to To
+        --    holding the plan's items (fn_TransferFill_FromWarning, fn_TransferFill_OtherOrdersWarning)
         INSERT INTO @W (Message)
-        SELECT ISNULL(@FromCode, N'The source') + N' goes below its own Min for ' + p.ItemCode + N': '
-               + CAST(p.FromAfterBase AS NVARCHAR(12)) + N' pcs left after this order, Min ' + CAST(p.FromMinBase AS NVARCHAR(12)) + N'.'
+        SELECT inventory.fn_TransferFill_FromWarning(@FromCode, p.ItemCode, p.FromAfterBase, p.FromMinBase)
         FROM #plan p
         WHERE p.Outcome = N'Filled' AND p.FromBelowMinAfter = 1
         ORDER BY p.ItemCode, p.Seq;
 
-        SELECT @OtherN = COUNT(*)
-        FROM inventory.TransferOrders o
-        WHERE o.Id <> @Id AND o.ToWarehouseId = @ToId AND o.Status IN (1, 4)
-          AND EXISTS (SELECT 1 FROM inventory.TransferOrderLines l INNER JOIN #plan p ON p.ItemId = l.ItemId WHERE l.TransferOrderId = o.Id);
-
-        IF @OtherN > 0
-        BEGIN
-            SELECT @OtherList = STRING_AGG(x.Label, N', ') WITHIN GROUP (ORDER BY x.Id)
-            FROM (SELECT TOP (3) o.Id, Label = ISNULL(o.DocumentNumber, N'draft #' + CAST(o.Id AS NVARCHAR(12)))
-                  FROM inventory.TransferOrders o
-                  WHERE o.Id <> @Id AND o.ToWarehouseId = @ToId AND o.Status IN (1, 4)
-                    AND EXISTS (SELECT 1 FROM inventory.TransferOrderLines l INNER JOIN #plan p ON p.ItemId = l.ItemId WHERE l.TransferOrderId = o.Id)
-                  ORDER BY o.Id) x;
-
-            INSERT INTO @W (Message)
-            VALUES (N'Other draft or waiting transfer orders to ' + ISNULL(@ToCode, N'the destination') + N' hold some of these items too ('
-                    + ISNULL(@OtherList, N'') + CASE WHEN @OtherN > 3 THEN N' and ' + CAST(@OtherN - 3 AS NVARCHAR(10)) + N' more' ELSE N'' END
-                    + N'): Fill to Max does not count them.');
-        END
+        INSERT INTO @PlanItems (Id) SELECT DISTINCT p.ItemId FROM #plan p;
+        INSERT INTO @W (Message)
+        SELECT w.Message FROM inventory.fn_TransferFill_OtherOrdersWarning(@ToId, @ToCode, @Id, @PlanItems) w;
 
         -- 6. Apply
         IF @Apply = 1
@@ -87334,7 +87571,8 @@ BEGIN
     INTO #plan
     FROM inventory.fn_TransferFill_Plan(@FromId, @ToId, @Id, @c) p
     INNER JOIN inventory.ItemUnits iu  ON iu.Id = p.ItemUnitId
-    INNER JOIN masterdata.UnitTypes ut ON ut.Id = iu.UnitTypeId;
+    INNER JOIN masterdata.UnitTypes ut ON ut.Id = iu.UnitTypeId
+    OPTION (RECOMPILE);   -- the candidates' real count (every level at To): the history is read once, not per item
 
     SELECT p.ItemId, p.ItemCode, p.ItemName, p.ToOnHandBase, p.ToInOnTheWayBase, p.ToInToDispatchBase, p.ToOutToDispatchBase,
            p.ProjectedBeforeBase, p.OtherLinesBase, p.MinBase, p.MaxBase, p.NeedBase, p.AvailableFromBase, p.OnOrder,
@@ -87377,7 +87615,9 @@ GO
    each ticked item in its base unit, planned as Add items below Min (no order yet: nothing excluded, no other lines);
    nothing filled: nothing created (62009, the sentence says why). The draft is saved by script 90's
    usp_TransferOrder_Save, which runs its own transaction and checks (none is opened around it): the number is given by
-   Save as for any draft (NULL while TRO is numbered at release). Result: NewId, DocumentNumber, Message. */
+   Save as for any draft (NULL while TRO is numbered at release). Result 1: NewId, DocumentNumber, Message. Result 2: the
+   warnings of Fill to Max for the new draft (From below its own Min; other drafts or waiting orders to To holding its
+   items, L10). */
 CREATE OR ALTER PROCEDURE inventory.usp_TransferOrder_CreateFromLevels
     @FromWarehouseId INT,
     @ToWarehouseId   INT,
@@ -87396,6 +87636,8 @@ BEGIN
             @Inactive INT, @OnOrder INT, @NotFilled INT;
     DECLARE @c inventory.tvp_TransferFillCandidate;
     DECLARE @Lines inventory.tvp_TransferOrderLine;
+    DECLARE @FilledItems logistics.tvp_IdList;
+    DECLARE @W TABLE (Seq INT IDENTITY(1,1) PRIMARY KEY, Message NVARCHAR(500) NOT NULL);
 
     SET @NewId = NULL;
     SET @DocumentDate = ISNULL(@DocumentDate, CAST(SYSUTCDATETIME() AS DATE));
@@ -87416,9 +87658,11 @@ BEGIN
     CROSS APPLY (SELECT TOP (1) iu.Id, iu.PackingFormula FROM inventory.ItemUnits iu
                  WHERE iu.ItemId = i.Id ORDER BY iu.IsBaseUnit DESC, iu.PackingFormula, iu.Id) u;
 
-    SELECT p.Seq, p.ItemId, p.ItemCode, p.ItemUnitId, p.Outcome, p.NewQuantity, p.IsCapped
+    SELECT p.Seq, p.ItemId, p.ItemCode, p.ItemUnitId, p.Outcome, p.NewQuantity, p.NewQuantityBase, p.IsCapped,
+           p.FromHasLevel, p.FromMinBase, p.FromProjectedBeforeBase
     INTO #plan
-    FROM inventory.fn_TransferFill_Plan(@FromWarehouseId, @ToWarehouseId, NULL, @c) p;
+    FROM inventory.fn_TransferFill_Plan(@FromWarehouseId, @ToWarehouseId, NULL, @c) p
+    OPTION (RECOMPILE);
 
     SELECT @Filled       = ISNULL(SUM(CASE WHEN Outcome = N'Filled' THEN 1 ELSE 0 END), 0),
            @Capped       = ISNULL(SUM(CASE WHEN IsCapped = 1 THEN 1 ELSE 0 END), 0),
@@ -87463,8 +87707,24 @@ BEGIN
 
     SELECT @Number = DocumentNumber FROM inventory.TransferOrders WHERE Id = @NewId;
 
+    -- 1: the draft and the sentence
     SELECT NewId = @NewId, DocumentNumber = @Number,
            Message = COALESCE(@Number, N'Draft transfer order #' + CAST(@NewId AS NVARCHAR(12))) + N' created. ' + @AddMessage;
+
+    -- 2: the warnings of Fill to Max (3.3.6.3 step 5) for the draft just made: From below its own Min for a filled
+    --    item; other drafts or waiting orders to To that already hold its items (a second click makes a second draft
+    --    for the same shortage: it is said)
+    INSERT INTO @W (Message)
+    SELECT inventory.fn_TransferFill_FromWarning(@FromCode, p.ItemCode, p.FromProjectedBeforeBase - p.NewQuantityBase, p.FromMinBase)
+    FROM #plan p
+    WHERE p.Outcome = N'Filled' AND p.FromHasLevel = 1 AND p.FromProjectedBeforeBase - p.NewQuantityBase < p.FromMinBase
+    ORDER BY p.ItemCode, p.Seq;
+
+    INSERT INTO @FilledItems (Id) SELECT DISTINCT p.ItemId FROM #plan p WHERE p.Outcome = N'Filled';
+    INSERT INTO @W (Message)
+    SELECT w.Message FROM inventory.fn_TransferFill_OtherOrdersWarning(@ToWarehouseId, @ToCode, @NewId, @FilledItems) w;
+
+    SELECT w.Message FROM @W w ORDER BY w.Seq;
 END
 GO
 
@@ -87472,19 +87732,43 @@ GO
 
 -- (91) THE DASHBOARD'S "WAREHOUSE LEVELS BELOW MIN": the levels of active items at active warehouses (of the branch, or
 --      of the company) whose Projected stock is below their Min - the Stock Levels page's "Below Min" tile for the same
---      branch with its default filters (test g). Read by the API after the summary and the charts; the summary
---      procedure is not touched.
+--      branch with its default filters (test g), worked out the same set-based way. Read by the API after the summary
+--      and the charts, only for a reader who may see it (View Items and View Stock Levels); the summary procedure is not
+--      touched.
 CREATE OR ALTER PROCEDURE reporting.usp_Dashboard_StockLevels
     @BranchId INT = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
-    SELECT BelowWarehouseMin = COUNT(*)
+
+    -- The levels counted: active items at active warehouses of the branch (or the company)
+    CREATE TABLE #lv (ItemId INT NOT NULL, WarehouseId INT NOT NULL, MinQuantityBase INT NOT NULL, MaxQuantityBase INT NULL,
+                      PRIMARY KEY (ItemId, WarehouseId));
+    INSERT INTO #lv (ItemId, WarehouseId, MinQuantityBase, MaxQuantityBase)
+    SELECT lv.ItemId, lv.WarehouseId, lv.MinQuantityBase, lv.MaxQuantityBase
     FROM inventory.ItemWarehouseLevels lv
     INNER JOIN inventory.Items i       ON i.Id = lv.ItemId AND i.IsActive = 1
     INNER JOIN masterdata.Warehouses w ON w.Id = lv.WarehouseId AND w.IsActive = 1
-    CROSS APPLY inventory.fn_StockPosition(lv.ItemId, lv.WarehouseId, NULL) p
-    WHERE (@BranchId IS NULL OR w.BranchId = @BranchId) AND p.Status = N'BelowMin';
+    WHERE @BranchId IS NULL OR w.BranchId = @BranchId;
+
+    -- What released transfer orders bring and take, every pair at once (fn_TransferPositions, as Stock Levels reads it)
+    CREATE TABLE #tp (ItemId INT NOT NULL, WarehouseId INT NOT NULL, InOnTheWayBase INT NOT NULL, InToDispatchBase INT NOT NULL,
+                      OutToDispatchBase INT NOT NULL, PRIMARY KEY (ItemId, WarehouseId));
+    INSERT INTO #tp (ItemId, WarehouseId, InOnTheWayBase, InToDispatchBase, OutToDispatchBase)
+    SELECT tp.ItemId, tp.WarehouseId, tp.InOnTheWayBase, tp.InToDispatchBase, tp.OutToDispatchBase
+    FROM inventory.fn_TransferPositions(NULL) tp
+    WHERE EXISTS (SELECT 1 FROM #lv lv WHERE lv.ItemId = tp.ItemId AND lv.WarehouseId = tp.WarehouseId);
+
+    SELECT BelowWarehouseMin = COUNT(*)
+    FROM #lv lv
+    LEFT JOIN #tp tp ON tp.ItemId = lv.ItemId AND tp.WarehouseId = lv.WarehouseId
+    LEFT JOIN (SELECT m.ItemId, m.WarehouseId, Qty = SUM(m.QuantityBase)
+               FROM inventory.StockMovements m
+               INNER JOIN #lv x ON x.ItemId = m.ItemId AND x.WarehouseId = m.WarehouseId
+               GROUP BY m.ItemId, m.WarehouseId) oh ON oh.ItemId = lv.ItemId AND oh.WarehouseId = lv.WarehouseId
+    CROSS APPLY inventory.fn_StockLevelState(ISNULL(oh.Qty, 0), ISNULL(tp.InOnTheWayBase, 0), ISNULL(tp.InToDispatchBase, 0),
+                                             ISNULL(tp.OutToDispatchBase, 0), lv.MinQuantityBase, lv.MaxQuantityBase) st
+    WHERE st.Status = N'BelowMin';
 END
 GO
 
@@ -87562,7 +87846,9 @@ FROM (VALUES (N'inventory.ItemWarehouseLevels'), (N'inventory.ItemWarehouseLevel
              (N'inventory.tvp_ItemWarehouseLevel'), (N'inventory.tvp_ItemWarehouseLevelImport'),
              (N'inventory.tvp_TransferFillItem'), (N'inventory.tvp_TransferFillCandidate'),
              (N'masterdata.fn_Warehouse_IsUsedInTransactions'), (N'masterdata.fn_Warehouse_IsUsed'),
+             (N'inventory.fn_StockLevelState'), (N'inventory.fn_TransferPositions'),
              (N'inventory.fn_StockPosition'), (N'inventory.fn_TransferFill_Plan'), (N'inventory.fn_TransferFill_Message'),
+             (N'inventory.fn_TransferFill_FromWarning'), (N'inventory.fn_TransferFill_OtherOrdersWarning'),
              (N'inventory.fn_ItemWarehouseLevel_ImportJudge'), (N'inventory.fn_TransferOrder_Blocks'),
              (N'inventory.usp_StockLevel_Search'), (N'inventory.usp_StockLevel_CompanySearch'),
              (N'inventory.usp_ItemWarehouseLevel_Set'), (N'inventory.usp_ItemWarehouseLevel_Remove'),
@@ -87600,6 +87886,32 @@ SELECT fk.name, ReferencedTable = OBJECT_SCHEMA_NAME(fk.referenced_object_id) + 
        fk.delete_referential_action_desc
 FROM sys.foreign_keys fk
 WHERE fk.parent_object_id = OBJECT_ID(N'inventory.ItemWarehouseLevels') AND fk.delete_referential_action = 1;
+
+-- 6. One formula (M6): where a warehouse stands, read set-based (fn_TransferPositions and the ledger, as Stock Levels,
+--    the Dashboard and the transfer order page read it), is fn_StockPosition's, pair by pair (script 90's
+--    fn_TransferPosition) - on the 200 levels changed last, so the check stays quick at every start (expected: 0 rows)
+DROP TABLE IF EXISTS #chk91;
+SELECT TOP (200) lv.ItemId, lv.WarehouseId, lv.UpdatedAtUtc
+INTO #chk91
+FROM inventory.ItemWarehouseLevels lv
+ORDER BY lv.UpdatedAtUtc DESC, lv.ItemId, lv.WarehouseId;
+
+SELECT c.ItemId, c.WarehouseId,
+       OnePair = CONCAT(p.OnHandBase, N'/', p.InOnTheWayBase, N'/', p.InToDispatchBase, N'/', p.OutToDispatchBase, N'/', p.ProjectedBase, N'/', p.Status, N'/', p.ToReachMaxBase),
+       SetBased = CONCAT(q.OnHandBase, N'/', q.InOnTheWayBase, N'/', q.InToDispatchBase, N'/', q.OutToDispatchBase, N'/', st.ProjectedBase, N'/', st.Status, N'/', st.ToReachMaxBase)
+FROM #chk91 c
+INNER JOIN inventory.ItemWarehouseLevels lv ON lv.ItemId = c.ItemId AND lv.WarehouseId = c.WarehouseId
+CROSS APPLY inventory.fn_StockPosition(c.ItemId, c.WarehouseId, NULL) p
+LEFT JOIN inventory.fn_TransferPositions(NULL) tp ON tp.ItemId = c.ItemId AND tp.WarehouseId = c.WarehouseId
+CROSS APPLY (SELECT OnHandBase = inventory.fn_StockOnHand(c.ItemId, c.WarehouseId), InOnTheWayBase = ISNULL(tp.InOnTheWayBase, 0),
+                    InToDispatchBase = ISNULL(tp.InToDispatchBase, 0), OutToDispatchBase = ISNULL(tp.OutToDispatchBase, 0)) q
+CROSS APPLY inventory.fn_StockLevelState(q.OnHandBase, q.InOnTheWayBase, q.InToDispatchBase, q.OutToDispatchBase,
+                                         lv.MinQuantityBase, lv.MaxQuantityBase) st
+WHERE p.OnHandBase <> q.OnHandBase OR p.InOnTheWayBase <> q.InOnTheWayBase OR p.InToDispatchBase <> q.InToDispatchBase
+   OR p.OutToDispatchBase <> q.OutToDispatchBase OR p.ProjectedBase <> st.ProjectedBase OR p.Status <> st.Status
+   OR p.ToReachMaxBase <> st.ToReachMaxBase;
+
+DROP TABLE #chk91;
 
 PRINT 'Script 91 applied: stock levels per warehouse and Fill to Max.';
 GO

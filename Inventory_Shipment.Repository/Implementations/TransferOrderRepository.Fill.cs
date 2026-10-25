@@ -211,20 +211,23 @@ public sealed partial class TransferOrderRepository
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
 
         // One transaction (Save's own); a deadlock victim wrote nothing, its number sequence included, so it is run again.
-        var answer = await QueryMultipleAsync("inventory.usp_TransferOrder_CreateFromLevels", parameters, null, async multi =>
+        var (answer, warnings) = await QueryMultipleAsync("inventory.usp_TransferOrder_CreateFromLevels", parameters, null, async multi =>
         {
-            // The answer is the procedure's last result set: anything an inner call may have answered before it is skipped.
-            CreatedFromLevelsRow? last = null;
+            // The answer is the procedure's draft row (NewId, DocumentNumber, Message), then its warnings (Message only).
+            // Anything an inner call may have answered before the draft row is skipped.
+            var sets = new List<List<CreatedFromLevelsRow>>();
             while (!multi.IsConsumed)
             {
-                var row = (await multi.ReadAsync<CreatedFromLevelsRow>()).FirstOrDefault();
-                if (row is not null && (row.NewId > 0 || !string.IsNullOrEmpty(row.Message)))
-                {
-                    last = row;
-                }
+                sets.Add((await multi.ReadAsync<CreatedFromLevelsRow>()).AsList());
             }
 
-            return last;
+            var main = sets.FindLastIndex(set => set.Any(r => r.NewId > 0));
+            var row = main >= 0 ? sets[main].First(r => r.NewId > 0) : null;
+            var notes = main >= 0
+                ? sets.Skip(main + 1).SelectMany(set => set).Select(r => r.Message).OfType<string>()
+                      .Where(m => m.Length > 0).ToList()
+                : [];
+            return (row, (IReadOnlyList<string>)notes);
         }, cancellationToken);
 
         var newId = answer?.NewId is > 0 ? answer.NewId : parameters.Get<int?>("@NewId") ?? 0;
@@ -233,6 +236,7 @@ public sealed partial class TransferOrderRepository
             OrderId = newId,
             DocumentNumber = string.IsNullOrWhiteSpace(answer?.DocumentNumber) ? null : answer.DocumentNumber,
             Message = answer?.Message ?? string.Empty,
+            Warnings = warnings,
         };
     }
 

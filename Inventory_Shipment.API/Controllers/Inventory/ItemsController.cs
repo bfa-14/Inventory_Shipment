@@ -178,7 +178,7 @@ public sealed class ItemsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     public async Task<ActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        var result = await _itemService.DeleteAsync(id, cancellationToken);
+        var result = await _itemService.DeleteAsync(id, User.GetUserId(), cancellationToken);
         return result.ToNoContentResult(this);
     }
 

@@ -60,6 +60,17 @@ public sealed class StockLevelImportParser
 
     public const string NoRowsMessage = "The file has no rows.";
 
+    public const string UnreadableMessage = "The file could not be read: open it in Excel, save it and try again.";
+
+    /// <summary>
+    /// The longest Item Code / Barcode and Warehouse cells that can name anything (the table type's columns; an item code
+    /// is 30 characters, a barcode 50, a warehouse code 20, a name 150). A longer cell can match nothing: it is "not
+    /// found" as it is, never cut to a length that might match a real item or warehouse.
+    /// </summary>
+    public const int MaxItemRefLength = 100;
+
+    public const int MaxWarehouseRefLength = 150;
+
     /// <summary>The headings and the aliases people type, lower case without spaces (see <see cref="Normalize"/>).</summary>
     private static readonly Dictionary<string, string> HeaderAliases = new(StringComparer.Ordinal)
     {
@@ -101,8 +112,19 @@ public sealed class StockLevelImportParser
                 ?? workbook.Worksheets.FirstOrDefault()
                 ?? throw new StockLevelImportFileException(NoRowsMessage);
 
-            var (headerRow, columns) = FindHeader(sheet);
-            var rows = ReadRows(sheet, headerRow, columns);
+            List<StockLevelFileRow> rows;
+            try
+            {
+                var (headerRow, columns) = FindHeader(sheet);
+                rows = ReadRows(sheet, headerRow, columns);
+            }
+            catch (Exception ex) when (ex is not StockLevelImportFileException)
+            {
+                // Whatever else a workbook can hold that will not read: the person is told about their file (400), the
+                // cause is kept for the log - never a 500.
+                throw new StockLevelImportFileException(UnreadableMessage, ex);
+            }
+
             return rows.Count == 0 ? throw new StockLevelImportFileException(NoRowsMessage) : rows;
         }
     }
@@ -126,7 +148,7 @@ public sealed class StockLevelImportParser
 
             for (var columnNumber = firstColumn; columnNumber <= lastColumn; columnNumber++)
             {
-                var heading = Normalize(sheet.Cell(rowNumber, columnNumber).GetString());
+                var heading = Normalize(SavedText(sheet.Cell(rowNumber, columnNumber)));
                 if (heading.Length > 0 && HeaderAliases.TryGetValue(heading, out var name))
                 {
                     // The leftmost of a heading typed twice wins: the one a person reading the sheet would take.
@@ -165,21 +187,28 @@ public sealed class StockLevelImportParser
             var (min, rawMin) = ReadQuantity(Cell(sheet, rowNumber, columns, ColumnMin));
             var (max, rawMax) = ReadQuantity(Cell(sheet, rowNumber, columns, ColumnMax));
             var (remove, rawRemove) = ReadRemove(Cell(sheet, rowNumber, columns, ColumnRemove));
+            var itemRef = Text(sheet, rowNumber, columns, ColumnItem);
+            var warehouseRef = Text(sheet, rowNumber, columns, ColumnWarehouse);
 
-            // S12.1: the first cell that does not read, in the order Min, Max, Remove.
+            // S12.1: the first cell that does not read, in the order Min, Max, Remove; then (S12.2) an Item or Warehouse
+            // cell longer than anything it could name - "not found" as it is, in the judgement's own words.
             var parseError = rawMin is not null
                 ? $"Min must be a whole number, 0 or more (the file has '{Quoted(rawMin)}')."
                 : rawMax is not null
                     ? $"Max must be a whole number, 0 or more (the file has '{Quoted(rawMax)}')."
                     : rawRemove is not null
                         ? $"Remove must be Yes or empty (the file has '{Quoted(rawRemove)}')."
-                        : null;
+                        : itemRef is { Length: > MaxItemRefLength }
+                            ? $"Item {Quoted(itemRef)} not found."
+                            : warehouseRef is { Length: > MaxWarehouseRefLength }
+                                ? $"Warehouse {Quoted(warehouseRef)} not found."
+                                : null;
 
             rows.Add(new StockLevelFileRow
             {
                 RowNumber = rowNumber,
-                ItemRef = Text(sheet, rowNumber, columns, ColumnItem),
-                WarehouseRef = Text(sheet, rowNumber, columns, ColumnWarehouse),
+                ItemRef = itemRef,
+                WarehouseRef = warehouseRef,
                 MinQuantityBase = min,
                 MaxQuantityBase = max,
                 IsRemove = remove,
@@ -193,7 +222,31 @@ public sealed class StockLevelImportParser
         return rows;
     }
 
-    private static bool IsBlank(IXLCell cell) => cell.IsEmpty() || cell.GetString().Trim().Length == 0;
+    /// <summary>
+    /// A cell's value AS SAVED in the file: a formula's last result (Excel saves it with the workbook), never worked out
+    /// here. The server never runs an uploaded file's formulas: a cycle (=C2+1 in C2) threw a 500 and a long chain took
+    /// seconds, and the check must read what the person saw in Excel. A formula saved without a result reads as its own
+    /// text ("=C2+1"), which the row then quotes.
+    /// </summary>
+    private static XLCellValue Saved(IXLCell cell)
+    {
+        if (!cell.HasFormula)
+        {
+            return cell.Value;
+        }
+
+        var cached = cell.CachedValue;
+        return cached.IsBlank ? "=" + cell.FormulaA1 : cached;
+    }
+
+    /// <summary>The saved value as text, read with the invariant culture (the same file reads the same on every machine).</summary>
+    private static string SavedText(IXLCell cell) => Saved(cell).ToString(CultureInfo.InvariantCulture);
+
+    private static bool IsBlank(IXLCell cell)
+    {
+        var value = Saved(cell);
+        return value.IsBlank || value.ToString(CultureInfo.InvariantCulture).Trim().Length == 0;
+    }
 
     /// <summary>The longest text a sentence quotes from a cell.</summary>
     internal const int MaxQuotedLength = 100;
@@ -210,32 +263,39 @@ public sealed class StockLevelImportParser
 
     private static string? Text(IXLWorksheet sheet, int rowNumber, Dictionary<string, int> columns, string name)
     {
-        var value = Cell(sheet, rowNumber, columns, name)?.GetString().Trim();
+        var cell = Cell(sheet, rowNumber, columns, name);
+        var value = cell is null ? null : SavedText(cell).Trim();
         return string.IsNullOrEmpty(value) ? null : value;
     }
 
     /// <summary>
     /// A quantity in pcs: a whole number, 0 or more, from a numeric cell or from text read with the invariant culture.
     /// An empty cell is "not given" (null, null); anything else that is not a whole number 0 or more comes back as
-    /// (null, what the file has), so the row quotes it. Never the server's culture: the same file reads the same on
-    /// every machine.
+    /// (null, what the file has - <see cref="Quoted"/>, so a cell of a whole paragraph never travels whole), so the row
+    /// quotes it. Never the server's culture: the same file reads the same on every machine.
     /// </summary>
     private static (int? Value, string? Raw) ReadQuantity(IXLCell? cell)
     {
-        if (cell is null || cell.IsEmpty())
+        if (cell is null)
         {
             return (null, null);
         }
 
-        if (cell.DataType == XLDataType.Number)
+        var value = Saved(cell);
+        if (value.IsBlank)
         {
-            var number = cell.GetDouble();
-            return double.IsFinite(number) && number >= 0 && number <= int.MaxValue && Math.Floor(number) == number
-                ? ((int)number, null)
-                : (null, number.ToString(CultureInfo.InvariantCulture));
+            return (null, null);
         }
 
-        var text = cell.GetString().Trim();
+        if (value.IsNumber)
+        {
+            var number = value.GetNumber();
+            return double.IsFinite(number) && number >= 0 && number <= int.MaxValue && Math.Floor(number) == number
+                ? ((int)number, null)
+                : (null, Quoted(number.ToString(CultureInfo.InvariantCulture)));
+        }
+
+        var text = value.ToString(CultureInfo.InvariantCulture).Trim();
         if (text.Length == 0)
         {
             return (null, null);
@@ -245,30 +305,32 @@ public sealed class StockLevelImportParser
                && decimal.TryParse(text, NumberStyles.AllowLeadingSign | NumberStyles.AllowDecimalPoint, CultureInfo.InvariantCulture, out var parsed)
                && parsed >= 0 && parsed <= int.MaxValue
             ? ((int)parsed, null)
-            : (null, text);
+            : (null, Quoted(text));
     }
 
-    /// <summary>Remove: "Yes" (any case) removes the level; empty does not; anything else comes back as typed.</summary>
+    /// <summary>Remove: "Yes" (any case) removes the level; empty does not; anything else comes back as typed (quoted).</summary>
     private static (bool Value, string? Raw) ReadRemove(IXLCell? cell)
     {
-        if (cell is null || cell.IsEmpty())
+        if (cell is null)
         {
             return (false, null);
         }
 
-        var text = cell.GetString().Trim();
+        var value = Saved(cell);
+        var text = value.IsBlank ? string.Empty : value.ToString(CultureInfo.InvariantCulture).Trim();
         if (text.Length == 0)
         {
             return (false, null);
         }
 
-        return string.Equals(text, "Yes", StringComparison.OrdinalIgnoreCase) ? (true, null) : (false, text);
+        return string.Equals(text, "Yes", StringComparison.OrdinalIgnoreCase) ? (true, null) : (false, Quoted(text));
     }
 
     /// <summary>Lower-cased with every space removed, so "Min (pcs)" and "min(pcs)" are one heading.</summary>
     internal static string Normalize(string value)
     {
-        Span<char> buffer = stackalloc char[value.Length];
+        // A heading is a few words: on the stack; a long cell (a sheet whose first rows hold a paragraph) on the heap.
+        Span<char> buffer = value.Length <= 256 ? stackalloc char[value.Length] : new char[value.Length];
         var length = 0;
 
         foreach (var character in value)

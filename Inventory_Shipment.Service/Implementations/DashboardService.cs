@@ -64,7 +64,12 @@ public sealed class DashboardService : IDashboardService
             return Result<DashboardSummaryDto>.Failure(ErrorType.Validation, "The previous period is not valid.", "VALIDATION");
         }
 
-        var summary = await _dashboard.GetSummaryAsync(query.BranchId, from, to, prevFrom, prevTo, today, cancellationToken);
+        // (91) "Warehouse levels below Min" is read only for a reader who sees it (Trim blanks it for anybody else): it
+        // reads every level of the scope, and nobody should wait for a figure they are never shown.
+        var warehouseLevels = permissions.Contains(Permissions.Inventory.ItemsView)
+                              && permissions.Contains(Permissions.Inventory.StockLevelsView);
+        var summary = await _dashboard.GetSummaryAsync(
+            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cancellationToken);
         Trim(summary, permissions);
         return Result<DashboardSummaryDto>.Success(summary);
     }
