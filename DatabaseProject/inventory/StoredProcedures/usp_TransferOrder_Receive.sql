@@ -1,6 +1,7 @@
 /* 13.19 RECEIVE (Blocks, Receive: a released order with goods on the way, TRR active, the destination fit): the core
    above, the order's header stamp and the audit "{TRR}: {r} pcs received from {TRD list}; {l} pc(s) written off
    ({reasons})." (the second part only with a loss). Result set: PostingId, DocumentNumber, ReceivedBase, LostBase. */
+-- Re-created (93) from the body of script 90: + @Tracking, passed to the core.
 CREATE   PROCEDURE inventory.usp_TransferOrder_Receive
     @Id             INT,
     @RowVersion     BINARY(8)      = NULL,
@@ -10,7 +11,8 @@ CREATE   PROCEDURE inventory.usp_TransferOrder_Receive
     @Lines          inventory.tvp_TransferReceiptLine READONLY,
     @UserId         INT            = NULL,
     @PostingId      INT            = NULL OUTPUT,
-    @DocumentNumber NVARCHAR(30)   = NULL OUTPUT
+    @DocumentNumber NVARCHAR(30)   = NULL OUTPUT,
+    @Tracking       inventory.tvp_TransferReceiptTracking READONLY         -- (93)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -35,7 +37,8 @@ BEGIN
 
         EXEC inventory.usp_TransferOrder_ReceiveCore @Id = @Id, @Date = @Date, @ReferenceNo = @ReferenceNo, @Notes = @Notes,
              @Lines = @Lines, @UserId = @UserId, @PostingId = @PostingId OUTPUT, @DocumentNumber = @DocumentNumber OUTPUT,
-             @PostedWithId = NULL;
+             @PostedWithId = NULL,
+             @Tracking = @Tracking;                                                                               -- (93)
 
         UPDATE inventory.TransferOrders SET UpdatedAtUtc = @Now, UpdatedBy = @UserId WHERE Id = @Id;
 

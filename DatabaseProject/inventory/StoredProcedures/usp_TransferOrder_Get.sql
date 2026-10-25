@@ -1,5 +1,3 @@
-/* ================================================================== 8. The transfer procedures */
-
 /* (91) ONE TRANSFER ORDER, script 90's six result sets with every column, + the destination's stock levels (3.3.6.1):
      1 header + ToLevelCount (levels at To of active items), ItemsBelowMin (the items whose lines are red),
        CanFillToMax / FillToMaxBlockedReason and CanAddBelowMin / AddBelowMinBlockedReason (fn_TransferOrder_Blocks)
@@ -10,6 +8,8 @@
        Script 90's five figures keep their names and values (fn_StockPosition reads the same fn_TransferPosition). */
 -- Re-created (91) from the body of script 90: + the order's levels and the two abilities (result 1), the lines' Min /
 -- Max / Projected at To and From after this order (result 2).
+-- Re-created (93) from the body of script 91: + per line the item's TrackingMode, RequiresExpiry, SerialLength and
+-- TrackingKind; + per posting line its TrackingKind and TrackingCount (B18: no rows here).
 CREATE   PROCEDURE inventory.usp_TransferOrder_Get
     @Id     INT,
     @UserId INT = NULL
@@ -202,7 +202,12 @@ BEGIN
            FromProjectedBeforeBase = ISNULL(pf.ProjectedBase, 0),
            FromAfterBase           = ISNULL(pf.ProjectedBase, 0) - ISNULL(bt.TakesBase, 0),
            FromBelowMinAfter       = CAST(CASE WHEN pf.HasLevel = 1 AND ISNULL(pf.ProjectedBase, 0) - ISNULL(bt.TakesBase, 0) < pf.MinBase
-                                               THEN 1 ELSE 0 END AS BIT)
+                                               THEN 1 ELSE 0 END AS BIT),
+           -- (93) how the item is tracked now, and the kind a dispatch asks for (2 Serial, 1 Batch, 3 Expiry, NULL none)
+           TrackingMode   = i.TrackingMode,
+           RequiresExpiry = i.RequiresExpiry,
+           SerialLength   = i.SerialLength,
+           TrackingKind   = CAST(CASE i.TrackingMode WHEN 2 THEN 2 WHEN 1 THEN 1 ELSE CASE WHEN i.RequiresExpiry = 1 THEN 3 END END AS TINYINT)
     FROM inventory.TransferOrderLines l
     INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
     INNER JOIN inventory.Items i          ON i.Id = l.ItemId
@@ -256,13 +261,18 @@ BEGIN
            pl.QuantityBase, pl.LostBase, pl.LossReasonCode, pl.LossNote, pl.SettledBase,
            OnTheWayBase = CASE WHEN p.Kind = N'Dispatch' AND p.Status = 2 THEN pl.QuantityBase - pl.SettledBase ELSE 0 END,
            pl.DispatchLineId, DispatchNumber = dp.DocumentNumber,
-           pl.UnitCostBase, pl.LossUnitCostBase
+           pl.UnitCostBase, pl.LossUnitCostBase,
+           -- (93) the kind it left with, and how many rows it holds (its rows: usp_TransferPosting_Tracking, B18)
+           pl.TrackingKind,
+           TrackingCount = ISNULL(tc.N, 0)
     FROM inventory.TransferPostingLines pl
     INNER JOIN inventory.TransferPostings p         ON p.Id = pl.PostingId
     INNER JOIN inventory.TransferOrderLines ol      ON ol.Id = pl.TransferOrderLineId
     INNER JOIN inventory.Items i                    ON i.Id = pl.ItemId
     LEFT  JOIN inventory.TransferPostingLines dl    ON dl.Id = pl.DispatchLineId
     LEFT  JOIN inventory.TransferPostings dp        ON dp.Id = dl.PostingId
+    OUTER APPLY (SELECT N = COUNT(*) FROM inventory.TransferPostingTracking t
+                 WHERE t.PostingLineId = pl.Id AND pl.TrackingKind IS NOT NULL) tc                                -- (93)
     WHERE p.TransferOrderId = @Id
     ORDER BY p.PostedAtUtc, p.Id, pl.LineNumber;
 

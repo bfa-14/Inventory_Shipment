@@ -18,6 +18,9 @@
    dispatch, or a receipt without a loss, leaves the company's stock as it was: no replay. A receipt's reversal takes
    pieces out of To: it holds the dispatch lock of To (inventory.TransferDispatch.{To}) before it checks To's stock,
    so a dispatch from To cannot pass its stock check on the same pieces at the same time. */
+-- Re-created (93) from the body of script 90: + a receipt holding serials takes the serial locks of its items (in ItemId
+-- order) after the order's rule and before the posting's (fn_TransferPosting_ReverseBlock); + a receipt's rows go back
+-- on the way (their dispatch rows' SettledBase), its losses undone. Rows are never changed or deleted.
 CREATE   PROCEDURE inventory.usp_TransferPosting_Reverse
     @PostingId  INT,
     @RowVersion BINARY(8)     = NULL,     -- the ORDER's
@@ -35,6 +38,7 @@ BEGIN
             @Number NVARCHAR(30), @PostingDate DATE, @NotSentAt DATETIME2(3),
             @Now DATETIME2(3) = SYSUTCDATETIME(), @ReversalAt DATETIME2(3), @Latest DATETIME2(3), @LatestReceipts DATETIME2(3),
             @ToId INT, @Resource NVARCHAR(255), @Lock INT, @ItemId INT;
+    DECLARE @SerialItemId INT = 0, @SerialItemCode NVARCHAR(30);     -- (93) (@Lock and @Resource are 90's)
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -85,6 +89,30 @@ BEGIN
         WHERE b.Action = CASE @Kind WHEN N'Dispatch' THEN N'ReverseDispatch' ELSE N'ReverseReceipt' END AND b.Message IS NOT NULL
         ORDER BY b.Seq;
         IF @Msg IS NOT NULL THROW @ErrNo, @Msg, 1;
+
+        -- (93) A RECEIPT OF SERIALS: the serial locks of its items (the dispatch's, 5b), in ItemId order, so that no
+        --      dispatch of one of its serials slips in between the check below (62013) and the reversal
+        IF @Kind = N'Receipt'
+        BEGIN
+            WHILE 1 = 1
+            BEGIN
+                SET @SerialItemCode = NULL;
+                SELECT TOP (1) @SerialItemId = t.ItemId, @SerialItemCode = i.ItemCode
+                FROM inventory.TransferPostingTracking t
+                INNER JOIN inventory.Items i ON i.Id = t.ItemId
+                WHERE t.PostingId = @PostingId AND t.Kind = 2 AND t.ItemId > @SerialItemId
+                ORDER BY t.ItemId;
+                IF @SerialItemCode IS NULL BREAK;
+
+                SET @Resource = N'inventory.TransferSerial.' + CAST(@SerialItemId AS NVARCHAR(10));
+                EXEC @Lock = sp_getapplock @Resource = @Resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 30000;
+                IF @Lock < 0
+                BEGIN
+                    SET @Msg = N'Another dispatch of ' + @SerialItemCode + N' serial numbers is being posted. Try again in a moment.';
+                    THROW 62010, @Msg, 1;
+                END
+            END
+        END
 
         SELECT TOP (1) @ErrNo = q.ErrorNumber, @Msg = q.Message
         FROM inventory.fn_TransferPosting_ReverseBlock(@PostingId) q
@@ -150,6 +178,12 @@ BEGIN
             FROM inventory.TransferPostingLines dl
             INNER JOIN (SELECT DispatchLineId, Qty = SUM(QuantityBase + LostBase) FROM inventory.TransferPostingLines
                         WHERE PostingId = @PostingId GROUP BY DispatchLineId) x ON x.DispatchLineId = dl.Id;
+
+            -- (93) ... its serials and batch pieces too (their dispatch rows), its losses undone
+            UPDATE dd SET SettledBase = dd.SettledBase - (rd.QuantityBase + rd.LostBase)
+            FROM inventory.TransferPostingTracking dd
+            INNER JOIN inventory.TransferPostingTracking rd ON rd.DispatchTrackingId = dd.Id
+            WHERE rd.PostingId = @PostingId;
 
             UPDATE l SET ReceivedBase = l.ReceivedBase - x.Received, LostBase = l.LostBase - x.Lost
             FROM inventory.TransferOrderLines l

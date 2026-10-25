@@ -3,6 +3,8 @@
 --      usp_TransferOrder_Get (the posting's ReverseBlockedReason). A RECEIPT BEFORE ITS DISPATCH: a dispatch whose goods
 --      a posted receipt took (received or written off) waits for that receipt's reversal; a receipt only while the
 --      destination still holds what it brought.
+-- Re-created (93) from the body of script 90: + a RECEIPT whose serial (received or lost) is on a row of a POSTED
+-- dispatch written after it cannot be reversed (Seq 3, 62013): reversing it would put the serial on the way twice.
 CREATE   FUNCTION inventory.fn_TransferPosting_ReverseBlock (@PostingId INT)
 RETURNS TABLE
 AS
@@ -42,6 +44,34 @@ FROM
     CROSS APPLY (SELECT List = STRING_AGG(t.DocumentNumber, N', ') WITHIN GROUP (ORDER BY t.PostedAtUtc, t.Id)
                  FROM (SELECT TOP (3) r.Id, r.DocumentNumber, r.PostedAtUtc FROM r ORDER BY r.PostedAtUtc, r.Id) t) rl
     WHERE p.Kind = N'Dispatch' AND p.Status = 2 AND rn.N > 0
+
+    UNION ALL
+    -- (93) a receipt whose serial (received or lost) left again with a POSTED dispatch written after it: reversing it
+    --      would put the serial on the way twice. Before the stock sentence (Seq 4): the precise reason, even when the
+    --      serial left again from the receiving warehouse itself. "After" = the dispatch row's Id is above the receipt
+    --      row's, never the postings' PostedAtUtc: a posting takes its time when it STARTS, and a dispatch that waited
+    --      on its source lock while this receipt committed would carry an earlier time than the receipt it follows. Its
+    --      rows are written only after its on-the-way check (62017), so after this receipt's commit: a higher Id.
+    --      PER RECEIPT ROW, THE FIRST LATER DISPATCH ROW (a MIN through IX_TransferPostingTracking_ItemSerial, the posting
+    --      by a seek), then the first of those (93 tests): a TOP (1) ... ORDER BY the dispatch row's Id let the optimiser
+    --      scan every tracking row in Id order against the receipt's rows (a row-goal plan) - with no serial dispatched
+    --      again, the usual case, it read them all: 77-99 s for the Get of an order with a 10,000-serial receipt, which
+    --      timed out the answer of Receive and Dispatch and receive after they had posted. The same first row: the
+    --      smallest of the per-row smallest Ids.
+    SELECT * FROM (SELECT TOP (1) Seq = 3, ErrorNumber = 62013,
+                          Message = N'Cannot reverse: serial no. ' + rr.SerialNo + N' of ' + p.DocumentNumber
+                                    + N' has been dispatched again with ' + p2.DocumentNumber + N': reverse that dispatch first.'
+                   FROM p
+                   INNER JOIN inventory.TransferPostingTracking rr ON rr.PostingId = p.Id AND rr.SerialNo IS NOT NULL
+                   CROSS APPLY (SELECT Id = MIN(dx.Id)
+                                FROM inventory.TransferPostingTracking dx WITH (FORCESEEK)
+                                INNER JOIN inventory.TransferPostings px WITH (FORCESEEK) ON px.Id = dx.PostingId AND px.Kind = N'Dispatch' AND px.Status = 2
+                                WHERE dx.ItemId = rr.ItemId AND dx.SerialNo = rr.SerialNo AND dx.SerialNo IS NOT NULL
+                                  AND dx.DispatchTrackingId IS NULL AND dx.Id > rr.Id) m
+                   INNER JOIN inventory.TransferPostingTracking d2 ON d2.Id = m.Id
+                   INNER JOIN inventory.TransferPostings p2 ON p2.Id = d2.PostingId
+                   WHERE p.Kind = N'Receipt' AND p.Status = 2
+                   ORDER BY m.Id, rr.RowNumber) a3
 
     UNION ALL
     -- a receipt, per item: the destination must still hold what it brought

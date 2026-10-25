@@ -12,6 +12,8 @@
    2: over every order of the filter (all pages): Orders, OnTheWayBase, LateOrders, WaitingForApproval. */
 -- Re-created (92) from the body of script 90: + @UserId, @Mine (From or to / From / To the reader's warehouses: Any |
 -- From | To, any case; NULL = no filter; an unrestricted reader is never filtered). Result sets unchanged.
+-- Re-created (93) from the body of script 92: + @TrackingNo (the orders whose dispatches or receipts hold a batch or
+-- serial no. containing it, 3 characters or more) and the column MatchedTracking (what happened to it).
 CREATE   PROCEDURE inventory.usp_TransferOrder_Search
     @Search             NVARCHAR(100) = NULL,
     @Status             NVARCHAR(20)  = NULL,
@@ -29,7 +31,8 @@ CREATE   PROCEDURE inventory.usp_TransferOrder_Search
     @PageNumber         INT           = 1,
     @PageSize           INT           = 25,
     @UserId             INT           = NULL,   -- (92) the reader
-    @Mine               NVARCHAR(4)   = NULL    -- (92) Any | From | To the reader's warehouses; NULL = no filter
+    @Mine               NVARCHAR(4)   = NULL,   -- (92) Any | From | To the reader's warehouses; NULL = no filter
+    @TrackingNo         NVARCHAR(100) = NULL    -- (93) a batch or serial no., or part of one (3 characters or more)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -56,6 +59,65 @@ BEGIN
     DECLARE @MineIds TABLE (WarehouseId INT NOT NULL PRIMARY KEY);
     IF @Mine IS NOT NULL AND @MineUnrestricted = 0
         INSERT INTO @MineIds (WarehouseId) SELECT WarehouseId FROM security.fn_User_Warehouses(@UserId);
+
+    -- (93) a batch or serial no. as the postings keep it (capitals, trimmed), found by "contains" (B9): chassis numbers
+    --      are quoted by their last digits. LIKE's own characters typed are taken as they are.
+    SET @TrackingNo = inventory.fn_TrackingNo_Normalize(@TrackingNo);
+    IF LEN(@TrackingNo) < 3 THROW 62000, 'Type at least 3 characters of the batch or serial number.', 1;
+    DECLARE @Pattern NVARCHAR(400) = N'%' + REPLACE(REPLACE(REPLACE(@TrackingNo, N'[', N'[[]'), N'%', N'[%]'), N'_', N'[_]') + N'%';
+    -- (93) the matching rows, ONCE (one pass over the tracking rows): @MatchOrder below reads them
+    --      (an EXISTS per order let the optimiser scan every row once per order: 2 s on 50,000 rows instead of 0.05)
+    DECLARE @Match TABLE
+    (
+        TrackingId      INT          NOT NULL PRIMARY KEY,
+        TransferOrderId INT          NOT NULL,
+        Number          NVARCHAR(50) NOT NULL,
+        PostingStatus   TINYINT      NOT NULL,
+        PostingKind     NVARCHAR(10) NOT NULL,
+        PostingNumber   NVARCHAR(30) NOT NULL,
+        ToWarehouseId   INT          NOT NULL,
+        QuantityBase    INT          NOT NULL,
+        SettledBase     INT          NOT NULL
+    );
+    IF @TrackingNo IS NOT NULL
+        INSERT INTO @Match (TrackingId, TransferOrderId, Number, PostingStatus, PostingKind, PostingNumber,
+                            ToWarehouseId, QuantityBase, SettledBase)
+        SELECT tx.Id, px.TransferOrderId, COALESCE(tx.SerialNo, tx.BatchNo), px.Status, px.Kind, px.DocumentNumber,
+               px.ToWarehouseId, tx.QuantityBase, tx.SettledBase
+        FROM inventory.TransferPostingTracking tx
+        INNER JOIN inventory.TransferPostings px ON px.Id = tx.PostingId
+        WHERE tx.SerialNo LIKE @Pattern OR tx.BatchNo LIKE @Pattern;
+
+    -- (93) ... and per order, ONCE, what MatchedTracking says: the order's latest matching row (rows of posted postings
+    --      first, so a serial back on the way after a reversed receipt reads "on the way"; then by the row's Id, the
+    --      order the rows were written in) and the count of distinct numbers. Worked out here, keyed by the order, and
+    --      not per row of the page: an APPLY over @Match per order ran in a plan compiled for an empty @Match (the
+    --      list's first call has no filter) and took minutes when every chassis no. matched (MD6...).
+    DECLARE @MatchOrder TABLE
+    (
+        TransferOrderId INT           NOT NULL PRIMARY KEY,
+        Txt             NVARCHAR(300) NULL,
+        N               INT           NOT NULL
+    );
+    IF @TrackingNo IS NOT NULL
+        INSERT INTO @MatchOrder (TransferOrderId, Txt, N)
+        SELECT r.TransferOrderId, r.Txt, r.N
+        FROM (SELECT m.TransferOrderId,
+                     Txt = LEFT(m.Number, 50) + N': '
+                           + CASE WHEN m.PostingStatus = 3 THEN N'reversed (' + m.PostingNumber + N')'
+                                  WHEN m.PostingKind = N'Dispatch' AND m.SettledBase < m.QuantityBase THEN N'on the way (' + m.PostingNumber + N')'
+                                  WHEN m.PostingKind = N'Dispatch' THEN N'dispatched (' + m.PostingNumber + N')'
+                                  WHEN m.QuantityBase > 0 THEN N'received into ' + ISNULL(rw.WarehouseCode, N'') + N' (' + m.PostingNumber + N')'
+                                  ELSE N'written off (' + m.PostingNumber + N')' END,
+                     -- the distinct numbers of the order (COUNT(DISTINCT) is not a window function)
+                     N  = DENSE_RANK() OVER (PARTITION BY m.TransferOrderId ORDER BY m.Number)
+                          + DENSE_RANK() OVER (PARTITION BY m.TransferOrderId ORDER BY m.Number DESC) - 1,
+                     Rn = ROW_NUMBER() OVER (PARTITION BY m.TransferOrderId
+                                             ORDER BY CASE WHEN m.PostingStatus = 2 THEN 0 ELSE 1 END, m.TrackingId DESC)
+              FROM @Match m
+              LEFT JOIN masterdata.Warehouses rw ON rw.Id = m.ToWarehouseId) r
+        WHERE r.Rn = 1
+        OPTION (RECOMPILE);   -- runs only with a filter: sized for the rows found, never for the empty @Match of the first call
 
     -- THE FILTER ONCE, with each order's state: the shown status, Late and On the way are filters, so the state is
     -- worked out before the page, and the page and the totals both read it from here.
@@ -98,6 +160,7 @@ BEGIN
       AND (@Mine IS NULL OR @MineUnrestricted = 1                                                          -- (92)
            OR (@Mine IN (N'Any', N'From') AND o.FromWarehouseId IN (SELECT WarehouseId FROM @MineIds))
            OR (@Mine IN (N'Any', N'To')   AND o.ToWarehouseId   IN (SELECT WarehouseId FROM @MineIds)))
+      AND (@TrackingNo IS NULL OR o.Id IN (SELECT mo.TransferOrderId FROM @MatchOrder mo))                 -- (93)
       AND (@Status IS NULL
            OR (@Status = N'Open' AND o.Status = 2 AND ISNULL(st.DisplayStatus, N'') NOT IN (N'Received', N'Closed'))
            OR st.DisplayStatus = @Status)
@@ -122,7 +185,11 @@ BEGIN
            x.ToDispatchBase, x.NotSentBase, x.LostBase,
            o.ExpectedArrival, o.ReferenceNo, o.ReturnOfOrderId, ReturnOfNumber = ro.DocumentNumber,
            o.CreatedAtUtc, CreatedByName = cu.FullName,
-           COUNT(*) OVER () AS TotalCount
+           COUNT(*) OVER () AS TotalCount,
+           -- (93) what happened to the number found (@MatchOrder: the order's latest matching row), + " and {n} more"
+           MatchedTracking = CAST(CASE WHEN @TrackingNo IS NOT NULL AND mt.Txt IS NOT NULL
+                                       THEN mt.Txt + CASE WHEN mt.N > 1 THEN N' and ' + CAST(mt.N - 1 AS NVARCHAR(10)) + N' more' ELSE N'' END
+                                  END AS NVARCHAR(300))
     FROM @Ids x
     INNER JOIN inventory.TransferOrders o   ON o.Id = x.Id
     INNER JOIN masterdata.Branches b        ON b.Id = o.BranchId
@@ -132,6 +199,7 @@ BEGIN
     INNER JOIN masterdata.Branches tb       ON tb.Id = tw.BranchId
     LEFT  JOIN inventory.TransferOrders ro  ON ro.Id = o.ReturnOfOrderId
     LEFT  JOIN security.Users cu            ON cu.Id = o.CreatedBy
+    LEFT  JOIN @MatchOrder mt               ON mt.TransferOrderId = o.Id                                    -- (93)
     ORDER BY
         CASE WHEN @SortDirection = N'ASC' THEN
             CASE @SortColumn WHEN N'DocumentNumber' THEN o.DocumentNumber WHEN N'FromWarehouse' THEN fw.WarehouseCode

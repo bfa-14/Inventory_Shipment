@@ -4,6 +4,8 @@
    back, numbers included (the number sequences are written in this transaction). Earlier dispatches on the way are
    untouched. Dispatch's parameters; @Eta is not read. Result set: DispatchPostingId, DispatchNumber, ReceiptPostingId,
    ReceiptNumber; @PostingId / @DocumentNumber = the dispatch's. */
+-- Re-created (93) from the body of script 90: + @Tracking to the dispatch core; the receipt receives every row of the
+-- new dispatch (received = sent, nothing lost), serial by serial.
 CREATE   PROCEDURE inventory.usp_TransferOrder_DispatchAndReceive
     @Id             INT,
     @RowVersion     BINARY(8)      = NULL,
@@ -14,7 +16,8 @@ CREATE   PROCEDURE inventory.usp_TransferOrder_DispatchAndReceive
     @Lines          inventory.tvp_TransferDispatchLine READONLY,
     @UserId         INT            = NULL,
     @PostingId      INT            = NULL OUTPUT,
-    @DocumentNumber NVARCHAR(30)   = NULL OUTPUT
+    @DocumentNumber NVARCHAR(30)   = NULL OUTPUT,
+    @Tracking       inventory.tvp_TransferDispatchTracking READONLY        -- (93)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -23,6 +26,7 @@ BEGIN
     DECLARE @Msg NVARCHAR(400), @ErrNo INT, @Status TINYINT, @Now DATETIME2(3) = SYSUTCDATETIME(),
             @ReceiptId INT, @ReceiptNumber NVARCHAR(30), @Pcs INT;
     DECLARE @Receipt inventory.tvp_TransferReceiptLine;
+    DECLARE @ReceiptTracking inventory.tvp_TransferReceiptTracking;                                               -- (93)
 
     BEGIN TRY
         BEGIN TRANSACTION;
@@ -40,7 +44,8 @@ BEGIN
 
         EXEC inventory.usp_TransferOrder_DispatchCore @Id = @Id, @Date = @Date, @Eta = @Date, @ReferenceNo = @ReferenceNo,
              @Notes = @Notes, @Lines = @Lines, @UserId = @UserId,
-             @PostingId = @PostingId OUTPUT, @DocumentNumber = @DocumentNumber OUTPUT;
+             @PostingId = @PostingId OUTPUT, @DocumentNumber = @DocumentNumber OUTPUT,
+             @Tracking = @Tracking;                                                                               -- (93)
 
         -- the receipt takes exactly what was just dispatched
         INSERT INTO @Receipt (DispatchLineId, ReceivedBase, NothingMoreWillArrive, LossReasonCode, LossNote)
@@ -48,9 +53,16 @@ BEGIN
         FROM inventory.TransferPostingLines pl
         WHERE pl.PostingId = @PostingId;
 
+        -- (93) ... serial by serial, batch by batch: every row of the new dispatch arrives
+        INSERT INTO @ReceiptTracking (DispatchTrackingId, ReceivedBase, LostBase)
+        SELECT t.Id, t.QuantityBase, 0
+        FROM inventory.TransferPostingTracking t
+        WHERE t.PostingId = @PostingId;
+
         EXEC inventory.usp_TransferOrder_ReceiveCore @Id = @Id, @Date = @Date, @ReferenceNo = @ReferenceNo, @Notes = @Notes,
              @Lines = @Receipt, @UserId = @UserId, @PostingId = @ReceiptId OUTPUT, @DocumentNumber = @ReceiptNumber OUTPUT,
-             @PostedWithId = @PostingId;
+             @PostedWithId = @PostingId,
+             @Tracking = @ReceiptTracking;                                                                        -- (93)
 
         UPDATE inventory.TransferOrders SET UpdatedAtUtc = @Now, UpdatedBy = @UserId WHERE Id = @Id;
 

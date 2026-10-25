@@ -1,5 +1,7 @@
-/* ================================================================== 2. usp_Item_Get (+ Note, Link) */
+/* ================================================================== 7. The item procedures */
 
+-- Re-created (93) from the body of script 87: + TrackingMode, RequiresExpiry, SerialLength after Note, Link (the first
+-- result set; read by name). Nothing else.
 CREATE   PROCEDURE inventory.usp_Item_Get
     @Id INT
 AS
@@ -22,6 +24,7 @@ BEGIN
            i.WeightKg, i.VolumeCbm, i.OilQtyPerUnit,
            i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
            i.Note, i.Link,                           -- (87)
+           i.TrackingMode, i.RequiresExpiry, i.SerialLength,   -- (93)
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
            i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
     FROM inventory.Items i
