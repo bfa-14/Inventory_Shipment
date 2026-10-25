@@ -155,6 +155,12 @@ public static class Permissions
         public const string ItemsEdit = "inventory.items.edit";
         public const string ItemsDelete = "inventory.items.delete";
 
+        /* STOCK LEVELS PER WAREHOUSE (script 91): each warehouse's own Min / Max of an item, which Fill to Max tops a
+           warehouse up to. Viewing and keeping them are two jobs: everyone who sees items may see them; the people the
+           owner names keep them (Edit). Granted once, when first created, to the roles holding View / Edit items. */
+        public const string StockLevelsView = "inventory.stocklevels.view";
+        public const string StockLevelsEdit = "inventory.stocklevels.edit";
+
         /* THE FIVE VERBS OF A DOCUMENT, and they are five permissions rather than one because they
            are five different jobs. A storekeeper writes drafts; a supervisor posts them, which is the
            moment stock actually moves; cancelling reverses a posted document and is rarer still. In
@@ -450,6 +456,11 @@ public static class Permissions
             "Change items, units, attachments and status.", 420),
         new(Inventory.ItemsDelete, "Delete items", InventoryModule,
             "Delete items not referenced by transactions.", 430),
+        // Script 91: name, module, description and order exactly as its MERGE writes them (the sync copies these over).
+        new(Inventory.StockLevelsView, "View Stock Levels", InventoryModule,
+            "Open Inventory › Stock Levels and the Stock levels per warehouse card of Item Definition: each warehouse's Min / Max, its stock and what released transfer orders bring or take.", 432),
+        new(Inventory.StockLevelsEdit, "Edit Stock Levels", InventoryModule,
+            "Set, change and remove an item's Min / Max in a warehouse, by hand or from an Excel file.", 434),
 
         new(Inventory.StockInView, "View Inventory In", InventoryModule,
             "See Inventory In documents.", 700),

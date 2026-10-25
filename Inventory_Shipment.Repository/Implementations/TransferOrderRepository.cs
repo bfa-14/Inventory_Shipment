@@ -18,7 +18,7 @@ namespace Inventory_Shipment.Repository.Implementations;
 /// locks the order, the source's dispatch lock and the ledger, and a reader of the order arriving in between can be
 /// killed. The postings (dispatch, receipt, dispatch and receive) also get the batch command timeout.
 /// </summary>
-public sealed class TransferOrderRepository : ITransferOrderRepository
+public sealed partial class TransferOrderRepository : ITransferOrderRepository
 {
     /* Matched by TYPE NAME on the server. FROZEN in script 90 (2.3.5): a later change takes a new type. */
     private const string OrderLineTypeName = "inventory.tvp_TransferOrderLine";
@@ -293,6 +293,15 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
         public string? UpdateDetailsBlockedReason { get; init; }
         public bool CanEditExpectedArrival { get; init; }
         public string? EditExpectedArrivalBlockedReason { get; init; }
+
+        /* (91) To's stock levels, and the answers of Fill to Max and Add items below Min (fn_TransferOrder_Blocks). */
+        public int ToLevelCount { get; init; }
+        public int ItemsBelowMin { get; init; }
+        public bool CanFillToMax { get; init; }
+        public string? FillToMaxBlockedReason { get; init; }
+        public bool CanAddBelowMin { get; init; }
+        public string? AddBelowMinBlockedReason { get; init; }
+
         public byte[] RowVersion { get; init; } = [];
     }
 
@@ -476,7 +485,10 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
                 CreateReturn = TransferAbilityDto.Of(header.CanCreateReturn, header.CreateReturnBlockedReason),
                 UpdateDetails = TransferAbilityDto.Of(header.CanUpdateDetails, header.UpdateDetailsBlockedReason),
                 EditExpectedArrival = TransferAbilityDto.Of(header.CanEditExpectedArrival, header.EditExpectedArrivalBlockedReason),
+                FillToMax = TransferAbilityDto.Of(header.CanFillToMax, header.FillToMaxBlockedReason),
+                AddBelowMin = TransferAbilityDto.Of(header.CanAddBelowMin, header.AddBelowMinBlockedReason),
             },
+            Levels = new TransferOrderLevelsDto { ToLevelCount = header.ToLevelCount, ItemsBelowMin = header.ItemsBelowMin },
             Lines = lines,
             Postings = postings.Select(p => ToDto(p, linesByPosting.TryGetValue(p.Id, out var own) ? own : [])).ToList(),
             Audit = audit,

@@ -76,6 +76,14 @@ public sealed class WarehouseLookupDto
     public bool IsUsed { get; init; }
 
     /// <summary>
+    /// (91) <see cref="IsUsed"/> is the sum of these two: used by stock or a document, and holding stock levels per
+    /// warehouse - the picker says which ("has stock levels, cannot be a parent"), the delete what goes with it.
+    /// </summary>
+    public bool IsUsedInTransactions { get; init; }
+
+    public bool HasStockLevels { get; init; }
+
+    /// <summary>
     /// (90) An "On the way" warehouse (goods of transfer orders between dispatch and receipt). Listed only when the
     /// lookup is asked for them (includeTransit, Stock Valuation's filter) or when it is the includeId.
     /// </summary>

@@ -128,6 +128,12 @@ public sealed class DashboardService : IDashboardService
             s.StockAlerts.OutOfStockSales = null;
         }
 
+        // (91) The warehouses' own levels are Stock Levels' screen: its line opens it.
+        if (s.StockAlerts is not null && !Has(Permissions.Inventory.StockLevelsView))
+        {
+            s.StockAlerts.BelowWarehouseMin = null;
+        }
+
         var containers = Has(Permissions.Containers.View);
         if (s.OnTheWay is not null)
         {

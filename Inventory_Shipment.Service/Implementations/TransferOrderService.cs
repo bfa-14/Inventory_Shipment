@@ -32,7 +32,7 @@ namespace Inventory_Shipment.Service.Implementations;
 /// THE APPROVAL EMAILS (<see cref="ITransferApprovalMailer"/>) are queued after the procedure decided, outside its
 /// transaction; a failure becomes the answer's emailWarning, never the action's failure.
 /// </summary>
-public sealed class TransferOrderService : ITransferOrderService
+public sealed partial class TransferOrderService : ITransferOrderService
 {
     private const string NotFoundMessage = "Transfer order not found.";
     private const string PostingNotFoundMessage = "Dispatch or receipt not found.";

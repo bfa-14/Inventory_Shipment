@@ -152,6 +152,13 @@ public sealed class DashboardStockAlertsDto
     public int NegativeStock { get; set; }
     /// <summary>NULL without the Out-of-Stock Sales permission.</summary>
     public int? OutOfStockSales { get; set; }
+
+    /// <summary>
+    /// (91) "Warehouse levels below Min": the stock levels per warehouse (active item, active warehouse) whose Projected is
+    /// below their Min - the Stock Levels page's "Below Min" tile for the same branch (reporting.usp_Dashboard_StockLevels).
+    /// NULL without View Stock Levels.
+    /// </summary>
+    public int? BelowWarehouseMin { get; set; }
 }
 
 public sealed class DashboardBelowMinimumDto

@@ -212,6 +212,19 @@ public sealed class TransferAvailabilityDto
 
     /// <summary>On the way to To, and still to dispatch to it, on released orders.</summary>
     public int IncomingToBase { get; init; }
+
+    /* (91) To's stock level and where it stands (inventory.fn_StockPosition), and From's own Min: the grid's Min, Max and
+       Projected at {To} on an unsaved draft (Projected before this order + the form's Ordered). The names are Get's. */
+    public int ToInOnTheWayBase { get; init; }
+    public int ToInToDispatchBase { get; init; }
+    public int ToOutToDispatchBase { get; init; }
+    public int ToProjectedBeforeBase { get; init; }
+    public bool ToHasLevel { get; init; }
+    public int? ToMinBase { get; init; }
+    public int? ToMaxBase { get; init; }
+    public int FromProjectedBeforeBase { get; init; }
+    public bool FromHasLevel { get; init; }
+    public int? FromMinBase { get; init; }
 }
 
 /// <summary>GET availability?fromWarehouseId=&amp;toWarehouseId=&amp;itemIds=1,2,3&amp;excludeOrderId=.</summary>
@@ -319,6 +332,12 @@ public sealed class TransferOrderAbilitiesDto
     public TransferAbilityDto CreateReturn { get; init; } = new();
     public TransferAbilityDto UpdateDetails { get; init; } = new();
     public TransferAbilityDto EditExpectedArrival { get; init; } = new();
+
+    /// <summary>(91) "Fill to Max…" on a saved draft (the transfers.create permission is the page's).</summary>
+    public TransferAbilityDto FillToMax { get; init; } = new();
+
+    /// <summary>(91) "Add items below Min…" on a saved draft.</summary>
+    public TransferAbilityDto AddBelowMin { get; init; } = new();
 }
 
 /// <summary>One line of the order, with where From and To stand for its item (this order left out).</summary>
@@ -358,6 +377,28 @@ public sealed class TransferOrderLineDto
     public int AvailableFromBase { get; init; }
     public int OnHandToBase { get; init; }
     public int IncomingToBase { get; init; }
+
+    /* (91) To's stock level for the item, and where To and From stand with this order (fn_StockPosition, this order left
+       out, then what it brings / takes: Ordered while a draft or waiting, To dispatch + On the way once released). */
+    public bool ToHasLevel { get; init; }
+    public int? ToMinBase { get; init; }
+    public int? ToMaxBase { get; init; }
+    public int ToOutToDispatchBase { get; init; }
+    public int ToProjectedBeforeBase { get; init; }
+
+    /// <summary>"Projected at {To}": what To will have once this order and the other released ones have arrived.</summary>
+    public int ToProjectedAfterBase { get; init; }
+
+    /// <summary>To stays below its Min AFTER this order (the line is red, L19).</summary>
+    public bool IsBelowMin { get; init; }
+
+    public bool FromHasLevel { get; init; }
+    public int? FromMinBase { get; init; }
+    public int FromProjectedBeforeBase { get; init; }
+    public int FromAfterBase { get; init; }
+
+    /// <summary>From goes below its own Min with this order (orange; red wins).</summary>
+    public bool FromBelowMinAfter { get; init; }
 }
 
 /// <summary>The On the way warehouse a dispatch put its goods in: "OTW-BR-002 - On the way to BR-002 (transfers)".</summary>
@@ -552,6 +593,10 @@ public sealed record TransferOrderDto
     public IReadOnlyList<TransferOrderLinkDto> Returns { get; init; } = [];
 
     public TransferOrderAbilitiesDto Abilities { get; init; } = new();
+
+    /// <summary>(91) To's stock levels: how many, and how many lines stay below Min after this order.</summary>
+    public TransferOrderLevelsDto Levels { get; init; } = new();
+
     public IReadOnlyList<TransferOrderLineDto> Lines { get; init; } = [];
 
     /// <summary>Dispatches and receipts in the order they were posted.</summary>

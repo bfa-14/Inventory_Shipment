@@ -37,6 +37,12 @@ public class Warehouse
     /// <summary>Named by a stock movement or a document (lookup only): such a warehouse cannot become a parent.</summary>
     public bool IsUsed { get; set; }
 
+    /// <summary>(91) Used by stock or a document (lookup only): <see cref="IsUsed"/> without the stock levels.</summary>
+    public bool IsUsedInTransactions { get; set; }
+
+    /// <summary>(91) Holds stock levels per warehouse (lookup only): it cannot become a parent for them either.</summary>
+    public bool HasStockLevels { get; set; }
+
     public bool IsMainWarehouse { get; set; }
 
     /// <summary>

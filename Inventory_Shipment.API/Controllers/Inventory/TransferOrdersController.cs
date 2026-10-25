@@ -28,7 +28,7 @@ namespace Inventory_Shipment.API.Controllers.Inventory;
 [Route("api/inventory/transfers")]
 [Authorize]
 [Produces("application/json")]
-public sealed class TransferOrdersController : ControllerBase
+public sealed partial class TransferOrdersController : ControllerBase
 {
     private readonly ITransferOrderService _transfers;
 

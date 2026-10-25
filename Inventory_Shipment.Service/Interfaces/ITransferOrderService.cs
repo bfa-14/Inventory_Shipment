@@ -123,4 +123,26 @@ public interface ITransferOrderService
 
     Task<Result> DeleteFileAsync(
         int id, int fileId, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /* ── (91) Fill to Max, Add items below Min, a transfer order from Stock Levels ────────────── */
+
+    /// <summary>The plan of Fill to Max (no addItems) or Add items below Min (addItems), computed on the server; nothing written.</summary>
+    Task<Result<TransferFillResult>> FillToMaxPreviewAsync(
+        int id, TransferFillRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The same plan computed again and written with the order's row version; answers the order re-read.</summary>
+    Task<Result<TransferFillResult>> FillToMaxAsync(
+        int id, TransferFillRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The drawer: every item with a level at the order's To, and the server's proposal per unit.</summary>
+    Task<Result<TransferBelowMinResult>> BelowMinAsync(
+        int id, TransferBelowMinQuery query, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>One draft from ticked rows of Inventory › Stock Levels (transfers.create AND stocklevels.view).</summary>
+    Task<Result<CreateTransferFromLevelsResult>> CreateFromLevelsAsync(
+        CreateTransferFromLevelsRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
 }

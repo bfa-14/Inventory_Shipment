@@ -66,6 +66,15 @@ public sealed class DashboardRepository : IDashboardRepository
         summary.SalesByFamily = (await charts.ReadAsync<DashboardSliceDto>()).AsList();
         summary.StockByWarehouse = (await charts.ReadAsync<DashboardSliceDto>()).AsList();
         summary.SalesByWeekday = (await charts.ReadAsync<DashboardWeekdayDto>()).AsList();
+
+        // (91) "Warehouse levels below Min": a third, small procedure, so the summary is not re-created for one figure.
+        if (summary.StockAlerts is not null)
+        {
+            summary.StockAlerts.BelowWarehouseMin = await connection.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
+                "reporting.usp_Dashboard_StockLevels", new { BranchId = branchId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)) ?? 0;
+        }
+
         return summary;
     }
 }

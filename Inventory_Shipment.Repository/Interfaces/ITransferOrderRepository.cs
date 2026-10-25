@@ -95,6 +95,25 @@ public interface ITransferOrderRepository
     Task<TransferOrderFileContent?> GetFileAsync(int fileId, CancellationToken cancellationToken = default);
 
     Task DeleteFileAsync(int fileId, int userId, CancellationToken cancellationToken = default);
+
+    /* ── (91) Fill to Max, Add items below Min, a transfer order from Stock Levels ────────────── */
+
+    /// <summary>
+    /// inventory.usp_TransferOrder_FillToMax: no <paramref name="addItems"/> = Fill the order's lines, items = Add them.
+    /// <paramref name="apply"/> false is the preview (nothing written, no lock); true writes the plan with the order's row
+    /// version. The answer has no order: the service re-reads it after an apply.
+    /// </summary>
+    Task<TransferFillResult> FillToMaxAsync(
+        int id, byte[]? rowVersion, IReadOnlyList<TransferFillItemRequest> addItems, bool apply, int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>inventory.usp_TransferOrder_BelowMinCandidates: the items with a level at the order's To, and the proposal per unit.</summary>
+    Task<TransferBelowMinResult> BelowMinAsync(
+        int id, TransferBelowMinQuery query, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>inventory.usp_TransferOrder_CreateFromLevels: one draft, filled, through the order's own Save.</summary>
+    Task<CreateTransferFromLevelsResult> CreateFromLevelsAsync(
+        CreateTransferFromLevelsRequest request, int userId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>One stored file of a transfer order with its bytes (the download).</summary>

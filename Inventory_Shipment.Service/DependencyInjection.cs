@@ -50,6 +50,10 @@ public static class DependencyInjection
         // Goods receipts (scripts 64 and 65): the only way goods enter stock.
         services.TryAddScoped<IGoodsReceiptService, GoodsReceiptService>();
         services.TryAddScoped<ITransferOrderService, TransferOrderService>();
+        // Stock levels per warehouse (script 91): the list, the item card, the Excel import (its reader holds nothing per request).
+        services.TryAddScoped<IStockLevelService, StockLevelService>();
+        services.TryAddSingleton<StockLevelImportParser>();
+        services.TryAddScoped<IStockLevelImportService, StockLevelImportService>();
         services.TryAddScoped<IShortageDocumentService, ShortageDocumentService>();
         services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
         services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();
