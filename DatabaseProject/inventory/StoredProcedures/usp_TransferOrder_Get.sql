@@ -1,18 +1,15 @@
-/* 13.2 ONE TRANSFER ORDER, 6 result sets (none with rows when the id is unknown; the API answers 404):
-     1 header: every column; the order's branch, From and To with their branches; the TRO type's NeedsApproval and
-       NumberOnPost; the names behind every stamp; ReturnOfNumber; the figures, shown status and Late of
-       fn_TransferOrder_State; OnTheWayValueBase (the pieces on the way at the cost frozen at their dispatch); per
-       action Can{Action} and {Action}BlockedReason (the first row of fn_TransferOrder_Blocks: the reason the action
-       would be refused with, NULL = allowed), and CanEditExpectedArrival / EditExpectedArrivalBlockedReason (rule T9:
-       only the notes change on a received, closed or cancelled order)
-     2 lines: item, unit, Ordered (in the unit and in pcs), the counters, To dispatch, On the way, and where From and To
-       stand with transfers (fn_TransferPosition, this order left out): on hand at From, what the other released
-       orders still take from it, available (never below 0); on hand at To, what released orders still bring to it
-     3 dispatches and receipts in the order they were posted, each with its own Reverse and Change ETA answers
-     4 their lines (a receipt line names the dispatch it receives)
-     5 audit, newest first
-     6 the returns of this order
-   @UserId: the reader, for the approval right of Release / Approve / Reject (Blocks). */
+/* ================================================================== 8. The transfer procedures */
+
+/* (91) ONE TRANSFER ORDER, script 90's six result sets with every column, + the destination's stock levels (3.3.6.1):
+     1 header + ToLevelCount (levels at To of active items), ItemsBelowMin (the items whose lines are red),
+       CanFillToMax / FillToMaxBlockedReason and CanAddBelowMin / AddBelowMinBlockedReason (fn_TransferOrder_Blocks)
+     2 lines + ToHasLevel, ToMinBase, ToMaxBase, ToOutToDispatchBase, ToProjectedBeforeBase, ToProjectedAfterBase,
+       IsBelowMin, FromHasLevel, FromMinBase, FromProjectedBeforeBase, FromAfterBase, FromBelowMinAfter: fn_StockPosition
+       of the item at To and at From with this order left out, then what this order brings (Ordered while a draft or
+       waiting, To dispatch + On the way once released, nothing cancelled) and takes (Ordered, To dispatch, nothing).
+       Script 90's five figures keep their names and values (fn_StockPosition reads the same fn_TransferPosition). */
+-- Re-created (91) from the body of script 90: + the order's levels and the two abilities (result 1), the lines' Min /
+-- Max / Projected at To and From after this order (result 2).
 CREATE   PROCEDURE inventory.usp_TransferOrder_Get
     @Id     INT,
     @UserId INT = NULL
@@ -35,6 +32,43 @@ BEGIN
     DECLARE @ReverseDispatch NVARCHAR(400) = (SELECT Message FROM @B WHERE Action = N'ReverseDispatch'),
             @ReverseReceipt  NVARCHAR(400) = (SELECT Message FROM @B WHERE Action = N'ReverseReceipt'),
             @ChangeEta       NVARCHAR(400) = (SELECT Message FROM @B WHERE Action = N'ChangeEta');
+
+    -- (91) WHAT THIS ORDER BRINGS TO To AND TAKES FROM From, per item (3.3.6.1), read by the header (ItemsBelowMin) and
+    --      the lines: a draft or an order waiting for approval its Ordered; a released one what it still has to dispatch
+    --      (+ what is on the way, for To; what was received is in To's on hand already); a cancelled one nothing.
+    DECLARE @BT TABLE (ItemId INT NOT NULL PRIMARY KEY, BringsBase INT NOT NULL, TakesBase INT NOT NULL);
+    INSERT INTO @BT (ItemId, BringsBase, TakesBase)
+    SELECT l.ItemId,
+           BringsBase = SUM(CASE o.Status WHEN 2 THEN td.ToDispatch + (l.DispatchedBase - l.ReceivedBase - l.LostBase)
+                                          WHEN 3 THEN 0 ELSE l.OrderedBase END),
+           TakesBase  = SUM(CASE o.Status WHEN 2 THEN td.ToDispatch WHEN 3 THEN 0 ELSE l.OrderedBase END)
+    FROM inventory.TransferOrderLines l
+    INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
+    CROSS APPLY (SELECT ToDispatch = CASE WHEN l.OrderedBase - l.DispatchedBase - l.NotSentBase > 0
+                                          THEN l.OrderedBase - l.DispatchedBase - l.NotSentBase ELSE 0 END) td
+    WHERE l.TransferOrderId = @Id
+    GROUP BY l.ItemId;
+
+    -- (91) WHERE From AND To STAND FOR THE ORDER'S ITEMS, this order left out: fn_StockPosition (script 90's five
+    --      figures + the level), ONCE per item and warehouse - read by the header (ItemsBelowMin) and by every line of
+    --      the item. (It ran once per line and once more per item for the header: the regression review's 2-3 times
+    --      script 90's reads.) A table variable: the order page's plan is kept between calls.
+    DECLARE @FromId INT, @ToId INT;
+    SELECT @FromId = FromWarehouseId, @ToId = ToWarehouseId FROM inventory.TransferOrders WHERE Id = @Id;
+
+    DECLARE @SP TABLE
+    (
+        ItemId INT NOT NULL, WarehouseId INT NOT NULL, OnHandBase INT NOT NULL, InOnTheWayBase INT NOT NULL,
+        InToDispatchBase INT NOT NULL, OutToDispatchBase INT NOT NULL, ProjectedBase INT NOT NULL, HasLevel BIT NOT NULL,
+        MinBase INT NULL, MaxBase INT NULL, PRIMARY KEY (ItemId, WarehouseId)
+    );
+    INSERT INTO @SP (ItemId, WarehouseId, OnHandBase, InOnTheWayBase, InToDispatchBase, OutToDispatchBase, ProjectedBase,
+                     HasLevel, MinBase, MaxBase)
+    SELECT bt.ItemId, w.WarehouseId, sp.OnHandBase, sp.InOnTheWayBase, sp.InToDispatchBase, sp.OutToDispatchBase,
+           sp.ProjectedBase, sp.HasLevel, sp.MinBase, sp.MaxBase
+    FROM @BT bt
+    CROSS JOIN (VALUES (@FromId), (@ToId)) w (WarehouseId)
+    CROSS APPLY inventory.fn_StockPosition(bt.ItemId, w.WarehouseId, @Id) sp;
 
     -- 1: header
     SELECT o.Id, o.DocumentTypeId, o.DocumentNumber, o.DocumentDate,
@@ -78,6 +112,12 @@ BEGIN
            CanCreateReturn       = CAST(CASE WHEN k.CreateReturnR       IS NULL THEN 1 ELSE 0 END AS BIT), CreateReturnBlockedReason       = k.CreateReturnR,
            CanUpdateDetails      = CAST(CASE WHEN k.UpdateDetailsR      IS NULL THEN 1 ELSE 0 END AS BIT), UpdateDetailsBlockedReason      = k.UpdateDetailsR,
            CanEditExpectedArrival = CAST(CASE WHEN ea.Reason IS NULL THEN 1 ELSE 0 END AS BIT), EditExpectedArrivalBlockedReason = ea.Reason,
+           -- (91) To's stock levels (active items), the items still below To's Min after this order, Fill to Max and
+           --      Add items below Min (fn_TransferOrder_Blocks)
+           ToLevelCount          = lc.N,
+           ItemsBelowMin         = bm.N,
+           CanFillToMax          = CAST(CASE WHEN k.FillToMaxR          IS NULL THEN 1 ELSE 0 END AS BIT), FillToMaxBlockedReason          = k.FillToMaxR,
+           CanAddBelowMin        = CAST(CASE WHEN k.AddBelowMinR        IS NULL THEN 1 ELSE 0 END AS BIT), AddBelowMinBlockedReason        = k.AddBelowMinR,
            o.RowVersion
     FROM inventory.TransferOrders o
     INNER JOIN inventory.DocumentTypes dt   ON dt.Id = o.DocumentTypeId
@@ -115,15 +155,28 @@ BEGIN
                         NothingMoreSentR    = MAX(CASE WHEN a.Action = N'NothingMoreSent'    THEN a.Message END),
                         CancelR             = MAX(CASE WHEN a.Action = N'Cancel'             THEN a.Message END),
                         CreateReturnR       = MAX(CASE WHEN a.Action = N'CreateReturn'       THEN a.Message END),
-                        UpdateDetailsR      = MAX(CASE WHEN a.Action = N'UpdateDetails'      THEN a.Message END)
+                        UpdateDetailsR      = MAX(CASE WHEN a.Action = N'UpdateDetails'      THEN a.Message END),
+                        FillToMaxR          = MAX(CASE WHEN a.Action = N'FillToMax'          THEN a.Message END),   -- (91)
+                        AddBelowMinR        = MAX(CASE WHEN a.Action = N'AddBelowMin'        THEN a.Message END)    -- (91)
                  FROM @B a) k
     -- (T9) Expected arrival and Reference No. stay editable on a released order until it is received or closed
     CROSS APPLY (SELECT Reason = CASE WHEN o.Status = 3 OR st.DisplayStatus IN (N'Received', N'Closed')
                                       THEN N'Only the notes can change on a received, closed or cancelled transfer order.'
                                       ELSE k.UpdateDetailsR END) ea
+    -- (91) the levels at To of active items; the items whose line is red (To still below its Min after this order)
+    CROSS APPLY (SELECT N = COUNT(*)
+                 FROM inventory.ItemWarehouseLevels lv
+                 INNER JOIN inventory.Items li ON li.Id = lv.ItemId AND li.IsActive = 1
+                 WHERE lv.WarehouseId = o.ToWarehouseId) lc
+    CROSS APPLY (SELECT N = COUNT(*)
+                 FROM @BT bt
+                 INNER JOIN @SP sp ON sp.ItemId = bt.ItemId AND sp.WarehouseId = o.ToWarehouseId
+                 WHERE sp.HasLevel = 1 AND sp.ProjectedBase + bt.BringsBase < sp.MinBase) bm
     WHERE o.Id = @Id;
 
-    -- 2: lines, and where From and To stand with transfers (this order left out)
+    -- 2: lines, and where From and To stand with transfers (this order left out); (91) To's level for the item, and
+    --    where To and From stand WITH this order (what it brings / takes, @BT): the line is red while To stays below its
+    --    Min (IsBelowMin, L19), From orange when it goes below its own Min (FromBelowMinAfter)
     SELECT l.Id, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName, ItemIsActive = i.IsActive,
            l.ItemUnitId, UnitName = ut.UnitTypeName, iu.IsBaseUnit, l.Quantity, l.PackingFormula, l.OrderedBase,
            l.DispatchedBase, l.ReceivedBase, l.LostBase, l.NotSentBase,
@@ -135,14 +188,31 @@ BEGIN
            CommittedFromBase = ISNULL(pf.OutToDispatchBase, 0),
            AvailableFromBase = CASE WHEN pf.OnHandBase - pf.OutToDispatchBase > 0 THEN pf.OnHandBase - pf.OutToDispatchBase ELSE 0 END,
            OnHandToBase      = ISNULL(pt.OnHandBase, 0),
-           IncomingToBase    = ISNULL(pt.InOnTheWayBase + pt.InToDispatchBase, 0)
+           IncomingToBase    = ISNULL(pt.InOnTheWayBase + pt.InToDispatchBase, 0),
+           ToHasLevel              = ISNULL(pt.HasLevel, CAST(0 AS BIT)),                                     -- (91)
+           ToMinBase               = pt.MinBase,
+           ToMaxBase               = pt.MaxBase,
+           ToOutToDispatchBase     = ISNULL(pt.OutToDispatchBase, 0),
+           ToProjectedBeforeBase   = ISNULL(pt.ProjectedBase, 0),
+           ToProjectedAfterBase    = ISNULL(pt.ProjectedBase, 0) + ISNULL(bt.BringsBase, 0),
+           IsBelowMin              = CAST(CASE WHEN pt.HasLevel = 1 AND ISNULL(pt.ProjectedBase, 0) + ISNULL(bt.BringsBase, 0) < pt.MinBase
+                                               THEN 1 ELSE 0 END AS BIT),
+           FromHasLevel            = ISNULL(pf.HasLevel, CAST(0 AS BIT)),
+           FromMinBase             = pf.MinBase,
+           FromProjectedBeforeBase = ISNULL(pf.ProjectedBase, 0),
+           FromAfterBase           = ISNULL(pf.ProjectedBase, 0) - ISNULL(bt.TakesBase, 0),
+           FromBelowMinAfter       = CAST(CASE WHEN pf.HasLevel = 1 AND ISNULL(pf.ProjectedBase, 0) - ISNULL(bt.TakesBase, 0) < pf.MinBase
+                                               THEN 1 ELSE 0 END AS BIT)
     FROM inventory.TransferOrderLines l
     INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
     INNER JOIN inventory.Items i          ON i.Id = l.ItemId
     INNER JOIN inventory.ItemUnits iu     ON iu.Id = l.ItemUnitId
     INNER JOIN masterdata.UnitTypes ut    ON ut.Id = iu.UnitTypeId
-    OUTER APPLY inventory.fn_TransferPosition(l.ItemId, o.FromWarehouseId, @Id) pf
-    OUTER APPLY inventory.fn_TransferPosition(l.ItemId, o.ToWarehouseId, @Id) pt
+    LEFT  JOIN @BT bt                     ON bt.ItemId = l.ItemId                                             -- (91)
+    -- (91) fn_StockPosition's columns (script 90's fn_TransferPosition's five figures + the warehouse's level), worked
+    --      out once above for every item of the order (@SP)
+    LEFT  JOIN @SP pf ON pf.ItemId = l.ItemId AND pf.WarehouseId = o.FromWarehouseId
+    LEFT  JOIN @SP pt ON pt.ItemId = l.ItemId AND pt.WarehouseId = o.ToWarehouseId
     WHERE l.TransferOrderId = @Id
     ORDER BY l.LineNumber;
 

@@ -36,15 +36,15 @@ CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Charge]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Invoice]
-    ON [purchase].[PaymentAllocations]([PurchaseDocumentId] ASC)
-    INCLUDE([PaymentId], [AmountDocCurrency], [RemovedAtUtc]) WHERE ([PurchaseDocumentId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Payment]
+    ON [purchase].[PaymentAllocations]([PaymentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Payment]
-    ON [purchase].[PaymentAllocations]([PaymentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_PaymentAllocations_Invoice]
+    ON [purchase].[PaymentAllocations]([PurchaseDocumentId] ASC)
+    INCLUDE([PaymentId], [AmountDocCurrency], [RemovedAtUtc]) WHERE ([PurchaseDocumentId] IS NOT NULL);
 
 
 GO

@@ -65,26 +65,26 @@ CREATE NONCLUSTERED INDEX [IX_TransferOrders_ReturnOf]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_TransferOrders_From]
-    ON [inventory].[TransferOrders]([FromWarehouseId] ASC, [Status] ASC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_TransferOrders_To]
-    ON [inventory].[TransferOrders]([ToWarehouseId] ASC, [Status] ASC);
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_TransferOrders_StatusDate]
     ON [inventory].[TransferOrders]([Status] ASC, [DocumentDate] DESC);
 
 
 GO
 
+CREATE NONCLUSTERED INDEX [IX_TransferOrders_From]
+    ON [inventory].[TransferOrders]([FromWarehouseId] ASC, [Status] ASC);
+
+
+GO
+
 CREATE UNIQUE NONCLUSTERED INDEX [UX_TransferOrders_Number]
     ON [inventory].[TransferOrders]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_TransferOrders_To]
+    ON [inventory].[TransferOrders]([ToWarehouseId] ASC, [Status] ASC);
 
 
 GO

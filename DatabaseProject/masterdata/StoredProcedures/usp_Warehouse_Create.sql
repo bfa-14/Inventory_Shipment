@@ -1,4 +1,8 @@
--- "used parent" test (it is used as soon as a transfer moved goods).
+/* ================================================================== 6. Master data and item procedures re-created (3.3.4) */
+
+/* (91) CREATE A WAREHOUSE (script 90's rules): a parent with stock levels and nothing else gets its own sentence. */
+-- Re-created (91) from the body of script 90: + the levels sentence of the used-parent refusal (52000) when the parent
+-- is used only through its stock levels (fn_Warehouse_IsUsedInTransactions = 0); otherwise today's sentence.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Create
     @WarehouseCode        NVARCHAR(20),
     @WarehouseName        NVARCHAR(150),
@@ -42,7 +46,14 @@ BEGIN
         THROW 52000, 'An On the way warehouse cannot hold other warehouses. Choose another parent warehouse.', 1;
     IF @ParentId IS NOT NULL AND masterdata.fn_Warehouse_IsUsed(@ParentId) = 1
     BEGIN
-        DECLARE @UsedMsg NVARCHAR(400) = N'Warehouse ' + (SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @ParentId) + N' is already used in transactions, so it cannot become a parent: stock is kept only in the warehouses at the bottom of the tree. Choose another parent warehouse.';
+        -- (91) a parent used only through its stock levels (no stock, no document) is told so, with its count of items
+        DECLARE @UsedMsg NVARCHAR(400) =
+            CASE WHEN masterdata.fn_Warehouse_IsUsedInTransactions(@ParentId) = 0
+                 THEN N'Warehouse ' + (SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @ParentId) + N' has stock levels for '
+                      + CAST((SELECT COUNT(DISTINCT lv.ItemId) FROM inventory.ItemWarehouseLevels lv WHERE lv.WarehouseId = @ParentId) AS NVARCHAR(10))
+                      + N' item(s), so it cannot become a parent: stock levels, like stock, are kept only in the warehouses at the bottom of the tree. Remove its levels (Inventory '
+                      + NCHAR(8250) + N' Stock Levels), or choose another parent warehouse.'
+                 ELSE N'Warehouse ' + (SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @ParentId) + N' is already used in transactions, so it cannot become a parent: stock is kept only in the warehouses at the bottom of the tree. Choose another parent warehouse.' END;
         THROW 52000, @UsedMsg, 1;
     END
 

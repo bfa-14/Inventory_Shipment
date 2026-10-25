@@ -41,8 +41,8 @@ CREATE TABLE [purchase].[Payments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Payments_Payee]
-    ON [purchase].[Payments]([PayeeId] ASC, [PaymentDate] DESC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Payments_Number]
+    ON [purchase].[Payments]([PaymentNumber] ASC) WHERE ([PaymentNumber] IS NOT NULL);
 
 
 GO
@@ -53,8 +53,8 @@ CREATE NONCLUSTERED INDEX [IX_Payments_Status]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Payments_Number]
-    ON [purchase].[Payments]([PaymentNumber] ASC) WHERE ([PaymentNumber] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_Payments_Payee]
+    ON [purchase].[Payments]([PayeeId] ASC, [PaymentDate] DESC);
 
 
 GO

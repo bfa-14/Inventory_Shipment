@@ -38,14 +38,14 @@ CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_ActiveMainWarehouse]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_TransitBranch]
-    ON [masterdata].[Warehouses]([BranchId] ASC) WHERE ([IsTransit]=(1));
+CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
+    ON [masterdata].[Warehouses]([ParentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
-    ON [masterdata].[Warehouses]([WarehouseName] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Warehouses_TransitBranch]
+    ON [masterdata].[Warehouses]([BranchId] ASC) WHERE ([IsTransit]=(1));
 
 
 GO
@@ -56,8 +56,8 @@ CREATE NONCLUSTERED INDEX [IX_Warehouses_BranchId]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Warehouses_ParentId]
-    ON [masterdata].[Warehouses]([ParentId] ASC);
+CREATE NONCLUSTERED INDEX [IX_Warehouses_WarehouseName]
+    ON [masterdata].[Warehouses]([WarehouseName] ASC);
 
 
 GO

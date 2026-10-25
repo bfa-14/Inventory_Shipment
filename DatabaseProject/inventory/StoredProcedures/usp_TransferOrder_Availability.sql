@@ -1,9 +1,8 @@
-/* 13.3 WHAT FROM HOLDS AND TO EXPECTS, per item, for a draft's lines (re-asked by the page when an item, From or To
-   changes): the five figures of the Get's lines, from the same fn_TransferPosition (one formula, M6). Information
-   only: Release reserves nothing (FB rule 16), the dispatch checks the real stock. @ExcludeOrderId = the draft being
-   edited, so its own lines are never counted against it. Asked for the pair a draft can hold only (62000 otherwise, in
-   Save's words): two different warehouses that exist, neither an On the way warehouse - an inactive one is answered (a
-   draft may still hold it). */
+/* (91) WHAT FROM HOLDS AND TO EXPECTS, per item, for a draft's lines: script 90's five figures and refusals (From = To;
+   a warehouse missing or On the way: 62000), + To's level and Projected before the draft, From's Projected and Min
+   (the names of Get's lines), so the grid shows Min / Max / Projected at {To} on an unsaved draft (3.3.6.2). */
+-- Re-created (91) from the body of script 90: + ToInOnTheWayBase, ToInToDispatchBase, ToOutToDispatchBase,
+-- ToProjectedBeforeBase, ToHasLevel, ToMinBase, ToMaxBase, FromProjectedBeforeBase, FromHasLevel, FromMinBase.
 CREATE   PROCEDURE inventory.usp_TransferOrder_Availability
     @FromWarehouseId INT,
     @ToWarehouseId   INT,
@@ -29,10 +28,22 @@ BEGIN
            CommittedFromBase = ISNULL(pf.OutToDispatchBase, 0),
            AvailableFromBase = CASE WHEN pf.OnHandBase - pf.OutToDispatchBase > 0 THEN pf.OnHandBase - pf.OutToDispatchBase ELSE 0 END,
            OnHandToBase      = ISNULL(pt.OnHandBase, 0),
-           IncomingToBase    = ISNULL(pt.InOnTheWayBase + pt.InToDispatchBase, 0)
+           IncomingToBase    = ISNULL(pt.InOnTheWayBase + pt.InToDispatchBase, 0),
+           -- (91) To's level and where To and From stand without the draft (the page adds the form's Ordered): the names are Get's
+           ToInOnTheWayBase        = ISNULL(pt.InOnTheWayBase, 0),
+           ToInToDispatchBase      = ISNULL(pt.InToDispatchBase, 0),
+           ToOutToDispatchBase     = ISNULL(pt.OutToDispatchBase, 0),
+           ToProjectedBeforeBase   = ISNULL(pt.ProjectedBase, 0),
+           ToHasLevel              = ISNULL(pt.HasLevel, CAST(0 AS BIT)),
+           ToMinBase               = pt.MinBase,
+           ToMaxBase               = pt.MaxBase,
+           FromProjectedBeforeBase = ISNULL(pf.ProjectedBase, 0),
+           FromHasLevel            = ISNULL(pf.HasLevel, CAST(0 AS BIT)),
+           FromMinBase             = pf.MinBase
     FROM @ItemIds x
-    OUTER APPLY inventory.fn_TransferPosition(x.Id, @FromWarehouseId, @ExcludeOrderId) pf
-    OUTER APPLY inventory.fn_TransferPosition(x.Id, @ToWarehouseId, @ExcludeOrderId) pt
+    -- (91) fn_StockPosition = script 90's fn_TransferPosition (the same five figures) + the warehouse's level
+    OUTER APPLY inventory.fn_StockPosition(x.Id, @FromWarehouseId, @ExcludeOrderId) pf
+    OUTER APPLY inventory.fn_StockPosition(x.Id, @ToWarehouseId, @ExcludeOrderId) pt
     ORDER BY x.Id;
 END
 

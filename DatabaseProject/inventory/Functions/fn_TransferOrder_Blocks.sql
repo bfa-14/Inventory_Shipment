@@ -1,14 +1,11 @@
-/* (90) WHY AN ACTION ON A TRANSFER ORDER CANNOT BE DONE NOW: one row per failed rule (Action, Seq, ErrorNumber,
-   Message); the first row of an action (lowest Seq) is its reason, none = allowed. Every procedure of the order throws
-   exactly that row (SELECT TOP (1) ... ORDER BY Seq, then THROW @Number, @Message), and usp_TransferOrder_Get gives it
-   as the action's BlockedReason, so the page and the refusal always say the same thing (logistics.fn_Movement_CancelBlock,
-   script 83). Permissions are not here - the API hides what a reader may not use - but the approval right, which is
-   the decision's own rule. ChangeEta, ReverseDispatch and ReverseReceipt have only the "not found" row here: their
-   rules are the posting's (usp_TransferPosting_SetEta, fn_TransferPosting_ReverseBlock); they are listed so that a
-   later script (92, warehouse access) adds its rows here alone. Actions: Edit, Delete, Release, SendForApproval,
-   Approve, Reject, Withdraw, BackToDraft, Dispatch, Receive, DispatchAndReceive, NothingMoreSent, Cancel,
-   CreateReturn, UpdateDetails, ChangeEta, ReverseDispatch, ReverseReceipt. The order's one row is worked out once
-   (the CTE), then unpivoted: a list names up to 3 numbers, oldest first, then " and {n} more". */
+/* (91) WHY AN ACTION ON A TRANSFER ORDER CANNOT BE DONE NOW (script 90's rules, one row per failed rule; the first row
+   of an action is its reason), + Fill to Max and Add items below Min (spec 3.3.3.6): a draft only (62010 while waiting
+   for approval, 62005 released or cancelled), the TRO type on (62008), warehouses an order can hold (62000), lines for
+   Fill (62009), and stock levels at To for an active item (62009). Read by usp_TransferOrder_FillToMax,
+   _BelowMinCandidates and usp_TransferOrder_Get (CanFillToMax / CanAddBelowMin). Needs inventory.ItemWarehouseLevels
+   (section 2). */
+-- Re-created (91) from the body of script 90: + FillToMax, AddBelowMin (the Seq 1 list, the order's ToCode / HasLines /
+-- HasToLevels, the rows 130-134).
 CREATE   FUNCTION inventory.fn_TransferOrder_Blocks (@Id INT, @UserId INT)
 RETURNS TABLE
 AS
@@ -32,6 +29,12 @@ WITH o AS
            NoApproval     = N'Transfer orders need no approval (Configuration ' + NCHAR(8250) + N' Document Types): release it.',
            NotApprover    = CASE WHEN ap.CanApprove = 0
                                  THEN N'You may not approve transfer orders: it takes the permission Approve Transfer Orders.' END,
+           -- (91) Fill to Max / Add items below Min: To's code, the order's lines, the levels at To for active items
+           ToCode         = ISNULL(tw.WarehouseCode, N'the destination'),
+           HasLines       = CASE WHEN EXISTS (SELECT 1 FROM inventory.TransferOrderLines l WHERE l.TransferOrderId = tro.Id) THEN 1 ELSE 0 END,
+           HasToLevels    = CASE WHEN EXISTS (SELECT 1 FROM inventory.ItemWarehouseLevels lv
+                                              INNER JOIN inventory.Items li ON li.Id = lv.ItemId AND li.IsActive = 1
+                                              WHERE lv.WarehouseId = tro.ToWarehouseId) THEN 1 ELSE 0 END,
            NoLines        = CASE WHEN NOT EXISTS (SELECT 1 FROM inventory.TransferOrderLines l WHERE l.TransferOrderId = tro.Id)
                                  THEN N'The order has no lines. Add at least one item before releasing it.' END,
            InactiveLine   = CASE WHEN ia.LineNumber IS NOT NULL
@@ -116,7 +119,8 @@ FROM
     SELECT a.Action, Seq = 1, ErrorNumber = 62006, Message = N'Transfer order not found.'
     FROM (VALUES (N'Edit'), (N'Delete'), (N'Release'), (N'SendForApproval'), (N'Approve'), (N'Reject'), (N'Withdraw'),
                  (N'BackToDraft'), (N'Dispatch'), (N'Receive'), (N'DispatchAndReceive'), (N'NothingMoreSent'), (N'Cancel'),
-                 (N'CreateReturn'), (N'UpdateDetails'), (N'ChangeEta'), (N'ReverseDispatch'), (N'ReverseReceipt')) a (Action)
+                 (N'CreateReturn'), (N'UpdateDetails'), (N'ChangeEta'), (N'ReverseDispatch'), (N'ReverseReceipt'),
+                 (N'FillToMax'), (N'AddBelowMin')) a (Action)   -- (91) FillToMax, AddBelowMin
     WHERE NOT EXISTS (SELECT 1 FROM inventory.TransferOrders WHERE Id = @Id)
 
     UNION ALL
@@ -205,7 +209,24 @@ FROM
                                            THEN N'Everything received on ' + o.No + N' is already on its returns (' + o.ReturnList + N'): open them.' END),
         -- Update details (Expected arrival, Reference, Notes of an order that is no longer a draft)
         (N'UpdateDetails', 140, 62010, CASE WHEN o.Status = 1 THEN N'A draft is changed with Save.' END),
-        (N'UpdateDetails', 141, 62010, CASE WHEN o.Status = 4 THEN N'This transfer order is waiting for approval: withdraw it to change it.' END)
+        (N'UpdateDetails', 141, 62010, CASE WHEN o.Status = 4 THEN N'This transfer order is waiting for approval: withdraw it to change it.' END),
+        -- (91) Fill to Max and Add items below Min: a draft, the TRO type on, fit warehouses, lines (Fill), levels at To
+        (N'FillToMax',   130, 62010, CASE WHEN o.Status = 4 THEN N'This transfer order is waiting for approval: withdraw it to change it.' END),
+        (N'AddBelowMin', 130, 62010, CASE WHEN o.Status = 4 THEN N'This transfer order is waiting for approval: withdraw it to change it.' END),
+        (N'FillToMax',   130, 62005, CASE WHEN o.Status = 2 THEN o.No + N' is released: its quantities are locked. Fill to Max works on a draft.' END),
+        (N'AddBelowMin', 130, 62005, CASE WHEN o.Status = 2 THEN o.No + N' is released: its quantities are locked. Fill to Max works on a draft.' END),
+        (N'FillToMax',   130, 62005, CASE WHEN o.Status = 3 THEN o.No + N' is cancelled.' END),
+        (N'AddBelowMin', 130, 62005, CASE WHEN o.Status = 3 THEN o.No + N' is cancelled.' END),
+        (N'FillToMax',   131, 62008, o.TroOff), (N'AddBelowMin', 131, 62008, o.TroOff),
+        (N'FillToMax',   132, 62000, o.WarehouseProblem), (N'AddBelowMin', 132, 62000, o.WarehouseProblem),
+        (N'FillToMax',   133, 62009, CASE WHEN o.HasLines = 0
+                                          THEN N'The order has no lines: add items, or use Add items below Min' + NCHAR(8230) + N'.' END),
+        (N'FillToMax',   134, 62009, CASE WHEN o.HasToLevels = 0
+                                          THEN o.ToCode + N' has no stock levels: set them on Item Definition (Stock levels per warehouse) or import them on Inventory '
+                                               + NCHAR(8250) + N' Stock Levels.' END),
+        (N'AddBelowMin', 134, 62009, CASE WHEN o.HasToLevels = 0
+                                          THEN o.ToCode + N' has no stock levels: set them on Item Definition (Stock levels per warehouse) or import them on Inventory '
+                                               + NCHAR(8250) + N' Stock Levels.' END)
     ) r (Action, Seq, ErrorNumber, Message)
     WHERE r.Message IS NOT NULL
 ) b;

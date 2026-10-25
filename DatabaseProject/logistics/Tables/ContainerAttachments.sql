@@ -28,14 +28,14 @@ CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Container]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_File]
-    ON [logistics].[ContainerAttachments]([FileId] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Movement]
+    ON [logistics].[ContainerAttachments]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Movement]
-    ON [logistics].[ContainerAttachments]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_File]
+    ON [logistics].[ContainerAttachments]([FileId] ASC);
 
 
 GO

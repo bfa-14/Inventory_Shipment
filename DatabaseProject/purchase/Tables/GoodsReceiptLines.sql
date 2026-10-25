@@ -54,9 +54,9 @@ CREATE TABLE [purchase].[GoodsReceiptLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_ContainerLine]
-    ON [purchase].[GoodsReceiptLines]([ContainerLineId] ASC)
-    INCLUDE([GoodsReceiptId]) WHERE ([ContainerLineId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_InvoiceLine]
+    ON [purchase].[GoodsReceiptLines]([InvoiceLineId] ASC)
+    INCLUDE([GoodsReceiptId], [QuantityBase]) WHERE ([InvoiceLineId] IS NOT NULL);
 
 
 GO
@@ -74,9 +74,9 @@ CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_SupplierItem]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_InvoiceLine]
-    ON [purchase].[GoodsReceiptLines]([InvoiceLineId] ASC)
-    INCLUDE([GoodsReceiptId], [QuantityBase]) WHERE ([InvoiceLineId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceiptLines_ContainerLine]
+    ON [purchase].[GoodsReceiptLines]([ContainerLineId] ASC)
+    INCLUDE([GoodsReceiptId]) WHERE ([ContainerLineId] IS NOT NULL);
 
 
 GO
