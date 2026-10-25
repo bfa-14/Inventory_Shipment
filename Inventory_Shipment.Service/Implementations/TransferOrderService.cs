@@ -38,6 +38,19 @@ public sealed class TransferOrderService : ITransferOrderService
     private const string PostingNotFoundMessage = "Dispatch or receipt not found.";
     private const string ForbiddenCode = "FORBIDDEN";
 
+    /// <summary>
+    /// A row version that is sent but cannot be one (not 8 bytes of base64, or a "+" turned into a space in a query
+    /// string): refused, never read as "not sent" - which would skip the concurrency check (script 82's rule).
+    /// </summary>
+    private const string InvalidRowVersionMessage = "The row version is not valid. Reload the page and try again.";
+
+    /// <summary>
+    /// THE WORK AFTER THE COMMIT never stops halfway: once a procedure has decided, the order is re-read and the approval
+    /// emails queued even when the caller has gone (a closed tab, a proxy's timeout) - an aborted read would turn an
+    /// action that took place into a 499, and an aborted mailer would lose the emails the audit says were sent (2.5.4).
+    /// </summary>
+    private static readonly CancellationToken AfterCommit = CancellationToken.None;
+
     /// <summary>The page's own type: the import's unit preference (Inventory: the base unit) and its "Document Type" check.</summary>
     private const string TransferOrderTypeCode = "TRO";
 
@@ -170,6 +183,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return Forbidden<TransferOrderDto>(Permissions.Inventory.TransfersCreate);
         }
 
+        if (BadRequest<TransferOrderDto>(request.RowVersion, request.Lines) is { } bad)
+        {
+            return bad;
+        }
+
         int savedId;
         try
         {
@@ -181,7 +199,7 @@ public sealed class TransferOrderService : ITransferOrderService
         }
 
         _logger.LogInformation("Transfer order {TransferOrderId} saved by user {UserId}", savedId, userId);
-        return await ReadAsync(savedId, userId, permissions, cancellationToken);
+        return await ReadAsync(savedId, userId, permissions, AfterCommit);
     }
 
     public async Task<Result<TransferOrderDto>> UpdateDetailsAsync(
@@ -193,6 +211,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return Forbidden<TransferOrderDto>(Permissions.Inventory.TransfersCreate);
         }
 
+        if (BadRequest<TransferOrderDto>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.UpdateDetailsAsync(id, request, ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -202,7 +225,7 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferOrderDto>(ex);
         }
 
-        return await ReadAsync(id, userId, permissions, cancellationToken);
+        return await ReadAsync(id, userId, permissions, AfterCommit);
     }
 
     public async Task<Result> DeleteAsync(
@@ -211,6 +234,11 @@ public sealed class TransferOrderService : ITransferOrderService
         if (!permissions.Contains(Permissions.Inventory.TransfersDelete))
         {
             return ForbiddenResult(Permissions.Inventory.TransfersDelete);
+        }
+
+        if (InvalidRowVersion(rowVersion))
+        {
+            return Result.Failure(ErrorType.Validation, InvalidRowVersionMessage, "VALIDATION");
         }
 
         try
@@ -238,6 +266,11 @@ public sealed class TransferOrderService : ITransferOrderService
         }
 
         IReadOnlyList<string> warnings;
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             warnings = await _transfers.ReleaseAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -247,7 +280,7 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} released.", warnings, null, cancellationToken);
+        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} released.", warnings, null);
     }
 
     public async Task<Result<TransferActionResult>> SendForApprovalAsync(
@@ -260,6 +293,11 @@ public sealed class TransferOrderService : ITransferOrderService
         }
 
         IReadOnlyList<TransferApproverDto> approvers;
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             approvers = await _transfers.SendForApprovalAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -269,14 +307,14 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        var read = await ReadAsync(id, userId, permissions, cancellationToken);
+        var read = await ReadAsync(id, userId, permissions, AfterCommit);
         if (read.IsFailure || read.Value is null)
         {
             return Result<TransferActionResult>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
         }
 
         var order = read.Value;
-        var emailWarning = await _mailer.ApprovalRequestedAsync(order, approvers, order.Approval.RequestedByName, userId, cancellationToken);
+        var emailWarning = await _mailer.ApprovalRequestedAsync(order, approvers, order.Approval.RequestedByName, userId, AfterCommit);
         _logger.LogInformation("Transfer order {TransferOrderId} sent for approval by user {UserId}: {Count} approver(s) to tell",
             id, userId, approvers.Count);
 
@@ -299,6 +337,11 @@ public sealed class TransferOrderService : ITransferOrderService
 
         IReadOnlyList<string> warnings;
         TransferRequesterDto? requester;
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             (warnings, requester) = await _transfers.ApproveAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -308,14 +351,14 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        var read = await ReadAsync(id, userId, permissions, cancellationToken);
+        var read = await ReadAsync(id, userId, permissions, AfterCommit);
         if (read.IsFailure || read.Value is null)
         {
             return Result<TransferActionResult>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
         }
 
         var order = read.Value;
-        var emailWarning = await _mailer.ApprovedAsync(order, requester, userId, userId, cancellationToken);
+        var emailWarning = await _mailer.ApprovedAsync(order, requester, userId, userId, AfterCommit);
         return Result<TransferActionResult>.Success(new TransferActionResult
         {
             Order = order,
@@ -335,6 +378,11 @@ public sealed class TransferOrderService : ITransferOrderService
         }
 
         TransferRequesterDto? requester;
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             requester = await _transfers.RejectAsync(id, ToRowVersion(request.RowVersion), request.Reason, userId, cancellationToken);
@@ -344,7 +392,7 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        var read = await ReadAsync(id, userId, permissions, cancellationToken);
+        var read = await ReadAsync(id, userId, permissions, AfterCommit);
         if (read.IsFailure || read.Value is null)
         {
             return Result<TransferActionResult>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
@@ -352,7 +400,7 @@ public sealed class TransferOrderService : ITransferOrderService
 
         var order = read.Value;
         var reason = order.Approval.RejectReason ?? request.Reason?.Trim() ?? string.Empty;
-        var emailWarning = await _mailer.RejectedAsync(order, requester, userId, reason, userId, cancellationToken);
+        var emailWarning = await _mailer.RejectedAsync(order, requester, userId, reason, userId, AfterCommit);
         return Result<TransferActionResult>.Success(new TransferActionResult
         {
             Order = order,
@@ -370,6 +418,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return Forbidden<TransferActionResult>(Permissions.Inventory.TransfersRelease);
         }
 
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.WithdrawAsync(id, ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -379,7 +432,7 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} withdrawn: back to draft.", [], null, cancellationToken);
+        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} withdrawn: back to draft.", [], null);
     }
 
     public async Task<Result<TransferActionResult>> BackToDraftAsync(
@@ -391,6 +444,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return Forbidden<TransferActionResult>(Permissions.Inventory.TransfersRelease);
         }
 
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.BackToDraftAsync(id, ToRowVersion(request.RowVersion), request.Reason, userId, cancellationToken);
@@ -400,7 +458,7 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} is a draft again.", [], null, cancellationToken);
+        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} is a draft again.", [], null);
     }
 
     /* ── dispatch and receipt ─────────────────────────────────────────────────────────────────── */
@@ -412,6 +470,11 @@ public sealed class TransferOrderService : ITransferOrderService
         if (!permissions.Contains(Permissions.Inventory.TransfersDispatch))
         {
             return Forbidden<TransferPostedResult>(Permissions.Inventory.TransfersDispatch);
+        }
+
+        if (BadRequest<TransferPostedResult>(request.RowVersion, request.Lines) is { } bad)
+        {
+            return bad;
         }
 
         if (DuplicateDispatchLines(request) is { } refusal)
@@ -436,7 +499,7 @@ public sealed class TransferOrderService : ITransferOrderService
         {
             var dispatch = Posting(order, posted);
             return $"{dispatch?.DocumentNumber ?? posted.DocumentNumber} posted: {Pcs(dispatch?.TotalQuantityBase ?? 0)} pcs left {order.From.Code}.";
-        }, cancellationToken);
+        });
     }
 
     public async Task<Result<TransferPostedResult>> ReceiveAsync(
@@ -446,6 +509,11 @@ public sealed class TransferOrderService : ITransferOrderService
         if (!permissions.Contains(Permissions.Inventory.TransfersReceive))
         {
             return Forbidden<TransferPostedResult>(Permissions.Inventory.TransfersReceive);
+        }
+
+        if (BadRequest<TransferPostedResult>(request.RowVersion, request.Lines) is { } bad)
+        {
+            return bad;
         }
 
         // The type's key is the dispatch line: two rows for one line would break it, so the request is refused first.
@@ -475,7 +543,7 @@ public sealed class TransferOrderService : ITransferOrderService
             var lost = receipt?.TotalLostBase ?? 0;
             return $"{receipt?.DocumentNumber ?? posted.DocumentNumber} posted: {Pcs(receipt?.TotalQuantityBase ?? 0)} pcs received into {order.To.Code}"
                    + (lost > 0 ? $"; {Pcs(lost)} pcs written off" : string.Empty) + ".";
-        }, cancellationToken);
+        });
     }
 
     public async Task<Result<TransferPostedResult>> DispatchAndReceiveAsync(
@@ -491,6 +559,11 @@ public sealed class TransferOrderService : ITransferOrderService
         if (!permissions.Contains(Permissions.Inventory.TransfersReceive))
         {
             return Forbidden<TransferPostedResult>(Permissions.Inventory.TransfersReceive);
+        }
+
+        if (BadRequest<TransferPostedResult>(request.RowVersion, request.Lines) is { } bad)
+        {
+            return bad;
         }
 
         if (DuplicateDispatchLines(request) is { } refusal)
@@ -520,7 +593,7 @@ public sealed class TransferOrderService : ITransferOrderService
                           ?? order.Postings.FirstOrDefault(p => p.Kind == TransferPostingKinds.Receipt && p.PostedWithId == dispatch.Id);
             return $"{sent?.DocumentNumber ?? dispatch.DocumentNumber} and {arrived?.DocumentNumber ?? receipt.DocumentNumber} posted: "
                    + $"{Pcs(sent?.TotalQuantityBase ?? 0)} pcs moved from {order.From.Code} to {order.To.Code}.";
-        }, cancellationToken);
+        });
     }
 
     /* ── close, cancel, reverse, ETA, return ──────────────────────────────────────────────────── */
@@ -534,6 +607,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return Forbidden<TransferActionResult>(Permissions.Inventory.TransfersClose);
         }
 
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.NothingMoreSentAsync(id, ToRowVersion(request.RowVersion), request.Reason, userId, cancellationToken);
@@ -544,7 +622,7 @@ public sealed class TransferOrderService : ITransferOrderService
         }
 
         return await ActionAsync(id, userId, permissions,
-            order => $"Nothing more will be sent on {Name(order)}: {Pcs(order.Totals.NotSentBase)} pcs not sent.", [], null, cancellationToken);
+            order => $"Nothing more will be sent on {Name(order)}: {Pcs(order.Totals.NotSentBase)} pcs not sent.", [], null);
     }
 
     public async Task<Result<TransferActionResult>> CancelAsync(
@@ -556,6 +634,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return Forbidden<TransferActionResult>(Permissions.Inventory.TransfersCancel);
         }
 
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.CancelAsync(id, ToRowVersion(request.RowVersion), request.Reason, userId, cancellationToken);
@@ -565,7 +648,7 @@ public sealed class TransferOrderService : ITransferOrderService
             return Failure<TransferActionResult>(ex);
         }
 
-        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} cancelled.", [], null, cancellationToken);
+        return await ActionAsync(id, userId, permissions, order => $"{Name(order)} cancelled.", [], null);
     }
 
     public async Task<Result<TransferActionResult>> ReversePostingAsync(
@@ -582,6 +665,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return notFound;
         }
 
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.ReversePostingAsync(postingId, ToRowVersion(request.RowVersion), request.Reason, request.Date, userId, cancellationToken);
@@ -593,8 +681,7 @@ public sealed class TransferOrderService : ITransferOrderService
 
         _logger.LogInformation("Transfer order {TransferOrderId}: posting {PostingId} reversed by user {UserId}", id, postingId, userId);
         return await ActionAsync(id, userId, permissions,
-            order => $"{order.Postings.FirstOrDefault(p => p.Id == postingId)?.DocumentNumber ?? "The posting"} reversed.", [], null,
-            cancellationToken);
+            order => $"{order.Postings.FirstOrDefault(p => p.Id == postingId)?.DocumentNumber ?? "The posting"} reversed.", [], null);
     }
 
     public async Task<Result<TransferActionResult>> ChangeEtaAsync(
@@ -611,6 +698,11 @@ public sealed class TransferOrderService : ITransferOrderService
             return notFound;
         }
 
+        if (BadRequest<TransferActionResult>(request.RowVersion) is { } bad)
+        {
+            return bad;
+        }
+
         try
         {
             await _transfers.SetEtaAsync(postingId, ToRowVersion(request.RowVersion), request.Eta, userId, cancellationToken);
@@ -624,7 +716,7 @@ public sealed class TransferOrderService : ITransferOrderService
         {
             var dispatch = order.Postings.FirstOrDefault(p => p.Id == postingId);
             return $"{dispatch?.DocumentNumber ?? "The dispatch"}: ETA {dispatch?.Eta?.ToString("dd/MM/yyyy", Numbers) ?? request.Eta?.ToString("dd/MM/yyyy", Numbers)}.";
-        }, [], null, cancellationToken);
+        }, [], null);
     }
 
     public async Task<Result<TransferOrderDto>> CreateReturnAsync(
@@ -646,7 +738,7 @@ public sealed class TransferOrderService : ITransferOrderService
         }
 
         _logger.LogInformation("Transfer order {TransferOrderId}: return {ReturnId} created by user {UserId}", id, newId, userId);
-        return await ReadAsync(newId, userId, permissions, cancellationToken);
+        return await ReadAsync(newId, userId, permissions, AfterCommit);
     }
 
     /* ── import and export ────────────────────────────────────────────────────────────────────── */
@@ -917,12 +1009,12 @@ public sealed class TransferOrderService : ITransferOrderService
             : Result<TransferOrderDto>.Success(WithValuesFor(order, permissions));
     }
 
-    /// <summary>The answer of an action that moved no stock: the order re-read, the message, the warnings.</summary>
+    /// <summary>The answer of an action that moved no stock: the order re-read (after the commit: <see cref="AfterCommit"/>), the message, the warnings.</summary>
     private async Task<Result<TransferActionResult>> ActionAsync(
         int id, int userId, IReadOnlySet<string> permissions, Func<TransferOrderDto, string> message,
-        IReadOnlyList<string> warnings, string? emailWarning, CancellationToken cancellationToken)
+        IReadOnlyList<string> warnings, string? emailWarning)
     {
-        var read = await ReadAsync(id, userId, permissions, cancellationToken);
+        var read = await ReadAsync(id, userId, permissions, AfterCommit);
         if (read.IsFailure || read.Value is null)
         {
             return Result<TransferActionResult>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
@@ -937,12 +1029,12 @@ public sealed class TransferOrderService : ITransferOrderService
         });
     }
 
-    /// <summary>The answer of a posting: the order re-read, the postings made, the message.</summary>
+    /// <summary>The answer of a posting: the order re-read (after the commit: <see cref="AfterCommit"/>), the postings made, the message.</summary>
     private async Task<Result<TransferPostedResult>> PostedAsync(
         int id, int userId, IReadOnlySet<string> permissions, IReadOnlyList<TransferPostedRefDto> postings,
-        Func<TransferOrderDto, string> message, CancellationToken cancellationToken)
+        Func<TransferOrderDto, string> message)
     {
-        var read = await ReadAsync(id, userId, permissions, cancellationToken);
+        var read = await ReadAsync(id, userId, permissions, AfterCommit);
         if (read.IsFailure || read.Value is null)
         {
             return Result<TransferPostedResult>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
@@ -1062,6 +1154,33 @@ public sealed class TransferOrderService : ITransferOrderService
         SqlErrors.WarehouseSystemManaged => new RuleFailure(ErrorType.Conflict, exception.Message, "SYSTEM_WAREHOUSE"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
+
+    /// <summary>
+    /// What the request got wrong before any database call (400 VALIDATION): a row version that cannot be one, or an
+    /// empty row (null) in its lines - "lines": [null] passes the model binding (it checks properties, not the elements of
+    /// a list) and would otherwise end in a NullReferenceException and a 500.
+    /// </summary>
+    private static Result<T>? BadRequest<T>(string? rowVersion, IEnumerable<object?>? lines = null)
+    {
+        if (InvalidRowVersion(rowVersion))
+        {
+            return Result<T>.Failure(ErrorType.Validation, InvalidRowVersionMessage, "VALIDATION");
+        }
+
+        var position = 0;
+        foreach (var line in lines ?? [])
+        {
+            position++;
+            if (line is null)
+            {
+                return Result<T>.Failure(ErrorType.Validation, $"Line {position} of the request is empty.", "VALIDATION");
+            }
+        }
+
+        return null;
+    }
+
+    private static bool InvalidRowVersion(string? value) => !string.IsNullOrWhiteSpace(value) && ToRowVersion(value) is null;
 
     private static byte[]? ToRowVersion(string? value)
     {

@@ -193,6 +193,9 @@ GO
 -- (89) A posting that was reversed (cancelled) does not count, by the cost replay's own test (inventory.usp_Item_RebuildCosts):
 --      this batch runs at every start, and an item whose every receipt was cancelled - replayed to a zero average and no
 --      last cost - got the cancelled document's cost back as its average and its last cost at the next start.
+-- (90) A transfer leg is not a receipt: its On the way and To rows carry the average frozen at the dispatch, and the
+--      company's stock does not change; counted here, an item replayed to a zero average got a transfer's frozen cost
+--      back as its average and its last cost at the next start.
 UPDATE i
 SET AverageCost = ISNULL(x.Avg, 0),
     LastCost = x.Last
@@ -201,12 +204,14 @@ CROSS APPLY
 (
     SELECT Avg  = (SELECT CASE WHEN SUM(m.QuantityBase) > 0 THEN SUM(m.QuantityBase * ISNULL(m.UnitCostBase, 0)) / SUM(m.QuantityBase) END
                    FROM inventory.StockMovements m WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0
+                     AND m.DocumentFamily <> N'Transfer'                                                         -- (90)
                      AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r                                    -- (89)
                                      WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
                                        AND r.DocumentId = m.DocumentId AND r.IsReversal = 1
                                        AND (m.DocumentTypeCode <> N'CNT' OR r.DocumentNumber = m.DocumentNumber))),
            Last = (SELECT TOP (1) m.UnitCostBase FROM inventory.StockMovements m
                    WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0
+                     AND m.DocumentFamily <> N'Transfer'                                                         -- (90)
                      AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r                                    -- (89)
                                      WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
                                        AND r.DocumentId = m.DocumentId AND r.IsReversal = 1

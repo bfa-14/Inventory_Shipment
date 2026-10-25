@@ -80,6 +80,10 @@ GO
                        inventory.usp_ShortageDocument_Get             from the body of script 77: + Transfers in
                        purchase.fn_GoodsReceipt_CancelCheck           from the body of script 64: the transfer note on 63007
                        inventory.usp_StockDocument_Cancel             from the body of script 89: the transfer note on 62007
+     Edited in place   script 19's per-start backfill of item costs (Database/19_Core_DocumentEngine.sql and its copy in
+                       Schema.sql, as 89 edited the same batch): it no longer counts transfer rows as receipts - it runs at
+                       every start, before any later script, so an item replayed to a zero average got a transfer's frozen
+                       cost back as its average and last cost at the next start
 
    Errors (block 62xxx, shared with the stock documents): new 62012 above To dispatch / above On the way, 62013 a later
    posting must be reversed first, 62014 release needs approval, 62015 not an approver; new 52009 an On the way
@@ -1689,6 +1693,9 @@ GO
 -- Re-created (90) from the body of script 06: + ITS ON THE WAY WAREHOUSE GOES WITH IT when nothing references it (a
 -- branch that never received a transfer); one that a transfer used is kept, and then references the branch, which is
 -- refused with today's sentence (51003). One transaction now: the On the way warehouse is deleted only with its branch.
+-- The scan of every reference to the branch runs FIRST (its On the way warehouse not counted), and nothing is deleted
+-- before it is done: a refused delete - the usual case, a branch in use - never holds a deleted warehouse row while the
+-- scan reads the ledger.
 CREATE OR ALTER PROCEDURE masterdata.usp_Branch_Delete
     @Id INT
 AS
@@ -1705,22 +1712,18 @@ BEGIN
     IF EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @Id AND IsMainBranch = 1)
         THROW 51005, 'The Main Branch cannot be deleted. Designate another branch as the Main Branch first.', 1;
 
-    -- (90) ITS ON THE WAY WAREHOUSE, deleted first when nothing references it; kept otherwise (the scan below then finds
-    --      it and refuses the branch, and the transaction leaves everything as it was)
+    -- (90) ITS ON THE WAY WAREHOUSE: not a reference of the branch by itself (the scan below leaves it out); a reference
+    --      when anything references IT (a transfer used it). Deleted with the branch, after every check.
     DECLARE @TransitId INT = (SELECT Id FROM masterdata.Warehouses WITH (UPDLOCK, HOLDLOCK) WHERE BranchId = @Id AND IsTransit = 1);
-    IF @TransitId IS NOT NULL
-    BEGIN
-        DECLARE @TransitReferenced BIT = 0;
-        EXEC masterdata.usp_Warehouse_IsReferenced @TransitId, @TransitReferenced OUTPUT;
-        IF @TransitReferenced = 0
-            DELETE FROM masterdata.Warehouses WHERE Id = @TransitId;
-    END
 
     DECLARE @sql NVARCHAR(MAX) = N'';
 
     SELECT @sql = @sql
         + N'IF @Referenced = 0 AND EXISTS (SELECT 1 FROM ' + QUOTENAME(SCHEMA_NAME(t.schema_id)) + N'.' + QUOTENAME(t.name)
-        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id) SET @Referenced = 1;' + NCHAR(10)
+        + N' WHERE ' + QUOTENAME(c.name) + N' = @Id'
+        + CASE WHEN t.object_id = OBJECT_ID(N'masterdata.Warehouses')
+               THEN N' AND (@TransitId IS NULL OR Id <> @TransitId)' ELSE N'' END                   -- (90)
+        + N') SET @Referenced = 1;' + NCHAR(10)
     FROM sys.foreign_keys fk
     INNER JOIN sys.foreign_key_columns fkc ON fkc.constraint_object_id = fk.object_id
     INNER JOIN sys.tables t  ON t.object_id = fk.parent_object_id
@@ -1730,10 +1733,17 @@ BEGIN
     DECLARE @Referenced BIT = 0;
 
     IF @sql <> N''
-        EXEC sp_executesql @sql, N'@Id INT, @Referenced BIT OUTPUT', @Id = @Id, @Referenced = @Referenced OUTPUT;
+        EXEC sp_executesql @sql, N'@Id INT, @TransitId INT, @Referenced BIT OUTPUT',
+                           @Id = @Id, @TransitId = @TransitId, @Referenced = @Referenced OUTPUT;   -- (90) + @TransitId
+
+    IF @Referenced = 0 AND @TransitId IS NOT NULL                          -- (90)
+        EXEC masterdata.usp_Warehouse_IsReferenced @TransitId, @Referenced OUTPUT;
 
     IF @Referenced = 1
         THROW 51003, 'This branch cannot be deleted because it is referenced by other records. You may deactivate the branch instead.', 1;
+
+    IF @TransitId IS NOT NULL                                              -- (90)
+        DELETE FROM masterdata.Warehouses WHERE Id = @TransitId;
 
     DELETE FROM masterdata.Branches WHERE Id = @Id;
 
@@ -2344,7 +2354,9 @@ GO
 /* 13.3 WHAT FROM HOLDS AND TO EXPECTS, per item, for a draft's lines (re-asked by the page when an item, From or To
    changes): the five figures of the Get's lines, from the same fn_TransferPosition (one formula, M6). Information
    only: Release reserves nothing (FB rule 16), the dispatch checks the real stock. @ExcludeOrderId = the draft being
-   edited, so its own lines are never counted against it. */
+   edited, so its own lines are never counted against it. Asked for the pair a draft can hold only (62000 otherwise, in
+   Save's words): two different warehouses that exist, neither an On the way warehouse - an inactive one is answered (a
+   draft may still hold it). */
 CREATE OR ALTER PROCEDURE inventory.usp_TransferOrder_Availability
     @FromWarehouseId INT,
     @ToWarehouseId   INT,
@@ -2353,6 +2365,18 @@ CREATE OR ALTER PROCEDURE inventory.usp_TransferOrder_Availability
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    DECLARE @m NVARCHAR(400);
+    IF @FromWarehouseId = @ToWarehouseId
+        THROW 62000, 'The destination must differ from the source.', 1;
+    SELECT TOP (1) @m = CASE WHEN w.Id IS NULL THEN N'The warehouse was not found.'
+                             ELSE w.WarehouseCode + N' is an On the way warehouse: it holds goods travelling between warehouses and cannot be chosen.' END
+    FROM (VALUES (1, @FromWarehouseId), (2, @ToWarehouseId)) s (Side, WarehouseId)
+    LEFT JOIN masterdata.Warehouses w ON w.Id = s.WarehouseId
+    WHERE w.Id IS NULL OR w.IsTransit = 1
+    ORDER BY s.Side;
+    IF @m IS NOT NULL THROW 62000, @m, 1;
+
     SELECT ItemId            = x.Id,
            OnHandFromBase    = ISNULL(pf.OnHandBase, 0),
            CommittedFromBase = ISNULL(pf.OutToDispatchBase, 0),
@@ -2455,6 +2479,10 @@ BEGIN
            OR CAST(l.Quantity AS BIGINT) * iu.PackingFormula > 2147483647
         ORDER BY l.LineNumber;
         IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
+        -- the order's total in pcs is an INT too (lines each within it can add up past it)
+        IF (SELECT SUM(CAST(l.Quantity AS BIGINT) * iu.PackingFormula) FROM @Lines l
+            INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId AND iu.ItemId = l.ItemId) > 2147483647
+            THROW 62000, 'The order is too large: its lines add up to more pieces than can be counted. Split it into several orders.', 1;
 
         -- The writes
         SELECT @BranchId = BranchId FROM masterdata.Warehouses WHERE Id = @FromWarehouseId;
@@ -2626,7 +2654,9 @@ GO
 /* 13.7 WHO IS TOLD THAT A TRANSFER ORDER WAITS FOR APPROVAL (M10): the active users holding Approve Transfer Orders
    through an active role that is not a system role, the requester left out, by name. The system role (Admin) holds
    every permission (usp_Permission_SyncCatalog) and would get every request, so its holders are told only when nobody
-   else qualifies. The right to decide stays the permission (Blocks), whatever this list says. */
+   else qualifies. Each must also hold View Transfer Orders (any of his roles): the email's link opens the order, and
+   without it the page and the waiting list answer 403. The right to decide stays the permission (Blocks), whatever
+   this list says. */
 CREATE OR ALTER PROCEDURE inventory.usp_TransferOrder_Approvers
     @RequesterId INT = NULL
 AS
@@ -2645,7 +2675,8 @@ BEGIN
                   INNER JOIN security.Roles r            ON r.Id = ur.RoleId AND r.IsActive = 1 AND r.IsSystem = 0
                   INNER JOIN security.RolePermissions rp ON rp.RoleId = r.Id
                   INNER JOIN security.Permissions p      ON p.Id = rp.PermissionId AND p.Code = N'inventory.transfers.approve'
-                  WHERE ur.UserId = u.Id);
+                  WHERE ur.UserId = u.Id)
+      AND security.fn_UserHasPermission(u.Id, N'inventory.transfers.view') = 1;
 
     IF NOT EXISTS (SELECT 1 FROM @A)
         INSERT INTO @A (UserId, FullName, Email)
@@ -2658,7 +2689,8 @@ BEGIN
                       INNER JOIN security.Roles r            ON r.Id = ur.RoleId AND r.IsActive = 1 AND r.IsSystem = 1
                       INNER JOIN security.RolePermissions rp ON rp.RoleId = r.Id
                       INNER JOIN security.Permissions p      ON p.Id = rp.PermissionId AND p.Code = N'inventory.transfers.approve'
-                      WHERE ur.UserId = u.Id);
+                      WHERE ur.UserId = u.Id)
+          AND security.fn_UserHasPermission(u.Id, N'inventory.transfers.view') = 1;
 
     SELECT UserId, FullName, Email FROM @A ORDER BY FullName, UserId;
 END
@@ -4004,7 +4036,14 @@ GO
    between). A dispatch takes its pieces off the order lines' Dispatched (and adds them to Not sent on a closed order:
    it stays closed); a receipt takes its pieces off its dispatch lines' Settled and the order lines' Received and Lost
    (its goods are back On the way, its write-off undone). The posting is marked Reversed with the date, the reason and
-   who. The cost replay leaves a reversed posting out with its reversal; no partial reversal. */
+   who. The cost replay leaves a reversed posting out with its reversal; no partial reversal.
+   A RECEIPT THAT WROTE PIECES OFF changes the company's stock when it is reversed (the lost pieces come back at the
+   average frozen on the loss, which may have moved since): its items' costs are REPLAYED (inventory.usp_Item_RebuildCosts),
+   as every cancel that writes reversal rows (M4, script 89), under the goods receipt matching lock taken first (89's
+   order: the matcher, then the document), giving way in a deadlock (DEADLOCK_PRIORITY LOW: the API runs it again). A
+   dispatch, or a receipt without a loss, leaves the company's stock as it was: no replay. A receipt's reversal takes
+   pieces out of To: it holds the dispatch lock of To (inventory.TransferDispatch.{To}) before it checks To's stock,
+   so a dispatch from To cannot pass its stock check on the same pieces at the same time. */
 CREATE OR ALTER PROCEDURE inventory.usp_TransferPosting_Reverse
     @PostingId  INT,
     @RowVersion BINARY(8)     = NULL,     -- the ORDER's
@@ -4015,14 +4054,21 @@ AS
 BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
+    SET DEADLOCK_PRIORITY LOW;      -- the replay of a reversed loss reads the item's ledger: the reverse gives way, the API runs it again
 
     SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
     DECLARE @Msg NVARCHAR(400), @ErrNo INT, @OrderId INT, @Status TINYINT, @Kind NVARCHAR(10), @TypeCode NVARCHAR(20),
             @Number NVARCHAR(30), @PostingDate DATE, @NotSentAt DATETIME2(3),
-            @Now DATETIME2(3) = SYSUTCDATETIME(), @ReversalAt DATETIME2(3), @Latest DATETIME2(3), @LatestReceipts DATETIME2(3);
+            @Now DATETIME2(3) = SYSUTCDATETIME(), @ReversalAt DATETIME2(3), @Latest DATETIME2(3), @LatestReceipts DATETIME2(3),
+            @ToId INT, @Resource NVARCHAR(255), @Lock INT, @ItemId INT;
 
     BEGIN TRY
         BEGIN TRANSACTION;
+
+        -- a receipt that wrote pieces off: the matching lock first, for the replay below (89's lock order)
+        IF EXISTS (SELECT 1 FROM inventory.TransferPostings
+                   WHERE Id = @PostingId AND Kind = N'Receipt' AND Status = 2 AND TotalLostBase > 0)
+            EXEC purchase.usp_GoodsReceipt_LockMatching;
 
         SELECT @OrderId = TransferOrderId FROM inventory.TransferPostings WHERE Id = @PostingId;
         IF @OrderId IS NULL
@@ -4041,9 +4087,23 @@ BEGIN
            AND NOT EXISTS (SELECT 1 FROM inventory.TransferOrders WHERE Id = @OrderId AND RowVersion = @RowVersion)
             THROW 62004, 'This transfer order was modified by another user. Reload the page and try again.', 1;
 
-        SELECT @Kind = Kind, @Number = DocumentNumber, @PostingDate = PostingDate,
+        SELECT @Kind = Kind, @Number = DocumentNumber, @PostingDate = PostingDate, @ToId = ToWarehouseId,
                @TypeCode = CASE Kind WHEN N'Dispatch' THEN N'TRD' ELSE N'TRR' END
         FROM inventory.TransferPostings WITH (UPDLOCK, HOLDLOCK) WHERE Id = @PostingId;
+
+        -- a receipt takes its pieces back out of To: one stock check at a time on To, with the dispatches from To
+        -- (inventory.usp_TransferOrder_DispatchCore step 5; the same order: the order header, then the warehouse)
+        IF @Kind = N'Receipt'
+        BEGIN
+            SET @Resource = N'inventory.TransferDispatch.' + CAST(@ToId AS NVARCHAR(10));
+            EXEC @Lock = sp_getapplock @Resource = @Resource, @LockMode = N'Exclusive', @LockOwner = N'Transaction', @LockTimeout = 30000;
+            IF @Lock < 0
+            BEGIN
+                SELECT @Msg = N'Another dispatch from ' + ISNULL((SELECT WarehouseCode FROM masterdata.Warehouses WHERE Id = @ToId), N'this warehouse')
+                              + N' is being posted. Try again in a moment.';
+                THROW 62010, @Msg, 1;
+            END
+        END
 
         -- the order's rule first, then the posting's own
         SELECT TOP (1) @ErrNo = b.ErrorNumber, @Msg = b.Message
@@ -4126,6 +4186,20 @@ BEGIN
         UPDATE inventory.TransferPostings
         SET Status = 3, ReversedAtUtc = @Now, ReversedBy = @UserId, ReverseDate = @Date, ReverseReason = @Reason
         WHERE Id = @PostingId;
+
+        -- a receipt's write-off undone: the company's stock changed, so its items' costs are replayed (see the header)
+        IF @Kind = N'Receipt'
+        BEGIN
+            DECLARE items CURSOR LOCAL FAST_FORWARD FOR
+                SELECT DISTINCT ItemId FROM inventory.TransferPostingLines WHERE PostingId = @PostingId AND LostBase > 0;
+            OPEN items; FETCH NEXT FROM items INTO @ItemId;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC inventory.usp_Item_RebuildCosts @ItemId;
+                FETCH NEXT FROM items INTO @ItemId;
+            END
+            CLOSE items; DEALLOCATE items;
+        END
 
         UPDATE inventory.TransferOrders SET UpdatedAtUtc = @Now, UpdatedBy = @UserId WHERE Id = @OrderId;
 

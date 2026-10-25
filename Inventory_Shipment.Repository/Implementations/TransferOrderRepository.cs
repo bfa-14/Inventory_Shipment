@@ -121,7 +121,7 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
     public async Task<(IReadOnlyList<TransferOrderListItemDto> Items, int TotalCount, TransferOrderListTotalsDto Totals)> SearchAsync(
         TransferOrderQuery query, CancellationToken cancellationToken = default)
     {
-        var parameters = new
+        var parameters = new DynamicParameters(new
         {
             Search = Trimmed(query.Search),
             Status = Trimmed(query.Status),
@@ -131,14 +131,16 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
             query.OnTheWayOnly,
             query.LateOnly,
             query.WaitingForApproval,
-            DateFrom = ToDate(query.DateFrom),
-            DateTo = ToDate(query.DateTo),
             query.ItemId,
             SortColumn = SortColumns.FirstOrDefault(c => string.Equals(c, query.SortColumn, StringComparison.OrdinalIgnoreCase)) ?? "DocumentDate",
             SortDirection = string.Equals(query.SortDirection, "asc", StringComparison.OrdinalIgnoreCase) ? "ASC" : "DESC",
             PageNumber = Math.Max(query.Page, 1),
             PageSize = Math.Clamp(query.PageSize, 1, 200),
-        };
+        });
+        // As DATE, like every other date here: a DateTime left to Dapper goes as DATETIME (1753-9999), which cannot hold
+        // every date the query string may carry ("0026-10-24": a 500 instead of an empty list).
+        parameters.Add("@DateFrom", ToDate(query.DateFrom), DbType.Date);
+        parameters.Add("@DateTo", ToDate(query.DateTo), DbType.Date);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -961,7 +963,9 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
         table.Columns.Add("Notes", typeof(string));
 
         var lineNumber = 1;
-        foreach (var line in (lines ?? []).Select((l, i) => (Line: l, Index: i)).OrderBy(x => x.Line.LineNumber).ThenBy(x => x.Index).Select(x => x.Line))
+        // An empty row of the request (null) is refused by the service first; never a NullReferenceException here.
+        foreach (var line in (lines ?? []).Where(l => l is not null)
+                     .Select((l, i) => (Line: l, Index: i)).OrderBy(x => x.Line.LineNumber).ThenBy(x => x.Index).Select(x => x.Line))
         {
             table.Rows.Add(lineNumber++, line.ItemId, line.ItemUnitId, line.Quantity, (object?)Trimmed(line.Notes) ?? DBNull.Value);
         }
@@ -976,7 +980,7 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
         table.Columns.Add("TransferOrderLineId", typeof(int));
         table.Columns.Add("QuantityBase", typeof(int));
 
-        foreach (var line in lines ?? [])
+        foreach (var line in (lines ?? []).Where(l => l is not null))
         {
             table.Rows.Add(line.TransferOrderLineId, line.QuantityBase);
         }
@@ -994,7 +998,7 @@ public sealed class TransferOrderRepository : ITransferOrderRepository
         table.Columns.Add("LossReasonCode", typeof(string));
         table.Columns.Add("LossNote", typeof(string));
 
-        foreach (var line in lines ?? [])
+        foreach (var line in (lines ?? []).Where(l => l is not null))
         {
             table.Rows.Add(
                 line.DispatchLineId,
