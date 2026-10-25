@@ -76,6 +76,13 @@ Types keeps what is saved (five seeds reset it at every start); an item whose ev
 average and no last cost (script 19's per-start backfill counted the cancelled postings); stale lines about closed
 orders and Expected Monthly Sales corrected (glossary, 3.3, 3.7, 4.5, 4.7, 4.12, 5.4).*
 
+*Updated on 25 October 2026 for **transfer orders** (script 90, prompt 47): Inventory › Transfer Orders moves stock
+between two warehouses of any branch without changing its cost - a dispatch (TRD) puts it on the destination branch's
+hidden On the way warehouse, a transfer receipt (TRR) into the destination - with partial postings, losses ("Nothing
+more will arrive"), "Nothing more will be sent", Cancel order, Reverse (receipt first), Dispatch and receive, returns,
+Late, and an approval switch on the TRO type with its emails; Shortages count "Transfers in" (glossary, 1.4, 3.1,
+3.3, 3.7, 3.8, 3.10, 4.1, 4.13, 5.2, 5.4, 6.1).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -161,6 +168,10 @@ after them it charges **demurrage**.
   named by a document or a goods receipt, a draft too) cannot become a parent.
 - The warehouse a container's goods are received into **must belong to the container's branch** (and be at the bottom
   of the tree).
+- **Each branch also has one hidden "On the way" warehouse** (script 90, `OTW-BR-002` "On the way to BR-002
+  (transfers)"): the goods a transfer order dispatched to one of the branch's warehouses sit there until they are
+  received. It is made and kept by the system, never a line's warehouse, and offered only by Stock Valuation's filter
+  (4.13).
 
 ### 1.5 Currencies
 - **Base currency: USD.** A USD document shows "Exchange Rate 1 (base currency)".
