@@ -1,4 +1,4 @@
-# Item costing — rules implemented in SQL (scripts 23, 27, 64-65, 79) and what the UI will expose later
+# Item costing — rules implemented in SQL (scripts 23, 27, 64-65, 79, 89) and what the UI will expose later
 
 ## Rules (all costs per BASE unit, base currency USD)
 
@@ -9,19 +9,23 @@
 | Allocation | Value / Quantity / Weight (item `WeightKg`) / Volume (item `VolumeCbm`) / Manual; remainder of rounding on the largest line | `usp_PurchaseCharges_Allocate`, `purchase.PurchaseChargeAllocations` |
 | Landed cost | FOB + allocated charges ÷ base qty = the **invoice cost** of a line. Since goods receipts it is no longer a ledger cost by itself: received goods are valued at it, or corrected to it (see below) | `PurchaseDocumentLines.UnitCostBase` (= landed), `AllocatedChargesBase` |
 | Goods in | **only a posted goods receipt (GRN) puts goods in stock** (script 65). A supplier invoice posted since the switch moves no stock and no item cost: it makes the amount payable and sets the invoice cost | `purchase.usp_GoodsReceipt_Post`, ledger rows family `Purchase`, type `GRN` |
-| Item costs | `FobCost` / `LastCost` / last supplier = the latest posted goods receipt line, after its cost adjustments (a receipt "Without an order" counts only once matched to an invoice; older goods: the old local invoices and the containers offloaded before goods receipts), `AverageCost` = moving weighted average (updated only by postings that add stock, and by cost adjustments), `InventoryValue = OnHand × AverageCost` | `inventory.Items`, `usp_Item_ApplyReceipts`, `usp_Item_RebuildCosts`, views `vw_InventoryValuation(ByWarehouse)` |
-| Inventory In / Sales return | update the average, never Last / FOB cost | `usp_StockDocument_Post`, `usp_SalesDocument_Post` |
+| Item costs | `FobCost` / `LastCost` / last supplier = the latest posted goods receipt line, after its cost adjustments (a receipt "Without an order" counts only once matched to an invoice; older goods: the old local invoices and the containers offloaded before goods receipts), `AverageCost` = moving weighted average (updated only by postings that add stock, and by cost adjustments), `InventoryValue = OnHand × AverageCost`; and replayed when a stock document or a sales document is cancelled (script 89) | `inventory.Items`, `usp_Item_ApplyReceipts`, `usp_Item_RebuildCosts`, views `vw_InventoryValuation(ByWarehouse)` |
+| Inventory In / Sales return | update the average, never Last / FOB cost; cancelling one replays its items' costs (script 89), as every cancelled stock or sales document does | `usp_StockDocument_Post`, `usp_SalesDocument_Post` |
 | Sales invoice | per line frozen at posting: `UnitCostBase` (COGS = average), `FobCostAtSale`, `LastCostAtSale`, `NetSalesBase`, `CogsBase`, `GrossProfitBase`, `GrossProfitPct` (on net sales); header `TotalCostBase`, `TotalGrossProfitBase` | `sales.SalesDocumentLines` |
 | Sales return | created from a posted invoice with the invoice prices and the ORIGINAL COGS; consumes `ReturnedQuantityBase` of the invoice lines | `sales.usp_SalesDocument_CreateFromSource` |
 | Purchase return | removes stock at the invoice line's **current** cost (local: its landed cost; container: its FOB + the container line's charges ÷ received), recomputed at posting. From an invoice that uses goods receipts (or an older "Shipped in containers" one): at most received − returned, from the warehouse the goods were received into. Older local invoices: invoiced − returned | `usp_PurchaseDocument_Post` (PRET) |
-| Landed cost adjustment | charges arriving after receipt (`LCA-KLW-000001`): allocated over the invoice lines. Old invoices (posted before the switch): still-in-stock quantity → inventory value (average recalculated), already-sold quantity → COGS adjustment; invoice landed cost and item last cost updated. Invoices that use goods receipts: the invoice cost rises, and the goods already received follow through a true-up (`LCA` / `LCACANCEL`, below); pieces not received yet enter at that cost when they arrive. Refused on imported and "Shipped in containers" invoices (67012) | `purchase.LandedCostAdjustments(+Lines)`, `inventory.CostAdjustments`, `usp_LandedCostAdjustment_*` |
-| Late container charge | a charge posted or cancelled after the container is received: still-in-stock quantity (in the receiving warehouse) → inventory value, the rest → COGS. Unchanged by goods receipts | `logistics.usp_ContainerCharge_ApplyCost`, SourceKind `CNTCHARGE` |
-| Cancellations | a cancelled receipt / return / LCA replays the ledger for its items | `inventory.usp_Item_RebuildCosts` |
+| Landed cost adjustment | charges arriving after receipt (`LCA-KLW-000001`): allocated over the invoice lines. Old invoices (posted before the switch): still-in-stock quantity (per item, on the company's stock since script 89) → inventory value (average recalculated), already-sold quantity → COGS adjustment; invoice landed cost updated and the item's costs replayed. Invoices that use goods receipts: the invoice cost rises, and the goods already received follow through a true-up (`LCA` / `LCACANCEL`, below); pieces not received yet enter at that cost when they arrive. Refused on imported and "Shipped in containers" invoices (67012) | `purchase.LandedCostAdjustments(+Lines)`, `inventory.CostAdjustments`, `usp_LandedCostAdjustment_*` |
+| Late container charge | a charge posted or cancelled after the container is received: per item, still-in-stock quantity = min(received, the company's stock of the item, every warehouse) → inventory value, the rest → COGS (script 89; it was the receiving warehouse's stock). A cancel takes its share from today's stock, never more out of stock than its posting put in. The rows keep the receiving warehouse and branch. Unchanged by goods receipts | `logistics.usp_ContainerCharge_ApplyCost`, SourceKind `CNTCHARGE` |
+| Cancellations | a cancelled goods receipt, stock document, sales document, return, LCA or late charge replays the ledger for its items | `inventory.usp_Item_RebuildCosts` |
 | Profit report | Net Sales − COGS, GP % on net sales, grouped by invoice / item / family / brand / client / salesman / branch / month; COGS adjustments (LCA, late charges, goods receipt cost changes) as a separate column, shown by item, family, brand, branch, month or all, not per invoice, client or salesman | `sales.usp_SalesProfit_Report` |
 
-Approximation (documented decision): the "still in stock" quantity of an invoice line for an LCA on an old invoice =
-min(received − returned, current on-hand of the item in that warehouse) — no FIFO layers are kept. Goods receipt
-true-ups use the company's stock instead (below).
+Approximation (documented decision): no FIFO layers are kept, so the pieces of a purchase still in stock are estimated
+per item as min(pieces received − returned, the company's stock of the item in every warehouse). The goods receipt
+true-up, the late container charge and the LCA of an old invoice all use it (the last two since script 89; before, the
+line's or the container's receiving warehouse decided). Pieces of the same item bought elsewhere count as these pieces;
+so a late charge CANCELLED after the container's pieces are sold takes its share from other purchases' stock of the
+item, which can push their average down when little of it is left (before 89 only when those pieces sat in the
+receiving warehouse).
 
 ## Goods receipts (scripts 64-65): the cost of received goods follows the invoices
 
@@ -66,8 +70,8 @@ of the touched order lines (or supplier + item) to its new target cost. Each eve
   - in stock = min(Σ net received, the **company's** stock on hand of the item, all warehouses, never below 0);
   - to stock = amount × in stock ÷ Σ net received (leftover cents on the largest line). It changes the average cost;
   - to cost of sales (COGS) = amount − to stock. The company holds none of the item: everything goes to COGS.
-  - Company stock, not the receiving warehouse's (unlike the late container charge and the old LCA): the average is
-    company-wide, and transfers move goods out of the receiving warehouse.
+  - Company stock, as the late container charge and the old LCA since script 89: the average is company-wide, and
+    transfers move goods out of the receiving warehouse.
   - For `LCA` / `LCACANCEL` only, the share of the re-priced pieces already **returned** to the supplier goes to COGS:
     they are no longer in stock.
 - **Exchange rate:** the order and the invoice each convert at their own rate. The difference is part of the cost

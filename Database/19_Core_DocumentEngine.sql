@@ -48,6 +48,7 @@ END
 GO
 
 -- Behaviour per type (the configuration page can change these later).
+-- (89) Only a type nobody has saved on Configuration › Document Types: this batch runs at every start, before any later script could restore an administrator's choice.
 UPDATE dt SET DefaultPricing = s.Pricing, PriceEditable = s.Editable, NumberPerBranch = 1
 FROM inventory.DocumentTypes dt
 INNER JOIN (VALUES
@@ -59,7 +60,8 @@ INNER JOIN (VALUES
     (N'SO',      N'PriceList', 1),
     (N'SINV',    N'PriceList', 1),   -- editable only with sales.invoices.priceoverride
     (N'SRET',    N'PriceList', 1)
-) AS s (Code, Pricing, Editable) ON s.Code = dt.Code;
+) AS s (Code, Pricing, Editable) ON s.Code = dt.Code
+WHERE dt.UpdatedAtUtc IS NULL;
 GO
 
 CREATE OR ALTER PROCEDURE inventory.usp_DocumentType_List
@@ -188,6 +190,9 @@ END
 GO
 
 -- One-time backfill from the ledger (items that already have receipts but no stored average).
+-- (89) A posting that was reversed (cancelled) does not count, by the cost replay's own test (inventory.usp_Item_RebuildCosts):
+--      this batch runs at every start, and an item whose every receipt was cancelled - replayed to a zero average and no
+--      last cost - got the cancelled document's cost back as its average and its last cost at the next start.
 UPDATE i
 SET AverageCost = ISNULL(x.Avg, 0),
     LastCost = x.Last
@@ -195,9 +200,18 @@ FROM inventory.Items i
 CROSS APPLY
 (
     SELECT Avg  = (SELECT CASE WHEN SUM(m.QuantityBase) > 0 THEN SUM(m.QuantityBase * ISNULL(m.UnitCostBase, 0)) / SUM(m.QuantityBase) END
-                   FROM inventory.StockMovements m WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0),
+                   FROM inventory.StockMovements m WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0
+                     AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r                                    -- (89)
+                                     WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                                       AND r.DocumentId = m.DocumentId AND r.IsReversal = 1
+                                       AND (m.DocumentTypeCode <> N'CNT' OR r.DocumentNumber = m.DocumentNumber))),
            Last = (SELECT TOP (1) m.UnitCostBase FROM inventory.StockMovements m
-                   WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0 ORDER BY m.MovementDate DESC, m.Id DESC)
+                   WHERE m.ItemId = i.Id AND m.QuantityBase > 0 AND m.IsReversal = 0
+                     AND NOT EXISTS (SELECT 1 FROM inventory.StockMovements r                                    -- (89)
+                                     WHERE r.DocumentFamily = m.DocumentFamily AND r.DocumentTypeCode = m.DocumentTypeCode
+                                       AND r.DocumentId = m.DocumentId AND r.IsReversal = 1
+                                       AND (m.DocumentTypeCode <> N'CNT' OR r.DocumentNumber = m.DocumentNumber))
+                   ORDER BY m.MovementDate DESC, m.Id DESC)
 ) x
 WHERE i.AverageCost = 0 AND i.LastCost IS NULL AND x.Avg IS NOT NULL AND x.Avg > 0;
 GO

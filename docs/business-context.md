@@ -67,6 +67,15 @@ SQL Server, `Inventory_Shipment_Test` next to production's `Inventory_Shipment`,
 with `share-sql-server.sh` on the server; `copy-testing-to-production.sh` takes testing's data into production when it
 goes live (8.2; `deploy/README.md`, "One SQL Server for both environments").*
 
+*Updated on 24 October 2026 for **script 89 (fixes)**: a late container charge, and a landed cost adjustment of an
+invoice posted before goods receipts, split on the company's stock in every warehouse, as the goods receipt true-up
+does, and a cancel never takes more out of stock than its posting put in; cancelling a stock document reverses only its
+own rows, and every cancelled stock or sales document replays its items' average cost (those cancelled before were
+replayed once); a shortage plan for a parent warehouse creates its purchase order again; Configuration › Document
+Types keeps what is saved (five seeds reset it at every start); an item whose every receipt was cancelled keeps a zero
+average and no last cost (script 19's per-start backfill counted the cancelled postings); stale lines about closed
+orders and Expected Monthly Sales corrected (glossary, 3.3, 3.7, 4.5, 4.7, 4.12, 5.4).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -201,7 +210,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **PINV** | Purchase (supplier) invoice, `PINV-BR-003-000011`. The number is given **at posting**; a draft has none. Since the switch to goods receipts, posting it makes the amount payable and moves **no stock**. |
 | **PRET** | Purchase return, created from a posted PINV, `PRET-…`. |
 | **GRN / goods receipt** | Purchase › Goods Receipts (scripts 64–65, document type `GRN`, `GRN-BR-002-000001` given at posting): the goods that arrived, counted and put in a warehouse. **The only way supplier goods enter the stock.** Draft → Posted → Cancelled. One source each: a container, an order, an invoice, or "Without an order". |
-| **Receive goods…** | The button that creates a draft goods receipt: on a container (status Confirmed to Cleared), an approved order (open or closed) or a posted invoice; "+ New" on the Goods Receipts list does the same. "Create draft" or "Create and post". |
+| **Receive goods…** | The button that creates a draft goods receipt: on a container (status Confirmed to Cleared), an approved order (Saved, Partially posted or Posted) or a posted invoice; "+ New" on the Goods Receipts list does the same. "Create draft" or "Create and post". |
 | **Automatic draft** | The draft goods receipt made for each container when a movement of the **Delivery** stage is completed (badge "Auto"). Cancelling that movement deletes it. Made only while the GRN type's "Create goods receipts when a Delivery is completed" is on (script 79, default on); off, goods receipts are made by hand with Receive goods…. |
 | **Affects item cost / Affects on-hand** | The two switches of the purchase invoice type (PINV) in Configuration › Document Types (script 79). *Affects item cost* (default on): the invoice's price and its own charges become the cost of the goods received against it; off, those goods keep the order price (plus their container's charges). *Affects on-hand* (default off): posting an invoice also receives its goods with a goods receipt made and posted at once. Each invoice keeps the values it was posted with (`PurchaseDocuments.AffectsCost` / `ReceiveOnPost`). |
 | **Delivered, not received** | A container whose Delivery is completed (or with a draft goods receipt) and whose goods receipt is not posted: a filter of the Containers list. |
@@ -220,7 +229,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Split rule** | How one charge typed for several containers is divided between them: **Same** (each container gets the full amount), **Equal**, **Pieces** (default), **Value**. |
 | **Allocation method** | How a container's charge is divided over its items: **Value, Quantity, Weight, Volume, Manual**. Rounded to the cent; leftover cents go to the largest remainders. A container with one line (with pieces) puts the whole charge on it, whatever the method (script 88). |
 | **Charge group** | Charges created together, or copied with "Apply to other containers", share a `GroupId`. The provider's invoice is attached once for the group. |
-| **Late charge / cost adjustment** | A charge posted (or cancelled) after the container's goods are received (badge "after receipt"), or on a posted local invoice (LCA). Recorded in `inventory.CostAdjustments`, SourceKind `CNTCHARGE` for containers. The cost of received goods following their invoices is a cost adjustment too (`GRNCOST`). |
+| **Late charge / cost adjustment** | A charge posted (or cancelled) after the container's goods are received (badge "after receipt"), or on a posted local invoice (LCA). Recorded in `inventory.CostAdjustments`, SourceKind `CNTCHARGE` for containers. The cost of received goods following their invoices is a cost adjustment too (`GRNCOST`). The part the company still holds (every warehouse, script 89) changes the average cost; the rest goes to COGS. |
 | **COGS** | Cost of goods sold. Sales take stock out at average cost. |
 | **Average cost** | Weighted average cost per item, updated at every receipt and cost adjustment. Items also keep **last cost** and **FOB cost**. |
 | **Container** | A shipping container, created **from a purchase order**. App reference `KTG-2026-0031` (document type CNT: prefix KTG, year, 4-digit number). |
@@ -260,7 +269,7 @@ per user in Settings › Purchase approval (see 4.3).
 | **Transshipment** | Moving a container to another vessel at an intermediate port. |
 | **FERI** | Electronic cargo tracking note required for DRC imports (a container field). |
 | **BIVAC Out** | Inventory › BIVAC Out (script 66, document type `BIV_OUT`, numbers like `BIV-BR-002-000001`): units of **BIVAC items** (items with "BIVAC Item" ticked in Item Definition) taken out of stock at average cost, like an Inventory Out, with its own list and permissions. The user chooses the item (model) and a quantity; other items are refused. No link to a shipment: the BIVAC certificate or container number goes in Reference No. Not the BIVAC fee, which is the charge type `BIV` "BIVAC / Inspection". |
-| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 65): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (open: ordered − received − settled short; closed: invoiced − received − settled short), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order (still to come)" (Item Definition › Purchase orders) counts the orders' part only, before Transit is taken off: the invoices without an order are not on its list. The Dashboard's "On the way" adds the three parts (script 72). |
+| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 85: Expected Monthly Sales is the busiest month): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (ordered − received − settled short, never below 0; no order closes since script 77), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order (still to come)" (Item Definition › Purchase orders) counts the orders' part only, before Transit is taken off: the invoices without an order are not on its list. The Dashboard's "On the way" adds the three parts (script 72). |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
 | **Payment type** | On sales invoices (Ali: "Payment Type and auto…"), probably cash / credit **(unsure)**. |
@@ -318,6 +327,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   which suggests each document type says where its default price comes from and whether it can be changed
   **(check the code)**.
 - **Inventory In / Inventory Out:** manual stock documents; a document type can require a reason (`RequiresReason`).
+  Cancelling a posted one writes the opposite of its own rows and replays its items' average cost (script 89).
 - **BIVAC Out:** an Inventory Out of BIVAC items only, with its own list, numbers and permissions (see 4.9).
 - **Stock Valuation:** stock × average cost per item and warehouse; the export calls it "Total Cost".
 - **Shortages:** see the glossary.
@@ -454,6 +464,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     Affects on-hand. Its stored StockDirection stays +1: the invoices posted before goods receipts still read it.
   - An invoice **captures** its two switches when it is posted: changing them never re-prices or re-receives an
     invoice already posted; a draft follows the type as it is when it is posted.
+  - A saved setting is kept (script 89): the seed values apply only to a type nobody has saved.
 - **Settings › General** (Ali's global settings, for example "Allow selling out-of-stock items").
 - **Settings › Email:**
   - sender, mail server and app password (encrypted), the "Address of the application" used in links, and a test
@@ -781,7 +792,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Test.
 
 ### 4.5 Containers **[Implemented unless marked]**
-- **Creation:** only from an **approved and open** PO (status 2): "The purchase order must be approved and still open."
+- **Creation:** only from an **approved** PO (status 2): "The purchase order must be approved and still open."
+  ("still open" is older than script 77: no order closes now; the same words in
+  `usp_PurchaseDocument_CreateFromContainers` S:53667 and `usp_PurchaseDocument_ValidateInput` S:61855)
   Lines of other approved POs, from other suppliers too, can be added.
 - **Quantities** are in pieces. Loadable per PO line = ordered − the larger of invoiced and received outside
   containers − loaded in other containers (69008). **[Implemented – script 65]**
@@ -1181,13 +1194,18 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   warned about only on a container of several lines (script 88: one line takes the whole charge). **[Implemented]**
 - **Copy to other containers:** drafts of the same group, or posted at once with the permission. A container that
   already has a charge of the group is refused. Manual allocation is copied with the charge type's method.
-- **Late charge after the goods receipt** (or cancelled after it): a cost adjustment (in stock in the receiving
-  warehouse → average cost; the rest → COGS), badge "after receipt", unchanged by goods receipts (`CNTCHARGE`). The
-  goods receipt can no longer be cancelled (63008).
+- **Late charge after the goods receipt** (or cancelled after it): a cost adjustment (`CNTCHARGE`), badge "after
+  receipt", unchanged by goods receipts. The part the **company** still holds - min(pieces received, the company's
+  stock of the item in every warehouse) ÷ pieces received - changes the average cost; the rest goes to COGS. Before
+  script 89 the receiving warehouse's stock decided, so goods moved to another warehouse sent their share to COGS (84
+  received, 80 moved: 140 of a 2,940 charge to stock instead of 2,940). The rows keep the receiving warehouse and
+  branch for the reports. A cancel takes its share again from today's stock, never more out of stock than its posting
+  put in. The goods receipt can no longer be cancelled (63008). **[Implemented – script 89]**
 - **Local purchases:** the invoice's charges while it is a draft, part of the invoice cost the received goods take;
   after posting, an LCA (67011 the invoice must be posted; 67012 refused on imported and "Shipped in containers"
   invoices). On an invoice that uses goods receipts, the LCA raises the invoice cost and the goods already received
-  follow (4.12); pieces not received yet enter at that cost.
+  follow (4.12); pieces not received yet enter at that cost. On an invoice posted before goods receipts the LCA's stock
+  part is worked out per item on the company's stock (script 89).
 - **The cost of received goods follows the invoices** (scripts 64–65): see 4.12 and `docs/notes/costing-rules.md`
   (causes PINV, PINVCANCEL, LCA, GRNPOST, GRNCANCEL, NEGSTOCK; the company stock share).
 - **Worked examples (user guide):**
@@ -1288,10 +1306,11 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 
 ### 4.12 Goods receipts (GRN) **[Implemented – scripts 64, 65]**
 
-The owner chose the recommended option of every decision: containers **and** local purchases; an order closes when
-fully invoiced and received (or settled short); an invoice whose goods were received may be cancelled; the exchange-rate
-difference is part of the cost adjustment; "Without an order" needs a supplier; any confirmed container can be
-received; "Receive the goods now" when an invoice is posted, off by default; status 6 keeps the name "Offloaded".
+The owner chose the recommended option of every decision: containers **and** local purchases; an order closed when
+fully invoiced and received (or settled short) - until script 77, which removed Closed; an invoice whose goods were
+received may be cancelled; the exchange-rate difference is part of the cost adjustment; "Without an order" needs a
+supplier; any confirmed container can be received; "Receive the goods now" when an invoice is posted, off by default;
+status 6 keeps the name "Offloaded".
 
 **What changed**
 1. **Goods enter the stock only through a posted goods receipt.** A supplier invoice posted after the switch moves no
@@ -1401,8 +1420,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     afterwards (63008: "The cost of these goods was adjusted after they were received (invoice price, landed cost or a
     late container charge). This goods receipt can no longer be cancelled."); a purchase return took its goods back
     (63010: "Purchase return {PRET-…} took back goods of this receipt. Cancel the return first."). Effects: the stock
-    goes back out, the matches are rebuilt and the other receipts trued up, the order's counters go down (an order
-    closed by them reopens), a container goes back to its movement status and can be received again.
+    goes back out, the matches are rebuilt and the other receipts trued up, the order's counters go down, a container
+    goes back to its movement status and can be received again.
 18. **Cancel an invoice whose goods were received:** allowed, no stock effect; the received pieces go back to the
     order price (goods without an order keep their cost at receipt). 69012 stays only for containers offloaded before
     goods receipts; the other refusals (returns or LCAs posted, payments allocated) stay.
@@ -1597,6 +1616,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `86_Purchase_InvoiceFromOrderLines.sql` | Create Purchase Invoice on an order, line by line like Create Invoice from Containers: new `purchase.usp_PurchaseOrder_InvoiceCandidates` (per order line ordered, invoiced, in draft invoices, available - the rule of `usp_PurchaseDocument_CreateFromSource`'s selection, which the API now sends) |
 | `87_Item_Note_Link.sql` | Item Definition: a Note (several lines, 2,000 characters) and a Link (an http/https address opened in a new tab) on the item: columns `inventory.Items.Note` / `Link`, `usp_Item_Get` re-created from 61 with both, new `inventory.usp_Item_SetNotes` (called after create / update, like `usp_Item_SetPurchasing`; refuses a link that is not http/https or has a space, 56000). The item page also gets a sticky header with Previous / Next through the Items list as filtered |
 | `88_Logistics_ChargeOneLine.sql` | A charge on a container of one line takes it whole: `logistics.usp_ContainerCharge_Allocate` re-created from 27 - the only line with pieces gets the whole charge whatever the method (no price, weight or volume needed); several lines all at price 0 by value are refused naming each line and the source of its price (order, draft or posted invoice, goods receipt); every refusal names the container (70013 as before). The charge import warns about a missing weight or volume only on a container of several lines |
+| `89_Fixes_CostsCancelsShortageDocumentTypes.sql` | Fixes: `logistics.usp_ContainerCharge_ApplyCost` (from 27) and `purchase.usp_LandedCostAdjustment_Post` (from 79) split a late charge on the company's stock, per item, as GRNCOST (a cancel never takes more out of stock than its posting put in); `inventory.usp_StockDocument_Cancel` (from 15) reverses only its own type and, like `sales.usp_SalesDocument_Cancel` (from 84), replays its items under the matching lock (the items of documents cancelled before replayed once, `inventory.OneTimeSteps`); `inventory.usp_ShortageDocument_CreatePurchaseOrder` (from 22): a plan for a parent warehouse puts each line in a leaf of its tree, in one transaction (66000 when there is none); the five per-start seeds of Document Types narrowed to types nobody saved; script 19's per-start backfill of item costs no longer counts a posting that was reversed (edited in place, like the seeds); the two cancels give way in a deadlock (`DEADLOCK_PRIORITY LOW`: the API runs them again, a posting has no retry) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -1760,6 +1780,8 @@ Every written prompt (32–46) is built, and so is every script up to the last o
   - **Stored procedures only** (Dapper); names `schema.usp_Entity_Action`, table types `tvp_*`, functions `fn_*`.
   - RowVersion checks.
   - `THROW` with the module's error numbers and plain-English messages that say what to do.
+  - A data step that must run once per database records itself in `inventory.OneTimeSteps` (script 89); never use a
+    procedure body as a marker: Schema.sql re-creates the older bodies first at every start.
 - **`Schema.sql`** is re-applied at every API start and stops at the first error. So:
   - never edit an older script;
   - keep older batches compilable;

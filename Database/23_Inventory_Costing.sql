@@ -1316,7 +1316,8 @@ ON t.Code = s.Code
 WHEN NOT MATCHED BY TARGET THEN
     INSERT (Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost, RequiresReason)
     VALUES (s.Code, s.Name, s.Family, s.StockDirection, s.NumberPrefix, s.NumberOnPost, s.RequiresReason);
-UPDATE inventory.DocumentTypes SET DefaultPricing = N'None', PriceEditable = 0 WHERE Code = N'LCA';
+-- (89) Only a type nobody has saved on Configuration › Document Types: this batch runs at every start, before any later script could restore an administrator's choice.
+UPDATE inventory.DocumentTypes SET DefaultPricing = N'None', PriceEditable = 0 WHERE Code = N'LCA' AND UpdatedAtUtc IS NULL;
 GO
 
 IF OBJECT_ID(N'purchase.LandedCostAdjustments', N'U') IS NULL

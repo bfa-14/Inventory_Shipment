@@ -519,9 +519,15 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
         }
     }
 
+    /// <summary>
+    /// Cancels a posted sales document. RETRIED ON A DEADLOCK (script 89): the cancel now takes the goods receipt
+    /// matching lock and replays its items' costs in its own transaction, so it can meet a posting of the same items;
+    /// a 1205 is not a business rule and would otherwise reach the user as a 500. The procedure is one transaction
+    /// (its automatic receipt reversal included), so running the killed one again is safe.
+    /// </summary>
     public Task CancelAsync(
         int id, string reason, DateOnly? cancelDate, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("sales.usp_SalesDocument_Cancel",
+        => SqlRetry.OnDeadlockAsync(() => ExecuteAsync("sales.usp_SalesDocument_Cancel",
             new
             {
                 Id = id,
@@ -530,7 +536,7 @@ public sealed class SalesDocumentRepository : ISalesDocumentRepository
                 RowVersion = rowVersion,
                 UserId = userId,
             },
-            cancellationToken);
+            cancellationToken), cancellationToken);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("sales.usp_SalesDocument_Delete", new { Id = id, UserId = userId }, cancellationToken);

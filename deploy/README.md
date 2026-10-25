@@ -411,6 +411,23 @@ Database changes need nothing extra: each API applies `Schema.sql` to its own da
 
 **Never commit straight to `production`.** A fix goes to `main` first, is checked in testing, then is merged.
 
+### Notes for the next release
+
+- **Script 89** replays the costs of the items of cancelled documents once (possibly over several starts) and keeps
+  Document Types settings from now on: rehearse on testing, compare the before / after query below, and re-apply the
+  Document Types settings once (the ones saved before were reset at the last start). In SSMS on the server, run this
+  BEFORE and AFTER the deploy, save each result to a file and compare them: the averages of those items become the
+  replay's (Stock Valuation may move for them: that is the fix); last cost, FOB cost and last supplier do not move.
+
+  ```sql
+  SELECT i.Id, i.ItemCode, i.AverageCost, i.LastCost, i.FobCost, i.LastSupplierId, OnHand = inventory.fn_StockOnHand(i.Id, NULL)
+  FROM inventory.Items i
+  WHERE i.Id IN (SELECT l.ItemId FROM inventory.StockDocumentLines l INNER JOIN inventory.StockDocuments d ON d.Id = l.DocumentId WHERE d.Status = 3
+                 UNION SELECT l.ItemId FROM sales.SalesDocumentLines l INNER JOIN sales.SalesDocuments d ON d.Id = l.DocumentId WHERE d.Status = 3)
+  ORDER BY i.ItemCode;
+  SELECT Code, Name, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength, UpdatedAtUtc FROM inventory.DocumentTypes ORDER BY Code;
+  ```
+
 ### The repositories: GitHub
 
 Both repositories live on GitHub, private, under the `bfa-14` account: **`bfa-14/Inventory_Shipment`** (API,
