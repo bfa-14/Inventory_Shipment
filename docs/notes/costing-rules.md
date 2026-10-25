@@ -1,4 +1,4 @@
-# Item costing — rules implemented in SQL (scripts 23, 27, 64-65, 79, 89) and what the UI will expose later
+# Item costing — rules implemented in SQL (scripts 23, 27, 64-65, 79, 89, 90) and what the UI will expose later
 
 ## Rules (all costs per BASE unit, base currency USD)
 
@@ -11,12 +11,13 @@
 | Goods in | **only a posted goods receipt (GRN) puts goods in stock** (script 65). A supplier invoice posted since the switch moves no stock and no item cost: it makes the amount payable and sets the invoice cost | `purchase.usp_GoodsReceipt_Post`, ledger rows family `Purchase`, type `GRN` |
 | Item costs | `FobCost` / `LastCost` / last supplier = the latest posted goods receipt line, after its cost adjustments (a receipt "Without an order" counts only once matched to an invoice; older goods: the old local invoices and the containers offloaded before goods receipts), `AverageCost` = moving weighted average (updated only by postings that add stock, and by cost adjustments), `InventoryValue = OnHand × AverageCost`; and replayed when a stock document or a sales document is cancelled (script 89) | `inventory.Items`, `usp_Item_ApplyReceipts`, `usp_Item_RebuildCosts`, views `vw_InventoryValuation(ByWarehouse)` |
 | Inventory In / Sales return | update the average, never Last / FOB cost; cancelling one replays its items' costs (script 89), as every cancelled stock or sales document does | `usp_StockDocument_Post`, `usp_SalesDocument_Post` |
+| Transfer (TRD / TRR) | **cost-neutral** (script 90): a dispatch moves pieces from the source to an On the way warehouse, a transfer receipt from there to the destination; the company's stock and every item cost (average, last, FOB) stay as they were. The rows carry the average at the dispatch, for information only. Pieces that will not arrive are written off at the average (`TRF_LOSS`), the only leg that changes the company's stock. See "Transfers" below | `inventory.usp_TransferOrder_DispatchCore` / `_ReceiveCore`, ledger rows family `Transfer` |
 | Sales invoice | per line frozen at posting: `UnitCostBase` (COGS = average), `FobCostAtSale`, `LastCostAtSale`, `NetSalesBase`, `CogsBase`, `GrossProfitBase`, `GrossProfitPct` (on net sales); header `TotalCostBase`, `TotalGrossProfitBase` | `sales.SalesDocumentLines` |
 | Sales return | created from a posted invoice with the invoice prices and the ORIGINAL COGS; consumes `ReturnedQuantityBase` of the invoice lines | `sales.usp_SalesDocument_CreateFromSource` |
 | Purchase return | removes stock at the invoice line's **current** cost (local: its landed cost; container: its FOB + the container line's charges ÷ received), recomputed at posting. From an invoice that uses goods receipts (or an older "Shipped in containers" one): at most received − returned, from the warehouse the goods were received into. Older local invoices: invoiced − returned | `usp_PurchaseDocument_Post` (PRET) |
 | Landed cost adjustment | charges arriving after receipt (`LCA-KLW-000001`): allocated over the invoice lines. Old invoices (posted before the switch): still-in-stock quantity (per item, on the company's stock since script 89) → inventory value (average recalculated), already-sold quantity → COGS adjustment; invoice landed cost updated and the item's costs replayed. Invoices that use goods receipts: the invoice cost rises, and the goods already received follow through a true-up (`LCA` / `LCACANCEL`, below); pieces not received yet enter at that cost when they arrive. Refused on imported and "Shipped in containers" invoices (67012) | `purchase.LandedCostAdjustments(+Lines)`, `inventory.CostAdjustments`, `usp_LandedCostAdjustment_*` |
 | Late container charge | a charge posted or cancelled after the container is received: per item, still-in-stock quantity = min(received, the company's stock of the item, every warehouse) → inventory value, the rest → COGS (script 89; it was the receiving warehouse's stock). A cancel takes its share from today's stock, never more out of stock than its posting put in. The rows keep the receiving warehouse and branch. Unchanged by goods receipts | `logistics.usp_ContainerCharge_ApplyCost`, SourceKind `CNTCHARGE` |
-| Cancellations | a cancelled goods receipt, stock document, sales document, return, LCA or late charge replays the ledger for its items | `inventory.usp_Item_RebuildCosts` |
+| Cancellations | a cancelled goods receipt, stock document, sales document, return, LCA or late charge replays the ledger for its items; so does a reversed transfer receipt that wrote pieces off (script 90) | `inventory.usp_Item_RebuildCosts` |
 | Profit report | Net Sales − COGS, GP % on net sales, grouped by invoice / item / family / brand / client / salesman / branch / month; COGS adjustments (LCA, late charges, goods receipt cost changes) as a separate column, shown by item, family, brand, branch, month or all, not per invoice, client or salesman | `sales.usp_SalesProfit_Report` |
 
 Approximation (documented decision): no FIFO layers are kept, so the pieces of a purchase still in stock are estimated
@@ -155,6 +156,52 @@ Refused once its cost was adjusted afterwards (63008): any `GRNCOST` change on i
 own posting, and for a container any `CNTCHARGE` on its charges (as 69018 refused the old Cancel Offload). Also refused
 when the stock it brought was used (63007) or a purchase return took its goods back (63010). Otherwise: reversal stock
 rows, matches rebuilt, the other receipts trued up (`GRNCANCEL`), item costs replayed.
+
+## Transfers (script 90): cost-neutral
+
+The average cost is company-wide and every warehouse is valued at it, so moving goods between two of the company's
+warehouses changes no cost (the owner's decision 3 of the transfer feedback).
+
+- **Where the goods are.** A dispatch (TRD) writes, per line, the source −q and the On the way warehouse of the
+  destination branch +q (reason `TRF_OUT`); a transfer receipt (TRR) writes the On the way warehouse −q and the
+  destination +q (`TRF_IN`). Each posting nets to zero for the company. Family `Transfer`, never `Sales` (Shortages
+  read that family as sales).
+- **The frozen average, for information.** Each dispatch line and its two rows carry `Items.AverageCost` at the
+  dispatch (`inventory.TransferPostingLines.UnitCostBase`; the posting's `ValueBase` = Σ pieces × it); a receipt line
+  and its rows carry its dispatch line's. Nothing reads them as a cost: no transfer calls `usp_Item_ApplyReceipts`, and
+  the average, last and FOB cost never move. The values show only with `inventory.valuation.view`.
+- **The replay** (`inventory.usp_Item_RebuildCosts`, re-created from script 79's body). An incoming leg of a transfer
+  (family `Transfer`, quantity above 0: the On the way warehouse at a dispatch, the destination at a receipt) enters
+  with no cost, so the receipt formula `ISNULL(cost, running average)` keeps the average where it is, whatever the
+  running balance - also when the outgoing leg took it to zero (the feedback's "restart at the frozen cost" is not
+  needed). The outgoing legs and the losses are issues, as every out. A reversed posting is left out with its reversal,
+  as every family's. Every other family reads its row's cost as before: a database without transfers replays to the
+  same costs. Why not the frozen cost: it goes stale as soon as anything is received, back-dated or cancelled between
+  the dispatch and the receipt, and entering at it would move the average.
+- **Losses** ("Nothing more will arrive" on a receipt line). The pieces leave the On the way warehouse at
+  `Items.AverageCost` at the receipt (`LossUnitCostBase`; the posting's `LostValueBase`), reason `TRF_LOSS` - the only
+  leg of a transfer that changes the company's stock. As every issue it leaves the average where it is: the stock
+  value goes down by pieces × average, as with an Inventory Out; nothing goes to COGS or to a cost adjustment.
+- **Reversing.** A reversed dispatch, or a reversed receipt without a loss, leaves the company's stock as it was: no
+  replay. A receipt that wrote pieces off brings them back On the way, so the company's stock changes: its items are
+  replayed, as every cancel that writes reversal rows (script 89), under the goods receipt matching lock taken first,
+  giving way in a deadlock (`DEADLOCK_PRIORITY LOW`; the API runs it again). A goods receipt posted while the loss stood
+  was averaged over fewer pieces; the replay averages it over the pieces the company holds again.
+- **Script 19's per-start backfill** of item costs (an item with receipts and no stored average) skips transfer rows
+  (`DocumentFamily <> N'Transfer'`, edited in place by script 90, as 89 edited it for reversed postings): counted as
+  receipts, they gave an item replayed to a zero average a transfer's frozen cost back as its average and last cost at
+  the next API start.
+- **What transfers leave alone.** The goods receipt true-up, the late container charge and the LCA of an old invoice
+  already split on the company's stock (script 89), so goods moved out of the receiving warehouse still count as in
+  stock. The cost adjustment rows keep the receiving warehouse and branch: Sales Profit's COGS adjustments stay in the
+  branch that received the goods (no per-piece tracking follows them). Stock Valuation's company total does not move;
+  by warehouse, the On the way warehouses hold the goods on the road at the average, in the destination branch.
+
+Example: 84 pcs of an item in LKS-01 at an average of 985.00. Dispatch 40 to LUB-01: LKS-01 −40 and OTW-BR-002 +40,
+both at 985.00; the company still holds 84 at 985.00 (82,740.00). A goods receipt of 10 at 1,000.00 then brings the
+average to (84 × 985 + 10 × 1,000) ÷ 94 = 986.60. The transfer receipt of 39 with 1 written off: OTW-BR-002 −39 and
+LUB-01 +39 (rows at the frozen 985.00, which the replay reads at the running 986.60), OTW-BR-002 −1 `TRF_LOSS` at
+986.60; the company holds 93 at 986.60, and the average has not moved.
 
 ## Future UI (prompts to write later)
 - Purchase Charge Types page (US-MD-008) — procs ready: `usp_ChargeType_Search/Lookup/Save/SetActive/Delete`, permission `purchase.chargetypes.manage`.
