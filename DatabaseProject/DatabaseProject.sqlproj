@@ -222,6 +222,7 @@
     <Build Include="inventory\StoredProcedures\usp_TransferOrder_Save.sql" />
     <Build Include="inventory\StoredProcedures\usp_TransferOrder_Search.sql" />
     <Build Include="inventory\StoredProcedures\usp_TransferOrder_SendForApproval.sql" />
+    <Build Include="inventory\StoredProcedures\usp_TransferOrder_ToReceiveCount.sql" />
     <Build Include="inventory\StoredProcedures\usp_TransferOrder_UpdateDetails.sql" />
     <Build Include="inventory\StoredProcedures\usp_TransferOrder_WaitingCount.sql" />
     <Build Include="inventory\StoredProcedures\usp_TransferOrder_Withdraw.sql" />
@@ -735,6 +736,11 @@
     <Build Include="sales\UserDefinedTypes\tvp_ReceiptAllocation.sql" />
     <Build Include="sales\UserDefinedTypes\tvp_ReceiptLine.sql" />
     <Build Include="sales\UserDefinedTypes\tvp_SalesDocumentLine.sql" />
+    <Build Include="security\Functions\fn_User_CanUseWarehouse.sql" />
+    <Build Include="security\Functions\fn_User_IsUnrestricted.sql" />
+    <Build Include="security\Functions\fn_User_WarehouseAccessText.sql" />
+    <Build Include="security\Functions\fn_User_WarehouseRefusal.sql" />
+    <Build Include="security\Functions\fn_User_Warehouses.sql" />
     <Build Include="security\Functions\fn_UserHasPermission.sql" />
     <Build Include="security\Functions\fn_UserPermissions.sql" />
     <Build Include="security\Functions\fn_UserRoles.sql" />
@@ -743,6 +749,10 @@
     <Build Include="security\StoredProcedures\usp_Role_SetPermissions.sql" />
     <Build Include="security\StoredProcedures\usp_User_GetAccess.sql" />
     <Build Include="security\StoredProcedures\usp_User_SetRoles.sql" />
+    <Build Include="security\StoredProcedures\usp_User_SetWarehouses.sql" />
+    <Build Include="security\StoredProcedures\usp_User_WarehouseRefusal.sql" />
+    <Build Include="security\StoredProcedures\usp_User_Warehouses_Get.sql" />
+    <Build Include="security\StoredProcedures\usp_User_WarehouseSummaries.sql" />
     <Build Include="security\Tables\LoginAudit.sql" />
     <Build Include="security\Tables\Permissions.sql" />
     <Build Include="security\Tables\RefreshTokens.sql" />
@@ -750,5 +760,7 @@
     <Build Include="security\Tables\Roles.sql" />
     <Build Include="security\Tables\UserRoles.sql" />
     <Build Include="security\Tables\Users.sql" />
+    <Build Include="security\Tables\UserWarehouseAudit.sql" />
+    <Build Include="security\Tables\UserWarehouses.sql" />
   </ItemGroup>
 </Project>

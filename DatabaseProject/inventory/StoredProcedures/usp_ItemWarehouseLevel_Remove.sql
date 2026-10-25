@@ -1,5 +1,7 @@
 /* (91) REMOVE ONE LEVEL (allowed on an inactive warehouse, L6): the row WITH (UPDLOCK, HOLDLOCK); gone 56006, changed
    since the page read it 56004; audit Removed; DELETE. @Source ItemCard | StockLevels (anything else: ItemCard). */
+-- Re-created (92) from the body of script 91: + a warehouse the user may not use is refused (50010, W17), after "This
+-- stock level no longer exists".
 CREATE   PROCEDURE inventory.usp_ItemWarehouseLevel_Remove
     @ItemId      INT,
     @WarehouseId INT,
@@ -23,6 +25,10 @@ BEGIN
         WHERE lv.ItemId = @ItemId AND lv.WarehouseId = @WarehouseId;
 
         IF @Rv IS NULL THROW 56006, 'This stock level no longer exists. Reload the page.', 1;
+
+        -- (92) the warehouse must be the user's
+        SET @Msg = security.fn_User_WarehouseRefusal(@UserId, CAST(@WarehouseId AS NVARCHAR(12)));
+        IF @Msg IS NOT NULL THROW 50010, @Msg, 1;
 
         IF @RowVersion IS NOT NULL AND @RowVersion <> @Rv
         BEGIN

@@ -4,6 +4,9 @@
    it stands now. Audit Source Import with the file name. Result 1, per row: RowNumber, Outcome (Added | Changed |
    Removed | Unchanged | Skipped), Message (the judgement's; a Skipped row's error). Result 2: the counts and the
    sentence. A 20,000-row import holds its locks until it commits: readers of the levels wait a few seconds. */
+-- Re-created (92) from the body of script 91: + a row in a warehouse the user may not use is Skipped with the
+-- sentence (W6, W17): the same step as the check on #j, inside the transaction and before the levels are read and
+-- written, so nothing is written for it.
 CREATE   PROCEDURE inventory.usp_ItemWarehouseLevel_Import
     @Rows     inventory.tvp_ItemWarehouseLevelImport READONLY,
     @FileName NVARCHAR(260) = NULL,
@@ -34,6 +37,18 @@ BEGIN
         INSERT INTO #j (RowNumber, Status, Action, Message, ItemId, WarehouseId, MinQuantityBase, MaxQuantityBase)
         SELECT j.RowNumber, j.Status, j.Action, j.Message, j.ItemId, j.WarehouseId, j.MinQuantityBase, j.MaxQuantityBase
         FROM inventory.fn_ItemWarehouseLevel_ImportJudge(@Rows) j;
+
+        -- (92) the rows a restricted user may not import: Error, with the sentence (one call per warehouse)
+        IF security.fn_User_IsUnrestricted(@UserId) = 0
+        BEGIN
+            DECLARE @Refused TABLE (WarehouseId INT NOT NULL PRIMARY KEY, Message NVARCHAR(400) NULL);
+            INSERT INTO @Refused (WarehouseId, Message)
+            SELECT d.WarehouseId, security.fn_User_WarehouseRefusal(@UserId, CAST(d.WarehouseId AS NVARCHAR(12)))
+            FROM (SELECT DISTINCT WarehouseId FROM #j WHERE Status IN (N'Valid', N'Warning') AND WarehouseId IS NOT NULL) d;
+            UPDATE j SET Status = N'Error', Action = N'None', Message = r.Message
+            FROM #j j INNER JOIN @Refused r ON r.WarehouseId = j.WarehouseId
+            WHERE j.Status IN (N'Valid', N'Warning') AND r.Message IS NOT NULL;
+        END
 
         INSERT INTO #cur (ItemId, WarehouseId, MinQuantityBase, MaxQuantityBase)
         SELECT lv.ItemId, lv.WarehouseId, lv.MinQuantityBase, lv.MaxQuantityBase

@@ -1,3 +1,5 @@
+/* ================================================================== 9. Stock level procedures re-created (4.3.8, A20) */
+
 /* (91) SET AN ITEM'S LEVELS IN ONE OR MORE WAREHOUSES (Item Definition's card, Stock Levels), all or nothing. The checks,
    the first failing row by warehouse code (56000): the warehouse exists, is not On the way, has no warehouses under
    it, is active (a new or changed level only: L6), Min is a whole number 0 or more, Min and Max are at most
@@ -7,6 +9,8 @@
    another user" - never a silent overwrite.
    An unchanged row is neither rewritten nor audited. @Source ItemCard | StockLevels (anything else: ItemCard). No
    result set. */
+-- Re-created (92) from the body of script 91: + a warehouse the user may not use is refused (50010, W17), after the
+-- per-row tests, one sentence for every such warehouse of the request (an unchanged row of one too: the request names it).
 CREATE   PROCEDURE inventory.usp_ItemWarehouseLevel_Set
     @ItemId INT,
     @Levels inventory.tvp_ItemWarehouseLevel READONLY,
@@ -49,6 +53,10 @@ BEGIN
     WHERE m.Message IS NOT NULL
     ORDER BY w.WarehouseCode;
     IF @Msg IS NOT NULL THROW 56000, @Msg, 1;
+
+    -- (92) every warehouse of the request must be the user's (one sentence for all of them)
+    SET @Msg = security.fn_User_WarehouseRefusal(@UserId, (SELECT STRING_AGG(CAST(WarehouseId AS NVARCHAR(12)), N',') FROM @Levels));
+    IF @Msg IS NOT NULL THROW 50010, @Msg, 1;
 
     BEGIN TRY
         BEGIN TRANSACTION;

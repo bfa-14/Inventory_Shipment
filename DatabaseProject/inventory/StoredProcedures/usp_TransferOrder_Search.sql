@@ -1,22 +1,3 @@
-/* ================================================================== 13. Transfer orders: the list, the page, the draft, its release and its approval (2.3.8.1-2.3.8.12, 2.3.8.21, 2.3.8.22) */
-
-/* The procedures of a transfer order that move no stock: the list, the page and its availability figures, the draft
-   (save, details, delete), its release and the approval cycle (approvers, send, approve, reject, withdraw, back to
-   draft), the approvers' menu count and the order's files. Dispatch, receipt, close, cancel, reverse, ETA and return
-   follow in the next section.
-
-   Every action follows one pattern: the order's header is read first WITH (UPDLOCK, HOLDLOCK) (two users acting on one
-   order queue up on it), the RowVersion is checked (skipped when NULL), then the action's first row of
-   inventory.fn_TransferOrder_Blocks is thrown as it comes (the page's disabled buttons read the same rows, so a
-   refusal and its tooltip can never differ), then the action's own checks, the writes and one audit row.
-   Permissions are not checked here (the API hides what a reader may not use), except the approval right, which is the
-   decision's own rule and lives in Blocks.
-
-   The import of lines needs no procedure of its own: sales.usp_InvoiceImport_Validate (script 72) already takes
-   @DocumentTypeCode N'TRO' - family Inventory, so a blank Unit is the base unit, an exact barcode takes its unit and a
-   row naming another type is an Error - with From as the default warehouse, @PriceListId NULL and @CheckStock 0; the
-   API refuses the Warehouse and Unit Price columns before it (2.5.5). */
-
 /* 13.1 THE LIST, paged, and a totals row (2 result sets).
    Filters: @Search (the order's number, its reference, From's or To's code or name, the code of an item on one of its
    lines, the number of one of its dispatches or receipts); @Status = a shown status (Draft, PendingApproval, Released,
@@ -29,6 +10,8 @@
    1: one row per order (TotalCount = all pages): its figures, shown status and Late from fn_TransferOrder_State, the
       one place they are worked out.
    2: over every order of the filter (all pages): Orders, OnTheWayBase, LateOrders, WaitingForApproval. */
+-- Re-created (92) from the body of script 90: + @UserId, @Mine (From or to / From / To the reader's warehouses: Any |
+-- From | To, any case; NULL = no filter; an unrestricted reader is never filtered). Result sets unchanged.
 CREATE   PROCEDURE inventory.usp_TransferOrder_Search
     @Search             NVARCHAR(100) = NULL,
     @Status             NVARCHAR(20)  = NULL,
@@ -44,7 +27,9 @@ CREATE   PROCEDURE inventory.usp_TransferOrder_Search
     @SortColumn         NVARCHAR(30)  = N'DocumentDate',
     @SortDirection      NVARCHAR(4)   = N'DESC',
     @PageNumber         INT           = 1,
-    @PageSize           INT           = 25
+    @PageSize           INT           = 25,
+    @UserId             INT           = NULL,   -- (92) the reader
+    @Mine               NVARCHAR(4)   = NULL    -- (92) Any | From | To the reader's warehouses; NULL = no filter
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -62,6 +47,15 @@ BEGIN
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
     SET @SortDirection = UPPER(@SortDirection);
     SELECT @OnTheWayOnly = ISNULL(@OnTheWayOnly, 0), @LateOnly = ISNULL(@LateOnly, 0), @WaitingForApproval = ISNULL(@WaitingForApproval, 0);
+
+    -- (92) the reader's warehouses (W15): a restricted reader's list starts on "From or to my warehouses"
+    SET @Mine = NULLIF(LTRIM(RTRIM(@Mine)), N'');
+    IF @Mine IS NOT NULL AND @Mine NOT IN (N'Any', N'From', N'To')
+        THROW 62000, 'Unknown warehouse filter: choose any, from or to.', 1;
+    DECLARE @MineUnrestricted BIT = security.fn_User_IsUnrestricted(@UserId);
+    DECLARE @MineIds TABLE (WarehouseId INT NOT NULL PRIMARY KEY);
+    IF @Mine IS NOT NULL AND @MineUnrestricted = 0
+        INSERT INTO @MineIds (WarehouseId) SELECT WarehouseId FROM security.fn_User_Warehouses(@UserId);
 
     -- THE FILTER ONCE, with each order's state: the shown status, Late and On the way are filters, so the state is
     -- worked out before the page, and the page and the totals both read it from here.
@@ -101,6 +95,9 @@ BEGIN
       AND (@DateTo IS NULL OR o.DocumentDate <= @DateTo)
       AND (@WaitingForApproval = 0 OR o.Status = 4)
       AND (@ItemId IS NULL OR EXISTS (SELECT 1 FROM inventory.TransferOrderLines l WHERE l.TransferOrderId = o.Id AND l.ItemId = @ItemId))
+      AND (@Mine IS NULL OR @MineUnrestricted = 1                                                          -- (92)
+           OR (@Mine IN (N'Any', N'From') AND o.FromWarehouseId IN (SELECT WarehouseId FROM @MineIds))
+           OR (@Mine IN (N'Any', N'To')   AND o.ToWarehouseId   IN (SELECT WarehouseId FROM @MineIds)))
       AND (@Status IS NULL
            OR (@Status = N'Open' AND o.Status = 2 AND ISNULL(st.DisplayStatus, N'') NOT IN (N'Received', N'Closed'))
            OR st.DisplayStatus = @Status)

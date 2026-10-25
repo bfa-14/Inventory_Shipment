@@ -1,3 +1,5 @@
+/* ================================================================== 8. Transfer objects (4.3.7) */
+
 /* (91) WHY AN ACTION ON A TRANSFER ORDER CANNOT BE DONE NOW (script 90's rules, one row per failed rule; the first row
    of an action is its reason), + Fill to Max and Add items below Min (spec 3.3.3.6): a draft only (62010 while waiting
    for approval, 62005 released or cancelled), the TRO type on (62008), warehouses an order can hold (62000), lines for
@@ -6,6 +8,10 @@
    (section 2). */
 -- Re-created (91) from the body of script 90: + FillToMax, AddBelowMin (the Seq 1 list, the order's ToCode / HasLines /
 -- HasToLevels, the rows 130-134).
+-- Re-created (92) from the body of script 91: + the warehouse access rows (Seq 5, 50010, W7 / A9): the From for what
+-- the source does, the To for receiving, both for Dispatch and receive, either for the details, neither for approving
+-- a request someone sent; Reject gets no row. Get's Can{Action} / reasons and every action procedure follow without
+-- being re-created. With @UserId NULL or an unrestricted user no access row is ever made.
 CREATE   FUNCTION inventory.fn_TransferOrder_Blocks (@Id INT, @UserId INT)
 RETURNS TABLE
 AS
@@ -229,6 +235,43 @@ FROM
                                                + NCHAR(8250) + N' Stock Levels.' END)
     ) r (Action, Seq, ErrorNumber, Message)
     WHERE r.Message IS NOT NULL
+
+    UNION ALL
+    -- (92) WAREHOUSE ACCESS (W7): the source decides what the source does, the destination receives. Seq 5: after "not
+    --      found", before every status reason (a reader who may not use the warehouse can do nothing about the order's
+    --      state). The table alias is t: o is this function's CTE.
+    SELECT a.Action, 5, 50010, r.Msg
+    FROM inventory.TransferOrders t
+    CROSS APPLY (SELECT Msg = security.fn_User_WarehouseRefusal(@UserId, CAST(t.FromWarehouseId AS NVARCHAR(12)))) r
+    CROSS JOIN (VALUES (N'Edit'), (N'Delete'), (N'Release'), (N'SendForApproval'), (N'Withdraw'), (N'BackToDraft'),
+                       (N'Dispatch'), (N'NothingMoreSent'), (N'Cancel'), (N'ChangeEta'), (N'ReverseDispatch'),
+                       (N'FillToMax'), (N'AddBelowMin')) a (Action)
+    WHERE t.Id = @Id AND r.Msg IS NOT NULL
+    UNION ALL
+    -- "Approve & release" of a draft is a release; approving a request someone sent (Status 4) needs no warehouse (A9)
+    SELECT N'Approve', 5, 50010, r.Msg
+    FROM inventory.TransferOrders t
+    CROSS APPLY (SELECT Msg = security.fn_User_WarehouseRefusal(@UserId, CAST(t.FromWarehouseId AS NVARCHAR(12)))) r
+    WHERE t.Id = @Id AND t.Status = 1 AND r.Msg IS NOT NULL
+    UNION ALL
+    SELECT a.Action, 5, 50010, r.Msg
+    FROM inventory.TransferOrders t
+    CROSS APPLY (SELECT Msg = security.fn_User_WarehouseRefusal(@UserId, CAST(t.ToWarehouseId AS NVARCHAR(12)))) r
+    CROSS JOIN (VALUES (N'Receive'), (N'CreateReturn'), (N'ReverseReceipt')) a (Action)
+    WHERE t.Id = @Id AND r.Msg IS NOT NULL
+    UNION ALL
+    -- both ends, one sentence ("warehouses LKS-01 and LUB-01" when neither is the reader's)
+    SELECT N'DispatchAndReceive', 5, 50010, r.Msg
+    FROM inventory.TransferOrders t
+    CROSS APPLY (SELECT Msg = security.fn_User_WarehouseRefusal(@UserId, CONCAT(t.FromWarehouseId, N',', t.ToWarehouseId))) r
+    WHERE t.Id = @Id AND r.Msg IS NOT NULL
+    UNION ALL
+    -- either end may change the expected arrival, the reference and the notes (the sentence names both: either would do)
+    SELECT N'UpdateDetails', 5, 50010, security.fn_User_WarehouseRefusal(@UserId, CONCAT(t.FromWarehouseId, N',', t.ToWarehouseId))
+    FROM inventory.TransferOrders t
+    WHERE t.Id = @Id
+      AND security.fn_User_CanUseWarehouse(@UserId, t.FromWarehouseId) = 0
+      AND security.fn_User_CanUseWarehouse(@UserId, t.ToWarehouseId) = 0
 ) b;
 
 GO

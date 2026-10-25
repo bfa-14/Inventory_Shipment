@@ -7,6 +7,9 @@
    TRO type numbers documents at their first save (NumberOnPost 0), else at release, and then keeps the branch it got.
    Each line keeps its unit's packing formula of the moment it is saved (Ordered in pcs never changes under it). No
    result set: @NewId = the order. */
+-- Re-created (92) from the body of script 90: + the From the request names must be the editor's (W7), checked after
+-- the warehouse rules and before the number is taken (a refusal creates nothing and uses no number); the To may be any
+-- warehouse (A9). 91's usp_TransferOrder_CreateFromLevels saves through it.
 CREATE   PROCEDURE inventory.usp_TransferOrder_Save
     @Id              INT            = NULL,
     @DocumentDate    DATE,
@@ -68,6 +71,11 @@ BEGIN
 
         -- 4. From and To
         EXEC inventory.usp_TransferOrder_CheckWarehouses @FromWarehouseId, @ToWarehouseId;
+
+        -- (92) 4b. The From the request names must be the editor's (an existing order's STORED From is Blocks' Edit, step 2);
+        --      the To may be any warehouse (A9)
+        SET @Msg = security.fn_User_WarehouseRefusal(@UserId, CAST(@FromWarehouseId AS NVARCHAR(12)));
+        IF @Msg IS NOT NULL THROW 50010, @Msg, 1;
 
         -- 5. Expected arrival
         IF @ExpectedArrival < @DocumentDate THROW 62000, 'Expected arrival cannot be before the order date.', 1;
