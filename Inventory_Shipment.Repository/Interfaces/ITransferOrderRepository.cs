@@ -10,11 +10,18 @@ namespace Inventory_Shipment.Repository.Interfaces;
 /// </summary>
 public interface ITransferOrderRepository
 {
+    /// <remarks>(92) <paramref name="userId"/>: the reader, for the "Warehouses" filter (<see cref="TransferOrderQuery.Mine"/>).</remarks>
     Task<(IReadOnlyList<TransferOrderListItemDto> Items, int TotalCount, TransferOrderListTotalsDto Totals)> SearchAsync(
-        TransferOrderQuery query, CancellationToken cancellationToken = default);
+        TransferOrderQuery query, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>The orders waiting for approval (stored status 4).</summary>
     Task<int> WaitingCountAsync(int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (92) inventory.usp_TransferOrder_ToReceiveCount: the released orders with goods on the way to one of the user's
+    /// warehouses; 0 at once for a user with All warehouses.
+    /// </summary>
+    Task<int> ToReceiveCountAsync(int userId, CancellationToken cancellationToken = default);
 
     Task<IReadOnlyList<TransferAvailabilityDto>> AvailabilityAsync(
         int fromWarehouseId, int toWarehouseId, IReadOnlyCollection<int> itemIds, int? excludeOrderId,

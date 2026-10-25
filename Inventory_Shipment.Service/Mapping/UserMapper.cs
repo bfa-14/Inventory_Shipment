@@ -48,6 +48,29 @@ public static class UserMapper
         Permissions = dto.Permissions,
         IsActive = dto.IsActive,
         LastLoginAtUtc = dto.LastLoginAtUtc,
-        CreatedAtUtc = dto.CreatedAtUtc
+        CreatedAtUtc = dto.CreatedAtUtc,
+        AllWarehouses = dto.AllWarehouses,
+        IsSystemAdministrator = dto.IsSystemAdministrator,
+        Warehouses = dto.Warehouses
+    };
+
+    /// <summary>(92) Copy of a mapped user with its warehouse access (users list only: sign-in and "me" never carry it).</summary>
+    public static UserDto WithWarehouses(
+        this UserDto dto, bool allWarehouses, bool isSystemAdministrator, IReadOnlyList<UserWarehouseRefDto> warehouses) => new()
+    {
+        Id = dto.Id,
+        Username = dto.Username,
+        Email = dto.Email,
+        FullName = dto.FullName,
+        Roles = dto.Roles,
+        RoleIds = dto.RoleIds,
+        Permissions = dto.Permissions,
+        IsActive = dto.IsActive,
+        LastLoginAtUtc = dto.LastLoginAtUtc,
+        CreatedAtUtc = dto.CreatedAtUtc,
+        AllWarehouses = allWarehouses,
+        IsSystemAdministrator = isSystemAdministrator,
+        // The ticks count only while the user is limited to them.
+        Warehouses = allWarehouses ? [] : warehouses.ToArray()
     };
 }

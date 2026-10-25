@@ -12,7 +12,10 @@ namespace Inventory_Shipment.Service.Implementations;
 
 public sealed class UserService : IUserService
 {
+    private const string ChooseWarehousesMessage = "Choose All warehouses, or tick the warehouses this user may use.";
+
     private readonly IUserRepository _users;
+    private readonly IUserWarehouseRepository _userWarehouses;
     private readonly IRefreshTokenRepository _refreshTokens;
     private readonly IPasswordHasher _passwordHasher;
     private readonly IPasswordPolicy _passwordPolicy;
@@ -20,12 +23,14 @@ public sealed class UserService : IUserService
 
     public UserService(
         IUserRepository users,
+        IUserWarehouseRepository userWarehouses,
         IRefreshTokenRepository refreshTokens,
         IPasswordHasher passwordHasher,
         IPasswordPolicy passwordPolicy,
         ILogger<UserService> logger)
     {
         _users = users;
+        _userWarehouses = userWarehouses;
         _refreshTokens = refreshTokens;
         _passwordHasher = passwordHasher;
         _passwordPolicy = passwordPolicy;
@@ -46,10 +51,31 @@ public sealed class UserService : IUserService
             .GroupBy(r => r.UserId)
             .ToDictionary(g => g.Key, g => (IReadOnlyList<(int Id, string Name)>)g.Select(r => (r.RoleId, r.RoleName)).ToList());
 
+        // (92) And one for every user's warehouse access: the list's Warehouses column.
+        var summaries = await _userWarehouses.SummariesAsync(cancellationToken);
+        var flagsByUser = summaries.Users.GroupBy(f => f.UserId).ToDictionary(g => g.Key, g => g.First());
+        var ticksByUser = summaries.Ticks
+            .GroupBy(t => t.UserId)
+            .ToDictionary(g => g.Key, g => (IReadOnlyList<UserWarehouseRefDto>)g.Select(t => new UserWarehouseRefDto
+            {
+                Id = t.WarehouseId,
+                Code = t.WarehouseCode,
+                Name = t.WarehouseName,
+                BranchCode = t.BranchCode,
+                IsActive = t.IsActive,
+                HasChildren = t.ChildCount > 0,
+            }).ToList());
+
         var dtos = users
-            .Select(u => rolesByUser.TryGetValue(u.Id, out var roles)
-                ? u.ToDto().WithRoles(roles)
-                : u.ToDto())
+            .Select(u =>
+            {
+                var dto = rolesByUser.TryGetValue(u.Id, out var roles) ? u.ToDto().WithRoles(roles) : u.ToDto();
+                var flags = flagsByUser.GetValueOrDefault(u.Id);
+                return dto.WithWarehouses(
+                    flags?.AllWarehouses ?? u.AllWarehouses,
+                    flags?.IsSystemAdministrator ?? false,
+                    ticksByUser.GetValueOrDefault(u.Id) ?? []);
+            })
             .ToList();
 
         return Result<IReadOnlyList<UserDto>>.Success(dtos);
@@ -230,11 +256,64 @@ public sealed class UserService : IUserService
         return Result.Success();
     }
 
+    /* ── (92) warehouse access ─────────────────────────────────────────────────────────────────── */
+
+    public async Task<Result<UserWarehousesDto>> GetWarehousesAsync(int id, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return Result<UserWarehousesDto>.Success(await _userWarehouses.GetAsync(id, cancellationToken));
+        }
+        catch (SecurityRuleException ex)
+        {
+            return Result<UserWarehousesDto>.Failure(MapRuleError(ex), ex.Message, RuleCode(ex));
+        }
+    }
+
+    /// <summary>
+    /// All warehouses, or only the ticked ones (a ticked parent gives its whole tree). Takes effect at once: nothing is
+    /// cached and no token carries it (M8). The last save wins; the history keeps every change. Answers the dialog re-read.
+    /// </summary>
+    public async Task<Result<UserWarehousesDto>> SetWarehousesAsync(
+        int id, SetUserWarehousesRequest request, int actingUserId, CancellationToken cancellationToken = default)
+    {
+        if (request.AllWarehouses is not { } allWarehouses)
+        {
+            return Result<UserWarehousesDto>.Failure(ErrorType.Validation, ChooseWarehousesMessage, "VALIDATION");
+        }
+
+        try
+        {
+            await _userWarehouses.SetAsync(id, allWarehouses, request.WarehouseIds ?? [], actingUserId, cancellationToken);
+            var saved = await _userWarehouses.GetAsync(id, cancellationToken);
+
+            // The words of the history (security.fn_User_WarehouseAccessText), for the log only.
+            var after = saved.AllWarehouses
+                ? "All warehouses"
+                : "Only: " + (saved.Warehouses.Count == 0 ? "none" : string.Join(", ", saved.Warehouses.Select(w => w.Code)));
+            _logger.LogInformation("Warehouses of user {UserId} set by user {ActingUserId}: {After}", id, actingUserId, after);
+
+            return Result<UserWarehousesDto>.Success(saved);
+        }
+        catch (SecurityRuleException ex)
+        {
+            return Result<UserWarehousesDto>.Failure(MapRuleError(ex), ex.Message, RuleCode(ex));
+        }
+    }
+
+    /// <summary>(92) The ProblemDetails code of a security procedure's refusal, as the pages read it.</summary>
+    private static string RuleCode(SecurityRuleException ex) => MapRuleError(ex) switch
+    {
+        ErrorType.NotFound => "NOT_FOUND",
+        _ => "VALIDATION",
+    };
+
     private static ErrorType MapRuleError(SecurityRuleException ex) => ex.Code switch
     {
         SqlErrors.UserNotFound => ErrorType.NotFound,
         SqlErrors.RoleNotFound => ErrorType.NotFound,
         SqlErrors.LastAdministrator => ErrorType.Validation,
+        SqlErrors.UserWarehousesValidation => ErrorType.Validation,
         _ => ErrorType.Validation
     };
 }

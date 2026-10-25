@@ -14,7 +14,7 @@ public sealed class UserRepository : IUserRepository
     // Roles are not columns here: a user holds zero or more roles through security.UserRoles
     // (the legacy single-role column was dropped by 04_Security_DropLegacyRoleColumn.sql).
     private const string SelectColumns = """
-        SELECT Id, Username, Email, FullName, PasswordHash, IsActive,
+        SELECT Id, Username, Email, FullName, PasswordHash, IsActive, AllWarehouses,
                FailedLoginAttempts, LockoutEndUtc, LastLoginAtUtc, CreatedAtUtc, UpdatedAtUtc
         FROM security.Users
         """;

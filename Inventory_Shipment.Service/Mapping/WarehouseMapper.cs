@@ -46,7 +46,8 @@ public static class WarehouseMapper
         IsUsed = warehouse.IsUsed,
         IsTransit = warehouse.IsTransit,
         IsUsedInTransactions = warehouse.IsUsedInTransactions,
-        HasStockLevels = warehouse.HasStockLevels
+        HasStockLevels = warehouse.HasStockLevels,
+        CanUse = warehouse.CanUse
     };
 
     public static BranchLookupDto ToDto(this BranchLookup branch) => new()

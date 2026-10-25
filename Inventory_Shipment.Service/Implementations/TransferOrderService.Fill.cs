@@ -2,6 +2,7 @@ using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Inventory.Transfers;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Repository.Exceptions;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -135,6 +136,15 @@ public sealed partial class TransferOrderService
         if (!permissions.Contains(Permissions.Inventory.StockLevelsView))
         {
             return Forbidden<CreateTransferFromLevelsResult>(Permissions.Inventory.StockLevelsView);
+        }
+
+        /* (92) THE ORDER IS THE SOURCE'S DOCUMENT (A9): its From must be the user's, asked first. The procedure works out
+           its plan before it calls Save (whose From check refuses the same way), so without this a reader who may not use
+           the From would get "Nothing to transfer: …" (62009) whenever nothing is below Min, instead of the access
+           sentence. One primary-key seek for a reader with All warehouses. */
+        if (await _access.RefusalAsync(userId, [request.FromWarehouseId], cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<CreateTransferFromLevelsResult>(refusal);
         }
 
         CreateTransferFromLevelsResult created;

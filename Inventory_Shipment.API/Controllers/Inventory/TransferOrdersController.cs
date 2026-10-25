@@ -43,7 +43,8 @@ public sealed partial class TransferOrdersController : ControllerBase
     /// The list, paged, with the totals of the whole filter (orders, pieces on the way, late orders, waiting for
     /// approval). Filters: search, status (a shown status or Open), branchId (From's or To's), fromWarehouseId,
     /// toWarehouseId, onTheWayOnly, lateOnly, waitingForApproval, dateFrom, dateTo, itemId; sortColumn / sortDirection;
-    /// page / pageSize (at most 200).
+    /// page / pageSize (at most 200). (92) mine = any | from | to: the "Warehouses" filter of a reader limited to some
+    /// warehouses (From or To one of theirs / From / To); a reader with All warehouses is never filtered by it.
     /// </summary>
     [HttpGet]
     [HasPermission(Permissions.Inventory.TransfersView)]
@@ -52,11 +53,14 @@ public sealed partial class TransferOrdersController : ControllerBase
     public async Task<ActionResult<TransferOrderListResult>> Search(
         [FromQuery] TransferOrderQuery query, CancellationToken cancellationToken)
     {
-        var result = await _transfers.SearchAsync(query, User.GetPermissions(), cancellationToken);
+        var result = await _transfers.SearchAsync(query, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
-    /// <summary>The orders waiting for approval, for the approvers' menu count (0 for a reader who may not approve).</summary>
+    /// <summary>
+    /// The menu count: the orders waiting for approval (0 for a reader who may not approve) and, (92) for a reader who may
+    /// receive, those on the way to their own warehouses (0 for a reader with All warehouses).
+    /// </summary>
     [HttpGet("waiting")]
     [HasPermission(Permissions.Inventory.TransfersView)]
     [ProducesResponseType<TransferWaitingDto>(StatusCodes.Status200OK)]
@@ -397,7 +401,7 @@ public sealed partial class TransferOrdersController : ControllerBase
 
         await using var stream = file.OpenReadStream();
         var result = await _transfers.ValidateImportAsync(
-            stream, file.FileName, file.Length, fromWarehouseId, User.GetPermissions(), cancellationToken);
+            stream, file.FileName, file.Length, fromWarehouseId, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

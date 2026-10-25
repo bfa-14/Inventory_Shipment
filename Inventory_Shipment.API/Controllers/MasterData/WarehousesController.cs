@@ -46,7 +46,9 @@ public sealed class WarehousesController : ControllerBase
         [FromQuery] bool activeOnly = true, [FromQuery] int? branchId = null, [FromQuery] int? includeId = null,
         [FromQuery] bool includeTransit = false, CancellationToken cancellationToken = default)
     {
-        var result = await _warehouseService.LookupAsync(activeOnly, branchId, includeId, includeTransit, cancellationToken);
+        // (92) canUse on each row is the caller's: worked out at each request, so a change of their warehouses shows at once.
+        var result = await _warehouseService.LookupAsync(
+            activeOnly, branchId, includeId, includeTransit, User.GetUserId(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -126,7 +128,7 @@ public sealed class WarehousesController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     public async Task<ActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        var result = await _warehouseService.DeleteAsync(id, cancellationToken);
+        var result = await _warehouseService.DeleteAsync(id, User.GetUserId(), cancellationToken);
         return result.ToNoContentResult(this);
     }
 }

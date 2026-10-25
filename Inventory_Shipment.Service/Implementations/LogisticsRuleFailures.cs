@@ -21,6 +21,9 @@ internal static class LogisticsRuleFailures
     internal static RuleFailure Describe(BusinessRuleException exception, string duplicateCode = "DUPLICATE_CONTAINER_NO")
         => exception.Number switch
         {
+            // (92) The ledger trigger refused a Cancel Offload (a container received before goods receipts) in a warehouse
+            // the user may not use.
+            SqlErrors.WarehouseAccessDenied => new(ErrorType.Forbidden, exception.Message, Security.WarehouseAccess.Code),
             SqlErrors.ContainerValidation => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             SqlErrors.ContainerConcurrency => new(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
             SqlErrors.ContainerNotEditable => new(ErrorType.Conflict, exception.Message, "NOT_EDITABLE"),

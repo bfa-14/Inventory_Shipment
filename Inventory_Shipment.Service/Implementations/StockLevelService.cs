@@ -280,6 +280,8 @@ public sealed class StockLevelService : IStockLevelService
     /// </summary>
     internal static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) Setting, removing or importing a warehouse's Min / Max needs that warehouse (usp_ItemWarehouseLevel_*).
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, Security.WarehouseAccess.Code),
         SqlErrors.ItemValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.ItemConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.ItemNotFound => new RuleFailure(ErrorType.NotFound, exception.Message, "NOT_FOUND"),

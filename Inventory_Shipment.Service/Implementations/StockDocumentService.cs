@@ -8,6 +8,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -29,13 +30,16 @@ public sealed class StockDocumentService : IStockDocumentService
 
     private readonly IStockDocumentRepository _documents;
     private readonly IWarehouseRepository _warehouses;
+    private readonly IWarehouseAccessService _access;
     private readonly ILogger<StockDocumentService> _logger;
 
     public StockDocumentService(
-        IStockDocumentRepository documents, IWarehouseRepository warehouses, ILogger<StockDocumentService> logger)
+        IStockDocumentRepository documents, IWarehouseRepository warehouses, IWarehouseAccessService access,
+        ILogger<StockDocumentService> logger)
     {
         _documents = documents;
         _warehouses = warehouses;
+        _access = access;
         _logger = logger;
     }
 
@@ -79,8 +83,8 @@ public sealed class StockDocumentService : IStockDocumentService
     }
 
     public async Task<Result<StockDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
-        => await ReadAsync(id, permissions, DocumentAction.View, cancellationToken);
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => await WithAccessAsync(await ReadAsync(id, permissions, DocumentAction.View, cancellationToken), userId, cancellationToken);
 
     /* ── writing ──────────────────────────────────────────────────────────────────────────────── */
 
@@ -102,9 +106,10 @@ public sealed class StockDocumentService : IStockDocumentService
            only stockin.create could aim a PUT carrying documentTypeCode INV_IN at an INV_OUT document
            and pass the check above. The procedure would refuse to change the type, but the request
            should never get that far. */
+        StockDocumentDto? existing = null;
         if (id is { } existingId)
         {
-            var existing = await _documents.GetAsync(existingId, cancellationToken);
+            existing = await _documents.GetAsync(existingId, cancellationToken);
             if (existing is null)
             {
                 return Failure(NotFoundMessage, ErrorType.NotFound, "NOT_FOUND");
@@ -114,6 +119,17 @@ public sealed class StockDocumentService : IStockDocumentService
             {
                 return Failure(ForbiddenMessage, ErrorType.Forbidden, "FORBIDDEN");
             }
+        }
+
+        /* (92) A WAREHOUSE THE EDITOR NAMES MUST BE THEIRS. A line already on the stored draft in one that is not may
+           stay as it is, or move to one of theirs (A8: an administrator's draft can still be corrected line by line);
+           nothing may be added, changed or dropped there, and posting it is refused until it is changed. */
+        var refusal = await _access.DraftRefusalAsync(
+            userId, DraftOf(request),
+            existing is null ? null : () => Task.FromResult<WarehouseDraft?>(DraftOf(existing)), cancellationToken);
+        if (refusal is not null)
+        {
+            return WarehouseAccess.Failure<StockDocumentDto>(refusal);
         }
 
         int savedId;
@@ -129,7 +145,7 @@ public sealed class StockDocumentService : IStockDocumentService
         _logger.LogInformation("Stock document {DocumentId} ({TypeCode}) saved by user {UserId}",
             savedId, request.DocumentTypeCode, userId);
 
-        return await ReadAsync(savedId, permissions, DocumentAction.View, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(savedId, permissions, DocumentAction.View, cancellationToken), userId, cancellationToken);
     }
 
     public async Task<Result<StockDocumentDto>> PostAsync(
@@ -344,6 +360,12 @@ public sealed class StockDocumentService : IStockDocumentService
         if (found.IsFailure)
         {
             return found;
+        }
+
+        // (92) Deleting a draft needs every warehouse on it: the Inventory Out an administrator prepared is not a restricted user's to throw away.
+        if (await _access.RefusalAsync(userId, WarehousesOf(found.Value!), cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure(refusal);
         }
 
         try
@@ -623,6 +645,13 @@ public sealed class StockDocumentService : IStockDocumentService
             return found;
         }
 
+        // (92) Posting and cancelling move stock in every warehouse of the stored document: each must be the user's
+        // (the ledger trigger refuses the same rows; this says it before the procedure runs).
+        if (await _access.RefusalAsync(userId, WarehousesOf(found.Value!), cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<StockDocumentDto>(refusal);
+        }
+
         try
         {
             await change(id, ToRowVersion(rowVersion));
@@ -636,8 +665,41 @@ public sealed class StockDocumentService : IStockDocumentService
 
         // Re-read: posting assigns the number, writes the ledger and moves the status, and the client
         // needs all three. The document is the server's answer, not a patch of what was sent.
-        return await ReadAsync(id, permissions, DocumentAction.View, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(id, permissions, DocumentAction.View, cancellationToken), userId, cancellationToken);
     }
+
+    /// <summary>
+    /// (92) The document as this reader receives it: with the sentence that says why they may not post, cancel or delete
+    /// it (every warehouse of its lines and header, no keep rule), null when they may - one primary-key seek for a reader
+    /// with All warehouses.
+    /// </summary>
+    private async Task<Result<StockDocumentDto>> WithAccessAsync(
+        Result<StockDocumentDto> read, int userId, CancellationToken cancellationToken)
+    {
+        if (read.Value is { } document)
+        {
+            document.WarehouseAccessRefusal = await _access.RefusalAsync(userId, WarehousesOf(document), cancellationToken: cancellationToken);
+        }
+
+        return read;
+    }
+
+    /// <summary>(92) Every warehouse a stored document moves stock in: its lines' and its header's.</summary>
+    private static IEnumerable<int?> WarehousesOf(StockDocumentDto document)
+        => document.Lines.Select(line => (int?)line.WarehouseId).Append(document.WarehouseId);
+
+    /// <summary>(92) A request as the keep rule (A8) compares it: its header warehouse and each line's stock fields.</summary>
+    private static WarehouseDraft DraftOf(SaveStockDocumentRequest request)
+        => new(request.WarehouseId, (request.Lines ?? [])
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId, (line.ItemUnitId, line.Quantity, line.ExpiryDate)))
+            .ToList());
+
+    /// <summary>(92) The stored draft, the same way.</summary>
+    private static WarehouseDraft DraftOf(StockDocumentDto document)
+        => new(document.WarehouseId, document.Lines
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate is { } expiry ? DateOnly.FromDateTime(expiry) : (DateOnly?)null)))
+            .ToList());
 
     /// <summary>
     /// Which permission code answers "may this caller do this to this kind of document".
@@ -699,6 +761,8 @@ public sealed class StockDocumentService : IStockDocumentService
     /// </summary>
     private static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) The ledger trigger's refusal (or any other 50010): the user may not move stock in that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, WarehouseAccess.Code),
         SqlErrors.StockDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.StockDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.StockDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

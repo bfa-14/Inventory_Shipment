@@ -119,7 +119,7 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
     }
 
     public async Task<(IReadOnlyList<TransferOrderListItemDto> Items, int TotalCount, TransferOrderListTotalsDto Totals)> SearchAsync(
-        TransferOrderQuery query, CancellationToken cancellationToken = default)
+        TransferOrderQuery query, int userId, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters(new
         {
@@ -141,6 +141,17 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         // every date the query string may carry ("0026-10-24": a 500 instead of an empty list).
         parameters.Add("@DateFrom", ToDate(query.DateFrom), DbType.Date);
         parameters.Add("@DateTo", ToDate(query.DateTo), DbType.Date);
+
+        // (92) The "Warehouses" filter of a restricted reader (any | from | to; the procedure refuses anything else with
+        // 62000). Sent only with a filter: without one the list is the same for every reader. AN UNKNOWN VALUE GOES AS "?",
+        // which the procedure refuses: sent as it came it would be cut to the parameter's four characters there, and
+        // "fromage" would read From.
+        if (Trimmed(query.Mine) is { } mine)
+        {
+            parameters.Add("@UserId", userId, DbType.Int32);
+            parameters.Add("@Mine", MineFilters.FirstOrDefault(f => string.Equals(f, mine, StringComparison.OrdinalIgnoreCase)) ?? "?",
+                DbType.String, size: 4);
+        }
 
         await using var connection = _connectionFactory.Create();
         try
@@ -164,6 +175,15 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         await using var connection = _connectionFactory.Create();
         return await connection.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
                    "inventory.usp_TransferOrder_WaitingCount", new { UserId = userId },
+                   commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))
+               ?? 0;
+    }
+
+    public async Task<int> ToReceiveCountAsync(int userId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
+                   "inventory.usp_TransferOrder_ToReceiveCount", new { UserId = userId },
                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))
                ?? 0;
     }
@@ -1028,4 +1048,7 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
     private static DateOnly? ToDateOnly(DateTime? value) => value is { } v ? DateOnly.FromDateTime(v) : null;
 
     private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
+
+    /// <summary>(92) The values of the list's "Warehouses" filter, as the procedure names them.</summary>
+    private static readonly string[] MineFilters = ["Any", "From", "To"];
 }

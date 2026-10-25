@@ -13,10 +13,14 @@ namespace Inventory_Shipment.Service.Interfaces;
 /// </summary>
 public interface ITransferOrderService
 {
+    /// <remarks>(92) <paramref name="userId"/>: the reader, for the "Warehouses" filter (query.Mine).</remarks>
     Task<Result<TransferOrderListResult>> SearchAsync(
-        TransferOrderQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+        TransferOrderQuery query, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    /// <summary>The menu count of the approvers: 0 for a reader who may not approve.</summary>
+    /// <summary>
+    /// The menu count of the approvers: 0 for a reader who may not approve. (92) + the transfers on the way to the reader's
+    /// warehouses for a reader who may receive (0 for one with All warehouses).
+    /// </summary>
     Task<Result<TransferWaitingDto>> WaitingAsync(
         int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
@@ -100,8 +104,9 @@ public interface ITransferOrderService
     Result<(byte[] Content, string FileName)> ImportTemplate(IReadOnlySet<string> permissions);
 
     /// <summary>The lines of a file judged against the order's From (the sales import's rows and verdicts); nothing is saved.</summary>
+    /// <remarks>(92) Refused (403 WAREHOUSE_ACCESS) when <paramref name="userId"/> may not use the From.</remarks>
     Task<Result<ImportValidationResult>> ValidateImportAsync(
-        Stream file, string fileName, long fileLength, int? fromWarehouseId, IReadOnlySet<string> permissions,
+        Stream file, string fileName, long fileLength, int? fromWarehouseId, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
     Task<Result<(byte[] Content, string FileName)>> ExportAsync(

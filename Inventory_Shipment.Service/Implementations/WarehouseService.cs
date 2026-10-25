@@ -57,9 +57,10 @@ public sealed class WarehouseService : IWarehouseService
     }
 
     public async Task<Result<IReadOnlyList<WarehouseLookupDto>>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default)
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, int? userId = null,
+        CancellationToken cancellationToken = default)
     {
-        var warehouses = await _warehouses.LookupAsync(activeOnly, branchId, includeId, includeTransit, cancellationToken);
+        var warehouses = await _warehouses.LookupAsync(activeOnly, branchId, includeId, includeTransit, userId, cancellationToken);
         return Result<IReadOnlyList<WarehouseLookupDto>>.Success(warehouses.Select(w => w.ToLookupDto()).ToList());
     }
 
@@ -136,18 +137,18 @@ public sealed class WarehouseService : IWarehouseService
         return await ReadBackAsync(id, cancellationToken);
     }
 
-    public async Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Result> DeleteAsync(int id, int? userId = null, CancellationToken cancellationToken = default)
     {
         try
         {
-            await _warehouses.DeleteAsync(id, cancellationToken);
+            await _warehouses.DeleteAsync(id, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
             return await FailureAsync(ex, cancellationToken);
         }
 
-        _logger.LogInformation("Warehouse {WarehouseId} deleted", id);
+        _logger.LogInformation("Warehouse {WarehouseId} deleted by user {UserId}", id, userId);
         return Result.Success();
     }
 
@@ -230,6 +231,11 @@ public sealed class WarehouseService : IWarehouseService
             // the reader's to change, nor is it deleted on its own. The procedure's sentence names it and its branch.
             case SqlErrors.WarehouseSystemManaged:
                 return new RuleFailure(ErrorType.Conflict, exception.Message, "SYSTEM_WAREHOUSE", null);
+
+            // (92) Moving a warehouse to another parent that changes what restricted users may use: only an editor who
+            // may use every warehouse and holds security.users.edit. The procedure's sentence says how many users.
+            case SqlErrors.WarehouseAccessDenied:
+                return new RuleFailure(ErrorType.Forbidden, exception.Message, "WAREHOUSE_ACCESS", null);
 
             case SqlErrors.WarehouseValidation:
             default:

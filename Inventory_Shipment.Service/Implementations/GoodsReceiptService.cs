@@ -8,6 +8,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Data.SqlClient;
 using Microsoft.Extensions.Logging;
 
@@ -40,11 +41,13 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         "Goods receipts and invoices are being matched for another user. Try again in a moment.";
 
     private readonly IGoodsReceiptRepository _receipts;
+    private readonly IWarehouseAccessService _access;
     private readonly ILogger<GoodsReceiptService> _logger;
 
-    public GoodsReceiptService(IGoodsReceiptRepository receipts, ILogger<GoodsReceiptService> logger)
+    public GoodsReceiptService(IGoodsReceiptRepository receipts, IWarehouseAccessService access, ILogger<GoodsReceiptService> logger)
     {
         _receipts = receipts;
+        _access = access;
         _logger = logger;
     }
 
@@ -86,9 +89,9 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         => _receipts.SwitchAsync(cancellationToken);
 
     public async Task<Result<GoodsReceiptDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
         => permissions.Contains(Permissions.Purchase.GoodsReceiptsView)
-            ? await ReadAsync(id, cancellationToken)
+            ? await ReadAsync(id, userId, cancellationToken)
             : Forbidden<GoodsReceiptDto>(Permissions.Purchase.GoodsReceiptsView);
 
     /* ── a draft ──────────────────────────────────────────────────────────────────────────────── */
@@ -114,6 +117,19 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
                 ErrorType.Validation, "sourceKind must be Container, Order, Invoice or Manual.", "VALIDATION");
         }
 
+        /* (92) "Receive into" and every line's warehouse must be the user's; a line already on the stored draft in one that
+           is not may stay as it is, or move to one of theirs ("Receive into" changed), A8: the automatic draft of a
+           Delivery, an administrator's draft - its counted pieces, source and "Nothing more will come" kept. Posting it
+           is then refused until it is changed. */
+        var refusal = await _access.DraftRefusalAsync(
+            userId, DraftOf(request),
+            id is { } storedId ? async () => DraftOf(await _receipts.GetAsync(storedId, cancellationToken)) : null,
+            cancellationToken);
+        if (refusal is not null)
+        {
+            return WarehouseAccess.Failure<GoodsReceiptDto>(refusal);
+        }
+
         int savedId;
         try
         {
@@ -125,7 +141,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         }
 
         _logger.LogInformation("Goods receipt {GoodsReceiptId} saved by user {UserId}", savedId, userId);
-        return await ReadAsync(savedId, cancellationToken);
+        return await ReadAsync(savedId, userId, cancellationToken);
     }
 
     public async Task<Result> DeleteAsync(
@@ -134,6 +150,12 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         if (!permissions.Contains(Permissions.Purchase.GoodsReceiptsDelete))
         {
             return ForbiddenResult(Permissions.Purchase.GoodsReceiptsDelete);
+        }
+
+        // (92) Deleting a draft needs every warehouse on it.
+        if (await StoredRefusalAsync(id, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure(refusal);
         }
 
         try
@@ -168,7 +190,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
 
         // Re-read: posting gives the number, writes the ledger and the costs, counts the order's received pieces and offloads the
         // container. The document is the server's answer, not a patch of what was sent.
-        return await ReadAsync(id, cancellationToken);
+        return await ReadAsync(id, userId, cancellationToken);
     }
 
     public async Task<Result<IReadOnlyList<BulkActionItemResult>>> PostManyAsync(
@@ -192,6 +214,12 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             return Forbidden<GoodsReceiptDto>(Permissions.Purchase.GoodsReceiptsCancel);
         }
 
+        // (92) Cancelling takes the received goods back out of every warehouse of the receipt.
+        if (await StoredRefusalAsync(id, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<GoodsReceiptDto>(refusal);
+        }
+
         try
         {
             await _receipts.CancelAsync(id, request.Reason.Trim(), ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -207,7 +235,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         }
 
         _logger.LogInformation("Goods receipt {GoodsReceiptId} cancelled by user {UserId}", id, userId);
-        return await ReadAsync(id, cancellationToken);
+        return await ReadAsync(id, userId, cancellationToken);
     }
 
     /// <summary>
@@ -217,6 +245,14 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
     /// </summary>
     private async Task<Result<string?>> PostCoreAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken)
     {
+        /* (92) Posting puts the goods into every warehouse of the stored receipt (each line's warehouse is set when it is
+           saved): each must be the user's. Here, so the single post, "Post selected" (per receipt) and "Create and post"
+           (the draft is kept and says why it was not posted) all ask it; the ledger trigger refuses the same rows. */
+        if (await StoredRefusalAsync(id, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<string?>(refusal);
+        }
+
         string? number;
         try
         {
@@ -300,6 +336,14 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         }
 
         var given = request.Lines ?? [];
+
+        // (92) The warehouses the dialog names must be the user's, before anything is created.
+        if (await _access.RefusalAsync(userId, given.Select(l => l.WarehouseId).Append(request.WarehouseId),
+                cancellationToken: cancellationToken) is { } denied)
+        {
+            return WarehouseAccess.Failure<GoodsReceiptCreatedDto>(denied);
+        }
+
         var units = await _receipts.LineItemUnitsAsync(
             ReceivableLineTable.PurchaseDocumentLine, given.Select(l => l.PoLineId).ToList(), cancellationToken);
 
@@ -334,6 +378,14 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         }
 
         var given = request.Lines ?? [];
+
+        // (92) The warehouses the dialog names must be the user's, before anything is created.
+        if (await _access.RefusalAsync(userId, given.Select(l => l.WarehouseId).Append(request.WarehouseId),
+                cancellationToken: cancellationToken) is { } denied)
+        {
+            return WarehouseAccess.Failure<GoodsReceiptCreatedDto>(denied);
+        }
+
         var units = await _receipts.LineItemUnitsAsync(
             ReceivableLineTable.PurchaseDocumentLine, given.Select(l => l.InvoiceLineId).ToList(), cancellationToken);
 
@@ -368,6 +420,13 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         if (RefuseCreate(request.Post, permissions) is { } refusal)
         {
             return refusal;
+        }
+
+        /* (92) "Receive into", when the dialog names one, must be the user's. Naming none, the draft takes the container's
+           warehouse as it always has, and its posting answers for it ("Draft goods receipt created; it was not posted: ..."). */
+        if (await _access.RefusalAsync(userId, [request.WarehouseId], cancellationToken: cancellationToken) is { } denied)
+        {
+            return WarehouseAccess.Failure<GoodsReceiptCreatedDto>(denied);
         }
 
         var given = request.Lines ?? [];
@@ -566,7 +625,10 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        var read = await GetAsync(id, permissions, cancellationToken);
+        // The workbook needs no reader's answer (92): read without the warehouse access sentence.
+        var read = permissions.Contains(Permissions.Purchase.GoodsReceiptsView)
+            ? await ReadAsync(id, null, cancellationToken)
+            : Forbidden<GoodsReceiptDto>(Permissions.Purchase.GoodsReceiptsView);
         if (read.IsFailure || read.Value is null)
         {
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
@@ -785,13 +847,52 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
 
     /* ── the shared shapes ────────────────────────────────────────────────────────────────────── */
 
-    private async Task<Result<GoodsReceiptDto>> ReadAsync(int id, CancellationToken cancellationToken)
+    private async Task<Result<GoodsReceiptDto>> ReadAsync(int id, int? userId, CancellationToken cancellationToken)
     {
         var receipt = await _receipts.GetAsync(id, cancellationToken);
-        return receipt is null
-            ? Result<GoodsReceiptDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<GoodsReceiptDto>.Success(receipt);
+        if (receipt is null)
+        {
+            return Result<GoodsReceiptDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
+
+        // (92) Why this reader may not post, cancel or delete it (every warehouse of its lines and "Receive into"); null when they may.
+        if (userId is { } reader)
+        {
+            receipt.WarehouseAccessRefusal = await _access.RefusalAsync(reader, WarehousesOf(receipt), cancellationToken: cancellationToken);
+        }
+
+        return Result<GoodsReceiptDto>.Success(receipt);
     }
+
+    /// <summary>
+    /// (92) A draft request as the keep rule (A8) compares it: "Receive into" and each line's stock fields (its warehouse
+    /// "Receive into" when it names none; the pieces counted, its order / invoice / container line, "Nothing more will
+    /// come").
+    /// </summary>
+    private static WarehouseDraft DraftOf(GoodsReceiptSaveRequest request)
+        => new(request.WarehouseId, (request.Lines ?? [])
+            .Select(line => new WarehouseDraftLine(line.WarehouseId ?? request.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate, line.PoLineId, line.InvoiceLineId, line.ContainerLineId, line.CloseShort)))
+            .ToList());
+
+    /// <summary>(92) The stored receipt, the same way (null when it no longer exists: the save answers that).</summary>
+    private static WarehouseDraft? DraftOf(GoodsReceiptDto? receipt)
+        => receipt is null ? null : new(receipt.WarehouseId, receipt.Lines
+            .Select(line => new WarehouseDraftLine(line.WarehouseId ?? receipt.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate is { } expiry ? DateOnly.FromDateTime(expiry) : (DateOnly?)null,
+                 line.PoLineId, line.InvoiceLineId, line.ContainerLineId, line.CloseShort)))
+            .ToList());
+
+    /// <summary>(92) Every warehouse a stored receipt puts goods into: its lines' and "Receive into".</summary>
+    private static IEnumerable<int?> WarehousesOf(GoodsReceiptDto? receipt)
+        => receipt is null ? [] : receipt.Lines.Select(line => line.WarehouseId).Append(receipt.WarehouseId);
+
+    /// <summary>
+    /// (92) Whether the user may move stock in every warehouse of the stored receipt, read only for a restricted user (one
+    /// primary-key seek for the others). A receipt that does not exist is never refused here: the procedure answers it.
+    /// </summary>
+    private Task<string?> StoredRefusalAsync(int id, int userId, CancellationToken cancellationToken)
+        => _access.RefusalAsync(userId, async () => WarehousesOf(await _receipts.GetAsync(id, cancellationToken)), cancellationToken);
 
     private static Result<T> Failure<T>(BusinessRuleException exception)
     {
@@ -808,6 +909,8 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
     /// </summary>
     internal static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) The ledger trigger's refusal (or any other 50010): the user may not move stock in that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, WarehouseAccess.Code),
         SqlErrors.GoodsReceiptValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.GoodsReceiptConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.GoodsReceiptNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

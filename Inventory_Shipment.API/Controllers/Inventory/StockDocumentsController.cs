@@ -56,7 +56,7 @@ public sealed class StockDocumentsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<StockDocumentDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _documents.GetAsync(id, User.GetPermissions(), cancellationToken);
+        var result = await _documents.GetAsync(id, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

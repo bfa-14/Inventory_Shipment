@@ -93,6 +93,16 @@ destination stays below Min after the order; Item Definition's Minimum / Maximum
 levels below Min"); a warehouse with levels cannot become a parent, and deleting an item or a warehouse takes its levels
 (glossary, 1.4, 3.1, 3.3, 3.8, 4.9, 4.14, 5.1, 5.2, 5.4, 6.1, 8.2).*
 
+*Updated on 25 October 2026 for **warehouse access per user** (script 92, prompt 49): an administrator may limit a
+user to some warehouses (Users & Permissions › Users, the row's Warehouses action: All warehouses, or only the ticked
+ones, a ticked parent giving every warehouse under it), and the user then moves stock only there - posting,
+cancelling, reversing, receiving, dispatching and receiving transfers, setting stock levels, naming a warehouse on a
+draft - while every list, page, report and export stays the same for everyone; system administrators use every
+warehouse; one sentence, "You have no access to warehouse LKS-01: ask an administrator." (50010, HTTP 403), said on the
+disabled buttons and repeated by the database, whose stock ledger refuses any row a restricted user writes in another
+warehouse; nothing changes for anybody until an administrator restricts someone (glossary, 1.6, 3.8, 4.11, 4.15, 5.2,
+5.4, 7.3).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -211,6 +221,10 @@ Real job titles and the other roles in `security.Roles` are **(unsure, check the
 roles (Users & Permissions › Roles / Role Permissions). **Approvers are no longer taken from a role**: they are ticked
 per user in Settings › Purchase approval (see 4.3).
 
+Since script 92 a user may also be limited to some warehouses (Users & Permissions › Users, the row's Warehouses
+action): the roles say what a user may do, the warehouses where they may move stock. Every user keeps every warehouse
+until an administrator restricts them; system administrators always use every warehouse (see 4.15).
+
 ### 1.7 The people and tools on the project
 - **Bilal**: the developer I work with, and the one who talks to the business. He is on Ubuntu and uses VS Code with
   the Claude Code extension, which I call "VS Code Claude". Folders:
@@ -318,6 +332,8 @@ per user in Settings › Purchase approval (see 4.3).
 | **Send again / Withdraw** | Resend the request with new links / take the order back to draft. |
 | **Approval link (token)** | Personal, single use, valid N hours (default 72). Opening it never decides; the decision is one click on the page `/purchase-approval/:token`. |
 | **Email outbox / Email log** | `messaging.EmailOutbox`, a queue sent by a background worker; read it in Settings › Email log (Pending / Sent / Failed). |
+| **Warehouse access (All warehouses / Only these warehouses)** | Script 92: where a user may MOVE stock - post, cancel, reverse, receive, dispatch, set stock levels, name a warehouse on a draft, delete a draft - never what they may see. Each user has **All warehouses** (every user before script 92, and every new user) or **Only these warehouses**, ticked in Users & Permissions › Users › Warehouses (`security.Users.AllWarehouses`, `security.UserWarehouses`); a ticked parent gives every warehouse under it, also those added later. A user with Only these warehouses who is not a system administrator is **restricted**; system administrators use every warehouse whatever is set; On the way warehouses are nobody's (a transfer is checked on its From and To). Refused with "You have no access to warehouse LKS-01: ask an administrator." (50010, HTTP 403). See 4.15. |
+| **Not one of your warehouses** | Script 92: the mark of a warehouse a document already holds that the reader may not use (a draft an administrator prepared): "{warehouse} - not one of your warehouses" in its picker, "Not one of your warehouses" under it. Such a line may stay as it is or move to one of the reader's warehouses; while one is left there the reader may not post, cancel or delete the document (4.15). |
 | **Schema.sql** | `Inventory_Shipment.Repository/Database/Schema.sql`: every SQL script appended in order, re-applied at **every API start**. |
 | **Batch** | A group of prompt steps. Batch 8 = prompt 32, 9 = 33, 10 = 34/36, 11 = 37. |
 | **A / B steps** | A1, A2… run in the API project; B1, B2… in the Web project. |
@@ -542,6 +558,16 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 ### 3.8 Security
 - JWT sign-in: `POST api/auth/login`; the user "Admin" is the system administrator.
 - Users, Roles, Role Permissions, Permissions (code, name, module, description, SortOrder), Login audit.
+- **Warehouses per user** (script 92, 4.15): besides the permissions of their roles, each user has All warehouses
+  (`security.Users.AllWarehouses`, default 1: every user before script 92 and every new user) or only the warehouses
+  ticked for them (`security.UserWarehouses`; a ticked parent gives its whole tree, worked out at each check), with
+  the history of every change (`security.UserWarehouseAudit`). The rule is the database's
+  (`security.fn_User_CanUseWarehouse`, its sentence `security.fn_User_WarehouseRefusal`), asked at each check and
+  never cached: nothing about warehouses is in the token, and sign-in, refresh and `me` are unchanged, so a change
+  takes effect at the user's next action without signing out. The Users page has a "Warehouses" column and, on each
+  row, a Warehouses action that opens "Warehouses of {username}" (`GET` / `PUT api/users/{id}/warehouses`): reading
+  needs View users (`security.users.view`), saving Edit users (`security.users.edit`, the right that already assigns
+  roles; the action is hidden without it). No permission was added.
 - The administrator role holds every permission.
 - Permission codes I know:
   - Containers: `containers.movements.manage` (1410), `containers.charges.view/create/post/cancel` (1420–1450),
@@ -1408,6 +1434,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   now unused); goods receipts view, create, post; movements; documents; view and create charges; transfer orders view
   and approve (script 90, the Owner role too). New sensitive
   permissions (`settings.email.manage`, `purchase.approval.manage`) are administrator-only by default. **[Implemented]**
+- **Warehouses per user** (script 92): besides the permissions of their roles, a user may be limited to some
+  warehouses, where they may move stock (never what they may see); system administrators use every warehouse (4.15).
+  **[Implemented]**
 - **Secrets:** approval links never decide on GET; tokens never appear in logs or API responses; the SMTP password is
   never returned or logged. **[Implemented]**
 - **Concurrency:** RowVersion on documents: "This … was modified by another user. Reload the page and try again."
@@ -2107,6 +2136,203 @@ file is larger than 5 MB." / "The file has more than 20,000 rows: split it." / "
 columns: Item Code / Barcode, Warehouse, Min (pcs), Max (pcs). Download the template and copy your rows into it." / "The
 file has no rows." / "The file could not be read: open it in Excel, save it and try again."
 
+### 4.15 Warehouse access per user **[Implemented – script 92, prompt 49]**
+
+Until script 92 every user could move stock in every warehouse. The transfer stories asked that "the source warehouse
+is limited to the warehouses the user can access" and that the destination's people receive; a rule for transfers
+alone would have been easy to get round with an Inventory Out. So an administrator may now limit a user to some
+warehouses, for **every** document that moves stock: where they may **move** stock, never what they may **see**.
+Nothing changes for anybody until an administrator restricts someone.
+
+**Who may use which warehouse**
+1. **All warehouses or only these.** Each user has **All warehouses** (`security.Users.AllWarehouses`, on by default:
+   every user before script 92, and every new user) or **Only these warehouses**, the ones ticked for them in
+   "Warehouses of {username}" (rule 21). A ticked **parent gives every warehouse under it**, also those added under it
+   later: the tree is read at each check ("a parent is a group, not a place", 1.4; one tick for "everything in
+   Lubumbashi").
+2. **System administrators always use every warehouse** (a user holding an active system role: Admin), whatever is
+   stored: an administrator locked out of a warehouse could not fix its data. What is set for them applies if the
+   Admin role is taken away; their dialog says so.
+3. **On the way warehouses are nobody's** (4.13 rule 29): never ticked ("{code} is an On the way warehouse: it holds
+   goods travelling between warehouses and is never given to a user."), never refused - a transfer is checked on its
+   From and its To (rules 14-17).
+4. **"Only these warehouses" with none ticked** is allowed - an accountant who must never move stock: the user sees
+   everything and moves stock nowhere (the dialog warns, rule 21; their documents say "You have no warehouse to move
+   stock in: ask an administrator."). An inactive warehouse stays ticked (it may be reactivated), shown "(inactive)".
+5. **At once.** The database is asked at each check, nothing is cached and nothing is in the sign-in token: a change
+   takes effect at the user's next action, without signing out, also with two API processes on one database or after
+   an edit in SSMS.
+
+**What it limits: moving stock**
+6. A restricted user **posts, cancels or reverses** a document only when they may use every warehouse its stock moves
+   in (its lines' and its header's); **saves a draft** only with warehouses they may use, line by line (rule 8);
+   **deletes a draft** only when they may use every warehouse on it (the Lubumbashi Inventory Out an administrator
+   prepared is not theirs to throw away).
+7. **Viewing is never limited**: every list, page, print, export, the item card, Stock Valuation, Shortages, Stock
+   Levels, the Dashboard and every document's files stay the same for everyone. No list is filtered by default, but
+   the Transfer Orders list of a restricted user (rule 17), which they can undo.
+8. **A draft is judged line by line.** In a warehouse the user may use, anything goes. In one they may not use (a
+   draft an administrator prepared): a stored line may stay exactly as it is, or **move** to one of the user's
+   warehouses (then it is theirs to change); a line added there, changed there (item, unit, quantity, expiry date; a
+   purchase return's invoice line; a goods receipt's counted pieces, its order, invoice or container line, "Nothing
+   more will come") or dropped without being moved is refused with the sentence naming that warehouse. The header may
+   keep it, never be set to it. Prices, discounts and notes are not compared: they move no stock. Posting the draft is
+   refused while a line is left there; moving the last one out enables Save & Post at once.
+9. **Which documents.** Limited: Inventory In, Inventory Out and BIVAC Out; sales invoices and returns; purchase
+   returns; goods receipts (from a container, an order, an invoice, or without an order); transfer orders, their
+   dispatches and receipts (rules 14-17); stock levels (rule 18); the Cancel Offload of a container received before
+   goods receipts; and the Cancel of a supplier invoice posted before goods receipts that put its own stock in (not
+   shipped in containers), which takes that stock back out. **Not limited** (they move no stock): purchase orders and
+   their approval; supplier invoices (save, post, Create Invoice, from containers, Split by item, Link); containers,
+   movements and the completion of a Delivery; container charges and landed cost adjustments; supplier payments and
+   customer receipts; shortage plans and their purchase order; files; master data (but moving a warehouse to another
+   parent, rule 25); item definitions.
+10. **Drafts the system makes are not checked when they are made** - the draft goods receipts of a completed Delivery
+    (the logistics clerk who completes it is rarely the one who receives the goods), a return made from its invoice,
+    invoices made from an order or from containers - **whoever posts them is**. A warehouse the user names in a dialog
+    (Receive goods…, a typed line) is checked at once, before anything is created.
+11. **An invoice that receives its goods when it is posted** (the PINV type's "Affects on-hand", 3.7) is posted all
+    the same, and its goods receipt refused in the existing warning: "Invoice posted; the goods receipt was not: You
+    have no access to warehouse LKS-01: ask an administrator. Use Receive goods…". In its post confirmation an orange
+    alert says it first: "You may not use LKS-01: the invoice will be posted, but its goods receipt will be refused.
+    Someone who may use LKS-01 receives them with Receive goods…". Without that switch, "Receive the goods now" can be
+    ticked only when every line it would receive is in one of the user's warehouses; otherwise it stays, disabled and
+    unticked, with the sentence under it.
+12. **Imports.** In the Excel imports of Inventory In / Out, BIVAC Out, sales invoices and returns and purchase
+    returns, a row whose warehouse the user may not use is an **Error** with the sentence (a Warning's own text kept
+    after it), counted with the errors; saving refuses it all the same. A purchase order or supplier invoice file is
+    not judged. Import Sales, which saves and posts at once, is refused whole and leaves no draft. A transfer order's
+    lines are imported only by someone who may use its From. Stock levels: rule 18.
+
+**One sentence, said before the click**
+13. **The sentence**, written once in the database (`security.fn_User_WarehouseRefusal`), the codes sorted: "You have
+    no access to warehouse LKS-01: ask an administrator." / "You have no access to warehouses LKS-01 and LUB-01: ask
+    an administrator." / "… warehouses KLW-01, LKS-01 and LUB-01: …" / "… warehouses KLW-01, LKS-01, LUB-01 and 2
+    more: ask an administrator." Error **50010**, HTTP **403**, code `WAREHOUSE_ACCESS`, for every family, the
+    transfers and the stock levels. The screens show it on the disabled button first; the server repeats it if the
+    click comes anyway (someone changed the user's warehouses meanwhile). The lists' row and bulk actions (Post,
+    Cancel document, Delete) are answered per document, with the sentence.
+14. **The screens** (`docs/frontend-conventions.md`, "Warehouse access per user"):
+    - **pickers offer only the user's warehouses** - Inventory In / Out / BIVAC Out, sales, purchase returns, goods
+      receipts ("Receive into" and the lines) and Receive goods…, Import Sales' warehouse, a transfer's From, the
+      stock level dialog, Create transfer order…'s From; purchase orders and supplier invoices keep every warehouse. A
+      warehouse already on the document stays, marked "{warehouse} - not one of your warehouses", with "Not one of
+      your warehouses" under the select;
+    - **a new document starts where the user may move stock**: the page's usual branch when it holds one of their
+      warehouses, else the branch of their first one, new lines in their warehouse of that branch (the main one
+      first);
+    - **Save & Post** waits while a line (or the goods receipt's "Receive into") is in a warehouse the user may not
+      use: with the server's sentence while those are the stored draft's warehouses, else "Some lines are in a
+      warehouse that is not one of yours (marked - not one of your warehouses): change them, or ask an
+      administrator."; Save Draft stays. **Cancel** and **Delete** are disabled with the server's sentence for the
+      stored document;
+    - in Receive goods… on an order or an invoice, a line whose own warehouse is not the user's starts in their only
+      warehouse when they have exactly one, else empty; choosing it again is refused in the dialog, "Line 1
+      (TVS-APACHE-160): You have no access to warehouse LUB-01: ask an administrator.";
+    - Receive goods… on a container whose branch has warehouses but none of the user's says so in the sentence ("You
+      have no access to warehouses LUB-01 and LUB-02: ask an administrator."); "Create draft" still works with no
+      warehouse named ("Create draft names no warehouse: the draft takes the container's own, and someone who may use
+      it posts the receipt."), and "Create and post" waits with the sentence. (Asked of the server with no warehouse
+      named, "Create and post" makes the draft and answers "Draft goods receipt created; it was not posted: You have
+      no access to warehouse LUB-01: ask an administrator.")
+
+**Transfers** (4.13)
+15. **The order is the source's document** (numbered by From's branch): what the source does needs the **From** -
+    create, edit, delete, release, send for approval, withdraw, back to draft, import lines, Fill to Max and Add items
+    below Min (4.14), dispatch, change a dispatch's ETA, reverse a dispatch, Nothing more will be sent, cancel the
+    order, and "Approve & release" of a draft (a release). The **To** receives: receive (and write off what will not
+    arrive), reverse a receipt, create a return. **Dispatch and receive** needs both (one sentence naming both when
+    neither is the user's). **Save details** (Expected arrival, Reference, Notes) needs either. **Approving or
+    rejecting** a request someone sent needs neither: the supervisor is often at head office.
+16. Save refuses a From the editor may not use before a number is taken; **the To of a new order may be any
+    warehouse**. "Create transfer order…" on Stock Levels is refused the same way, with nothing created and no number
+    used. Every button keeps reading the order's abilities (`inventory.fn_TransferOrder_Blocks`, 4.13): the access
+    reason comes before every status reason (a user who may not use the warehouse can do nothing about the order's
+    state). The From picker offers the user's warehouses only (the order's own From kept, marked), the To every
+    warehouse.
+17. **The Transfer Orders list** gives a restricted user a "Warehouses" filter: "From or to my warehouses" (the
+    default) / "From my warehouses" / "To my warehouses" / "All warehouses"; emptied by it alone it says "No transfer
+    order from or to your warehouses. Choose All warehouses under Warehouses to see every order." A user with every
+    warehouse sees no filter and the list as before. **The menu count** beside Inventory › Transfer Orders is the
+    orders waiting for the user's approval (4.13) plus, for a restricted user holding Receive Transfers, the released
+    orders with goods on the way to their warehouses; it is asked for a user holding Approve Transfer Orders or
+    Receive Transfers.
+
+**Stock levels** (4.14)
+18. Everyone who may view stock levels sees every warehouse's. **Setting, removing or importing a warehouse's Min /
+    Max needs that warehouse**: refused with the sentence (one sentence for every such warehouse of the request); in
+    the import such a row is an Error with the sentence and is skipped. On Stock Levels and Item Definition's "Stock
+    levels per warehouse" card the rows stay, their Set level… / Add level… / Remove level (the card's pencil and
+    trash) disabled with the sentence; the levels dialog offers the user's warehouses only. Fill to Max and Add items
+    below Min follow the order's From (rule 15).
+
+**No way round**
+19. **The stock ledger refuses it too.** A trigger on `inventory.StockMovements`
+    (`inventory.TR_StockMovements_WarehouseAccess`) refuses any stock row a restricted user writes into or out of a
+    warehouse that is not theirs, whatever wrote it: a posting, a cancel, a reversal, an import, a bulk action, the
+    receipt an invoice makes when it is posted, a family added later. The screens and the API's early checks only say
+    it sooner. For a user with every warehouse it costs one primary-key read per stock statement (measured within
+    noise); it never makes a posting wait for a change to another user. A trigger disabled by hand is enabled again at
+    the next start.
+20. **Every writer stamps the acting user** (7.3): the trigger trusts the row's `CreatedBy`; a row without a user is
+    never refused, and script 92's Check counts such rows among the newest (expected 0).
+
+**Changing a user's warehouses**
+21. **"Warehouses of {username}"** (the teal warehouse icon on the user's row, with Edit users; no new permission):
+    "Where {name} may move stock: post, cancel and delete documents, receive goods, dispatch and receive transfers,
+    set stock levels. Every document stays visible to them."; the switch "All warehouses" ("Every warehouse, including
+    those added later."); off, "Search warehouses" and every warehouse in a tree by branch, each a tick -
+    "(inactive)", a parent "(and the warehouses under it)", the warehouses under a ticked parent ticked and disabled
+    "through {code}"; "{n} ticked: {name} may use {m} warehouses." (the warehouses at the bottom of the tree the ticks
+    give, inactive ones included); none ticked: "No warehouse ticked: {name} will not be able to move stock
+    anywhere."; a system administrator: "{name} is a system administrator: system administrators use every warehouse,
+    whatever is set here. This setting applies if the Admin role is taken away."; the History; after Save, "Warehouses
+    of {username} saved." A ticked warehouse under another ticked one is dropped (the parent covers it). No row
+    version: the last save wins, and the history shows both. Refused (50011, 400): "Choose All warehouses, or tick the
+    warehouses this user may use." / "Warehouse #{id} was not found: reload the page and try again." / the On the way
+    sentence of rule 3.
+22. **The Users list** has a "Warehouses" column after Roles: "All", "All (administrator)", up to three codes then
+    "+{n}", or "None" (with an orange warning sign).
+23. **Every change is kept** (`security.UserWarehouseAudit`): who, when, before → after in words - "All warehouses" →
+    "Only: LKS-01, LUB", "Only: none"; two equal saves write one row. The dialog shows the 100 newest; none yet: "No
+    change yet: {name} has always used every warehouse."
+24. **Deleting a warehouse** (only an unused one can be: a tick is not use) takes its ticks with it, and each user who
+    had it gets a history row "Only: LKS-01 (LKS-02 deleted)" ("Only: none (LKS-02 deleted)" when it was their only
+    one). A deactivated warehouse stays ticked.
+25. **Moving a warehouse to another parent** changes who may use it (a ticked parent gives its whole tree). When it
+    changes the warehouses of a restricted user, only an editor who may use every warehouse and holds Edit users may
+    move it - else 50010 (403) "Moving LKS-01 to another parent changes the warehouses 2 users may use (Users &
+    Permissions › Users › Warehouses): ask an administrator." - so a restricted user can never give himself a
+    warehouse by moving it under one of his; each user concerned gets a history row "Only: LUB (LKS-01 moved under
+    LUB)" / "Only: LUB (LKS-01 moved out of LUB)". A user who ticked the warehouse itself keeps it wherever it stands;
+    a move that changes nobody's warehouses is free.
+
+**Errors (block 50xxx, security)**
+
+| No. | Meaning | HTTP |
+|---|---|---|
+| 50010 (new) | the user may not use that warehouse: every family, the stock ledger, transfers, stock levels, a warehouse move (code `WAREHOUSE_ACCESS`) | 403 |
+| 50011 (new) | the Warehouses dialog was refused (rule 21); script 92's guard | 400 |
+| 50003 | "User not found." (the dialog) | 404 |
+| 62000 | the transfer list's filter: "Unknown warehouse filter: choose any, from or to." | 400 |
+
+A missing permission is the usual 403 "Forbidden".
+
+**Changed from the design, and why**
+- **A draft is judged line by line** (rule 8), not by warehouse: kept by warehouse, an administrator's line could be
+  changed or dropped by someone who may not use its warehouse; a line may still move out to the user's warehouse, so
+  an administrator's draft is corrected without a dead end.
+- **Moving a warehouse** (rule 25) was not in the design: a restricted user who may edit warehouses could have given
+  himself one by moving it under his own, and others' access changed without history.
+- **The Cancel of a supplier invoice posted before goods receipts** (rule 9) is limited: it takes its own stock back
+  out, like a return.
+
+**What does not change:** sign-in, refresh, `me` and the token; every permission and grant (none added); the stock,
+sales, purchase, goods receipt, container and movement procedures (their bodies, messages and numbers: the ledger
+trigger is the only thing under them); every list, report, export, print and Dashboard figure; purchase orders,
+supplier invoices, approvals, containers, movements, charges, payments and receipts; costs. For a user with All
+warehouses every page and answer stays as it was.
+
 ---
 
 ## 5. The prompts so far
@@ -2131,9 +2357,9 @@ masterdata-branches, 05 masterdata-warehouses, 06 mantine-migration, 07 dev-star
 masterdata-parties, 16 frontend-enhancements-1, 17 sales-invoice-import, 18 inventory-stock-in, 19
 inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventory-docs, 23 document-engine, 24
 sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
-28–31 have no file there; prompts 32–48 were given outside the repositories (5.2 and section 4 say what they asked).
+28–31 have no file there; prompts 32–49 were given outside the repositories (5.2 and section 4 say what they asked).
 
-### 5.2 Prompts 32–48
+### 5.2 Prompts 32–49
 
 | Prompt | Title / what it does | Status |
 |---|---|---|
@@ -2154,6 +2380,7 @@ sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-type
 | **46** | Container capacity from one place, the item's Container unit; Max Units removed | Done: script 54; capacity from the item's Container unit only, Max Units gone from the screens |
 | **47** | Inventory transfer orders (script 90): Inventory › Transfer Orders, a dispatch (TRD) and a transfer receipt (TRR) through each branch's On the way warehouse, cost-neutral; losses, Nothing more will be sent, Cancel order, Reverse (receipt first), Dispatch and receive, returns, Late, the TRO approval switch and its emails, Transfers in on Shortages, the dispatch note (A1, A2, B1) | Done: 4.13 |
 | **48** | Stock levels per warehouse and Fill to Max (script 91): each warehouse's own Min / Max per item on Item Definition's "Stock levels per warehouse" card and on Inventory › Stock Levels (Per warehouse, and Company (Item Definition): the company Minimum / Maximum Quantity), the Excel import and export, Projected from released transfer orders, "Fill to Max…" and "Add items below Min…" on a draft transfer order, "Create transfer order…" from ticked rows, Min / Max / Projected at {To} on the order's lines, the Dashboard's "Warehouse levels below Min" and its "Items below their minimum" opening the company view (A1, A2, B1) | Done: 4.14 |
+| **49** | Warehouse access per user (script 92): All warehouses or only the ticked ones (a parent gives its tree; system administrators use every warehouse), set in Users & Permissions › Users › "Warehouses of {username}" with its history and the Users list's Warehouses column; it limits moving stock in every family (post, cancel, reverse, a draft line by line, delete, imports, goods receipts, transfers by From / To, stock levels), never viewing; one sentence, 50010 / 403, said on the disabled buttons, the pickers offering the reader's warehouses only; the ledger trigger under every posting; the Transfer Orders list's Warehouses filter and the menu's "to receive" count (A1, A2, B1) | Done: 4.15 |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -2234,6 +2461,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `89_Fixes_CostsCancelsShortageDocumentTypes.sql` | Fixes: `logistics.usp_ContainerCharge_ApplyCost` (from 27) and `purchase.usp_LandedCostAdjustment_Post` (from 79) split a late charge on the company's stock, per item, as GRNCOST (a cancel never takes more out of stock than its posting put in); `inventory.usp_StockDocument_Cancel` (from 15) reverses only its own type and, like `sales.usp_SalesDocument_Cancel` (from 84), replays its items under the matching lock (the items of documents cancelled before replayed once, `inventory.OneTimeSteps`); `inventory.usp_ShortageDocument_CreatePurchaseOrder` (from 22): a plan for a parent warehouse puts each line in a leaf of its tree, in one transaction (66000 when there is none); the five per-start seeds of Document Types narrowed to types nobody saved; script 19's per-start backfill of item costs no longer counts a posting that was reversed (edited in place, like the seeds); the two cancels give way in a deadlock (`DEADLOCK_PRIORITY LOW`: the API runs them again, a posting has no retry) |
 | `90_Inventory_TransferOrders.sql` | Transfer orders, dispatch and receipt, with approval (prompt 47): new tables `inventory.TransferOrders`, `TransferOrderLines`, `TransferPostings`, `TransferPostingLines`, `TransferOrderAudit`, `TransferOrderFiles`; `masterdata.Warehouses.IsTransit` and one On the way warehouse per branch (`masterdata.usp_Warehouse_EnsureTransit`, run at each start for every branch that has none, and by a new branch); document types TRO, TRD, TRR and `inventory.DocumentTypes.NeedsApproval`; stock reason TRF_LOSS (inactive); `inventory.fn_TransferPosition`, `fn_TransferOrder_State` (the shown status, Late), `fn_TransferOrder_Blocks` (an action's refusal in the order's state, every disabled reason), `fn_TransferPosting_ReverseBlock`, `fn_Transfer_MovedOutNote`; the procedures of the order, its approval (`usp_TransferOrder_Approvers`), dispatch, receipt, Dispatch and receive, Nothing more will be sent, cancel, reverse, ETA, return and files; ten permissions `inventory.transfers.*` (855-890) granted once; re-created: the warehouse, branch and item procedures (the On the way rules), `masterdata.fn_Warehouse_IsLeaf` / `_IsUsed`, `inventory.usp_DocumentType_List` / `_Update`, `usp_Item_RebuildCosts` (incoming transfer legs at the running average), `usp_Item_StockStatement`, `fn_Shortage_Live` and the three shortage procedures (Transfers in; `ShortageDocumentLines.TransfersInBase`, its four formula columns re-added), `purchase.fn_GoodsReceipt_CancelCheck` and `inventory.usp_StockDocument_Cancel` (the refusal names the transfer). Script 19's per-start backfill of item costs no longer counts transfer rows (edited in place, as 89 did) |
 | `91_Inventory_StockLevels_FillToMax.sql` | Stock levels per warehouse and Fill to Max (prompt 48): new tables `inventory.ItemWarehouseLevels` (an item's Min / Max in a warehouse at the bottom of the tree, at most 1,000,000,000 pcs, owned by the item and the warehouse: two cascading keys) and `inventory.ItemWarehouseLevelAudit`; four frozen table types (`tvp_ItemWarehouseLevel`, `tvp_ItemWarehouseLevelImport`, `tvp_TransferFillItem`, `tvp_TransferFillCandidate`); `inventory.fn_StockLevelState` (Projected, the status, To reach Max: the one formula), `fn_TransferPositions` (what released transfer orders bring to and take from every warehouse, every pair at once), `fn_StockPosition` (one pair, on 90's `fn_TransferPosition`), `fn_TransferFill_Plan` (the Fill to Max rule), `fn_TransferFill_Message`, `fn_TransferFill_FromWarning`, `fn_TransferFill_OtherOrdersWarning`, `fn_ItemWarehouseLevel_ImportJudge` (the import's judgement, read by the check and the import), `masterdata.fn_Warehouse_IsUsedInTransactions` (90's `fn_Warehouse_IsUsed` body, moved); the procedures `inventory.usp_StockLevel_Search` / `_CompanySearch`, `usp_ItemWarehouseLevel_Set` / `_Remove` / `_History` / `_ImportCheck` / `_Import`, `usp_TransferOrder_FillToMax` (preview and apply, Fill and Add) / `_BelowMinCandidates` / `_CreateFromLevels` (through 90's `usp_TransferOrder_Save`), `reporting.usp_Dashboard_StockLevels`; the permissions `inventory.stocklevels.view` / `.edit` (432, 434) granted once; re-created: `masterdata.fn_Warehouse_IsUsed` (+ stock levels), `inventory.fn_TransferOrder_Blocks` (+ FillToMax, AddBelowMin), `masterdata.usp_Warehouse_Create` / `_Update` (the levels sentence of 52000) and `_Lookup` (+ `IsUsedInTransactions`, `HasStockLevels`), `inventory.usp_Item_Delete` (from 11: the cascading keys are not references; + `@UserId` and a "Removed" history row per level), `inventory.usp_TransferOrder_Get` and `_Availability` (from 90: + To's and From's levels and Projected; Get also the two abilities). `reporting.usp_Dashboard_Summary` and `masterdata.usp_Warehouse_Delete` are not changed |
+| `92_Security_WarehouseAccess.sql` | Warehouse access per user (prompt 49): new column `security.Users.AllWarehouses` (default 1: every existing and new user keeps every warehouse, no data step); new tables `security.UserWarehouses` (the ticks, both keys cascading: a tick never stops a warehouse's delete) and `security.UserWarehouseAudit`; the rule in five functions, `security.fn_User_IsUnrestricted` (All warehouses or an active system role), `fn_User_CanUseWarehouse` (a ticked ancestor gives the warehouse; On the way warehouses never refused), `fn_User_Warehouses`, `fn_User_WarehouseRefusal` (THE sentence, 50010), `fn_User_WarehouseAccessText` (the history's words); the ledger trigger `inventory.TR_StockMovements_WarehouseAccess` (AFTER INSERT; it reads only the users who wrote the rows; disabled by hand, it is enabled again at the next start); new `security.usp_User_WarehouseRefusal` (the API's early check), `usp_User_Warehouses_Get` / `_SetWarehouses` (the dialog, 50011), `usp_User_WarehouseSummaries` (the Users list), `inventory.usp_TransferOrder_ToReceiveCount` (the menu); re-created: `masterdata.usp_Warehouse_Lookup` (from 91: + `@UserId`, `CanUse`), `usp_Warehouse_Delete` (from 90: the history of the users who ticked it), `usp_Warehouse_Update` (from 91: a move to another parent that changes users' warehouses needs an unrestricted editor with `security.users.edit`, and writes their history), `inventory.fn_TransferOrder_Blocks` (from 91: the access rows, From / To), `usp_TransferOrder_Save` (from 90: the From), `usp_TransferOrder_Search` (from 90: + `@UserId`, `@Mine`), `usp_ItemWarehouseLevel_Set` / `_Remove` / `_ImportCheck` / `_Import` (from 91: the level's warehouse). No stock, sales, purchase, goods receipt, container or movement procedure is re-created, and `security.usp_User_GetAccess` (sign-in) is not changed; no permission added |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -2252,14 +2480,15 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 ## 6. What's next
 
 ### 6.1 What's next (19 October 2026; the developer decides)
-Every written prompt (32–48) is built, and so is every script up to the last one in 5.4. What is left:
+Every written prompt (32–49) is built, and so is every script up to the last one in 5.4. What is left:
 1. **Release the scripts after 72 to production** (production runs up to 72): on testing first (the Deploy to
    server button, or `sudo ./update.sh`; `copy-production-to-testing.sh` to rehearse on production's data), then a
    pull request `main` → `production` in both repositories, and the button with production. Script 77 changes data
    once (closed orders back to approved); script 90 adds an On the way warehouse to every branch, the TRO / TRD / TRR
    document types and the ten transfer permissions with their one-time grants (3.8); script 91 adds the two stock
    level permissions with theirs - after it the owner ticks Edit Stock Levels (Role Permissions) for the roles of the
-   people who keep the levels; `update.sh` backs the database up first.
+   people who keep the levels; script 92 adds warehouse access per user, every user keeping all warehouses until an
+   administrator ticks some (Users & Permissions › Users › Warehouses); `update.sh` backs the database up first.
 2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
 3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
    `enable-github-deploy.sh` on the server and its secrets in both repositories.
@@ -2402,6 +2631,10 @@ Every written prompt (32–48) is built, and so is every script up to the last o
   - `THROW` with the module's error numbers and plain-English messages that say what to do.
   - A data step that must run once per database records itself in `inventory.OneTimeSteps` (script 89); never use a
     procedure body as a marker: Schema.sql re-creates the older bodies first at every start.
+  - **The ledger writer rule** (script 92): every INSERT into `inventory.StockMovements` stamps `CreatedBy` with the
+    acting `@UserId`, never a value copied from another row, and never uses OUTPUT without INTO. The warehouse access
+    trigger trusts `CreatedBy` (a row without a user is never refused), and on a table with a trigger an OUTPUT without
+    INTO fails with error 334 when the procedure is created, which would stop Schema.sql at start-up.
 - **`Schema.sql`** is re-applied at every API start and stops at the first error. So:
   - never edit an older script;
   - keep older batches compilable;
@@ -2415,6 +2648,8 @@ Every written prompt (32–48) is built, and so is every script up to the last o
     invoiced, 69018 cost adjusted);
   - 70xxx logistics (70000 validation, 70001 duplicate, 70004 concurrency, 70005 not editable, 70006 not found, 70010
     invalid status, 70012 container busy, 70013 allocation data missing, 70014 in use, 70015 / 70016 place rules);
+  - 50xxx security (50003 user not found; script 92: 50010 no access to a warehouse, answered 403 with the code
+    `WAREHOUSE_ACCESS` whatever the family, and 50011 the Warehouses dialog, 400);
   - Ali's ranges for sales **(unknown)**.
   - HTTP: validation → 400, not found → 404, the rest → 409.
 - **Permissions:** code `module.entity.action` with Name, Module, Description and SortOrder. Seeded to the system
@@ -2675,7 +2910,7 @@ every step that did not behave as described.
 - **Files delivered outside the repos:**
   - `Containers_User_Guide.docx`;
   - `Movement_Containers_Import_Template.xlsx` (now in the Web project's `public/templates/`);
-  - prompt files 32–48: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
+  - prompt files 32–49: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
     section 4.
 
 ### 8.3 Security rules to keep

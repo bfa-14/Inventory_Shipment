@@ -173,6 +173,12 @@ public sealed class TransferOrderQuery
     public DateOnly? DateTo { get; init; }
     public int? ItemId { get; init; }
 
+    /// <summary>
+    /// (92) The "Warehouses" filter of a restricted reader: any (From or To is one of the reader's warehouses), from, to;
+    /// empty = no filter. A reader with All warehouses is never filtered by it. Anything else is refused (62000).
+    /// </summary>
+    public string? Mine { get; init; }
+
     /// <summary>DocumentNumber | DocumentDate | FromWarehouse | ToWarehouse | Status | OrderedBase | OnTheWayBase | ExpectedArrival | CreatedAtUtc.</summary>
     public string? SortColumn { get; init; }
 
@@ -189,6 +195,12 @@ public sealed class TransferOrderQuery
 public sealed class TransferWaitingDto
 {
     public int WaitingForApproval { get; init; }
+
+    /// <summary>
+    /// (92) The released orders with goods on the way to one of the reader's warehouses: 0 for a reader with All
+    /// warehouses and for one who may not receive (inventory.transfers.receive). The menu shows the sum of both counts.
+    /// </summary>
+    public int ToReceive { get; init; }
 }
 
 /* ── where From and To stand ──────────────────────────────────────────────────────────────────── */

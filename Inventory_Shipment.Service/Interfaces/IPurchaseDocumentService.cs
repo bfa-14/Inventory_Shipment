@@ -17,8 +17,9 @@ public interface IPurchaseDocumentService
     Task<Result<PagedResult<PurchaseDocumentListDto>>> SearchAsync(
         PurchaseDocumentQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>(92) <paramref name="userId"/>: the reader, for a purchase return's WarehouseAccessRefusal.</summary>
     Task<Result<PurchaseDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     Task<Result<PurchaseDocumentDto>> SaveDraftAsync(
         int? id, SavePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,

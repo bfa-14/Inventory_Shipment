@@ -24,9 +24,12 @@ public interface IWarehouseRepository
     /// <paramref name="includeId"/> keeps one extra warehouse in the list even when it is inactive.
     /// (90) The "On the way" warehouses of transfer orders are left out unless <paramref name="includeTransit"/> (Stock
     /// Valuation's filter) or one of them is the <paramref name="includeId"/>.
+    /// (92) <paramref name="userId"/>: the reader, for each row's CanUse (may they move stock there); null = CanUse on
+    /// every warehouse but the On the way ones.
     /// </summary>
     Task<IReadOnlyList<Warehouse>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default);
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, int? userId = null,
+        CancellationToken cancellationToken = default);
 
     /// <summary>masterdata.usp_Warehouse_Create - returns the new id. Throws 52000-52002 / 52005 / 52007.</summary>
     Task<int> CreateAsync(Warehouse warehouse, bool replaceMainWarehouse, int? userId, CancellationToken cancellationToken = default);
@@ -40,6 +43,9 @@ public interface IWarehouseRepository
     /// <summary>masterdata.usp_Warehouse_SetActive - throws 52005 (main warehouse) / 52006 / 52007.</summary>
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);
 
-    /// <summary>masterdata.usp_Warehouse_Delete - throws 52003 (referenced) / 52005 (main warehouse) / 52006.</summary>
-    Task DeleteAsync(int id, CancellationToken cancellationToken = default);
+    /// <summary>
+    /// masterdata.usp_Warehouse_Delete - throws 52003 (referenced) / 52005 (main warehouse) / 52006. (92)
+    /// <paramref name="userId"/>: who deletes it, written in the history of each user who had it ticked.
+    /// </summary>
+    Task DeleteAsync(int id, int? userId = null, CancellationToken cancellationToken = default);
 }

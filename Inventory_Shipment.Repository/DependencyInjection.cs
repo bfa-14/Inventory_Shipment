@@ -19,6 +19,7 @@ public static class DependencyInjection
         services.TryAddSingleton<IDatabaseInitializer, DatabaseInitializer>();
 
         services.TryAddScoped<IUserRepository, UserRepository>();
+        services.TryAddScoped<IUserWarehouseRepository, UserWarehouseRepository>();
         services.TryAddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.TryAddScoped<ILoginAuditRepository, LoginAuditRepository>();
         services.TryAddScoped<IRoleRepository, RoleRepository>();

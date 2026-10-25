@@ -381,6 +381,13 @@ public sealed class SalesInvoiceDto
     public IReadOnlyList<SalesInvoiceLineDto> Lines { get; init; } = [];
     public IReadOnlyList<SalesInvoiceFileDto> Files { get; init; } = [];
     public IReadOnlyList<SalesInvoiceAuditDto> Audit { get; init; } = [];
+
+    /// <summary>
+    /// (92) Why the reader may not post, cancel or delete this document: the server's sentence ("You have no access to
+    /// warehouse LKS-01: ask an administrator."), worked out for the reader from the document's line and header
+    /// warehouses at each read. Null when they may - always for a reader with All warehouses.
+    /// </summary>
+    public string? WarehouseAccessRefusal { get; set; }
 }
 
 /// <summary>Make the sales return of a posted invoice.</summary>

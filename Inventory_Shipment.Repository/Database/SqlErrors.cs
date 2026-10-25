@@ -21,6 +21,17 @@ public static class SqlErrors
     public const int SystemRoleDelete = 50005;
     public const int RoleStillAssigned = 50006;
 
+    /// <summary>
+    /// (92) The user may not move stock in that warehouse: every family (the ledger trigger, the early checks of the
+    /// services), transfers (fn_TransferOrder_Blocks, Save) and stock levels. One sentence, written once in SQL
+    /// (security.fn_User_WarehouseRefusal): "You have no access to warehouse LKS-01: ask an administrator." 403
+    /// WAREHOUSE_ACCESS. In the security block, so it arrives wrapped as a SecurityRuleException (a BusinessRuleException).
+    /// </summary>
+    public const int WarehouseAccessDenied = 50010;
+
+    /// <summary>(92) The Warehouses dialog of a user was refused (no choice made, a warehouse not found or On the way); the guard of script 92.</summary>
+    public const int UserWarehousesValidation = 50011;
+
     // ----- 51xxx: master data -----
     public const int Validation = 51000;
     public const int BranchDuplicateCode = 51001;

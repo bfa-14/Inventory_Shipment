@@ -47,7 +47,7 @@ public sealed class PurchaseDocumentsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PurchaseDocumentDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _documents.GetAsync(id, User.GetPermissions(), cancellationToken);
+        var result = await _documents.GetAsync(id, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

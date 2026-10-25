@@ -52,6 +52,12 @@ public class Warehouse
     /// </summary>
     public bool IsTransit { get; set; }
 
+    /// <summary>
+    /// (92) The reader may move stock here (lookup only, worked out per request for the caller): All warehouses, a system
+    /// administrator, or the warehouse or one of its parents ticked. Never true on an On the way warehouse.
+    /// </summary>
+    public bool CanUse { get; set; } = true;
+
     /// <summary>Out-of-stock sales: true allows, false disallows, null follows the global setting.</summary>
     public bool? AllowOutOfStockOverride { get; set; }
     public bool IsActive { get; set; } = true;

@@ -140,14 +140,23 @@ public sealed class WarehouseRepository : IWarehouseRepository
     }
 
     public async Task<IReadOnlyList<Warehouse>> LookupAsync(
-        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, CancellationToken cancellationToken = default)
+        bool activeOnly, int? branchId, int? includeId, bool includeTransit = false, int? userId = null,
+        CancellationToken cancellationToken = default)
     {
+        var parameters = new DynamicParameters(
+            new { ActiveOnly = activeOnly, BranchId = branchId, IncludeId = includeId, IncludeTransit = includeTransit });
+
+        // (92) The reader, for each row's CanUse; without one the procedure answers CanUse on every non-transit row.
+        if (userId is { } reader)
+        {
+            parameters.Add("@UserId", reader, DbType.Int32);
+        }
+
         await using var connection = _connectionFactory.Create();
         try
         {
             var rows = await connection.QueryAsync<Warehouse>(new CommandDefinition(
-                "masterdata.usp_Warehouse_Lookup",
-                new { ActiveOnly = activeOnly, BranchId = branchId, IncludeId = includeId, IncludeTransit = includeTransit },
+                "masterdata.usp_Warehouse_Lookup", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             return rows.AsList();
         }
@@ -236,13 +245,21 @@ public sealed class WarehouseRepository : IWarehouseRepository
         }
     }
 
-    public async Task DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(int id, int? userId = null, CancellationToken cancellationToken = default)
     {
+        var parameters = new DynamicParameters(new { Id = id });
+
+        // (92) Who deletes it: the history row of each user who had it ticked says so.
+        if (userId is { } deletedBy)
+        {
+            parameters.Add("@UserId", deletedBy, DbType.Int32);
+        }
+
         await using var connection = _connectionFactory.Create();
         try
         {
             await connection.ExecuteAsync(new CommandDefinition(
-                "masterdata.usp_Warehouse_Delete", new { Id = id },
+                "masterdata.usp_Warehouse_Delete", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

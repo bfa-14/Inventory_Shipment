@@ -24,6 +24,8 @@ public static class DependencyInjection
 
         services.TryAddScoped<IAuthService, AuthService>();
         services.TryAddScoped<IUserService, UserService>();
+        // (92) Warehouse access per user: the early check of every family that moves stock (no cache, M8).
+        services.TryAddScoped<IWarehouseAccessService, WarehouseAccessService>();
         services.TryAddScoped<IRoleService, RoleService>();
         services.TryAddScoped<IPermissionService, PermissionService>();
         services.TryAddScoped<ILoginAuditService, LoginAuditService>();

@@ -77,7 +77,7 @@ public sealed class GoodsReceiptsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<GoodsReceiptDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _receipts.GetAsync(id, User.GetPermissions(), cancellationToken);
+        var result = await _receipts.GetAsync(id, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

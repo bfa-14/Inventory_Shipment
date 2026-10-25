@@ -703,6 +703,15 @@ public sealed class PurchaseDocumentDto
     /// received goods adjusted, and the goods receipt of "Receive the goods now". Set after the document is read back.
     /// </summary>
     public PurchasePostResultDto? PostResult { get; set; }
+
+    /// <summary>
+    /// (92) Why the reader may not post, cancel or delete this document: the server's sentence ("You have no access to
+    /// warehouse LKS-01: ask an administrator."), worked out for the reader at each read - on a purchase return from its
+    /// line and header warehouses; on a supplier invoice posted before goods receipts (its Cancel takes its own stock back
+    /// out) from its lines' warehouses, for its Cancel. Null on orders and every other invoice (not limited), and when
+    /// the reader may - always for a reader with All warehouses.
+    /// </summary>
+    public string? WarehouseAccessRefusal { get; set; }
 }
 
 /// <summary>A goods receipt of a purchase order or invoice (result set 9 of usp_PurchaseDocument_Get, script 65).</summary>

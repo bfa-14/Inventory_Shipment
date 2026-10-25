@@ -88,4 +88,12 @@ public sealed class WarehouseLookupDto
     /// lookup is asked for them (includeTransit, Stock Valuation's filter) or when it is the includeId.
     /// </summary>
     public bool IsTransit { get; init; }
+
+    /// <summary>
+    /// (92) The caller may move stock in this warehouse (post, cancel, receive, dispatch, set its stock levels): worked
+    /// out for the reader at each request, so a change of their warehouses shows at once. False on an On the way
+    /// warehouse; true everywhere else for a reader with All warehouses. Pickers of documents that move stock offer only
+    /// these; viewing is never limited.
+    /// </summary>
+    public bool CanUse { get; init; } = true;
 }

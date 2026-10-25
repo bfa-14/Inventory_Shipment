@@ -11,6 +11,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,15 +24,17 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
     private readonly IPurchaseDocumentRepository _documents;
     private readonly IPurchaseApprovalMailer _approvalMailer;
+    private readonly IWarehouseAccessService _access;
     private readonly PurchaseOptions _options;
     private readonly ILogger<PurchaseDocumentService> _logger;
 
     public PurchaseDocumentService(
-        IPurchaseDocumentRepository documents, IPurchaseApprovalMailer approvalMailer, IOptions<PurchaseOptions> options,
-        ILogger<PurchaseDocumentService> logger)
+        IPurchaseDocumentRepository documents, IPurchaseApprovalMailer approvalMailer, IWarehouseAccessService access,
+        IOptions<PurchaseOptions> options, ILogger<PurchaseDocumentService> logger)
     {
         _documents = documents;
         _approvalMailer = approvalMailer;
+        _access = access;
         _options = options.Value;
         _logger = logger;
     }
@@ -126,7 +129,11 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     }
 
     public async Task<Result<PurchaseDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => await WithAccessAsync(await GetCoreAsync(id, permissions, cancellationToken), userId, cancellationToken);
+
+    private async Task<Result<PurchaseDocumentDto>> GetCoreAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
     {
         var document = await _documents.GetAsync(id, cancellationToken);
         if (document is null)
@@ -175,6 +182,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Forbidden<PurchaseDocumentDto>(set.Create);
         }
 
+        var isReturn = set == Returns;
         if (id is { } existingId)
         {
             // The kind of an existing draft is the kind of the request, or the procedure refuses it; the
@@ -184,6 +192,23 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             if (allowed.IsFailure)
             {
                 return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
+            }
+
+            isReturn |= IsReturn(allowed.Value?.DocumentTypeCode);
+        }
+
+        /* (92) A PURCHASE RETURN TAKES STOCK OUT: a warehouse its editor names must be theirs; a line already on the
+           stored draft in one that is not may stay as it is or move to one of theirs (A8) - nothing added, changed or
+           dropped there. Orders and supplier invoices move no stock and are not limited (A6). */
+        if (isReturn)
+        {
+            var refusal = await _access.DraftRefusalAsync(
+                userId, DraftOf(request),
+                id is { } storedId ? async () => DraftOf(await _documents.GetAsync(storedId, cancellationToken)) : null,
+                cancellationToken);
+            if (refusal is not null)
+            {
+                return WarehouseAccess.Failure<PurchaseDocumentDto>(refusal);
             }
         }
 
@@ -199,7 +224,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         _logger.LogInformation("{Kind} {DocumentId} saved by user {UserId}", set.Label, savedId, userId);
 
-        return await ReadAsync(savedId, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(savedId, cancellationToken), userId, cancellationToken);
     }
 
     public Task<Result<PurchaseDocumentDto>> PostAsync(
@@ -228,6 +253,14 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         }
 
         var typeCode = PurchaseDocumentTypes.Normalize(allowed.Value?.DocumentTypeCode);
+
+        // (92) Posting a return takes its stock out of every warehouse of its lines: each must be the user's. An invoice is
+        // posted whoever posts it; the goods receipt its posting may make is refused by the ledger trigger, as its warning.
+        if (await StoredReturnRefusalAsync(id, typeCode, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<PurchaseDocumentDto>(refusal);
+        }
+
         var receiveNow = request.ReceiveNow && typeCode == PurchaseDocumentTypes.Invoice;
         if (receiveNow && GoodsReceiptRights.FirstOrDefault(right => !permissions.Contains(right)) is { } missing)
         {
@@ -256,7 +289,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         // Re-read: posting assigns the number, may complete the order's invoicing and adjust received goods. The document is the
         // server's answer, with what the posting did beside it.
-        var posted = await ReadAsync(id, cancellationToken);
+        var posted = await WithAccessAsync(await ReadAsync(id, cancellationToken), userId, cancellationToken);
         if (posted.Value is { } document)
         {
             document.PostResult = PostResult(document, outcome, receiveNow);
@@ -399,6 +432,13 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
         }
 
+        // (92) Cancelling a return puts its stock back in every warehouse of its lines; cancelling an invoice posted before
+        // goods receipts takes its own stock back out of them (usp_PurchaseDocument_Cancel reverses its ledger rows).
+        if (await StoredCancelRefusalAsync(id, allowed.Value?.DocumentTypeCode, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<PurchaseDocumentDto>(refusal);
+        }
+
         return await ChangeAsync(id, cancellationToken,
             version => _documents.CancelAsync(id, request.Reason, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled");
@@ -475,6 +515,12 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
         }
 
+        // (92) Deleting a return draft needs every warehouse on it.
+        if (await StoredReturnRefusalAsync(id, allowed.Value?.DocumentTypeCode, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure(refusal);
+        }
+
         try
         {
             await _documents.DeleteAsync(id, userId, cancellationToken);
@@ -499,7 +545,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result<PurchaseDocumentDto>.Failure(created.ErrorType, created.Error ?? string.Empty, created.Code ?? "ERROR");
         }
 
-        return await ReadAsync(created.Value.NewId, cancellationToken);
+        // (92) A return made from its invoice is not checked when made (W5); its answer says whether this reader may post it.
+        return await WithAccessAsync(await ReadAsync(created.Value.NewId, cancellationToken), userId, cancellationToken);
     }
 
     /// <summary>
@@ -1025,7 +1072,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        var read = await GetAsync(id, permissions, cancellationToken);
+        var read = await GetCoreAsync(id, permissions, cancellationToken);
         if (read.IsFailure || read.Value is null)
         {
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
@@ -1238,7 +1285,90 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         // Re-read: posting assigns the number, writes the ledger and the costs, moves the status and
         // may change how far its order is invoiced. The document is the server's answer, not a patch of what was sent.
-        return await ReadAsync(id, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(id, cancellationToken), userId, cancellationToken);
+    }
+
+    /* ── (92) warehouse access: purchase returns only ─────────────────────────────────────────── */
+
+    private static bool IsReturn(string? documentTypeCode)
+        => PurchaseDocumentTypes.Normalize(documentTypeCode) == PurchaseDocumentTypes.Return;
+
+    /// <summary>Every warehouse a stored document moves stock in: its lines' and its header's.</summary>
+    private static IEnumerable<int?> WarehousesOf(PurchaseDocumentDto? document)
+        => document is null ? [] : document.Lines.Select(line => (int?)line.WarehouseId).Append(document.WarehouseId);
+
+    /// <summary>
+    /// (92) A return request as the keep rule (A8) compares it: its header warehouse and each line's stock fields (its
+    /// warehouse the header's when it names none, and its invoice line).
+    /// </summary>
+    private static WarehouseDraft DraftOf(SavePurchaseDocumentRequest request)
+        => new(request.WarehouseId, (request.Lines ?? [])
+            .Select(line => new WarehouseDraftLine(line.WarehouseId ?? request.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate, line.SourceLineId)))
+            .ToList());
+
+    /// <summary>(92) The stored return, the same way (null when it no longer exists: the save answers that).</summary>
+    private static WarehouseDraft? DraftOf(PurchaseDocumentDto? document)
+        => document is null ? null : new(document.WarehouseId, document.Lines
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate is { } expiry ? DateOnly.FromDateTime(expiry) : (DateOnly?)null, line.SourceLineId)))
+            .ToList());
+
+    /// <summary>
+    /// For a purchase return, whether the user may move stock in every warehouse of the stored document (read only for a
+    /// restricted user); null for every other kind, which is not limited (A6).
+    /// </summary>
+    private Task<string?> StoredReturnRefusalAsync(int id, string? documentTypeCode, int userId, CancellationToken cancellationToken)
+        => IsReturn(documentTypeCode)
+            ? _access.RefusalAsync(userId, async () => WarehousesOf(await _documents.GetAsync(id, cancellationToken)), cancellationToken)
+            : Task.FromResult<string?>(null);
+
+    /// <summary>
+    /// (92) A SUPPLIER INVOICE POSTED BEFORE GOODS RECEIPTS with its own stock (UsesGoodsReceipts off, not shipped in
+    /// containers): its Cancel reverses the ledger rows its posting wrote, in its lines' warehouses
+    /// (usp_PurchaseDocument_Cancel, @OldStock), so it is the one invoice whose Cancel is limited like a return's. Every
+    /// other invoice moves no stock when it is cancelled (A6).
+    /// </summary>
+    private static bool CancelMovesStock(PurchaseDocumentDto document)
+        => PurchaseDocumentTypes.Normalize(document.DocumentTypeCode) == PurchaseDocumentTypes.Invoice
+        && document.Status == PurchaseDocumentStatus.Posted
+        && !document.UsesGoodsReceipts
+        && document.ReceiptMode == PurchaseReceiptModes.OnPosting;
+
+    /// <summary>(92) The warehouses such an invoice's Cancel takes stock out of: its lines'.</summary>
+    private static IEnumerable<int?> CancelWarehousesOf(PurchaseDocumentDto document)
+        => document.Lines.Select(line => (int?)line.WarehouseId);
+
+    /// <summary>
+    /// (92) Whether the user may cancel the stored document: a return as for its posting; an invoice posted before goods
+    /// receipts by its lines' warehouses (read only for a restricted user); null for every other kind.
+    /// </summary>
+    private Task<string?> StoredCancelRefusalAsync(int id, string? documentTypeCode, int userId, CancellationToken cancellationToken)
+        => PurchaseDocumentTypes.Normalize(documentTypeCode) == PurchaseDocumentTypes.Invoice
+            ? _access.RefusalAsync(userId, async () =>
+                await _documents.GetAsync(id, cancellationToken) is { } invoice && CancelMovesStock(invoice)
+                    ? CancelWarehousesOf(invoice)
+                    : Enumerable.Empty<int?>(), cancellationToken)
+            : StoredReturnRefusalAsync(id, documentTypeCode, userId, cancellationToken);
+
+    /// <summary>
+    /// The document as this reader receives it: a purchase return carries the sentence that says why they may not post,
+    /// cancel or delete it (no keep rule), null when they may; an invoice posted before goods receipts why they may not
+    /// cancel it; other orders and invoices always null, with no database call.
+    /// </summary>
+    private async Task<Result<PurchaseDocumentDto>> WithAccessAsync(
+        Result<PurchaseDocumentDto> read, int userId, CancellationToken cancellationToken)
+    {
+        if (read.Value is { } document && IsReturn(document.DocumentTypeCode))
+        {
+            document.WarehouseAccessRefusal = await _access.RefusalAsync(userId, WarehousesOf(document), cancellationToken: cancellationToken);
+        }
+        else if (read.Value is { } invoice && CancelMovesStock(invoice))
+        {
+            invoice.WarehouseAccessRefusal = await _access.RefusalAsync(userId, CancelWarehousesOf(invoice), cancellationToken: cancellationToken);
+        }
+
+        return read;
     }
 
     private static Result<T> Failure<T>(BusinessRuleException exception)
@@ -1254,6 +1384,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// </summary>
     internal static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) The ledger trigger's refusal (or any other 50010): the user may not move stock in that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, WarehouseAccess.Code),
         SqlErrors.PurchaseDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.PurchaseDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.PurchaseDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

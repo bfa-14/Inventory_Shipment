@@ -10,6 +10,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Excel;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -64,6 +65,7 @@ public sealed partial class TransferOrderService : ITransferOrderService
     private readonly IInvoiceImportRepository _imports;
     private readonly InvoiceImportParser _parser;
     private readonly ITransferApprovalMailer _mailer;
+    private readonly IWarehouseAccessService _access;
     private readonly SalesOptions _salesOptions;
     private readonly ILogger<TransferOrderService> _logger;
 
@@ -73,6 +75,7 @@ public sealed partial class TransferOrderService : ITransferOrderService
         IInvoiceImportRepository imports,
         InvoiceImportParser parser,
         ITransferApprovalMailer mailer,
+        IWarehouseAccessService access,
         IOptions<SalesOptions> salesOptions,
         ILogger<TransferOrderService> logger)
     {
@@ -81,6 +84,7 @@ public sealed partial class TransferOrderService : ITransferOrderService
         _imports = imports;
         _parser = parser;
         _mailer = mailer;
+        _access = access;
         _salesOptions = salesOptions.Value;
         _logger = logger;
     }
@@ -88,7 +92,7 @@ public sealed partial class TransferOrderService : ITransferOrderService
     /* ── reading ──────────────────────────────────────────────────────────────────────────────── */
 
     public async Task<Result<TransferOrderListResult>> SearchAsync(
-        TransferOrderQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        TransferOrderQuery query, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Inventory.TransfersView))
         {
@@ -97,7 +101,7 @@ public sealed partial class TransferOrderService : ITransferOrderService
 
         try
         {
-            var (items, totalCount, totals) = await _transfers.SearchAsync(query, cancellationToken);
+            var (items, totalCount, totals) = await _transfers.SearchAsync(query, userId, cancellationToken);
             return Result<TransferOrderListResult>.Success(new TransferOrderListResult
             {
                 Items = items,
@@ -113,7 +117,11 @@ public sealed partial class TransferOrderService : ITransferOrderService
         }
     }
 
-    /// <summary>The approvers' menu count. A reader who may not approve gets 0: the count is the approvers' to-do list.</summary>
+    /// <summary>
+    /// The menu count. A reader who may not approve gets 0 waiting for approval: that part is the approvers' to-do list.
+    /// (92) A reader who may receive gets the transfers on the way to their own warehouses beside it (0 for a reader with
+    /// All warehouses: the count is for once users have their own warehouses, FB section 6).
+    /// </summary>
     public async Task<Result<TransferWaitingDto>> WaitingAsync(
         int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
@@ -125,7 +133,10 @@ public sealed partial class TransferOrderService : ITransferOrderService
         var count = permissions.Contains(Permissions.Inventory.TransfersApprove)
             ? await _transfers.WaitingCountAsync(userId, cancellationToken)
             : 0;
-        return Result<TransferWaitingDto>.Success(new TransferWaitingDto { WaitingForApproval = count });
+        var toReceive = permissions.Contains(Permissions.Inventory.TransfersReceive)
+            ? await _transfers.ToReceiveCountAsync(userId, cancellationToken)
+            : 0;
+        return Result<TransferWaitingDto>.Success(new TransferWaitingDto { WaitingForApproval = count, ToReceive = toReceive });
     }
 
     public async Task<Result<IReadOnlyList<TransferAvailabilityDto>>> AvailabilityAsync(
@@ -757,7 +768,7 @@ public sealed partial class TransferOrderService : ITransferOrderService
     /// Unit Price / Cost (a transfer moves no cost). Nothing is saved: the page appends the usable rows to its draft.
     /// </summary>
     public async Task<Result<ImportValidationResult>> ValidateImportAsync(
-        Stream file, string fileName, long fileLength, int? fromWarehouseId, IReadOnlySet<string> permissions,
+        Stream file, string fileName, long fileLength, int? fromWarehouseId, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)
     {
         if (!permissions.Contains(Permissions.Inventory.TransfersCreate))
@@ -805,6 +816,12 @@ public sealed partial class TransferOrderService : ITransferOrderService
         if (from is null)
         {
             return Result<ImportValidationResult>.Failure(ErrorType.Validation, "The warehouse was not found.", "VALIDATION");
+        }
+
+        // (92) The order is the source's document: its lines are imported only by someone who may use the From (A9).
+        if (await _access.RefusalAsync(userId, [from.Id], cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<ImportValidationResult>(refusal);
         }
 
         // A transfer's own refusals, before the database: the row keeps its number and says what to leave empty.
@@ -1137,6 +1154,8 @@ public sealed partial class TransferOrderService : ITransferOrderService
     /// </summary>
     internal static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) fn_TransferOrder_Blocks' access rows, Save's From and the ledger trigger: the user may not use that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, Security.WarehouseAccess.Code),
         SqlErrors.StockDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.StockDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.StockDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

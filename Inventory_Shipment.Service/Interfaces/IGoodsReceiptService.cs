@@ -21,7 +21,8 @@ public interface IGoodsReceiptService
     /// <summary>When goods receipts started: the date of the purchase invoice list's banner (no permission: a date).</summary>
     Task<GoodsReceiptSwitchDto> SwitchAsync(CancellationToken cancellationToken = default);
 
-    Task<Result<GoodsReceiptDto>> GetAsync(int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+    /// <summary>(92) <paramref name="userId"/>: the reader, for the receipt's WarehouseAccessRefusal.</summary>
+    Task<Result<GoodsReceiptDto>> GetAsync(int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>Creates (id null) or saves a draft, of any source.</summary>
     Task<Result<GoodsReceiptDto>> SaveDraftAsync(
