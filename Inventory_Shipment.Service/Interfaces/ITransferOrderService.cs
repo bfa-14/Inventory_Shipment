@@ -150,4 +150,22 @@ public interface ITransferOrderService
     Task<Result<CreateTransferFromLevelsResult>> CreateFromLevelsAsync(
         CreateTransferFromLevelsRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
+
+    /* ── (93) batch, serial and expiry on transfers ───────────────────────────────────────────── */
+
+    /// <summary>
+    /// The dialog's Done: every problem of the dispatch as typed (errors of the whole dispatch; warnings of
+    /// <paramref name="forLineId"/> only when given), 200 even when there are errors. Dispatch Transfers.
+    /// </summary>
+    Task<Result<CheckDispatchTrackingResult>> CheckDispatchTrackingAsync(
+        int id, DispatchTransferRequest request, int? forLineId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>The tracking rows of one dispatch or receipt of the order, with their state; 404 for a posting of another order.</summary>
+    Task<Result<IReadOnlyList<TransferTrackingRowDto>>> PostingTrackingAsync(
+        int id, int postingId, bool onTheWayOnly, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>"Known at {From}…": the serials received into the order's From by transfers and not sent since (serial items).</summary>
+    Task<Result<TransferTrackingSuggestionsDto>> TrackingSuggestionsAsync(
+        int id, int transferOrderLineId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 }

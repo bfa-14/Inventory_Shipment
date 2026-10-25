@@ -55,6 +55,14 @@ public interface IItemRepository
     /// <summary>inventory.usp_Item_SetNotes (script 87) - the note and the link; throws 56000.</summary>
     Task SetNotesAsync(int id, string? note, string? link, int? userId, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (93) inventory.usp_Item_SetTracking - Tracking, Requires expiry date and Serial no. length, written after create /
+    /// update like the note (only when one of them changes); throws 56000 (the rules) and 56006 (no such item).
+    /// </summary>
+    Task SetTrackingAsync(
+        int id, Model.Enums.TrackingMode trackingMode, bool requiresExpiry, int? serialLength, int? userId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_Item_SetActive - throws 56006.</summary>
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);
 

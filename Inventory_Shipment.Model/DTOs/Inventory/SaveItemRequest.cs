@@ -75,6 +75,21 @@ public sealed class SaveItemRequest
     [StringLength(500)]
     public string? Link { get; init; }
 
+    /// <summary>
+    /// (93) "None" | "Batch" | "Serial" (checked by the service: "Tracking must be None, Batch or Serial."). Null: None on
+    /// a new item, and on an update the tracking is left as it is - with <see cref="RequiresExpiry"/> and
+    /// <see cref="SerialLength"/> - so a client that does not know these fields changes nothing.
+    /// </summary>
+    [StringLength(20)]
+    public string? TrackingMode { get; init; }
+
+    /// <summary>(93) Null = false when <see cref="TrackingMode"/> is given.</summary>
+    public bool? RequiresExpiry { get; init; }
+
+    /// <summary>(93) Serial items only: every serial no. has exactly this many characters. Null = any length.</summary>
+    [Range(1, 50)]
+    public int? SerialLength { get; init; }
+
     /// <summary>Base64 ROWVERSION read with the item (update only). Null skips the concurrency check.</summary>
     public string? RowVersion { get; init; }
 }

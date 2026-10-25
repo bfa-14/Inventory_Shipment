@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using Inventory_Shipment.Model.Enums;
 
 namespace Inventory_Shipment.Model.DTOs.Inventory.Transfers;
 
@@ -129,6 +130,12 @@ public sealed class TransferOrderListItemDto
     public string? ReturnOfNumber { get; init; }
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
+
+    /// <summary>
+    /// (93) With the "Batch or serial no." filter only: what happened to the order's latest matching number,
+    /// "MD626AE1XR1T00005: received into LUB-01 (TRR-BR-002-000007)" + " and {n} more"; null without the filter.
+    /// </summary>
+    public string? MatchedTracking { get; init; }
 }
 
 /// <summary>The list's summary row, over EVERY order of the filter, not only the page (result 2).</summary>
@@ -178,6 +185,13 @@ public sealed class TransferOrderQuery
     /// empty = no filter. A reader with All warehouses is never filtered by it. Anything else is refused (62000).
     /// </summary>
     public string? Mine { get; init; }
+
+    /// <summary>
+    /// (93) "Batch or serial no.": the orders whose dispatches or receipts hold a number CONTAINING this text, 3
+    /// characters or more (the database trims and capitalises it, and refuses fewer with 62000). Empty = no filter.
+    /// </summary>
+    [StringLength(100)]
+    public string? TrackingNo { get; init; }
 
     /// <summary>DocumentNumber | DocumentDate | FromWarehouse | ToWarehouse | Status | OrderedBase | OnTheWayBase | ExpectedArrival | CreatedAtUtc.</summary>
     public string? SortColumn { get; init; }
@@ -411,6 +425,16 @@ public sealed class TransferOrderLineDto
 
     /// <summary>From goes below its own Min with this order (orange; red wins).</summary>
     public bool FromBelowMinAfter { get; init; }
+
+    /* (93) The item's tracking NOW (Item Definition), and what Dispatch… asks for the line: Serial | Batch | Expiry |
+       null. A dispatch line keeps the kind it left with (TransferPostingLineDto.TrackingKind), whatever this says later. */
+    public TrackingMode TrackingMode { get; init; }
+    public bool RequiresExpiry { get; init; }
+
+    /// <summary>(93) Serial items: the exact length of a serial no. (17 for a TVS chassis no.); null = any length.</summary>
+    public int? SerialLength { get; init; }
+
+    public TrackingKind? TrackingKind { get; init; }
 }
 
 /// <summary>The On the way warehouse a dispatch put its goods in: "OTW-BR-002 - On the way to BR-002 (transfers)".</summary>
@@ -471,6 +495,15 @@ public sealed record TransferPostingLineDto
 
     /// <summary>The average a loss was written off at. Null without the value permission, or without a loss.</summary>
     public decimal? LossUnitCostBase { get; init; }
+
+    /// <summary>
+    /// (93) Serial | Batch | Expiry when the line carries tracking rows (a dispatch line: what it left with; a receipt
+    /// line: its dispatch line's), null otherwise. Its rows are read by GET …/postings/{postingId}/tracking (B18).
+    /// </summary>
+    public TrackingKind? TrackingKind { get; init; }
+
+    /// <summary>(93) How many tracking rows the line holds: "20 serial nos.", "2 batches", "1 expiry date".</summary>
+    public int TrackingCount { get; init; }
 }
 
 /// <summary>A dispatch (TRD) or a transfer receipt (TRR) of the order, with its own Reverse and Change ETA answers.</summary>
@@ -703,6 +736,12 @@ public sealed class DispatchTransferLineRequest
 
     /// <summary>Pieces leaving From; lines at 0 are ignored by the procedure.</summary>
     public int QuantityBase { get; init; }
+
+    /// <summary>
+    /// (93) The line's serial nos., batches or expiry dates when its item is tracked (required then, B3); none (or [])
+    /// for an untracked line. Sent in this order: a row's place in the list is its RowNumber.
+    /// </summary>
+    public IReadOnlyList<TransferDispatchTrackingRequest>? Tracking { get; init; }
 }
 
 /// <summary>A dispatch, or "Dispatch and receive" (its <see cref="Eta"/> is then ignored: the goods arrive the same date).</summary>
@@ -736,6 +775,13 @@ public sealed class ReceiveTransferLineRequest
 
     [StringLength(300)]
     public string? LossNote { get; init; }
+
+    /// <summary>
+    /// (93) A dispatch line that left with tracking rows: one entry per row that arrived or was lost (a row left out is
+    /// still coming). The line's <see cref="ReceivedBase"/> is then the rows' sum (the service sets it), its
+    /// <see cref="NothingMoreWillArrive"/> is not read, and <see cref="LossReasonCode"/> covers its lost pieces.
+    /// </summary>
+    public IReadOnlyList<TransferReceiptTrackingRequest>? Tracking { get; init; }
 }
 
 public sealed class ReceiveTransferRequest

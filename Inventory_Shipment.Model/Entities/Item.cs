@@ -89,6 +89,15 @@ public class Item
     /// <summary>An http(s) web address, e.g. the maker's product page (script 87).</summary>
     public string? Link { get; set; }
 
+    /// <summary>(93) None, Batch numbers or Serial numbers: asked on transfer dispatches (usp_Item_SetTracking).</summary>
+    public Enums.TrackingMode TrackingMode { get; set; }
+
+    /// <summary>(93) Each dispatch gives the expiry date of its pieces: per batch, per serial no., or per group of pieces.</summary>
+    public bool RequiresExpiry { get; set; }
+
+    /// <summary>(93) Serial items: the exact length of every serial no. (17 = a TVS chassis no.); null = any length.</summary>
+    public int? SerialLength { get; set; }
+
     public DateTime CreatedAtUtc { get; set; }
     public int? CreatedBy { get; set; }
     public string? CreatedByName { get; set; }

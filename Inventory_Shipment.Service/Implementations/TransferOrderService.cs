@@ -488,7 +488,8 @@ public sealed partial class TransferOrderService : ITransferOrderService
             return bad;
         }
 
-        if (DuplicateDispatchLines(request) is { } refusal)
+        // (93) An empty tracking row ("tracking": [null]), then one line twice, then more than 10,000 tracking rows.
+        if ((EmptyDispatchRows<TransferPostedResult>(request) ?? DuplicateDispatchLines(request) ?? TooManyDispatchRows<TransferPostedResult>(request)) is { } refusal)
         {
             return refusal;
         }
@@ -527,12 +528,24 @@ public sealed partial class TransferOrderService : ITransferOrderService
             return bad;
         }
 
+        // (93) An empty tracking row ("tracking": [null]) before anything reads it.
+        if (EmptyReceiptRows(request) is { } emptyRow)
+        {
+            return emptyRow;
+        }
+
         // The type's key is the dispatch line: two rows for one line would break it, so the request is refused first.
         var lines = request.Lines ?? [];
         if (lines.GroupBy(l => l.DispatchLineId).Any(g => g.Count() > 1))
         {
             return Result<TransferPostedResult>.Failure(
                 ErrorType.Validation, "Each dispatch line may appear only once in a receipt.", "VALIDATION");
+        }
+
+        // (93) The tracking rows: at most 10,000, each dispatch row once (the receipt type's key).
+        if ((ReceiptTrackingRefusal(request) ?? await RowsUnderUntrackedLineAsync(id, request, userId, cancellationToken)) is { } trackingRefusal)
+        {
+            return trackingRefusal;
         }
 
         TransferPostedRefDto posted;
@@ -577,7 +590,8 @@ public sealed partial class TransferOrderService : ITransferOrderService
             return bad;
         }
 
-        if (DuplicateDispatchLines(request) is { } refusal)
+        // (93) An empty tracking row ("tracking": [null]), then one line twice, then more than 10,000 tracking rows.
+        if ((EmptyDispatchRows<TransferPostedResult>(request) ?? DuplicateDispatchLines(request) ?? TooManyDispatchRows<TransferPostedResult>(request)) is { } refusal)
         {
             return refusal;
         }
@@ -903,8 +917,10 @@ public sealed partial class TransferOrderService : ITransferOrderService
         }
 
         var withValues = permissions.Contains(ValuePermission);
+        // (93) The sheet "Batch, serial and expiry": the rows of each posting that carries any, read posting by posting.
+        var tracking = await TrackingForExportAsync(read.Value, cancellationToken);
         return Result<(byte[], string)>.Success(
-            (TransferOrderWorkbooks.BuildExport(read.Value, withValues), TransferOrderWorkbooks.ExportFileName(read.Value)));
+            (TransferOrderWorkbooks.BuildExport(read.Value, withValues, tracking), TransferOrderWorkbooks.ExportFileName(read.Value)));
     }
 
     /* ── files ────────────────────────────────────────────────────────────────────────────────── */
@@ -1171,6 +1187,9 @@ public sealed partial class TransferOrderService : ITransferOrderService
         SqlErrors.TransferNeedsApproval => new RuleFailure(ErrorType.Conflict, exception.Message, "NEEDS_APPROVAL"),
         SqlErrors.TransferNotApprover => new RuleFailure(ErrorType.Forbidden, exception.Message, "NOT_APPROVER"),
         SqlErrors.WarehouseSystemManaged => new RuleFailure(ErrorType.Conflict, exception.Message, "SYSTEM_WAREHOUSE"),
+        // (93) Batch, serial or expiry rows refused (the line, the row, what to do), and a serial no. already on the way.
+        SqlErrors.TransferTracking => new RuleFailure(ErrorType.Validation, exception.Message, TrackingCode),
+        SqlErrors.TransferSerialOnTheWay => new RuleFailure(ErrorType.Conflict, exception.Message, "SERIAL_ON_THE_WAY"),
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
     };
 

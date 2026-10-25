@@ -2,6 +2,7 @@ using System.Data;
 using Dapper;
 using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory.Transfers;
+using Inventory_Shipment.Model.Enums;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Interfaces;
 using Microsoft.Data.SqlClient;
@@ -77,6 +78,9 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         public string? CreatedByName { get; init; }
         public int TotalCount { get; init; }
 
+        /// <summary>(93) With @TrackingNo only.</summary>
+        public string? MatchedTracking { get; init; }
+
         public TransferOrderListItemDto ToDto()
         {
             var status = StatusCode ?? TransferOrderStatuses.Draft;
@@ -114,6 +118,7 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
                 ReturnOfNumber = ReturnOfNumber,
                 CreatedAtUtc = CreatedAtUtc,
                 CreatedByName = CreatedByName,
+                MatchedTracking = MatchedTracking,
             };
         }
     }
@@ -151,6 +156,13 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
             parameters.Add("@UserId", userId, DbType.Int32);
             parameters.Add("@Mine", MineFilters.FirstOrDefault(f => string.Equals(f, mine, StringComparison.OrdinalIgnoreCase)) ?? "?",
                 DbType.String, size: 4);
+        }
+
+        // (93) "Batch or serial no.": sent only when typed. The procedure trims and capitalises it with the dispatch's own
+        // rule and refuses fewer than 3 characters (62000), so the list and the dialog agree on what a number is.
+        if (Trimmed(query.TrackingNo) is { } trackingNo)
+        {
+            parameters.Add("@TrackingNo", trackingNo, DbType.String, size: 100);
         }
 
         await using var connection = _connectionFactory.Create();
@@ -382,6 +394,11 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         public string? DispatchNumber { get; init; }
         public decimal? UnitCostBase { get; init; }
         public decimal? LossUnitCostBase { get; init; }
+
+        /* (93) The kind the line left with (1 Batch, 2 Serial, 3 Expiry, NULL none) and how many tracking rows it holds:
+           only the count, never the rows (B18). */
+        public TrackingKind? TrackingKind { get; init; }
+        public int TrackingCount { get; init; }
     }
 
     /// <summary>Result set 6: a return of the order.</summary>
@@ -582,6 +599,8 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         DispatchNumber = l.DispatchNumber,
         UnitCostBase = l.UnitCostBase,
         LossUnitCostBase = l.LossUnitCostBase,
+        TrackingKind = l.TrackingKind,
+        TrackingCount = l.TrackingCount,
     };
 
     public async Task<bool> ExistsAsync(int id, CancellationToken cancellationToken = default)
@@ -717,6 +736,7 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         parameters.Add("@ReferenceNo", Trimmed(request.ReferenceNo), DbType.String, size: 100);
         parameters.Add("@Notes", Trimmed(request.Notes), DbType.String, size: 1000);
         parameters.Add("@Lines", ToReceiptLineTable(request.Lines).AsTableValuedParameter(ReceiptLineTypeName));
+        AddReceiptTracking(parameters, request.Lines);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@PostingId", dbType: DbType.Int32, direction: ParameterDirection.Output);
         parameters.Add("@DocumentNumber", dbType: DbType.String, size: 30, direction: ParameterDirection.Output);
@@ -916,6 +936,7 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         parameters.Add("@ReferenceNo", Trimmed(request.ReferenceNo), DbType.String, size: 100);
         parameters.Add("@Notes", Trimmed(request.Notes), DbType.String, size: 1000);
         parameters.Add("@Lines", ToDispatchLineTable(request.Lines).AsTableValuedParameter(DispatchLineTypeName));
+        AddDispatchTracking(parameters, request.Lines);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@PostingId", dbType: DbType.Int32, direction: ParameterDirection.Output);
         parameters.Add("@DocumentNumber", dbType: DbType.String, size: 30, direction: ParameterDirection.Output);
@@ -1034,7 +1055,7 @@ public sealed partial class TransferOrderRepository : ITransferOrderRepository
         {
             table.Rows.Add(
                 line.DispatchLineId,
-                line.ReceivedBase,
+                ReceivedBaseOf(line),
                 line.NothingMoreWillArrive,
                 (object?)TransferLossReasons.Normalize(line.LossReasonCode) ?? DBNull.Value,
                 (object?)Trimmed(line.LossNote) ?? DBNull.Value);

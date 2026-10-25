@@ -130,6 +130,13 @@ public sealed class ItemDetailsDto
     /// <summary>An http(s) web address the page opens in a new tab. Only the item's own Get returns it.</summary>
     public string? Link { get; init; }
 
+    /* (93) Tracking on transfers: None | Batch | Serial, whether each dispatch gives an expiry date, the exact length of a
+       serial no. (null = any), and what a dispatch asks for (Serial | Batch | Expiry | null). Only the item's own Get. */
+    public Enums.TrackingMode TrackingMode { get; init; }
+    public bool RequiresExpiry { get; init; }
+    public int? SerialLength { get; init; }
+    public Enums.TrackingKind? TrackingKind { get; init; }
+
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }

@@ -173,6 +173,15 @@ public static class SqlErrors
     /// <summary>(90) Approve or reject by a user without Approve Transfer Orders (403 NOT_APPROVER).</summary>
     public const int TransferNotApprover = 62015;
 
+    /// <summary>
+    /// (93) A dispatch's or receipt's batch, serial or expiry rows are missing, incomplete or invalid; the message names the
+    /// line, the row and what to do (400 TRANSFER_TRACKING).
+    /// </summary>
+    public const int TransferTracking = 62016;
+
+    /// <summary>(93) A serial no. already on the way with a posted dispatch: receive it, or reverse that dispatch (409 SERIAL_ON_THE_WAY).</summary>
+    public const int TransferSerialOnTheWay = 62017;
+
     // ----- 63xxx: purchase - goods receipts (scripts 64 and 65) -----
     // HTTP: 400 for what the request got wrong (63000, 63009, 63011, 63012), 404 for 63006, 409 for the state of
     // the world (the others).

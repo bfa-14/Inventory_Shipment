@@ -103,6 +103,16 @@ disabled buttons and repeated by the database, whose stock ledger refuses any ro
 warehouse; nothing changes for anybody until an administrator restricts someone (glossary, 1.6, 3.8, 4.11, 4.15, 5.2,
 5.4, 7.3).*
 
+*Updated on 25 October 2026 for **batch, serial and expiry on transfers** (script 93, prompt 50): Item Definition says
+how an item is tracked (Tracking None / Batch numbers / Serial numbers, Requires expiry date, a Serial no. length such
+as 17 for a TVS chassis no.), and a transfer dispatch then asks, line by line in its own dialog ("Serial nos.…",
+"Batches…", "Expiry dates…"), which pieces leave - one serial no. per piece, scanned or pasted, or batch / expiry rows
+adding up to the pieces - and is refused until every tracked line is complete; a serial no. is never on the way twice;
+the receipt says, serial by serial or row by row, what arrived, is still coming or is lost; the rows stay on the posting
+for good (shown on the order, printed on the dispatch note, exported, found from the list by "Batch or serial no."); the
+stock ledger carries the expiry date; no cost and no stock figure moves; nothing changes for an item until someone ticks
+its Tracking (glossary, 3.3, 3.8, 3.10, 4.16, 5.2, 5.4, 6.1, 6.3, 8.5; `docs/notes/costing-rules.md`, "Transfers").*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -334,6 +344,9 @@ until an administrator restricts them; system administrators always use every wa
 | **Email outbox / Email log** | `messaging.EmailOutbox`, a queue sent by a background worker; read it in Settings › Email log (Pending / Sent / Failed). |
 | **Warehouse access (All warehouses / Only these warehouses)** | Script 92: where a user may MOVE stock - post, cancel, reverse, receive, dispatch, set stock levels, name a warehouse on a draft, delete a draft - never what they may see. Each user has **All warehouses** (every user before script 92, and every new user) or **Only these warehouses**, ticked in Users & Permissions › Users › Warehouses (`security.Users.AllWarehouses`, `security.UserWarehouses`); a ticked parent gives every warehouse under it, also those added later. A user with Only these warehouses who is not a system administrator is **restricted**; system administrators use every warehouse whatever is set; On the way warehouses are nobody's (a transfer is checked on its From and To). Refused with "You have no access to warehouse LKS-01: ask an administrator." (50010, HTTP 403). See 4.15. |
 | **Not one of your warehouses** | Script 92: the mark of a warehouse a document already holds that the reader may not use (a draft an administrator prepared): "{warehouse} - not one of your warehouses" in its picker, "Not one of your warehouses" under it. Such a line may stay as it is or move to one of the reader's warehouses; while one is left there the reader may not post, cancel or delete the document (4.15). |
+| **Tracking (item)** | Script 93, Item Definition › Inventory Parameters (`inventory.Items.TrackingMode` 0 None / 1 Batch numbers / 2 Serial numbers, `RequiresExpiry`, `SerialLength`): how the pieces of an item are told apart when they leave on a **transfer dispatch** - and only there: goods receipts, sales and Inventory In / Out do not ask. Three **kinds**, worked out from the two fields and never stored on the item: **Serial** (Serial numbers: one serial no. per piece), **Batch** (Batch numbers: rows of batch no., expiry and pcs), **Expiry** (None + Requires expiry date: rows of expiry and pcs); None without an expiry = untracked, as every item before script 93. "+ expiry" on a serial or batch item means each serial or batch also gives its date. A change applies to the next dispatches; goods on the way keep the kind they left with (4.16). Shown as a badge on the item's header and under a transfer line's Item Name ("Serial nos.", "Batches", "Expiry dates", "… + expiry"). |
+| **Serial no.** | A number that names ONE piece (a TVS chassis no., 17 characters): letters, digits, `.` `/` `-`, no spaces, at most 50 characters, kept in capitals, exactly the item's Serial no. length when it has one. Typed on a dispatch of a serial item, one per piece (scanned into the dialog's box, pasted as a list, or ticked from "Known at {From}": the serials transfers received into the source and did not send since). Once in a dispatch and **never on the way twice** (62017); received, still coming or lost one by one. What transfers know of a number's earlier place gives warnings ("last received into LUB-01 … not into LKS-01", "written off as lost"), never refusals: no other module records serials yet (4.16). |
+| **Batch no.** | A lot number shared by many pieces: letters, digits, spaces, `.` `/` `_` `#` `-`, at most 50 characters, capitals. A dispatch of a batch item gives rows of batch no., expiry date (required when the item requires it) and pcs adding up to the line, one row per batch; a receipt says what arrived of each row. **Expiry rows** (an item of kind Expiry) are the same without the batch no., one row per date. The stock ledger then carries the expiry date on each leg (`StockMovements.ExpiryDate`, one row per leg and date) - information: no stock per batch or expiry is kept, no FEFO, no alert (4.16). |
 | **Schema.sql** | `Inventory_Shipment.Repository/Database/Schema.sql`: every SQL script appended in order, re-applied at **every API start**. |
 | **Batch** | A group of prompt steps. Batch 8 = prompt 32, 9 = 33, 10 = 34/36, 11 = 37. |
 | **A / B steps** | A1, A2… run in the API project; B1, B2… in the Web project. |
@@ -383,7 +396,10 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   **Container unit**), weight (kg) and volume (CBM), which charge allocation by weight or volume needs. The item also
   shows average cost, last cost and FOB cost (last and FOB from the latest goods receipt, after its cost adjustments).
   Its Inventory Parameters hold the company's Minimum / Maximum Quantity (glossary); since script 91 the card "Stock
-  levels per warehouse" below them holds each warehouse's own Min / Max (4.14).
+  levels per warehouse" below them holds each warehouse's own Min / Max (4.14). Since script 93 the row after the Min /
+  Max hint holds the item's **Tracking** (None / Batch numbers / Serial numbers), **Serial no. length** (serial items,
+  optional, 1-50) and **Requires expiry date**, asked on transfer dispatches only (4.16); the header shows a badge
+  ("Serial nos.", "Batches", "Expiry dates", "+ expiry").
 - **Price Lists:** selling prices **(details unsure)**. Document types carry `DefaultPricing` and `PriceEditable`,
   which suggests each document type says where its default price comes from and whether it can be changed
   **(check the code)**.
@@ -395,6 +411,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   (TRR) puts it into To; partial postings, losses, Nothing more will be sent, Cancel order, Reverse, Dispatch and
   receive, returns, Late and an optional approval (see 4.13). It replaces an Inventory Out in one warehouse and an
   Inventory In in the other, which moved the average cost twice and showed nothing while the truck was on its way.
+  Since script 93 a dispatch of a **tracked** item asks which pieces leave - serial numbers, batches or expiry dates in
+  a dialog of the line - and the receipt says what arrived of each; the list finds an order by a batch or serial no.
+  (4.16).
 - **Stock Levels** (script 91): each warehouse's own Min / Max per item and where the warehouse stands for it (on hand,
   what released transfer orders bring and take, Projected, the status), kept by hand - on the page or on Item
   Definition's card - or from an Excel file, which an export of the page round-trips. A second view, "Company (Item
@@ -616,6 +635,12 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     Levels: their dialog and drawer show that user the destination's levels. "Create transfer order…" on Stock Levels
     needs Create Transfer Orders and View Stock Levels. The Dashboard's "Warehouse levels below Min" needs View Items
     and View Stock Levels: the server sends it empty to others and does not work it out for them.
+  - Batch, serial and expiry on transfers (script 93): **no new permission**. Typing the serial numbers, batches and
+    expiry dates is part of dispatching (`inventory.transfers.dispatch`: the dialog's Check and the "Known at {From}"
+    suggestions too) and of receiving (`inventory.transfers.receive`); the rows of a posting are read with View Transfer
+    Orders (`inventory.transfers.view`; a posting of another order answers 404); the item's Tracking fields come with
+    Edit Items (`inventory.items.edit`). Script 92's warehouse access applies unchanged: the access refusal comes before
+    any tracking rule, and the split ledger rows pass the ledger trigger like any row.
 
 ### 3.9 End-to-end flows
 
@@ -688,6 +713,7 @@ allowed), then receipt, customer statement and sales profit [Ali – details unk
 | **Invoice line ↔ container** | linked (`ContainerLineId`) / not linked; "Not linked" is only a warning on shipped-in-containers invoices |
 | **Transfer orders** (TRO; `inventory.TransferOrders.Status`, script 90) | 1 Draft · 4 Waiting for approval (locked) · 2 Released, **shown** from its counters, the first that applies: Released · Partly dispatched · Dispatched · Partly received · Closed · Received · 3 Cancelled. "Nothing more will be sent" is a stamp, not a status. The API's names: `Draft`, `PendingApproval`, `Released`, `PartlyDispatched`, `Dispatched`, `PartlyReceived`, `Received`, `Closed`, `Cancelled` |
 | **Transfer dispatches and receipts** (TRD, TRR; `inventory.TransferPostings.Status`) | 2 Posted · 3 Reversed. No draft: the dialogs post directly |
+| **Tracking rows of a transfer** (`inventory.TransferPostingTracking`, script 93; one per serial no., batch or expiry date of a posting line) | Worked out, never stored, from the row and its posting (`usp_TransferPosting_Tracking`): a dispatch row **On the way** · **Partly received** ("{r} received, {l} written off, {w} on the way") · **Received** ("Received by TRR-…") · **Lost** ("Written off by TRR-… (reason)") · **Settled** (received and written off); a receipt row **Received** · **Lost** · **Partly lost**; any row of a reversed posting **Reversed**. The API's names: `OnTheWay`, `PartlyReceived`, `Received`, `Lost`, `Settled`, `PartlyLost`, `Reversed` |
 
 Numbers: `PO-BR-002-000042`, `PINV-BR-003-000011`, `PRET-…`, `GRN-BR-002-000001`, `KTG-2026-0031` (CNT),
 `MOV-2026-000046`, `TRO-BR-003-000012`, `TRD-BR-003-000004`, `TRR-BR-002-000007`. LCA numbers and sales numbers
@@ -2333,6 +2359,234 @@ trigger is the only thing under them); every list, report, export, print and Das
 supplier invoices, approvals, containers, movements, charges, payments and receipts; costs. For a user with All
 warehouses every page and answer stays as it was.
 
+### 4.16 Batch, serial and expiry on transfers **[Implemented – script 93, prompt 50]**
+
+The transfer story's last bullet: "Batch, serial, and expiry details are captured in a separate dialog when the item
+requires them". The feedback had recommended a separate epic for chassis and engine numbers across every module; the
+owner put it in scope now, so it is built **on transfers only, without rebuilding the stock ledger of any module**: the
+item says how its pieces are told apart, a dispatch asks for them, a receipt says what arrived of each, and the rows stay
+on the posting. The word is **tracking** ("details" already means a transfer's header fields, "Save details"). Nothing
+changes for an item until someone ticks its Tracking. Quantities are pcs. Rules K1-K25 are the spec's; B1-B19 its
+decisions; "What it does not do" is said plainly at the end.
+
+**A. The item** (Item Definition › Inventory Parameters, the row after the Min / Max hint; `inventory.items.edit`)
+1. **Tracking**: None (the default, every item before script 93), Batch numbers, Serial numbers; **Requires expiry
+   date**: no / yes; **Serial no. length**: empty (any length) or 1-50, serial items only (17 for a TVS chassis no.; a
+   length typed on a batch item is refused "Serial no. length applies to serial-numbered items only.", 60 "Serial no.
+   length must be between 1 and 50, or empty for any length." - the field never clamps). The item's **kind** follows,
+   never stored on the item: **Serial**, **Batch**, **Expiry** (None + Requires expiry date), or none. View mode reads
+   "Tracking: Serial numbers (17 characters) · expiry date required"; the header shows the badge ("Serial nos." grape,
+   "Batches" cyan, "Expiry dates" yellow, "+ expiry" when a serial or batch item also requires the date); under the row,
+   dimmed: "Batch, serial and expiry details are asked on transfer dispatches (Inventory › Transfer Orders). Goods
+   receipts, sales and Inventory In / Out do not ask for them." Copy Item copies the three fields. (B1, B2)
+2. **Asked on transfer dispatches only.** A change is allowed at any time and applies to the next dispatches; **goods on
+   the way keep the kind they left with**: a dispatch line records its kind (`TransferPostingLines.TrackingKind`), and
+   its receipt follows that, whatever the item says now - a flag turned on while goods travel does not block their
+   receipt; turned off, the serials already sent are still received one by one. (B3, B10)
+
+**B. Dispatch** ("Dispatch…" and "Dispatch and receive…", `inventory.transfers.dispatch`)
+3. **Every line of a tracked item that leaves (pcs above 0) needs its rows** before the dispatch is allowed; an untracked
+   line takes none, and rows for one are refused. The dialog shows a column "Batch / serial" with the line's button
+   "Serial nos.…" / "Batches…" / "Expiry dates…" and its state - "{c} / {q} serial nos.", "{s} / {q} pcs in {b} batches",
+   "{s} / {q} pcs in {e} dates" (the singular for one), green with a tick when complete, red while not, "—" when nothing
+   leaves (the button disabled: "Type the pieces that leave in Dispatch now first."). **Dispatch stays disabled** while
+   a leaving tracked line is incomplete, with the first line's sentence; the server refuses the same way (62016):
+   "Line 1 (TEST93-S): type the serial numbers of the 20 pcs that leave (Serial nos.…)." / "… say which batches the 60
+   pcs come from (Batches…)." / "… give the expiry dates of the 30 pcs (Expiry dates…)." Changing "Dispatch now" keeps
+   the rows typed; the state turns red until they match again.
+4. **Serial numbers: one per piece.** The dialog "Serial numbers - line {n}: {item code}" ("{q} pcs leave {From}: one
+   serial no. per piece.") has a scan box ("Scan or type a serial no. and press Enter", the counter "{c} / {q}" red until
+   equal; a scanner's Enter adds the number and nothing else, a code with a tab or line break inside is refused "Scan one
+   number at a time, or use Paste list…"), **"Paste list…"** ("One serial no. per line, or separated by commas,
+   semicolons or spaces", "followed by its expiry date (DD/MM/YYYY)" when required; "Add to the list" answers "{a} added,
+   {d} already in the list, {o} over the {q} pcs leaving (not added)." and names each line it could not read), and
+   **"Known at {From} ({n})…"**: the serials transfers received into the source warehouse and did not send since (at
+   most 2,000, the oldest received first; "Find a number" narrows them), ticked and added ("Add the ticked"; B12 - the
+   only serials the system knows of; batch and expiry items get no suggestion).
+   Refused on the spot, before any server call: "{x} is already in the list.", "{x} is already on line {m}." (the same
+   item on another line of the dispatch), "{q} serial numbers are already typed: remove one, or raise Dispatch now.", "A
+   serial no. has no spaces.", "{x} has {len} characters; this item's have {L}.". The newest serial is listed first; a
+   serial can be edited in its row and is tidied (capitals, trimmed) when the cursor leaves it.
+5. **Batches**: the dialog "Batches - line {n}: {item code}" opens with one row of Pcs = the line's pieces; rows of Batch
+   no., Expiry ("Expiry (optional)" unless the item requires it) and Pcs (a whole number, at least 1), "Add a row" (Pcs =
+   what is missing), the total "{s} / {q} pcs" red until equal, "Put the rest here" on the last row; one row per batch
+   (the same batch twice: "Line {n} ({item}): batch {x} is on two rows: put its pieces on one row."). "Paste list…"
+   takes "One row per line: batch no., expiry date (DD/MM/YYYY) and pcs, separated by tabs (copied from Excel),
+   semicolons or commas." (a batch already listed gets the pasted pieces added).
+6. **Expiry dates**: the same dialog without the batch no. ("Expiry dates - line {n}: {item code}"; "expiry {date} is on
+   two rows: put its pieces on one row.").
+7. **A serial item that requires expiry** gives each serial its date (a column in the list; "Same expiry for every
+   serial: [date] Apply").
+8. **How a number is kept** (one place, `inventory.fn_TrackingNo_Normalize`): spaces, tabs, line breaks, no-break
+   spaces and byte-order marks are trimmed at both ends, the rest in **capitals**; one of those characters INSIDE is
+   refused ("Line {n} ({item}): serial no. {x} may not hold a tab or a line break: paste a list with Paste list…
+   instead."), so a pasted "serial TAB expiry" never glues into one serial. (B4)
+9. **The characters**: a serial no. holds letters, digits, `.` `/` `-`, no spaces, at most 50 characters ("Line {n}
+   ({item}): serial no. {x} may hold only letters, digits and . / - (no spaces)."; "… is longer than 50 characters.";
+   "… has {len} characters; the serial numbers of {item} have {L} (Item Definition)."); a batch no. letters, digits,
+   spaces, `.` `/` `_` `#` `-`, at most 50 ("… batch no. {x} may hold only letters, digits, spaces and . / _ # -.").
+10. **An expiry date** is between 01/01/2000 and 31/12/2099 ("Line {n} ({item}), row {r}: {date} is not a valid expiry
+    date."); one **in the past is a warning** ("Line {n} ({item}): expiry {date} is in the past."): expired goods are
+    moved too. (B13)
+11. **A serial no. is once in a dispatch** ("Line {n} ({item}): serial no. {x} is typed twice." / "Serial no. {x} of
+    {item} is twice in this dispatch (lines {a} and {b})."), and once in any posting by a unique index, whatever a
+    procedure does.
+12. **Rows for a line that does not leave are refused** ("Batches, serial nos. or expiry dates were given for line {n},
+    which does not leave on this dispatch."; "Line {n} ({item}): {item} takes no batch, serial or expiry details (Item
+    Definition): open Dispatch… again."; "… the rows do not match how {item} is tracked now ({kind}): open Dispatch…
+    again."); **at most 10,000 rows per dispatch and per receipt** ("A dispatch holds at most 10,000 batch, serial or
+    expiry rows.", refused by the API before the database too; a ship of motorcycles stays possible, a runaway paste does
+    not). (B14)
+13. **The rules are checked when the dialog's Done is pressed and again at posting, with the same sentences** - one
+    function, `inventory.fn_TransferDispatch_TrackingProblems`, read by the dialog's Check (every error and warning of
+    the whole dispatch as it would be posted, this line's warnings; no lock, nothing written) and by the posting (the
+    first error). Done: the errors in red at the top with the named rows outlined, the warnings in orange and the button
+    becomes **"Keep these numbers"** (a second click closes with the rows). **A decision against the spec's "errors keep
+    the dialog open", recorded:** the count errors alone - the rows do not add up to the pieces yet (rules 3 and 14) -
+    are said in red but let "Keep these numbers" close the dialog with what is typed ("Keep these numbers closes the
+    dialog with what is typed: nothing is posted until the line is complete."): 19 chassis numbers scanned of 20 must
+    survive closing the dialog, the line's state stays red and Dispatch stays disabled, so nothing half done is posted
+    and nothing scanned is lost. Cancel drops every change since the dialog opened ("Discard the serial numbers, batches
+    and expiry dates typed in this dialog?", "Discard" / "Keep editing"). The rows survive a page reload: they are kept
+    in the browser's session storage per order and row version, and reopening the dispatch offers "Restore the {n} rows
+    typed earlier?" ("Restore" / "Start again"; the line buttons wait for the answer); a post or Discard clears them
+    (B8; no draft postings).
+14. **The count must match**: "Line {n} ({item}): {q} pcs leave but {c} serial numbers are typed." / "… the batches add
+    up to {s} pcs but {q} pcs leave." / "… the expiry dates add up to {s} pcs but {q} pcs leave."; a serial row is one
+    piece ("… a serial number is one piece."), a batch or expiry row a whole number above 0; a missing number or a
+    missing required date is named with its row ("Line {n} ({item}), row {r}: the serial no. is missing." / "… the
+    batch no. is missing." / "… the expiry date is required for {item}.").
+15. **A serial already on the way is refused** (62017, HTTP 409 `SERIAL_ON_THE_WAY`): "Serial no. MD626AE1XR1T00001 of
+    TEST93-S is already on the way with TRD-BR-003-000004 (TRO-BR-003-000012: LKS-01 → LUB-01): receive it first, or
+    reverse that dispatch." Checked under an **application lock per item** (`inventory.TransferSerial.{ItemId}`, taken
+    after 90's source lock, items in id order so two dispatches never wait in a circle; 30 s, then 62010 "Another
+    dispatch of {item} serial numbers is being posted. Try again in a moment."): two dispatches of one serial from two
+    warehouses at the same instant never both pass. The format, count and duplicate errors are checked **before** the
+    source lock (B17): a slow check never blocks every dispatch from that warehouse; only this rule runs after the
+    locks. (B5)
+16. **The ledger gets one row per leg and expiry date**: a tracked line writes the source −q and the On the way warehouse
+    +q once per distinct expiry date of its rows (`StockMovements.ExpiryDate`; 40 pcs expiring 31/03/2027 and 20
+    expiring 30/06/2027 give four rows instead of two), as every other document writes its line's expiry; a serial item
+    without a date writes 90's two rows. No batch or serial column on the ledger (B7): stock stays per item and
+    warehouse, and every reader sums it as before (`docs/notes/costing-rules.md`, "Transfers"). The dispatch's history
+    line adds "… 20 serial no(s), 2 batch(es), 2 expiry date(s)."
+17. **Warnings only** (never a refusal; said by Done, never by the posting; B5, K16): "Serial no. {x} was last received
+    into LUB-01 by TRR-BR-002-000009 on 21/10/2026, not into LKS-01: check it is really here.", "Serial no. {x} was
+    written off as lost by TRR-… on {date} ({reason}): dispatch it only if it was found.", the past expiry of rule 10,
+    and "Line {n} ({item}): batch {x} left with expiry {d1} on TRD-…; here it is {d2}." ("no expiry" when none). The
+    transfer history is the only clue the system has of a number's place: refusing on it would block legitimate moves
+    (a chassis sold from LUB-01 and dispatched from LKS-01 are, for the system, the same number twice).
+
+**C. Receive** ("Receive…", `inventory.transfers.receive`)
+18. **A dispatch line that left with rows is received with them**, whatever the item says now; one that left without is
+    received without (rows for it: "{TRD} line {n} ({item}) left without batch, serial or expiry details: receive it
+    without them."). On such a line "Received now" is read-only (the sum of its rows), 90's "Still coming | Nothing more
+    will arrive" control is not shown, and the line's button opens the rows with the state "{r} arrived · {l} lost · {w}
+    still coming". Without opening the dialog, everything on the way arrived. (B3, B6)
+19. **Serials**: "Serial numbers that arrived - {TRD} line {n}: {item code}" lists the serials on the way, all ticked
+    (ticked = arrived), with a counter "{arrived} / {on the way}". **The first scan starts a scan session**: every serial
+    not scanned yet is unticked, a gray line says "Scanning: only the serial numbers you scan are ticked.", each scan
+    ticks one ("{x} is not on the way on this line." otherwise); "Tick all" / "Untick all"; each unticked serial is
+    **Still coming** (the default: it stays on the way) or **Lost**, and "Mark the {n} not ticked as lost" does it for
+    all. **Batches and expiry dates**: one row per batch or date on the way with "Received now" (starts at its on the
+    way, may be lowered, "Max {w}" refused above it) and, when lower, "Rest: Still coming | Lost". Lost pieces need the
+    line's reason ("Why?", and the note for Other), are written off from the On the way warehouse at the average cost
+    (`TRF_LOSS`) and keep their expiry date on the ledger row. With serials it matters WHICH piece is lost.
+20. **Received + lost of a row never exceed its on the way** (62012, checked under the order's lock): "{TRD} line {n}
+    ({item}): serial no. {x} is no longer on the way." / "… batch {x}: {r} pcs received and {l} written off, but only
+    {w} are on the way." (the same with "expiry {date}"); a serial "either arrived or is lost, not both."; the rows must
+    add up to the line ("… the rows add up to {d} pcs received, but the line says {r}: open Receive… again."), and a
+    tracked line received or written off without rows is refused ("… tick the serial numbers that arrived (Serial
+    nos.…)." / "… say what arrived of each batch (Batches…)." / "… say what arrived of each expiry date (Expiry
+    dates…)."); at most 10,000 rows ("A receipt holds at most 10,000 batch, serial or expiry rows: receive one dispatch
+    at a time."). A refused Receive (someone received a serial meanwhile, 409) keeps the reader's ticks: the rows on the
+    way are read again and an orange line says so ("The order was changed by someone else: the serial numbers, batches
+    and expiry dates on the way were read again.").
+21. **Dispatch and receive** receives every row of its dispatch, serial by serial: nothing is asked twice.
+
+**D. Reverse** (`inventory.transfers.reverse`)
+22. **The rows stay, shown "Reversed"**: a reversed dispatch's serials are free again (a new dispatch of them passes); a
+    reversed receipt's serials and batch pieces are **on the way again** and its losses undone. A receipt one of whose
+    serials has been **dispatched again since** (from the receiving warehouse) cannot be reversed until that dispatch is
+    (62013, before 90's stock sentence): "Cannot reverse: serial no. {x} of TRR-… has been dispatched again with TRD-…:
+    reverse that dispatch first." - checked under the same per-item serial lock, so a dispatch of one of its serials
+    cannot slip in between the check and the reversal. (B5)
+
+**E. Seen and found**
+23. **The order page**: a tracking badge under each line's Item Name (from the item's kind; **as soon as the item is
+    chosen on a line**, a decision over the spec's "once the draft is saved", so a line changed to another item never
+    keeps the old badge; tooltip "Dispatch… asks for the serial numbers of these pieces."). In "Dispatches and
+    receipts" a posting line with rows shows a dimmed summary ("20 serial nos." / "2 batches" / "1 expiry date") and a
+    link that opens its rows **when clicked** (B18: the order's page never carries 10,000 serials), with each row's
+    state (On the way blue, Partly received orange, Received green, Written off red, Reversed gray, and the sentence:
+    "Received by TRR-BR-002-000007", "Written off by TRR-… (Damaged)", "3 received, 1 written off, 16 on the way";
+    3.10), "Find a number" above 10 rows and "Copy list". The columns a kind does not use (Expiry without a date, Pcs
+    for serials) are left out.
+24. **The list** (Inventory › Transfer Orders): the filter **"Batch or serial no."** ("At least 3 characters"; 3
+    characters of the number as kept: capitals, trimmed; "contains", so a chassis no. is found by its last digits, B9)
+    keeps the orders whose dispatches or receipts hold such a number, and each row says what became of it, dimmed under
+    the number, from the order's latest posted row that holds it: "MD626AE1XR1T00005: on the way (TRD-…)" / "…:
+    dispatched (TRD-…)" (a dispatch row received or written off since) / "…: received into LUB-01 (TRR-…)" / "…:
+    written off (TRR-…)" / "…: reversed (TRR-…)" (+ " and {n} more" when other numbers of the order match). Fewer than 3 characters: "Type at least 3
+    characters of the batch or serial number." (62000; the page sends nothing below 3). There is no trace drawer: the
+    matched line and the posting's rows answer "where is it" (the cross-module trace is the epic's, below).
+25. **The dispatch note and the export**: the note lists under each line its serial nos. (four columns), batches
+    ("B2410-07 · exp. 31/03/2027 · 40 pcs") or expiry dates, never a cost; while the rows cannot be read, Print is
+    disabled with the reason and "Try again" reads them again (the paper never goes out without them). The order's
+    Excel export gains the sheet **"Batch, serial and expiry"** (Posting, Kind, Date, Status, Line, Item code, Item
+    name, Serial no., Batch no., Expiry, Pcs, Lost, Received from, On the way, State) only when the order has tracking
+    rows: the export of an untracked order is cell-identical to script 90's.
+26. **The item statement** (Item Definition › Stock Movement) shows "Expiry {date}" under the document of a transfer row
+    that carries one - **transfer rows only** (B19): the expiry other families write comes from fields no screen
+    shows, and showing it would change a finished screen.
+
+**Speed, measured** (the sandbox, 4 shared CPUs; test93 case s and the testers' timings): a dispatch of **10,000
+serials** - the dialog's Check 0.6-0.9 s, the Dispatch 1.0-1.3 s, its receipt 1.0-1.5 s, Dispatch and receive about 2.2
+s, the rows of a posting 0.1-0.3 s, the suggestions for an item with 20,000 serials 0.07-0.16 s, the order's Get 12-50
+ms whatever the rows; the list filter on 50,000 orders holding 100,000 rows 0.3-2.2 s with a reused plan. Three lookups
+were rewritten for it during the tests (the 62017 rule, a serial's last event and the reversal block of a receipt, each a
+`MAX(Id)` seek through `IX_TransferPostingTracking_ItemSerial` instead of a "latest by date" that scanned every posting
+per serial: 17-399 s once the history grew; 6.3 says what that index must never lose).
+
+**What it does not do, honestly** (5.9 of the spec; B1)
+- **No stock per serial, batch or expiry**: on hand stays per item and warehouse. A dispatch cannot prove that chassis X
+  is at the source, because goods receipts, sales, Inventory In / Out, BIVAC Out and purchase returns record no batch or
+  serial: the transfer history is the only clue, and it gives warnings, never refusals (rule 17). Serial uniqueness
+  holds among the goods on the way by transfers and inside one posting. Expiry is information: no FEFO, no alert before
+  an expiry, no refusal to sell expired goods. The item flags act on transfers only, and the item page says so.
+- **How it grows without rework.** The row shape (kind, batch, serial, expiry, pcs, lost, settled, the row it consumes)
+  is keyed by a posting line, i.e. by the ledger key (family `Transfer`, TRD / TRR, the posting, its line). The "Chassis
+  and engine numbers" epic adds the same rows under goods receipts first, then sales, Inventory In / Out and purchase
+  returns, joined to these through one view; the warnings of rule 17 then become real refusals ("Serial no. X is not at
+  LKS-01"), the trace runs across modules, and no transfer screen changes: the dialog, the viewer, the number rule and
+  the problem table name no transfer. The ledger needs nothing: it already carries the expiry.
+
+**Changed from the spec, and why** (both recorded by the review and the browser tests, kept as built)
+- **"Keep these numbers" also closes the dialog on a count error** (rule 13; the spec: errors keep it open): what is
+  scanned must survive closing; Dispatch stays disabled until the line is complete, so nothing half done is posted.
+- **The line badge appears as soon as the item is chosen** (rule 23; the spec: once the draft is saved): a saved line
+  changed to another item kept the old badge otherwise. It sits under the Item Name, compact, so a released order at
+  1440 px keeps every badge whole without a sideways scroll.
+- Smaller: the posting summary is a dimmed line of its own on a wide screen (appended " · …" on a phone); the states say
+  "1 batch" / "1 date" in the singular; the viewer leaves out a column a kind does not use; the receipt's serial dialog
+  also counts "{arrived} / {on the way}"; "Requires expiry date"'s explanation is on an info icon beside the box.
+
+**What does not change:** every transfer of an untracked item (the new steps run only for tracked lines; 90's table types
+are untouched and the tracking travels in two optional table-valued parameters, so every caller of 90 keeps working);
+90's sentences, numbers, locks and order of checks (93 adds steps, never edits one); 91 (levels count pcs; Get is 91's
+body plus columns) and 92 (Search is 92's plus a parameter; the access refusals come first; the trigger checks the split
+rows like any); the ledger's shape and every other family's rows; on hand, Stock Valuation, the Dashboard, Shortages,
+Stock Levels and the item card (they sum by item and warehouse); costs and the replay; the items' create, update,
+search, lookup, units, files, note, link and levels (only the item's read gains three columns, and an older client that
+sends no Tracking changes nothing); expiry on other documents and screens; permissions (none added).
+
+**Errors:** new **62016** (400, `TRANSFER_TRACKING`: batch, serial or expiry rows missing, incomplete or invalid, on a
+dispatch or a receipt) and **62017** (409, `SERIAL_ON_THE_WAY`); reused 62000 (the receipt's shape errors of rule 20,
+the list filter), 62006, 62010 (the serial lock not obtained in 30 s), 62012 (above the on the way of a row), 62013 (a
+receipt whose serial left again, code `REVERSE_LATER_FIRST`), 56000 / 56006 (the item's Tracking). The API also refuses,
+400: more than 10,000 rows before the database, a dispatch row twice, a receipt row of the same dispatch row twice, and
+the item's "Tracking must be None, Batch or Serial." Every sentence is the database's, shown as it comes.
+
 ---
 
 ## 5. The prompts so far
@@ -2357,9 +2611,9 @@ masterdata-branches, 05 masterdata-warehouses, 06 mantine-migration, 07 dev-star
 masterdata-parties, 16 frontend-enhancements-1, 17 sales-invoice-import, 18 inventory-stock-in, 19
 inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventory-docs, 23 document-engine, 24
 sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
-28–31 have no file there; prompts 32–49 were given outside the repositories (5.2 and section 4 say what they asked).
+28–31 have no file there; prompts 32–50 were given outside the repositories (5.2 and section 4 say what they asked).
 
-### 5.2 Prompts 32–49
+### 5.2 Prompts 32–50
 
 | Prompt | Title / what it does | Status |
 |---|---|---|
@@ -2381,6 +2635,7 @@ sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-type
 | **47** | Inventory transfer orders (script 90): Inventory › Transfer Orders, a dispatch (TRD) and a transfer receipt (TRR) through each branch's On the way warehouse, cost-neutral; losses, Nothing more will be sent, Cancel order, Reverse (receipt first), Dispatch and receive, returns, Late, the TRO approval switch and its emails, Transfers in on Shortages, the dispatch note (A1, A2, B1) | Done: 4.13 |
 | **48** | Stock levels per warehouse and Fill to Max (script 91): each warehouse's own Min / Max per item on Item Definition's "Stock levels per warehouse" card and on Inventory › Stock Levels (Per warehouse, and Company (Item Definition): the company Minimum / Maximum Quantity), the Excel import and export, Projected from released transfer orders, "Fill to Max…" and "Add items below Min…" on a draft transfer order, "Create transfer order…" from ticked rows, Min / Max / Projected at {To} on the order's lines, the Dashboard's "Warehouse levels below Min" and its "Items below their minimum" opening the company view (A1, A2, B1) | Done: 4.14 |
 | **49** | Warehouse access per user (script 92): All warehouses or only the ticked ones (a parent gives its tree; system administrators use every warehouse), set in Users & Permissions › Users › "Warehouses of {username}" with its history and the Users list's Warehouses column; it limits moving stock in every family (post, cancel, reverse, a draft line by line, delete, imports, goods receipts, transfers by From / To, stock levels), never viewing; one sentence, 50010 / 403, said on the disabled buttons, the pickers offering the reader's warehouses only; the ledger trigger under every posting; the Transfer Orders list's Warehouses filter and the menu's "to receive" count (A1, A2, B1) | Done: 4.15 |
+| **50** | Batch, serial and expiry on transfers (script 93): Item Definition's Tracking (None / Batch numbers / Serial numbers), Requires expiry date and Serial no. length; a transfer dispatch asks, per line of a tracked item, its serial numbers (scan box, Paste list, Known at {From}), batches or expiry dates in a dialog whose Done checks the rules on the server (errors, warnings); a serial no. is never on the way twice; the receipt ticks the serials that arrived (a scan session) or lowers each batch / expiry row, the rest Still coming or Lost; Dispatch and receive, Reverse, the order page's badges and "{n} serial nos." viewer, the dispatch note, the export's sheet "Batch, serial and expiry", the list's "Batch or serial no." filter, the item statement's expiry line; the ledger's rows per expiry date; no new permission (A1, A2, B1) | Done: 4.16 |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -2462,6 +2717,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `90_Inventory_TransferOrders.sql` | Transfer orders, dispatch and receipt, with approval (prompt 47): new tables `inventory.TransferOrders`, `TransferOrderLines`, `TransferPostings`, `TransferPostingLines`, `TransferOrderAudit`, `TransferOrderFiles`; `masterdata.Warehouses.IsTransit` and one On the way warehouse per branch (`masterdata.usp_Warehouse_EnsureTransit`, run at each start for every branch that has none, and by a new branch); document types TRO, TRD, TRR and `inventory.DocumentTypes.NeedsApproval`; stock reason TRF_LOSS (inactive); `inventory.fn_TransferPosition`, `fn_TransferOrder_State` (the shown status, Late), `fn_TransferOrder_Blocks` (an action's refusal in the order's state, every disabled reason), `fn_TransferPosting_ReverseBlock`, `fn_Transfer_MovedOutNote`; the procedures of the order, its approval (`usp_TransferOrder_Approvers`), dispatch, receipt, Dispatch and receive, Nothing more will be sent, cancel, reverse, ETA, return and files; ten permissions `inventory.transfers.*` (855-890) granted once; re-created: the warehouse, branch and item procedures (the On the way rules), `masterdata.fn_Warehouse_IsLeaf` / `_IsUsed`, `inventory.usp_DocumentType_List` / `_Update`, `usp_Item_RebuildCosts` (incoming transfer legs at the running average), `usp_Item_StockStatement`, `fn_Shortage_Live` and the three shortage procedures (Transfers in; `ShortageDocumentLines.TransfersInBase`, its four formula columns re-added), `purchase.fn_GoodsReceipt_CancelCheck` and `inventory.usp_StockDocument_Cancel` (the refusal names the transfer). Script 19's per-start backfill of item costs no longer counts transfer rows (edited in place, as 89 did) |
 | `91_Inventory_StockLevels_FillToMax.sql` | Stock levels per warehouse and Fill to Max (prompt 48): new tables `inventory.ItemWarehouseLevels` (an item's Min / Max in a warehouse at the bottom of the tree, at most 1,000,000,000 pcs, owned by the item and the warehouse: two cascading keys) and `inventory.ItemWarehouseLevelAudit`; four frozen table types (`tvp_ItemWarehouseLevel`, `tvp_ItemWarehouseLevelImport`, `tvp_TransferFillItem`, `tvp_TransferFillCandidate`); `inventory.fn_StockLevelState` (Projected, the status, To reach Max: the one formula), `fn_TransferPositions` (what released transfer orders bring to and take from every warehouse, every pair at once), `fn_StockPosition` (one pair, on 90's `fn_TransferPosition`), `fn_TransferFill_Plan` (the Fill to Max rule), `fn_TransferFill_Message`, `fn_TransferFill_FromWarning`, `fn_TransferFill_OtherOrdersWarning`, `fn_ItemWarehouseLevel_ImportJudge` (the import's judgement, read by the check and the import), `masterdata.fn_Warehouse_IsUsedInTransactions` (90's `fn_Warehouse_IsUsed` body, moved); the procedures `inventory.usp_StockLevel_Search` / `_CompanySearch`, `usp_ItemWarehouseLevel_Set` / `_Remove` / `_History` / `_ImportCheck` / `_Import`, `usp_TransferOrder_FillToMax` (preview and apply, Fill and Add) / `_BelowMinCandidates` / `_CreateFromLevels` (through 90's `usp_TransferOrder_Save`), `reporting.usp_Dashboard_StockLevels`; the permissions `inventory.stocklevels.view` / `.edit` (432, 434) granted once; re-created: `masterdata.fn_Warehouse_IsUsed` (+ stock levels), `inventory.fn_TransferOrder_Blocks` (+ FillToMax, AddBelowMin), `masterdata.usp_Warehouse_Create` / `_Update` (the levels sentence of 52000) and `_Lookup` (+ `IsUsedInTransactions`, `HasStockLevels`), `inventory.usp_Item_Delete` (from 11: the cascading keys are not references; + `@UserId` and a "Removed" history row per level), `inventory.usp_TransferOrder_Get` and `_Availability` (from 90: + To's and From's levels and Projected; Get also the two abilities). `reporting.usp_Dashboard_Summary` and `masterdata.usp_Warehouse_Delete` are not changed |
 | `92_Security_WarehouseAccess.sql` | Warehouse access per user (prompt 49): new column `security.Users.AllWarehouses` (default 1: every existing and new user keeps every warehouse, no data step); new tables `security.UserWarehouses` (the ticks, both keys cascading: a tick never stops a warehouse's delete) and `security.UserWarehouseAudit`; the rule in five functions, `security.fn_User_IsUnrestricted` (All warehouses or an active system role), `fn_User_CanUseWarehouse` (a ticked ancestor gives the warehouse; On the way warehouses never refused), `fn_User_Warehouses`, `fn_User_WarehouseRefusal` (THE sentence, 50010), `fn_User_WarehouseAccessText` (the history's words); the ledger trigger `inventory.TR_StockMovements_WarehouseAccess` (AFTER INSERT; it reads only the users who wrote the rows; disabled by hand, it is enabled again at the next start); new `security.usp_User_WarehouseRefusal` (the API's early check), `usp_User_Warehouses_Get` / `_SetWarehouses` (the dialog, 50011), `usp_User_WarehouseSummaries` (the Users list), `inventory.usp_TransferOrder_ToReceiveCount` (the menu); re-created: `masterdata.usp_Warehouse_Lookup` (from 91: + `@UserId`, `CanUse`), `usp_Warehouse_Delete` (from 90: the history of the users who ticked it), `usp_Warehouse_Update` (from 91: a move to another parent that changes users' warehouses needs an unrestricted editor with `security.users.edit`, and writes their history), `inventory.fn_TransferOrder_Blocks` (from 91: the access rows, From / To), `usp_TransferOrder_Save` (from 90: the From), `usp_TransferOrder_Search` (from 90: + `@UserId`, `@Mine`), `usp_ItemWarehouseLevel_Set` / `_Remove` / `_ImportCheck` / `_Import` (from 91: the level's warehouse). No stock, sales, purchase, goods receipt, container or movement procedure is re-created, and `security.usp_User_GetAccess` (sign-in) is not changed; no permission added |
+| `93_Inventory_TransferTracking.sql` | Batch, serial and expiry on transfers (prompt 50): new columns `inventory.Items.TrackingMode` / `RequiresExpiry` / `SerialLength` (`CK_Items_Tracking`) and `inventory.TransferPostingLines.TrackingKind` (the kind a dispatch line left with, copied by its receipt line); new table `inventory.TransferPostingTracking` (one row per serial no., batch or expiry date of a posting line; a receipt row points at the dispatch row it receives, `DispatchTrackingId`; a dispatch row's `SettledBase` = received + written off by posted receipts; a serial once per posting by a unique index; the filtered index `IX_TransferPostingTracking_ItemSerial` the forced seeks of the serial rules read) and two new, optional table types `inventory.tvp_TransferDispatchTracking` / `tvp_TransferReceiptTracking` (90's types stay frozen); `inventory.fn_TrackingNo_Normalize` (trim, capitals: the one place of the number rule), `fn_TransferSerial_LastEvent` (a serial's latest posted event, by row id), `fn_TransferDispatch_TrackingProblems` (the one source of the dispatch rules: errors Seq 5-24 by number, 62017 at Seq 90, warnings 100-103; read by the dialog's Check and by the posting); new `inventory.usp_Item_SetTracking`, `usp_TransferPosting_Tracking` (the rows and their state), `usp_TransferOrder_CheckDispatchTracking` (no lock, nothing written), `usp_TransferOrder_TrackingSuggestions` (the serials received into the source and not sent since); re-created: `inventory.usp_Item_Get` (from 87: + the three columns), `fn_TransferPosting_ReverseBlock` (from 90: + Seq 3, a receipt whose serial left again, 62013), `usp_TransferOrder_DispatchCore` (from 90: + `@Tracking`, the format rules BEFORE the source lock, one application lock per serial item `inventory.TransferSerial.{ItemId}` after it (62010 after 30 s), 62017 after the stock check, the rows, the ledger per expiry date, the audit's counts), `usp_TransferOrder_Dispatch`, `usp_TransferOrder_ReceiveCore` (from 90: + the receipt rules, the rows, the ledger per expiry date, the dispatch rows' Settled), `usp_TransferOrder_Receive`, `usp_TransferOrder_DispatchAndReceive` (every row of the new dispatch received), `usp_TransferPosting_Reverse` (from 90: the serial locks of a receipt, its rows back on the way), `usp_TransferOrder_Get` (from 91, its `@SP` fix kept: + the item's tracking per line, the kind and count per posting line - never the rows), `usp_TransferOrder_Search` (from 92: + `@TrackingNo`, `MatchedTracking`, the matching orders found once with `OPTION (RECOMPILE)`). Errors 62016 (400 `TRANSFER_TRACKING`) and 62017 (409 `SERIAL_ON_THE_WAY`) new; 62000, 62006, 62010, 62012, 62013, 56000, 56006 reused. The ledger is not altered (its `ExpiryDate` is written); the cost replay, on hand, the valuation, the Dashboard, Shortages and Stock Levels are not touched; no permission added |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -2480,7 +2736,7 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 ## 6. What's next
 
 ### 6.1 What's next (19 October 2026; the developer decides)
-Every written prompt (32–49) is built, and so is every script up to the last one in 5.4. What is left:
+Every written prompt (32–50) is built, and so is every script up to the last one in 5.4. What is left:
 1. **Release the scripts after 72 to production** (production runs up to 72): on testing first (the Deploy to
    server button, or `sudo ./update.sh`; `copy-production-to-testing.sh` to rehearse on production's data), then a
    pull request `main` → `production` in both repositories, and the button with production. Script 77 changes data
@@ -2488,7 +2744,10 @@ Every written prompt (32–49) is built, and so is every script up to the last o
    document types and the ten transfer permissions with their one-time grants (3.8); script 91 adds the two stock
    level permissions with theirs - after it the owner ticks Edit Stock Levels (Role Permissions) for the roles of the
    people who keep the levels; script 92 adds warehouse access per user, every user keeping all warehouses until an
-   administrator ticks some (Users & Permissions › Users › Warehouses); `update.sh` backs the database up first.
+   administrator ticks some (Users & Permissions › Users › Warehouses); script 93 changes nothing for any item until
+   its Tracking is ticked - **tell the owner: tick Tracking on the items that need it (motorcycles: Serial numbers, 17
+   characters; dated goods such as oil, if stocked: Batch numbers + Requires expiry date)**, in Item Definition, Edit
+   Items; `update.sh` backs the database up first.
 2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
 3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
    `enable-github-deploy.sh` on the server and its secrets in both repositories.
@@ -2510,6 +2769,23 @@ Every written prompt (32–49) is built, and so is every script up to the last o
   (Microsoft 365 / Google Workspace) instead of the Gmail account. Not discussed yet.
 
 ### 6.3 Known problems and things to remember
+### 6.3 Known problems and things to remember
+- **Script 93's serial rules depend on one index.** The lookups of a serial's place
+  (`fn_TransferDispatch_TrackingProblems` Seq 90 and warnings 100 / 101, `fn_TransferSerial_LastEvent`,
+  `fn_TransferPosting_ReverseBlock` Seq 3) force a seek on
+  `IX_TransferPostingTracking_ItemSerial` (`WITH (FORCESEEK)`: without it the optimiser scanned every posting per serial,
+  37-399 s on a long history). Schema.sql creates the eight indexes of `inventory.TransferPostingTracking` together with
+  the table only, so an index dropped by hand on a server is not put back by a restart: every dispatch of a serial item
+  and the dialog's Check would then fail with SQL error 8622 ("could not produce a query plan because of the hints")
+  until the index is re-created. Never drop it; the next script that opens the file should create each index in its own
+  guarded batch (`IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = … AND object_id = OBJECT_ID(…)) CREATE …`) so a
+  start heals it. Two more notes for that script, found by the final review and harmless today: `DispatchCore` reads the
+  item's kind twice (its step 2 and the rules function; an item's Tracking changed in the same millisecond as a dispatch
+  of it could end in a constraint error instead of the sentence - read it once, or re-derive the kind in step 9 from the
+  same read), and warning 103 (a batch's earlier expiry, Check only) still finds "the latest dispatch" with a `TOP (1)
+  … ORDER BY PostedAtUtc` per row instead of the `MAX(Id)` seek the other lookups use. A list filter made only of
+  characters the normaliser strips (a lone BOM) is taken as no filter instead of "Type at least 3 characters …": keep the
+  raw value and refuse it when the normalised one is empty.
 - **A stale API after new code** shows 404 / 405 on new endpoints, or "Not found" on new pages. `npm run dev` reuses
   an API already running on 7089. Fix:
   `fuser -k 7089/tcp 5174/tcp && cd …/Inventory_Shipment.Web && npm run dev`.
@@ -2910,7 +3186,7 @@ every step that did not behave as described.
 - **Files delivered outside the repos:**
   - `Containers_User_Guide.docx`;
   - `Movement_Containers_Import_Template.xlsx` (now in the Web project's `public/templates/`);
-  - prompt files 32–49: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
+  - prompt files 32–50: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
     section 4.
 
 ### 8.3 Security rules to keep
@@ -2955,5 +3231,12 @@ every step that did not behave as described.
   "Download the result".
 - **Purchase order:** "Create & send", "Create & approve", "Approve & post", "Send again", "Withdraw", "Send to
   supplier…".
+- **Transfer tracking (script 93):** Item Definition's "Tracking", "Serial no. length", "Requires expiry date"; the
+  line buttons "Serial nos.…", "Batches…", "Expiry dates…"; in the dialog "Scan or type a serial no. and press Enter",
+  "Paste list…", "Add to the list", "Known at {From} ({n})…", "Add the ticked", "Same expiry for every serial", "Add a
+  row", "Put the rest here", "Done", "Keep these numbers", "Restore" / "Start again"; on a receipt "Tick all", "Untick
+  all", "Still coming | Lost", "Mark the {n} not ticked as lost"; the order's "{n} serial nos." / "{n} batches" / "{n}
+  expiry dates" viewer with "Find a number" and "Copy list"; the list's "Batch or serial no."; the export's sheet "Batch,
+  serial and expiry". The word is **tracking**, never "details" ("Save details" is the header).
 
 *End of the handoff.*

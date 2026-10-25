@@ -121,6 +121,30 @@ public interface ITransferOrderRepository
     /// <summary>inventory.usp_TransferOrder_CreateFromLevels: one draft, filled, through the order's own Save.</summary>
     Task<CreateTransferFromLevelsResult> CreateFromLevelsAsync(
         CreateTransferFromLevelsRequest request, int userId, CancellationToken cancellationToken = default);
+
+    /* ── (93) batch, serial and expiry on transfers ───────────────────────────────────────────── */
+
+    /// <summary>
+    /// inventory.usp_TransferOrder_CheckDispatchTracking: every problem of the dispatch as typed (read only, no lock) -
+    /// its errors, and its warnings (only <paramref name="forLineId"/>'s when given). 62006 for an order that does not exist.
+    /// </summary>
+    Task<IReadOnlyList<TransferTrackingProblemDto>> CheckDispatchTrackingAsync(
+        int id, IReadOnlyList<DispatchTransferLineRequest>? lines, int? forLineId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// inventory.usp_TransferPosting_Tracking: the tracking rows of one dispatch or receipt with their state, by line and
+    /// row; <paramref name="onTheWayOnly"/> = a posted dispatch's rows still on the way (the Receive dialog). 62006 when missing.
+    /// </summary>
+    Task<IReadOnlyList<TransferTrackingRowDto>> PostingTrackingAsync(
+        int postingId, bool onTheWayOnly, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// inventory.usp_TransferOrder_TrackingSuggestions: the order line's tracking kind now (its result 2) and, for a
+    /// serial item, the serials received into From by transfers and not sent since (result 1). 62006 when the line is
+    /// not one of the order's.
+    /// </summary>
+    Task<TransferTrackingSuggestionsDto?> TrackingSuggestionsAsync(
+        int id, int transferOrderLineId, CancellationToken cancellationToken = default);
 }
 
 /// <summary>One stored file of a transfer order with its bytes (the download).</summary>

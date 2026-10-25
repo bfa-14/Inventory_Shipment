@@ -3,6 +3,7 @@ using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.DTOs.Purchase;
 using Inventory_Shipment.Model.Entities;
+using Inventory_Shipment.Model.Enums;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
@@ -157,7 +158,7 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> CreateAsync(
         SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
     {
-        if ((ValidateQuantities(request) ?? ValidateLink(request)) is { } validationError)
+        if ((ValidateQuantities(request) ?? ValidateLink(request) ?? ValidateTracking(request, isNew: true)) is { } validationError)
         {
             return Result<ItemDetailsDto>.Failure(ErrorType.Validation, validationError, "VALIDATION");
         }
@@ -173,6 +174,9 @@ public sealed class ItemService : IItemService
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
             // So do the note and the link (script 87).
             await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
+            // And the tracking (script 93): always on a new item, None / no / any length when the request has none.
+            var tracking = TrackingOf(request);
+            await _items.SetTrackingAsync(id, tracking.Mode, tracking.RequiresExpiry, tracking.SerialLength, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -187,7 +191,7 @@ public sealed class ItemService : IItemService
     public async Task<Result<ItemDetailsDto>> UpdateAsync(
         int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
     {
-        if ((ValidateQuantities(request) ?? ValidateLink(request)) is { } validationError)
+        if ((ValidateQuantities(request) ?? ValidateLink(request) ?? ValidateTracking(request, isNew: false)) is { } validationError)
         {
             return Result<ItemDetailsDto>.Failure(ErrorType.Validation, validationError, "VALIDATION");
         }
@@ -207,6 +211,12 @@ public sealed class ItemService : IItemService
             await _items.SetPurchasingAsync(
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
             await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
+            // (93) Only when the request carries trackingMode: a client that does not know the fields changes nothing.
+            if (request.TrackingMode is not null)
+            {
+                var tracking = TrackingOf(request);
+                await _items.SetTrackingAsync(id, tracking.Mode, tracking.RequiresExpiry, tracking.SerialLength, userId, cancellationToken);
+            }
         }
         catch (BusinessRuleException ex)
         {
@@ -588,6 +598,34 @@ public sealed class ItemService : IItemService
             && !string.IsNullOrEmpty(uri.Host);
 
         return valid ? null : "Link must be a web address starting with http:// or https://, for example https://www.tvsmotor.com.";
+    }
+
+    /* (93) TRACKING ON TRANSFERS. Checked here so the sentence sits next to the field (the page's red Alert, like the link);
+       usp_Item_SetTracking refuses the same, in its words, as the last guard. An update without trackingMode leaves the
+       three fields alone, whatever else it carries. */
+    private static string? ValidateTracking(SaveItemRequest request, bool isNew)
+    {
+        if (request.TrackingMode is null && !isNew)
+        {
+            return null;
+        }
+
+        var mode = TrackingMode.None;
+        if (request.TrackingMode is not null && !Tracking.TryParseMode(request.TrackingMode, out mode))
+        {
+            return "Tracking must be None, Batch or Serial.";
+        }
+
+        return request.SerialLength is not null && mode != TrackingMode.Serial
+            ? "Serial no. length applies to serial-numbered items only."
+            : null;
+    }
+
+    /// <summary>The request's tracking, after <see cref="ValidateTracking"/>: absent = None, no expiry, any length.</summary>
+    private static (TrackingMode Mode, bool RequiresExpiry, int? SerialLength) TrackingOf(SaveItemRequest request)
+    {
+        var mode = Tracking.TryParseMode(request.TrackingMode, out var parsed) ? parsed : TrackingMode.None;
+        return (mode, request.RequiresExpiry ?? false, mode == TrackingMode.Serial ? request.SerialLength : null);
     }
 
     private static bool TryReadRowVersion(string? value, out byte[]? rowVersion)

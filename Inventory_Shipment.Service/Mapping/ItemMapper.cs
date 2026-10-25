@@ -1,6 +1,7 @@
 using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Entities;
+using Inventory_Shipment.Model.Enums;
 
 namespace Inventory_Shipment.Service.Mapping;
 
@@ -78,6 +79,10 @@ public static class ItemMapper
         LastPurchaseAtUtc = item.LastPurchaseAtUtc.AsUtc(),
         Note = item.Note,
         Link = item.Link,
+        TrackingMode = item.TrackingMode,
+        RequiresExpiry = item.RequiresExpiry,
+        SerialLength = item.SerialLength,
+        TrackingKind = Tracking.KindOf(item.TrackingMode, item.RequiresExpiry),
         CreatedAtUtc = item.CreatedAtUtc.AsUtc(),
         CreatedByName = item.CreatedByName,
         UpdatedAtUtc = item.UpdatedAtUtc.AsUtc(),

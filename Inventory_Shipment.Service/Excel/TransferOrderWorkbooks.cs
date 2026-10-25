@@ -98,13 +98,77 @@ public static class TransferOrderWorkbooks
     }
 
     /// <summary>Sheets "Order", "Lines" and "Dispatches and receipts" (2.5.6); the values only <paramref name="withValues"/>.</summary>
-    public static byte[] BuildExport(TransferOrderDto order, bool withValues)
+    public static byte[] BuildExport(TransferOrderDto order, bool withValues) => BuildExport(order, withValues, []);
+
+    /// <summary>
+    /// (93) The same, + the sheet "Batch, serial and expiry" after "Dispatches and receipts" when a posting of the order
+    /// carries tracking rows (<paramref name="tracking"/>, read per posting); an order without any exports as before.
+    /// </summary>
+    public static byte[] BuildExport(TransferOrderDto order, bool withValues, IReadOnlyList<TransferPostingTracking> tracking)
     {
         using var workbook = new XLWorkbook();
         WriteOrder(workbook.AddWorksheet("Order"), order, withValues);
         WriteLines(workbook.AddWorksheet("Lines"), order);
         WritePostings(workbook.AddWorksheet("Dispatches and receipts"), order, withValues);
+        if (tracking.Any(t => t.Rows.Count > 0))
+        {
+            WriteTracking(workbook.AddWorksheet("Batch, serial and expiry"), tracking);
+        }
+
         return ToBytes(workbook);
+    }
+
+    /// <summary>
+    /// (93) One row per serial no., batch or expiry group of each posting line, in posting order then as the posting
+    /// lists them: Posting | Kind | Date | Status | Line | Item code | Item name | Serial no. | Batch no. | Expiry | Pcs |
+    /// Lost | Received from | On the way | State. "Received from" is a receipt row's dispatch; State the row's sentence.
+    /// </summary>
+    private static void WriteTracking(IXLWorksheet sheet, IReadOnlyList<TransferPostingTracking> tracking)
+    {
+        string[] columns =
+        [
+            "Posting", "Kind", "Date", "Status", "Line", "Item code", "Item name", "Serial no.", "Batch no.", "Expiry", "Pcs",
+            "Lost", "Received from", "On the way", "State",
+        ];
+        WriteHeader(sheet, 1, columns);
+
+        var row = 1;
+        foreach (var (posting, rows) in tracking)
+        {
+            var itemNames = posting.Lines.ToDictionary(l => l.Id, l => l.ItemName);
+            foreach (var r in rows)
+            {
+                row++;
+                sheet.Cell(row, 1).Value = posting.DocumentNumber;
+                sheet.Cell(row, 2).Value = posting.Kind;
+                sheet.Cell(row, 3).Value = posting.PostingDate.ToString("dd/MM/yyyy");
+                sheet.Cell(row, 4).Value = posting.Status;
+                sheet.Cell(row, 5).Value = r.PostingLineNumber;
+                sheet.Cell(row, 6).Value = r.ItemCode;
+                sheet.Cell(row, 7).Value = itemNames.TryGetValue(r.PostingLineId, out var name) ? name : string.Empty;
+                sheet.Cell(row, 8).Value = r.SerialNo ?? string.Empty;
+                sheet.Cell(row, 9).Value = r.BatchNo ?? string.Empty;
+                sheet.Cell(row, 10).Value = r.ExpiryDate?.ToString("dd/MM/yyyy") ?? string.Empty;
+                sheet.Cell(row, 11).Value = r.QuantityBase;
+                sheet.Cell(row, 12).Value = r.LostBase;
+                sheet.Cell(row, 13).Value = r.DispatchNumber ?? string.Empty;
+                sheet.Cell(row, 14).Value = r.OnTheWayBase;
+                sheet.Cell(row, 15).Value = r.StateText;
+            }
+        }
+
+        if (row > 1)
+        {
+            sheet.Range(2, 11, row, 12).Style.NumberFormat.Format = "#,##0";
+            sheet.Range(2, 14, row, 14).Style.NumberFormat.Format = "#,##0";
+            // Serial and batch numbers are text, never numbers: a chassis no. of digits keeps its leading zeros.
+            sheet.Range(2, 8, row, 9).Style.NumberFormat.Format = "@";
+        }
+
+        sheet.SheetView.FreezeRows(1);
+        sheet.Columns().AdjustToContents();
+        sheet.Column(7).Width = Math.Min(sheet.Column(7).Width, 36);
+        sheet.Column(15).Width = Math.Min(Math.Max(sheet.Column(15).Width, 24), 60);
     }
 
     private static void WriteOrder(IXLWorksheet sheet, TransferOrderDto order, bool withValues)
@@ -303,3 +367,6 @@ public static class TransferOrderWorkbooks
         return stream.ToArray();
     }
 }
+
+/// <summary>(93) One posting of the order and its tracking rows (usp_TransferPosting_Tracking), for the export's sheet.</summary>
+public sealed record TransferPostingTracking(TransferPostingDto Posting, IReadOnlyList<TransferTrackingRowDto> Rows);

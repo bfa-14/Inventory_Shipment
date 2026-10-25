@@ -44,7 +44,9 @@ public sealed partial class TransferOrdersController : ControllerBase
     /// approval). Filters: search, status (a shown status or Open), branchId (From's or To's), fromWarehouseId,
     /// toWarehouseId, onTheWayOnly, lateOnly, waitingForApproval, dateFrom, dateTo, itemId; sortColumn / sortDirection;
     /// page / pageSize (at most 200). (92) mine = any | from | to: the "Warehouses" filter of a reader limited to some
-    /// warehouses (From or To one of theirs / From / To); a reader with All warehouses is never filtered by it.
+    /// warehouses (From or To one of theirs / From / To); a reader with All warehouses is never filtered by it. (93)
+    /// trackingNo = "Batch or serial no." (contains, 3 characters or more): each row then says what became of the number
+    /// (matchedTracking).
     /// </summary>
     [HttpGet]
     [HasPermission(Permissions.Inventory.TransfersView)]
@@ -405,7 +407,10 @@ public sealed partial class TransferOrdersController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    /// <summary>TRO-{number}.xlsx: sheets Order, Lines and "Dispatches and receipts" (values only with View Stock Valuation).</summary>
+    /// <summary>
+    /// TRO-{number}.xlsx: sheets Order, Lines and "Dispatches and receipts" (values only with View Stock Valuation); (93)
+    /// + "Batch, serial and expiry" when a posting carries serial nos., batches or expiry dates.
+    /// </summary>
     [HttpGet("{id:int}/export")]
     [HasPermission(Permissions.Inventory.TransfersView)]
     [Produces(TransferOrderWorkbooks.ContentType)]
