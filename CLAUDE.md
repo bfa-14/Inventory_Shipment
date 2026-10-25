@@ -27,7 +27,7 @@ Inventory_Shipment.Repository   Dapper over stored procedures; Database/Schema.s
 Inventory_Shipment.Model        DTOs, entities, enums, options - no dependencies
 Database/NN_*.sql               one idempotent script per change, numbered in order
 DatabaseProject/                SSDT project mirroring the database (refreshed by tools/refresh-dbproject.sh)
-tools/                          refresh-dbproject.sh, compare-dbproject.sh, sync-sqlproj.py
+tools/                          refresh-dbproject.sh, compare-dbproject.sh, sync-sqlproj.py, sort-dbproject-tables.py
 deploy/                         Docker stack and server scripts (setup, update, backup, restore)
 ```
 

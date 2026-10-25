@@ -30,12 +30,6 @@ CREATE TABLE [inventory].[TransferPostingLines] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_TransferPostingLines_Posting]
-    ON [inventory].[TransferPostingLines]([PostingId] ASC);
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_TransferPostingLines_Dispatch]
     ON [inventory].[TransferPostingLines]([DispatchLineId] ASC) WHERE ([DispatchLineId] IS NOT NULL);
 
@@ -44,6 +38,12 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_TransferPostingLines_OrderLine]
     ON [inventory].[TransferPostingLines]([TransferOrderLineId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_TransferPostingLines_Posting]
+    ON [inventory].[TransferPostingLines]([PostingId] ASC);
 
 
 GO

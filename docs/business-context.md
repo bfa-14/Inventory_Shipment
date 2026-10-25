@@ -2642,9 +2642,13 @@ every step that did not behave as described.
     applies Schema.sql), runs `refresh-dbproject.sh` on it and pushes "DatabaseProject refreshed (up to script NN)".
     The project then holds exactly what testing and production get. Before, it was refreshed from a developer's local
     database, which also held 4 objects of `Database/16_Inventory_ItemImport.sql` never in Schema.sql nor used by the
-    code (`usp_ItemImport_Commit` / `_Validate`, `ItemImportLogs`, `tvp_ItemImportRow`) and listed some indexes in
-    another order. **The PCs only pull**: a refresh from a PC puts those back (`git checkout -- DatabaseProject` before
-    pulling if it was changed; on any PC `tools/compare-dbproject.sh` shows how the local database differs).
+    code (`usp_ItemImport_Commit` / `_Validate`, `ItemImportLogs`, `tvp_ItemImportRow`). **The PCs only pull**: a
+    refresh from a PC puts those back (`git checkout -- DatabaseProject` before pulling if it was changed; on any PC
+    `tools/compare-dbproject.sh` shows how the local database differs).
+  - **Indexes in a fixed order**: sqlpackage writes a table's indexes in the order of their internal ids, which differ
+    from one database to another, so each refresh from another database rewrote some 30 table files with no real
+    change. `tools/sort-dbproject-tables.py` (run by both tools) puts the statements after each CREATE TABLE in
+    alphabetical order.
 - **Other files in the API repo:** `docs/notes/container-costing-rules.md`, `docs/notes/database-project-workflow.md`,
   `.githooks` (pre-commit check).
 - **`CLAUDE.md`** sits in `InventoryShipment-Project/`, the parent folder **outside both repositories**. It holds the

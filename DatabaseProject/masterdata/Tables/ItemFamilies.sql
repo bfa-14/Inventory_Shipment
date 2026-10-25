@@ -25,14 +25,14 @@ CREATE TABLE [masterdata].[ItemFamilies] (
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemFamilies_Parent_FamilyName]
-    ON [masterdata].[ItemFamilies]([ParentId] ASC, [FamilyName] ASC);
+CREATE NONCLUSTERED INDEX [IX_ItemFamilies_ParentId]
+    ON [masterdata].[ItemFamilies]([ParentId] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ItemFamilies_ParentId]
-    ON [masterdata].[ItemFamilies]([ParentId] ASC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemFamilies_Parent_FamilyName]
+    ON [masterdata].[ItemFamilies]([ParentId] ASC, [FamilyName] ASC);
 
 
 GO

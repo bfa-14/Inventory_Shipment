@@ -54,32 +54,8 @@ CREATE TABLE [purchase].[GoodsReceipts] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Supplier]
-    ON [purchase].[GoodsReceipts]([SupplierId] ASC, [DocumentDate] DESC);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_StatusDate]
-    ON [purchase].[GoodsReceipts]([Status] ASC, [DocumentDate] DESC);
-
-
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_GoodsReceipts_OpenContainer]
-    ON [purchase].[GoodsReceipts]([ContainerId] ASC) WHERE ([ContainerId] IS NOT NULL AND [Status]<(3));
-
-
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_GoodsReceipts_Number]
-    ON [purchase].[GoodsReceipts]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Order]
-    ON [purchase].[GoodsReceipts]([PurchaseOrderId] ASC) WHERE ([PurchaseOrderId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Invoice]
+    ON [purchase].[GoodsReceipts]([PurchaseInvoiceId] ASC) WHERE ([PurchaseInvoiceId] IS NOT NULL);
 
 
 GO
@@ -90,8 +66,32 @@ CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Movement]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Invoice]
-    ON [purchase].[GoodsReceipts]([PurchaseInvoiceId] ASC) WHERE ([PurchaseInvoiceId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Order]
+    ON [purchase].[GoodsReceipts]([PurchaseOrderId] ASC) WHERE ([PurchaseOrderId] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_StatusDate]
+    ON [purchase].[GoodsReceipts]([Status] ASC, [DocumentDate] DESC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_GoodsReceipts_Supplier]
+    ON [purchase].[GoodsReceipts]([SupplierId] ASC, [DocumentDate] DESC);
+
+
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_GoodsReceipts_Number]
+    ON [purchase].[GoodsReceipts]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+
+
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_GoodsReceipts_OpenContainer]
+    ON [purchase].[GoodsReceipts]([ContainerId] ASC) WHERE ([ContainerId] IS NOT NULL AND [Status]<(3));
 
 
 GO

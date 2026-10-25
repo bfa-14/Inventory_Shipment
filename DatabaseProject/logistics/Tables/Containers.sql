@@ -93,20 +93,14 @@ CREATE TABLE [logistics].[Containers] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_Containers_OrderMonth]
-    ON [logistics].[Containers]([OrderMonthKey] ASC);
-
-
-GO
-
-CREATE UNIQUE NONCLUSTERED INDEX [UX_Containers_ContainerNo]
-    ON [logistics].[Containers]([ContainerNo] ASC) WHERE ([ContainerNo] IS NOT NULL AND [Status]<(7));
-
-
-GO
-
 CREATE NONCLUSTERED INDEX [IX_Containers_Order]
     ON [logistics].[Containers]([PurchaseOrderId] ASC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_Containers_OrderMonth]
+    ON [logistics].[Containers]([OrderMonthKey] ASC);
 
 
 GO
@@ -119,6 +113,12 @@ GO
 
 CREATE NONCLUSTERED INDEX [IX_Containers_Warehouse]
     ON [logistics].[Containers]([WarehouseId] ASC, [Status] ASC);
+
+
+GO
+
+CREATE UNIQUE NONCLUSTERED INDEX [UX_Containers_ContainerNo]
+    ON [logistics].[Containers]([ContainerNo] ASC) WHERE ([ContainerNo] IS NOT NULL AND [Status]<(7));
 
 
 GO
