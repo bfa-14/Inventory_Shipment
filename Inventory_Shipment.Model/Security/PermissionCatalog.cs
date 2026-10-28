@@ -151,6 +151,14 @@ public static class Permissions
 
         /// <summary>Inventory › Stock Valuation (script 75): its own screen, no longer View Items.</summary>
         public const string ValuationView = "inventory.valuation.view";
+
+        /// <summary>
+        /// (94) What an item costs - average, last and FOB cost, stock values - on the inventory screens, goods receipts, the
+        /// item search, the Dashboard and transfer orders. Without it every such field leaves the API null and the pages
+        /// draw none of them; an Inventory In is then priced by the server. Stock Valuation, purchase documents, containers
+        /// (their invoices, charges and landed cost) and sales keep their own.
+        /// </summary>
+        public const string CostsView = "inventory.costs.view";
         public const string ItemsCreate = "inventory.items.create";
         public const string ItemsEdit = "inventory.items.edit";
         public const string ItemsDelete = "inventory.items.delete";
@@ -450,6 +458,9 @@ public static class Permissions
             "See the Item Definition list and item details.", 400),
         new(Inventory.ValuationView, "View Stock Valuation", InventoryModule,
             "Open Stock Valuation: the stock of every item and warehouse at its average cost.", 405),
+        // Script 94: name, module, description and order exactly as its MERGE writes them (the sync copies these over).
+        new(Inventory.CostsView, "View item costs", InventoryModule,
+            "See item costs (average, last, FOB) and stock values on Item Definition, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfers and the Dashboard. Without it an Inventory In takes the item's last cost, else its average.", 406),
         new(Inventory.ItemsCreate, "Create items", InventoryModule,
             "Add new items with units and attachments.", 410),
         new(Inventory.ItemsEdit, "Edit items", InventoryModule,

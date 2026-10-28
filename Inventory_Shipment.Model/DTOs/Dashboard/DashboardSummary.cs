@@ -108,7 +108,8 @@ public sealed class DashboardPayablesDto
 /// <summary>Stock on hand at the items' moving average cost.</summary>
 public sealed class DashboardInventoryDto
 {
-    public decimal ValueBase { get; set; }
+    /// <summary>(94) Null without View item costs (the item count stays).</summary>
+    public decimal? ValueBase { get; set; }
     public int ItemsInStock { get; set; }
 }
 

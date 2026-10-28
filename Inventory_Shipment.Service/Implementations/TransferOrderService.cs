@@ -26,9 +26,9 @@ namespace Inventory_Shipment.Service.Implementations;
 /// the procedure's refusal as it comes with a code, and re-reads the order after every action: the answer is the
 /// server's document, never a patch of what was sent.
 ///
-/// VALUES ARE A PERMISSION, NOT A SCREEN (FB decision 21): without inventory.valuation.view every value figure leaves as
-/// null - never 0, which would read as a measured zero - and the export leaves its value columns out (script 94 changes
-/// only the permission).
+/// VALUES ARE A PERMISSION, NOT A SCREEN (FB decision 21): without inventory.costs.view (View item costs, script 94;
+/// inventory.valuation.view before it) every value figure leaves as null - never 0, which would read as a measured zero -
+/// and the export leaves its value columns out.
 ///
 /// THE APPROVAL EMAILS (<see cref="ITransferApprovalMailer"/>) are queued after the procedure decided, outside its
 /// transaction; a failure becomes the answer's emailWarning, never the action's failure.
@@ -54,9 +54,6 @@ public sealed partial class TransferOrderService : ITransferOrderService
 
     /// <summary>The page's own type: the import's unit preference (Inventory: the base unit) and its "Document Type" check.</summary>
     private const string TransferOrderTypeCode = "TRO";
-
-    /// <summary>Who sees the value figures (cost frozen at dispatch, the value on the way, losses). Script 94 changes it.</summary>
-    private const string ValuePermission = Permissions.Inventory.ValuationView;
 
     private static readonly CultureInfo Numbers = CultureInfo.InvariantCulture;
 
@@ -916,7 +913,8 @@ public sealed partial class TransferOrderService : ITransferOrderService
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
         }
 
-        var withValues = permissions.Contains(ValuePermission);
+        // (94) The value columns: View item costs (View Stock Valuation before script 94).
+        var withValues = ItemCosts.Sees(permissions);
         // (93) The sheet "Batch, serial and expiry": the rows of each posting that carries any, read posting by posting.
         var tracking = await TrackingForExportAsync(read.Value, cancellationToken);
         return Result<(byte[], string)>.Success(
@@ -1117,7 +1115,9 @@ public sealed partial class TransferOrderService : ITransferOrderService
     /// </summary>
     internal static TransferOrderDto WithValuesFor(TransferOrderDto order, IReadOnlySet<string> permissions)
     {
-        if (permissions.Contains(ValuePermission))
+        // (94) Who sees the value figures (cost frozen at dispatch, the value on the way, losses): View item costs, the
+        // permission of every item cost (View Stock Valuation before script 94; every role holding it was granted this).
+        if (ItemCosts.Sees(permissions))
         {
             return order;
         }

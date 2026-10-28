@@ -7,6 +7,7 @@ using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -47,7 +48,9 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         try
         {
             var rows = await _shortages.CalculateAsync(query, cancellationToken);
-            return Result<IReadOnlyList<ShortageLiveRowDto>>.Success(rows);
+            // (94) The last and average cost null without View item costs.
+            return Result<IReadOnlyList<ShortageLiveRowDto>>.Success(
+                ItemCosts.Sees(permissions) ? rows : rows.Select(r => ItemCosts.Strip(r)).ToList());
         }
         catch (BusinessRuleException ex)
         {
@@ -82,7 +85,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             return Forbidden<ShortageDocumentDto>(Permissions.Inventory.ShortagesView);
         }
 
-        return await ReadAsync(id, cancellationToken);
+        return await ReadAsync(id, permissions, cancellationToken);
     }
 
     /* ── writing ──────────────────────────────────────────────────────────────────────────────── */
@@ -120,7 +123,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         }
 
         _logger.LogInformation("Shortage plan {DocumentId} saved by user {UserId}", savedId, userId);
-        return await ReadAsync(savedId, cancellationToken);
+        return await ReadAsync(savedId, permissions, cancellationToken);
     }
 
     public Task<Result<ShortageDocumentDto>> RecalculateAsync(
@@ -205,7 +208,8 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
         }
 
-        return Result<(byte[], string)>.Success((BuildWorkbook(read.Value), $"Shortage_{read.Value.DocumentNumber}.xlsx"));
+        return Result<(byte[], string)>.Success(
+            (BuildWorkbook(read.Value, ItemCosts.Sees(permissions)), $"Shortage_{read.Value.DocumentNumber}.xlsx"));
     }
 
     public async Task<Result<(byte[] Content, string FileName)>> ExportLiveAsync(
@@ -218,7 +222,8 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         }
 
         var stamp = _clock.GetUtcNow().ToString("yyyyMMdd");
-        return Result<(byte[], string)>.Success((BuildLiveWorkbook(rows.Value, query), $"Shortage_Live_{stamp}.xlsx"));
+        return Result<(byte[], string)>.Success(
+            (BuildLiveWorkbook(rows.Value, query, ItemCosts.Sees(permissions)), $"Shortage_Live_{stamp}.xlsx"));
     }
 
     /// <summary>
@@ -240,8 +245,9 @@ public sealed class ShortageDocumentService : IShortageDocumentService
     /// The plan as it would be filed: the header block says which warehouse, supplier and lead time
     /// the figures belong to, every snapshot column follows, and the totals close it. A posted plan
     /// exports what was posted — the workbook reads the stored snapshot like the page does.
+    /// (94) Without View item costs the Last Cost column is left out, not blank.
     /// </summary>
-    private static byte[] BuildWorkbook(ShortageDocumentDto document)
+    private static byte[] BuildWorkbook(ShortageDocumentDto document, bool includeCosts)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet("Shortage Plan");
@@ -285,7 +291,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         [
             "#", .. FigureColumns,
             "Manual Monthly Sales", "Purchase Unit", "Required Qty", "Required (base)", "PC per Container",
-            "Container Requirement", "Min", "Max", "Last Cost", "Notes",
+            "Container Requirement", "Min", "Max", .. (includeCosts ? (string[])["Last Cost"] : []), "Notes",
         ];
         WriteColumnHeader(sheet, row, columns);
 
@@ -304,8 +310,12 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             sheet.Cell(row, next + 5).Value = Num(line.ContainerRequirement);
             sheet.Cell(row, next + 6).Value = Num(line.MinQuantity);
             sheet.Cell(row, next + 7).Value = Num(line.MaxQuantity);
-            sheet.Cell(row, next + 8).Value = Num(line.LastCost);
-            sheet.Cell(row, next + 9).Value = line.Notes ?? string.Empty;
+            if (includeCosts)
+            {
+                sheet.Cell(row, next + 8).Value = Num(line.LastCost);
+            }
+
+            sheet.Cell(row, next + (includeCosts ? 9 : 8)).Value = line.Notes ?? string.Empty;
         }
 
         var after = 2 + FigureCount;
@@ -314,7 +324,10 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             FormatFigures(sheet, firstLineRow, row, 2);
             sheet.Range(firstLineRow, after, row, after).Style.NumberFormat.Format = "#,##0.00";
             sheet.Range(firstLineRow, after + 5, row, after + 5).Style.NumberFormat.Format = "#,##0.00";
-            sheet.Range(firstLineRow, after + 8, row, after + 8).Style.NumberFormat.Format = "#,##0.00";
+            if (includeCosts)
+            {
+                sheet.Range(firstLineRow, after + 8, row, after + 8).Style.NumberFormat.Format = "#,##0.00";
+            }
         }
 
         row += 2;
@@ -341,14 +354,15 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         sheet.Columns().AdjustToContents();
         sheet.Column(2).Width = 22;
         sheet.Column(3).Width = 40;
-        sheet.Column(after + 9).Width = 30;
+        sheet.Column(after + (includeCosts ? 9 : 8)).Width = 30;
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
         return stream.ToArray();
     }
 
-    private static byte[] BuildLiveWorkbook(IReadOnlyList<ShortageLiveRowDto> rows, ShortageCalculateQuery query)
+    /// <summary>The live calculation as a workbook. (94) Without View item costs the Last Cost column is left out.</summary>
+    private static byte[] BuildLiveWorkbook(IReadOnlyList<ShortageLiveRowDto> rows, ShortageCalculateQuery query, bool includeCosts)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet("Shortages (live)");
@@ -365,7 +379,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         [
             .. FigureColumns,
             "Sold in Period", "Purchase Unit", "Suggested Qty", "PC per Container", "Container Requirement",
-            "Min", "Max", "Last Cost", "Supplier",
+            "Min", "Max", .. (includeCosts ? (string[])["Last Cost"] : []), "Supplier",
         ];
         WriteColumnHeader(sheet, row, columns);
 
@@ -382,8 +396,12 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             sheet.Cell(row, next + 4).Value = Num(r.ContainerRequirement);
             sheet.Cell(row, next + 5).Value = Num(r.MinQuantity);
             sheet.Cell(row, next + 6).Value = Num(r.MaxQuantity);
-            sheet.Cell(row, next + 7).Value = Num(r.LastCost);
-            sheet.Cell(row, next + 8).Value = r.SupplierName ?? string.Empty;
+            if (includeCosts)
+            {
+                sheet.Cell(row, next + 7).Value = Num(r.LastCost);
+            }
+
+            sheet.Cell(row, next + (includeCosts ? 8 : 7)).Value = r.SupplierName ?? string.Empty;
         }
 
         if (rows.Count > 0)
@@ -391,7 +409,10 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             var after = 1 + FigureCount;
             FormatFigures(sheet, firstLineRow, row, 1);
             sheet.Range(firstLineRow, after + 4, row, after + 4).Style.NumberFormat.Format = "#,##0.00";
-            sheet.Range(firstLineRow, after + 7, row, after + 7).Style.NumberFormat.Format = "#,##0.00";
+            if (includeCosts)
+            {
+                sheet.Range(firstLineRow, after + 7, row, after + 7).Style.NumberFormat.Format = "#,##0.00";
+            }
         }
 
         sheet.Columns().AdjustToContents();
@@ -453,12 +474,18 @@ public sealed class ShortageDocumentService : IShortageDocumentService
 
     /* ── the shared shapes ────────────────────────────────────────────────────────────────────── */
 
-    private async Task<Result<ShortageDocumentDto>> ReadAsync(int id, CancellationToken cancellationToken)
+    /// <summary>The plan as this reader receives it: (94) its lines' last cost null without View item costs.</summary>
+    private async Task<Result<ShortageDocumentDto>> ReadAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
     {
         var document = await _shortages.GetAsync(id, cancellationToken);
+        // (94) The lines' last cost null without View item costs; the totals of the plan's purchase orders too, unless the
+        // reader may see purchase orders (where those amounts are anyway).
         return document is null
             ? Result<ShortageDocumentDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<ShortageDocumentDto>.Success(document);
+            : Result<ShortageDocumentDto>.Success(ItemCosts.Sees(permissions)
+                ? document
+                : ItemCosts.Strip(document, permissions.Contains(Permissions.Purchase.OrdersView)));
     }
 
     private async Task<Result<ShortageDocumentDto>> ChangeAsync(
@@ -482,7 +509,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         _logger.LogInformation("Shortage plan {DocumentId} {Verb} by user {UserId}", id, verb, userId);
 
         // Re-read: a recalculation replaces every figure and the totals, posting stamps who and when.
-        return await ReadAsync(id, cancellationToken);
+        return await ReadAsync(id, permissions, cancellationToken);
     }
 
     private static Result<T> Failure<T>(BusinessRuleException exception)

@@ -42,12 +42,18 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
 
     private readonly IGoodsReceiptRepository _receipts;
     private readonly IWarehouseAccessService _access;
+    private readonly IUserRepository _users;
+    private readonly IItemRepository _items;
     private readonly ILogger<GoodsReceiptService> _logger;
 
-    public GoodsReceiptService(IGoodsReceiptRepository receipts, IWarehouseAccessService access, ILogger<GoodsReceiptService> logger)
+    public GoodsReceiptService(
+        IGoodsReceiptRepository receipts, IWarehouseAccessService access, IUserRepository users, IItemRepository items,
+        ILogger<GoodsReceiptService> logger)
     {
         _receipts = receipts;
         _access = access;
+        _users = users;
+        _items = items;
         _logger = logger;
     }
 
@@ -67,15 +73,23 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             return Forbidden<GoodsReceiptListResult>(Permissions.Purchase.GoodsReceiptsView);
         }
 
+        // (94) A list is never sorted by a figure the reader may not see: the order would reveal it.
+        var seesCosts = ItemCosts.Sees(permissions);
+        if (!seesCosts && string.Equals(query.SortBy, "ValueBase", StringComparison.OrdinalIgnoreCase))
+        {
+            query.SortBy = "DocumentDate";
+        }
+
         var (items, totalCount, totals) = await _receipts.SearchAsync(query, cancellationToken);
 
         return Result<GoodsReceiptListResult>.Success(new GoodsReceiptListResult
         {
-            Items = items,
+            // (94) The value of each receipt and of "Received not invoiced" null without View item costs; the pieces stay.
+            Items = seesCosts ? items : items.Select(r => ItemCosts.Strip(r)).ToList(),
             Page = query.Page,
             PageSize = query.PageSize,
             TotalCount = totalCount,
-            Totals = totals,
+            Totals = seesCosts ? totals : ItemCosts.Strip(totals),
         });
     }
 
@@ -88,10 +102,14 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
     public Task<GoodsReceiptSwitchDto> SwitchAsync(CancellationToken cancellationToken = default)
         => _receipts.SwitchAsync(cancellationToken);
 
+    /// <summary>
+    /// One receipt, as the page reads it to edit it: (94) its costs follow the token CONFIRMED by the database
+    /// (ItemCosts.ConfirmedAsync), so a page never holds a draft stripped by a token older than the reader's permission.
+    /// </summary>
     public async Task<Result<GoodsReceiptDto>> GetAsync(
         int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
         => permissions.Contains(Permissions.Purchase.GoodsReceiptsView)
-            ? await ReadAsync(id, userId, cancellationToken)
+            ? await ReadAsync(id, userId, await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken), cancellationToken)
             : Forbidden<GoodsReceiptDto>(Permissions.Purchase.GoodsReceiptsView);
 
     /* ── a draft ──────────────────────────────────────────────────────────────────────────────── */
@@ -117,18 +135,38 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
                 ErrorType.Validation, "sourceKind must be Container, Order, Invoice or Manual.", "VALIDATION");
         }
 
+        // The stored draft, read at most once: by the access check (92) and by the cost rule (94), whichever asks first.
+        Task<GoodsReceiptDto?>? storedRead = null;
+        Task<GoodsReceiptDto?> StoredAsync()
+            => storedRead ??= id is { } storedId ? _receipts.GetAsync(storedId, cancellationToken) : Task.FromResult<GoodsReceiptDto?>(null);
+
         /* (92) "Receive into" and every line's warehouse must be the user's; a line already on the stored draft in one that
            is not may stay as it is, or move to one of theirs ("Receive into" changed), A8: the automatic draft of a
            Delivery, an administrator's draft - its counted pieces, source and "Nothing more will come" kept. Posting it
            is then refused until it is changed. */
         var refusal = await _access.DraftRefusalAsync(
             userId, DraftOf(request),
-            id is { } storedId ? async () => DraftOf(await _receipts.GetAsync(storedId, cancellationToken)) : null,
+            id is not null ? async () => DraftOf(await StoredAsync()) : null,
             cancellationToken);
         if (refusal is not null)
         {
             return WarehouseAccess.Failure<GoodsReceiptDto>(refusal);
         }
+
+        /* (94) The typed cost of a line without an order: dropped for a reader who may not see item costs - asked of the
+           database when the token says so, since a token older than the permission would drop a viewer's costs - and
+           whenever the page says it drew none (costsHidden): a saved line then keeps its cost by its id. */
+        permissions = await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken);
+        if (!ItemCosts.Sees(permissions) || request.CostsHidden)
+        {
+            ApplyManualCosts(request, await StoredAsync());
+        }
+
+        /* (94) A line without an order that still has no cost - dropped above, or a viewer's empty box - takes the item's
+           cost as an Inventory In line does (C13): its last cost when it is not 0, else its average. Left to
+           usp_GoodsReceipt_Save's own default it would take the last cost even when that is 0 (a free receipt line sets
+           it so) and the goods would enter stock at nothing. An item with neither cost is left to the procedure. */
+        await PriceManualLinesAsync(request, cancellationToken);
 
         int savedId;
         try
@@ -141,7 +179,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         }
 
         _logger.LogInformation("Goods receipt {GoodsReceiptId} saved by user {UserId}", savedId, userId);
-        return await ReadAsync(savedId, userId, cancellationToken);
+        return await ReadAsync(savedId, userId, permissions, cancellationToken);
     }
 
     public async Task<Result> DeleteAsync(
@@ -182,6 +220,9 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             return Forbidden<GoodsReceiptDto>(Permissions.Purchase.GoodsReceiptsPost);
         }
 
+        // (94) The answer is read with the permission the database confirms, as Get and Save: a token older than a
+        // grant would strip the posted document the page had just shown with its costs.
+        permissions = await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken);
         var posted = await PostCoreAsync(id, ToRowVersion(rowVersion), userId, cancellationToken);
         if (posted.IsFailure)
         {
@@ -190,7 +231,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
 
         // Re-read: posting gives the number, writes the ledger and the costs, counts the order's received pieces and offloads the
         // container. The document is the server's answer, not a patch of what was sent.
-        return await ReadAsync(id, userId, cancellationToken);
+        return await ReadAsync(id, userId, permissions, cancellationToken);
     }
 
     public async Task<Result<IReadOnlyList<BulkActionItemResult>>> PostManyAsync(
@@ -220,6 +261,8 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             return WarehouseAccess.Failure<GoodsReceiptDto>(refusal);
         }
 
+        permissions = await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken);   // (94) as Post
+
         try
         {
             await _receipts.CancelAsync(id, request.Reason.Trim(), ToRowVersion(request.RowVersion), userId, cancellationToken);
@@ -235,7 +278,7 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         }
 
         _logger.LogInformation("Goods receipt {GoodsReceiptId} cancelled by user {UserId}", id, userId);
-        return await ReadAsync(id, userId, cancellationToken);
+        return await ReadAsync(id, userId, permissions, cancellationToken);
     }
 
     /// <summary>
@@ -289,17 +332,21 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
                 ErrorType.Validation, "Give one of purchaseOrderId, invoiceId, supplierId or containerId.", "VALIDATION");
         }
 
+        // (94) Each line's price per piece (the order's, or the invoice's FOB) null without View item costs, in every mode.
+        var seesCosts = ItemCosts.Sees(permissions);
+        ReceivableDto Shown(ReceivableDto receivable) => seesCosts ? receivable : ItemCosts.Strip(receivable);
+
         if (query.PurchaseOrderId is { } orderId)
         {
             var order = await _receipts.OrderReceivableAsync(orderId, null, cancellationToken);
             return order.Documents.Count == 0
                 ? Result<ReceivableDto>.Failure(ErrorType.NotFound, "Purchase order not found.", "NOT_FOUND")
-                : Result<ReceivableDto>.Success(order);
+                : Result<ReceivableDto>.Success(Shown(order));
         }
 
         if (query.SupplierId is { } supplierId)
         {
-            return Result<ReceivableDto>.Success(await _receipts.OrderReceivableAsync(null, supplierId, cancellationToken));
+            return Result<ReceivableDto>.Success(Shown(await _receipts.OrderReceivableAsync(null, supplierId, cancellationToken)));
         }
 
         if (query.InvoiceId is { } invoiceId)
@@ -307,13 +354,13 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             var invoice = await _receipts.InvoiceReceivableAsync(invoiceId, cancellationToken);
             return invoice is null
                 ? Result<ReceivableDto>.Failure(ErrorType.NotFound, "Purchase invoice not found.", "NOT_FOUND")
-                : Result<ReceivableDto>.Success(invoice);
+                : Result<ReceivableDto>.Success(Shown(invoice));
         }
 
         var container = await _receipts.ContainerReceivableAsync(query.ContainerId!.Value, cancellationToken);
         return container is null
             ? Result<ReceivableDto>.Failure(ErrorType.NotFound, "Container not found.", "NOT_FOUND")
-            : Result<ReceivableDto>.Success(container);
+            : Result<ReceivableDto>.Success(Shown(container));
     }
 
     public async Task<Result<IReadOnlyList<ReceivableContainerDto>>> ReceivableContainersAsync(
@@ -627,14 +674,14 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
     {
         // The workbook needs no reader's answer (92): read without the warehouse access sentence.
         var read = permissions.Contains(Permissions.Purchase.GoodsReceiptsView)
-            ? await ReadAsync(id, null, cancellationToken)
+            ? await ReadAsync(id, null, permissions, cancellationToken)
             : Forbidden<GoodsReceiptDto>(Permissions.Purchase.GoodsReceiptsView);
         if (read.IsFailure || read.Value is null)
         {
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
         }
 
-        return Result<(byte[], string)>.Success((BuildWorkbook(read.Value), ExportFileName(read.Value)));
+        return Result<(byte[], string)>.Success((BuildWorkbook(read.Value, ItemCosts.Sees(permissions)), ExportFileName(read.Value)));
     }
 
     /// <summary>"GRN-BR-002-000001.xlsx" - without doubling the prefix of a number that starts with it; a draft has none.</summary>
@@ -652,8 +699,11 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
     /// <summary>
     /// The receipt as the warehouse files it: where the goods came from and where they went in the header, then per
     /// line what was expected, what arrived, the difference and its reason, and what the goods cost now.
+    ///
+    /// (94) WITHOUT VIEW ITEM COSTS "Cost per Piece" and "Value" are left out (not blank), and so are the value totals; the
+    /// cost source stays. With it the workbook is the one it always was, cell by cell.
     /// </summary>
-    internal static byte[] BuildWorkbook(GoodsReceiptDto receipt)
+    internal static byte[] BuildWorkbook(GoodsReceiptDto receipt, bool includeCosts = true)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet("Goods Receipt");
@@ -733,9 +783,12 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
         string[] columns =
         [
             "#", "Item Code", "Item Name", "Unit", "Warehouse", "Source", "Expected (pcs)", "Received (pcs)", "Difference",
-            "Reason", "Settled Short (pcs)", $"Cost per Piece ({currency})", $"Value ({currency})", "Cost Source",
-            "Invoiced (pcs)", "Expiry", "Notes",
+            "Reason", "Settled Short (pcs)", .. (includeCosts ? (string[])[$"Cost per Piece ({currency})", $"Value ({currency})"] : []),
+            "Cost Source", "Invoiced (pcs)", "Expiry", "Notes",
         ];
+
+        // (94) The columns after "Settled Short (pcs)" move two to the left when the two cost columns are left out.
+        var shift = includeCosts ? 0 : 2;
         for (var i = 0; i < columns.Length; i++)
         {
             sheet.Cell(row, i + 1).Value = columns[i];
@@ -764,23 +817,31 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             sheet.Cell(row, 9).Value = line.ExpectedQuantityBase is { } expectedPieces ? line.QuantityBase - expectedPieces : Blank.Value;
             sheet.Cell(row, 10).Value = LineReason(line);
             sheet.Cell(row, 11).Value = line.SettledShortBase;
-            sheet.Cell(row, 12).Value = line.UnitCostBase is { } cost ? cost : Blank.Value;
-            sheet.Cell(row, 13).Value = line.ValueBase is { } value ? value : Blank.Value;
-            sheet.Cell(row, 14).Value = line.IsCostEstimate
+            if (includeCosts)
+            {
+                sheet.Cell(row, 12).Value = line.UnitCostBase is { } cost ? cost : Blank.Value;
+                sheet.Cell(row, 13).Value = line.ValueBase is { } value ? value : Blank.Value;
+            }
+
+            sheet.Cell(row, 14 - shift).Value = line.IsCostEstimate
                 ? (line.CostSourceName is null ? "Estimate" : $"{line.CostSourceName} (est.)")
                 : line.CostSourceName ?? string.Empty;
-            sheet.Cell(row, 15).Value = line.InvoicedBase;
-            sheet.Cell(row, 16).Value = line.ExpiryDate?.ToString("dd/MM/yyyy") ?? string.Empty;
-            sheet.Cell(row, 17).Value = line.Notes ?? string.Empty;
+            sheet.Cell(row, 15 - shift).Value = line.InvoicedBase;
+            sheet.Cell(row, 16 - shift).Value = line.ExpiryDate?.ToString("dd/MM/yyyy") ?? string.Empty;
+            sheet.Cell(row, 17 - shift).Value = line.Notes ?? string.Empty;
         }
 
         if (receipt.Lines.Count > 0)
         {
             sheet.Range(firstLineRow, 7, row, 9).Style.NumberFormat.Format = pieces;
             sheet.Range(firstLineRow, 11, row, 11).Style.NumberFormat.Format = pieces;
-            sheet.Range(firstLineRow, 12, row, 12).Style.NumberFormat.Format = unitCost;
-            sheet.Range(firstLineRow, 13, row, 13).Style.NumberFormat.Format = money;
-            sheet.Range(firstLineRow, 15, row, 15).Style.NumberFormat.Format = pieces;
+            if (includeCosts)
+            {
+                sheet.Range(firstLineRow, 12, row, 12).Style.NumberFormat.Format = unitCost;
+                sheet.Range(firstLineRow, 13, row, 13).Style.NumberFormat.Format = money;
+            }
+
+            sheet.Range(firstLineRow, 15 - shift, row, 15 - shift).Style.NumberFormat.Format = pieces;
         }
 
         row += 2;
@@ -793,26 +854,29 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             ("Invoiced (pcs)", receipt.TotalInvoicedBase, false),
         };
 
-        if (receipt.Status != GoodsReceiptStatus.Draft)
+        if (includeCosts)
         {
-            totals.Add(($"Value at receipt ({currency})", receipt.ValueAtReceiptBase, true));
-        }
+            if (receipt.Status != GoodsReceiptStatus.Draft)
+            {
+                totals.Add(($"Value at receipt ({currency})", receipt.ValueAtReceiptBase ?? 0, true));
+            }
 
-        totals.Add((receipt.IsValueEstimate ? $"Value, estimated ({currency})" : $"Current value ({currency})", receipt.CurrentValueBase, true));
+            totals.Add((receipt.IsValueEstimate ? $"Value, estimated ({currency})" : $"Current value ({currency})", receipt.CurrentValueBase ?? 0, true));
+        }
 
         foreach (var (label, value, isMoney) in totals)
         {
-            sheet.Cell(row, 12).Value = label;
-            sheet.Cell(row, 12).Style.Font.Bold = true;
-            sheet.Cell(row, 13).Value = value;
-            sheet.Cell(row, 13).Style.NumberFormat.Format = isMoney ? money : pieces;
+            sheet.Cell(row, 12 - shift).Value = label;
+            sheet.Cell(row, 12 - shift).Style.Font.Bold = true;
+            sheet.Cell(row, 13 - shift).Value = value;
+            sheet.Cell(row, 13 - shift).Style.NumberFormat.Format = isMoney ? money : pieces;
             row++;
         }
 
         sheet.Columns().AdjustToContents();
         sheet.Column(3).Width = 36;
         sheet.Column(10).Width = 36;
-        sheet.Column(17).Width = 30;
+        sheet.Column(17 - shift).Width = 30;
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
@@ -847,7 +911,13 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
 
     /* ── the shared shapes ────────────────────────────────────────────────────────────────────── */
 
-    private async Task<Result<GoodsReceiptDto>> ReadAsync(int id, int? userId, CancellationToken cancellationToken)
+    /// <summary>
+    /// The receipt as this reader receives it, every read path's (Get, the re-reads after Save, Post and Cancel, the
+    /// export): (94) its values, its lines' costs, its matches' invoice costs and its cost adjustments' figures null
+    /// without View item costs (<paramref name="permissions"/> null = an internal caller, which sees them).
+    /// </summary>
+    private async Task<Result<GoodsReceiptDto>> ReadAsync(
+        int id, int? userId, IReadOnlySet<string>? permissions, CancellationToken cancellationToken)
     {
         var receipt = await _receipts.GetAsync(id, cancellationToken);
         if (receipt is null)
@@ -861,7 +931,58 @@ public sealed class GoodsReceiptService : IGoodsReceiptService
             receipt.WarehouseAccessRefusal = await _access.RefusalAsync(reader, WarehousesOf(receipt), cancellationToken: cancellationToken);
         }
 
-        return Result<GoodsReceiptDto>.Success(receipt);
+        return Result<GoodsReceiptDto>.Success(ItemCosts.Sees(permissions) ? receipt : ItemCosts.Strip(receipt));
+    }
+
+    /// <summary>
+    /// (94) THE TYPED COST OF A LINE WITHOUT AN ORDER, for a reader who may not see item costs (or a page that drew none,
+    /// costsHidden): whatever the request carries is dropped; a line keeps the cost it was saved with when its id names a
+    /// stored line of the same item and unit (a colleague typed it), any other goes without one and PriceManualLinesAsync
+    /// then gives it the item's last cost, else its average. A line of an order, an invoice or a container carries no
+    /// typed cost: left as it comes.
+    /// </summary>
+    private static void ApplyManualCosts(GoodsReceiptSaveRequest request, GoodsReceiptDto? stored)
+    {
+        foreach (var line in request.Lines ?? [])
+        {
+            if (line.PoLineId is not null || line.InvoiceLineId is not null || line.ContainerLineId is not null)
+            {
+                continue;
+            }
+
+            line.ManualUnitCostBase = line.Id is { } id
+                && stored?.Lines.FirstOrDefault(s => s.Id == id && s.ItemId == line.ItemId && s.ItemUnitId == line.ItemUnitId) is { } saved
+                ? saved.ManualUnitCostBase
+                : null;
+        }
+    }
+
+    /// <summary>
+    /// (94) The item's cost for every line without an order whose cost is still null, each item read once: its last cost
+    /// when it is not 0, else its average when it is not 0, else null (the procedure's default: an item never costed).
+    /// </summary>
+    private async Task PriceManualLinesAsync(GoodsReceiptSaveRequest request, CancellationToken cancellationToken)
+    {
+        var costs = new Dictionary<int, decimal?>();
+        foreach (var line in request.Lines ?? [])
+        {
+            if (line.ManualUnitCostBase is not null || line.PoLineId is not null || line.InvoiceLineId is not null || line.ContainerLineId is not null)
+            {
+                continue;
+            }
+
+            if (!costs.TryGetValue(line.ItemId, out var cost))
+            {
+                var item = (await _items.GetAsync(line.ItemId, cancellationToken))?.Item;
+                cost = item is null ? null
+                    : item.LastCost > 0 ? item.LastCost
+                    : item.AverageCost > 0 ? item.AverageCost
+                    : null;
+                costs[line.ItemId] = cost;
+            }
+
+            line.ManualUnitCostBase = cost;
+        }
     }
 
     /// <summary>

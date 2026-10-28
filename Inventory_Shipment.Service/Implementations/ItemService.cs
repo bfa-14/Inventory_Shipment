@@ -9,6 +9,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
 using Inventory_Shipment.Service.Mapping;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -40,21 +41,24 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<PagedResult<ItemListDto>>> SearchAsync(
-        ItemQuery query, CancellationToken cancellationToken = default)
+        ItemQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         var (items, totalCount) = await _items.SearchAsync(query, cancellationToken);
+        var seesCosts = ItemCosts.Sees(permissions);
 
         return Result<PagedResult<ItemListDto>>.Success(new PagedResult<ItemListDto>
         {
-            Items = items.Select(i => i.ToListDto()).ToList(),
+            // (94) The list and the item search behind every scan box: the costs and the value null without View item costs.
+            Items = items.Select(i => seesCosts ? i.ToListDto() : ItemCosts.Strip(i.ToListDto())).ToList(),
             Page = query.Page,
             PageSize = query.PageSize,
             TotalCount = totalCount
         });
     }
 
-    public async Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default)
-        => await ReadBackAsync(id, cancellationToken);
+    public async Task<Result<ItemDetailsDto>> GetAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => await ReadBackAsync(id, permissions, cancellationToken);
 
     public async Task<Result<ItemContainersDto>> GetContainersAsync(int id, CancellationToken cancellationToken = default)
     {
@@ -106,7 +110,7 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<ItemStockStatementDto>> GetStockStatementAsync(
-        int id, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
+        int id, DateOnly? from, DateOnly? to, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (from is not null && to is not null && to < from)
         {
@@ -122,7 +126,7 @@ public sealed class ItemService : IItemService
         var (opening, movements) = await _items.GetStockStatementAsync(id, from, to, cancellationToken);
         var totalIn = movements.Sum(m => m.QuantityIn);
         var totalOut = movements.Sum(m => m.QuantityOut);
-        return Result<ItemStockStatementDto>.Success(new ItemStockStatementDto
+        var statement = new ItemStockStatementDto
         {
             ItemId = id,
             ItemCode = loaded.Value.Item.ItemCode,
@@ -132,10 +136,14 @@ public sealed class ItemService : IItemService
             TotalOut = totalOut,
             ClosingBase = opening + totalIn - totalOut,
             Movements = movements,
-        });
+        };
+
+        // (94) Each movement's unit cost (the transfer rows too) null without View item costs.
+        return Result<ItemStockStatementDto>.Success(ItemCosts.Sees(permissions) ? statement : ItemCosts.Strip(statement));
     }
 
-    public async Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         var loaded = await _items.GetAsync(id, cancellationToken);
         if (loaded is null)
@@ -144,7 +152,7 @@ public sealed class ItemService : IItemService
         }
 
         var rows = await _items.GetStockBalanceAsync(id, cancellationToken);
-        return Result<ItemStockBalanceDto>.Success(new ItemStockBalanceDto
+        var balance = new ItemStockBalanceDto
         {
             ItemId = id,
             ItemCode = loaded.Value.Item.ItemCode,
@@ -152,11 +160,14 @@ public sealed class ItemService : IItemService
             Warehouses = rows,
             TotalOnHandBase = rows.Sum(r => r.OnHandBase),
             TotalInventoryValue = rows.Sum(r => r.InventoryValue),
-        });
+        };
+
+        // (94) Stripped AFTER the total is computed: the averages, the values and the total null without View item costs.
+        return Result<ItemStockBalanceDto>.Success(ItemCosts.Sees(permissions) ? balance : ItemCosts.Strip(balance));
     }
 
     public async Task<Result<ItemDetailsDto>> CreateAsync(
-        SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
+        SaveItemRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if ((ValidateQuantities(request) ?? ValidateLink(request) ?? ValidateTracking(request, isNew: true)) is { } validationError)
         {
@@ -185,11 +196,11 @@ public sealed class ItemService : IItemService
 
         _logger.LogInformation("Item {ItemId} ({ItemCode}) created by user {UserId}", id, item.ItemCode, userId);
 
-        return await ReadBackAsync(id, cancellationToken);
+        return await ReadBackAsync(id, permissions, cancellationToken);
     }
 
     public async Task<Result<ItemDetailsDto>> UpdateAsync(
-        int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
+        int id, SaveItemRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if ((ValidateQuantities(request) ?? ValidateLink(request) ?? ValidateTracking(request, isNew: false)) is { } validationError)
         {
@@ -225,7 +236,7 @@ public sealed class ItemService : IItemService
 
         _logger.LogInformation("Item {ItemId} ({ItemCode}) updated by user {UserId}", id, item.ItemCode, userId);
 
-        return await ReadBackAsync(id, cancellationToken);
+        return await ReadBackAsync(id, permissions, cancellationToken);
     }
 
     public async Task<Result> SetActiveAsync(
@@ -654,13 +665,18 @@ public sealed class ItemService : IItemService
         return loaded?.Units.FirstOrDefault(u => u.Id == unitId);
     }
 
-    private async Task<Result<ItemDetailsDto>> ReadBackAsync(int id, CancellationToken cancellationToken)
+    /// <summary>The item card as this reader receives it: (94) its costs and value null without View item costs.</summary>
+    private async Task<Result<ItemDetailsDto>> ReadBackAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
     {
         var loaded = await _items.GetAsync(id, cancellationToken);
+        if (loaded is null)
+        {
+            return Result<ItemDetailsDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
 
-        return loaded is null
-            ? Result<ItemDetailsDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<ItemDetailsDto>.Success(loaded.Value.Item.ToDetailsDto(loaded.Value.Units, loaded.Value.Files));
+        var item = loaded.Value.Item.ToDetailsDto(loaded.Value.Units, loaded.Value.Files);
+        return Result<ItemDetailsDto>.Success(ItemCosts.Sees(permissions) ? item : ItemCosts.Strip(item));
     }
 
     private async Task<Result<IReadOnlyList<ItemUnitDto>>> ReadUnitsAsync(int id, CancellationToken cancellationToken)

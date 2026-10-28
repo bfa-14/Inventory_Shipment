@@ -22,8 +22,11 @@ public sealed class ItemStockBalanceRowDto
     public decimal OnHandBase { get; init; }
 
     public DateTime? LastMovementAtUtc { get; init; }
-    public decimal? AverageCost { get; init; }
-    public decimal InventoryValue { get; init; }
+
+    /// <summary>(94) Null, with <see cref="InventoryValue"/>, without View item costs.</summary>
+    public decimal? AverageCost { get; set; }
+
+    public decimal? InventoryValue { get; set; }
 }
 
 /// <summary>The item, its stock per warehouse, and the totals across them.</summary>
@@ -34,7 +37,9 @@ public sealed class ItemStockBalanceDto
     public string ItemName { get; init; } = string.Empty;
     public IReadOnlyList<ItemStockBalanceRowDto> Warehouses { get; init; } = [];
     public decimal TotalOnHandBase { get; init; }
-    public decimal TotalInventoryValue { get; init; }
+
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? TotalInventoryValue { get; set; }
 }
 
 /// <summary>One movement of an item on its stock statement, with the balance after it.</summary>
@@ -65,7 +70,8 @@ public sealed class ItemStockMovementDto
     /// <summary>The balance after this movement, from the statement's opening balance.</summary>
     public int Balance { get; init; }
 
-    public decimal? UnitCostBase { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? UnitCostBase { get; set; }
 
     /// <summary>The client of a sale or the supplier of a purchase; null for Inventory In / Out.</summary>
     public string? Counterparty { get; init; }

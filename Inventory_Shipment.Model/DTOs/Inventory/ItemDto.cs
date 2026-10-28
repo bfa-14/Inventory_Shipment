@@ -32,16 +32,16 @@ public sealed class ItemListDto
     public int OnHand { get; init; }
 
     /// <summary>The moving average cost per base unit, kept on the item by the postings that add stock.</summary>
-    public decimal? AverageCost { get; init; }
+    public decimal? AverageCost { get; set; }
 
     /// <summary>What the last purchase LANDED at, per base unit.</summary>
-    public decimal? LastCost { get; init; }
+    public decimal? LastCost { get; set; }
 
     /// <summary>What the supplier charged on the last posted invoice, before the charges around it.</summary>
-    public decimal? FobCost { get; init; }
+    public decimal? FobCost { get; set; }
 
-    /// <summary>On hand × average cost, in the base currency.</summary>
-    public decimal InventoryValue { get; init; }
+    /// <summary>On hand × average cost, in the base currency. (94) The costs above and this are null without View item costs.</summary>
+    public decimal? InventoryValue { get; set; }
 
     public int? DefaultSupplierId { get; init; }
     public string? DefaultSupplierName { get; init; }
@@ -88,19 +88,19 @@ public sealed class ItemDetailsDto
     public int OnHand { get; init; }
 
     /// <summary>What the last posted purchase LANDED at, per base unit. An Inventory In does not touch it.</summary>
-    public decimal? LastCost { get; init; }
+    public decimal? LastCost { get; set; }
 
     /// <summary>The moving weighted average, moved only by the postings that add stock. What a sale is costed at.</summary>
-    public decimal? AverageCost { get; init; }
+    public decimal? AverageCost { get; set; }
 
     /// <summary>What the supplier charged per base unit on the last posted invoice, before freight, customs and the rest.</summary>
-    public decimal? FobCost { get; init; }
+    public decimal? FobCost { get; set; }
 
-    /// <summary>On hand × average cost, in the base currency.</summary>
-    public decimal InventoryValue { get; init; }
+    /// <summary>On hand × average cost, in the base currency. (94) The costs above and this are null without View item costs.</summary>
+    public decimal? InventoryValue { get; set; }
 
     /// <summary>The same figure as <see cref="FobCost"/>, under the name the item page used before landed costs existed.</summary>
-    public decimal? LastPurchaseCost { get; init; }
+    public decimal? LastPurchaseCost { get; set; }
 
     /// <summary>The supplier a purchase order for this item is raised on by default.</summary>
     public int? DefaultSupplierId { get; init; }

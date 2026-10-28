@@ -80,7 +80,8 @@ public abstract class ShortageFiguresDto
 
     public int? MinQuantity { get; init; }
     public int? MaxQuantity { get; init; }
-    public decimal? LastCost { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? LastCost { get; set; }
 }
 
 /// <summary>One LIVE row of inventory.usp_Shortage_Calculate — what "Load items" offers to a draft.</summary>
@@ -92,7 +93,8 @@ public sealed class ShortageLiveRowDto : ShortageFiguresDto
     /// <summary>The shortage rounded up to whole purchase units — the default Required Qty of a new line.</summary>
     public int SuggestedRequiredQty { get; init; }
 
-    public decimal? AverageCost { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? AverageCost { get; set; }
     public int? LeadTimeDays { get; init; }
 
     /// <summary>The default supplier, else the last one the item was bought from — what the supplier filter matches.</summary>
@@ -134,7 +136,12 @@ public sealed class ShortagePurchaseOrderDto
     /// <summary>(77) An approved order: 0 Saved, 1 Partially posted, 2 Posted (its posted invoices).</summary>
     public int? InvoicingStatus { get; init; }
 
-    public decimal TotalAmount { get; init; }
+    /// <summary>
+    /// (94) Null for a reader who may see neither item costs nor purchase orders: the order is priced at the item's last
+    /// cost, so a one-item plan's total names it.
+    /// </summary>
+    public decimal? TotalAmount { get; set; }
+
     public string CurrencyCode { get; init; } = string.Empty;
     public DateTime CreatedAtUtc { get; init; }
 }

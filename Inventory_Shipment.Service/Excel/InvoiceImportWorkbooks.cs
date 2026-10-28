@@ -74,7 +74,10 @@ public sealed class InvoiceImportWorkbooks
                 "A whole number of units, greater than zero."),
             ("Unit Price / Cost", "Optional",
                 "On a sales document: the selling price. Blank uses the price list (the branch price first, then the All Branches price); a price typed here is only accepted from a user holding the price-override permission. "
-                + $"On Inventory In and purchase documents: the unit cost. Ignored on {stockOutNames}, which take the moving average cost."),
+                + "On Inventory In and purchase documents: the unit cost. "
+                // (94) What a blank cell means on an Inventory In, and that a reader without View item costs never prices one.
+                + "Blank on an Inventory In: the item's last cost (its average when it has none). For a user who may not see item costs the column is not used on an Inventory In. "
+                + $"Ignored on {stockOutNames}, which take the moving average cost."),
             ("Discount %", "Optional",
                 "Sales and purchase documents only. Blank is 0; it must be between 0 and the maximum the system allows. Both 5 and 5% are read as five percent."),
             ("Notes", "Optional",
@@ -249,7 +252,11 @@ public sealed class InvoiceImportWorkbooks
             sheet.Cell(rowNumber, 2).Value = t.Family;
             sheet.Cell(rowNumber, 3).Value = t.Name
                 + (t.DefaultPricing == "PriceList" ? " — Unit Price / Cost is the selling price"
-                    : t.DefaultPricing == "Cost" && t.StockDirection >= 0 ? " — Unit Price / Cost is the unit cost"
+                    : t.DefaultPricing == "Cost" && t.StockDirection >= 0
+                        ? " — Unit Price / Cost is the unit cost"
+                          // (94) An Inventory In's blank cell is priced by the server.
+                          + (string.Equals(t.Code, StockDocumentTypes.In, StringComparison.OrdinalIgnoreCase)
+                              ? " (blank: the item's last cost, its average when it has none)" : string.Empty)
                     : t.DefaultPricing == "Cost" ? " — the moving average cost is applied; the price column is ignored"
                     : " — no pricing")
                 + (t.BivacItemsOnly ? "; BIVAC items only" : string.Empty);

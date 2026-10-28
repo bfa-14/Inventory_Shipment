@@ -9,7 +9,7 @@ namespace Inventory_Shipment.Service.Interfaces;
 /// <summary>
 /// Transfer orders (script 90): the order, its dispatches and receipts, its approval, its files, its import and export.
 /// Each call checks the caller's permission (the controller's [HasPermission] is the first gate), strips the value
-/// figures for a reader without <c>inventory.valuation.view</c>, and answers the procedures' refusals as they come.
+/// figures for a reader without <c>inventory.costs.view</c> (script 94), and answers the procedures' refusals as they come.
 /// </summary>
 public interface ITransferOrderService
 {

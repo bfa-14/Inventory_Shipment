@@ -7,13 +7,17 @@ namespace Inventory_Shipment.Service.Interfaces;
 
 public interface IItemService
 {
-    Task<Result<PagedResult<ItemListDto>>> SearchAsync(ItemQuery query, CancellationToken cancellationToken = default);
+    /* (94) permissions: the reader's. Without View item costs every cost and value of these answers leaves null. */
+
+    Task<Result<PagedResult<ItemListDto>>> SearchAsync(
+        ItemQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>The item with its units and file metadata.</summary>
-    Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default);
+    Task<Result<ItemDetailsDto>> GetAsync(int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>The item's stock per warehouse, with totals. 404 when the item does not exist.</summary>
-    Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default);
+    Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>The containers carrying the item, and what is still on the way. 404 for an unknown item.</summary>
     Task<Result<ItemContainersDto>> GetContainersAsync(int id, CancellationToken cancellationToken = default);
@@ -23,11 +27,13 @@ public interface IItemService
 
     /// <summary>The item's stock statement across every warehouse, optionally for a date range. 404 for an unknown item.</summary>
     Task<Result<ItemStockStatementDto>> GetStockStatementAsync(
-        int id, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default);
+        int id, DateOnly? from, DateOnly? to, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    Task<Result<ItemDetailsDto>> CreateAsync(SaveItemRequest request, int userId, CancellationToken cancellationToken = default);
+    Task<Result<ItemDetailsDto>> CreateAsync(
+        SaveItemRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
-    Task<Result<ItemDetailsDto>> UpdateAsync(int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default);
+    Task<Result<ItemDetailsDto>> UpdateAsync(
+        int id, SaveItemRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     Task<Result> SetActiveAsync(int id, bool isActive, int userId, CancellationToken cancellationToken = default);
 

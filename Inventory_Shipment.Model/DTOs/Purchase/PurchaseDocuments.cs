@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Sales;
 
@@ -349,10 +350,17 @@ public sealed class PurchaseDocumentLineDto
     public string? Notes { get; init; }
     public int? SourceLineId { get; init; }
     public decimal OnHandBase { get; init; }
+
+    /// <summary>(94) Server only: the item's current costs are not a purchase document's figure, and no page drew them.</summary>
+    [JsonIgnore]
     public decimal? ItemLastCost { get; init; }
+
+    /// <summary>(94) Server only, as <see cref="ItemLastCost"/>.</summary>
+    [JsonIgnore]
     public decimal? ItemAverageCost { get; init; }
 
-    /// <summary>The item's FOB cost as it stands now — what the next invoice would start from.</summary>
+    /// <summary>The item's FOB cost as it stands now — what the next invoice would start from. (94) Server only.</summary>
+    [JsonIgnore]
     public decimal? ItemFobCost { get; init; }
 }
 

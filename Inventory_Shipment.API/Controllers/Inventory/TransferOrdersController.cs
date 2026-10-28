@@ -408,7 +408,7 @@ public sealed partial class TransferOrdersController : ControllerBase
     }
 
     /// <summary>
-    /// TRO-{number}.xlsx: sheets Order, Lines and "Dispatches and receipts" (values only with View Stock Valuation); (93)
+    /// TRO-{number}.xlsx: sheets Order, Lines and "Dispatches and receipts" (values only with View item costs, script 94); (93)
     /// + "Batch, serial and expiry" when a posting carries serial nos., batches or expiry dates.
     /// </summary>
     [HttpGet("{id:int}/export")]

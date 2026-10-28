@@ -172,7 +172,9 @@ public sealed class StockDocumentListDto
     /// <summary>Base units, so a Box of 12 counts as 12 — the same measure the ledger uses.</summary>
     public decimal TotalQuantity { get; init; }
 
-    public decimal TotalCost { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? TotalCost { get; set; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime CreatedAtUtc { get; init; }
@@ -218,8 +220,10 @@ public sealed class StockDocumentLineDto
     /// <summary>Quantity times the packing formula: what actually moves in the ledger.</summary>
     public decimal QuantityBase { get; init; }
 
-    public decimal UnitCost { get; init; }
-    public decimal LineTotal { get; init; }
+    /// <summary>(94) Null, with <see cref="LineTotal"/>, without View item costs.</summary>
+    public decimal? UnitCost { get; set; }
+
+    public decimal? LineTotal { get; set; }
     public string? Notes { get; init; }
 
     /// <summary>Stock in this item and warehouse right now, so the grid can warn before an Out is posted.</summary>
@@ -283,7 +287,9 @@ public sealed class StockDocumentDto
 
     public int TotalItems { get; init; }
     public decimal TotalQuantity { get; init; }
-    public decimal TotalCost { get; init; }
+
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? TotalCost { get; set; }
 
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
@@ -329,6 +335,12 @@ public sealed class SaveStockDocumentLineRequest
 {
     public int LineNo { get; init; }
 
+    /// <summary>
+    /// (94) The line's id as it was read (null on a new row): lets the server keep a saved line's cost for a reader who may
+    /// not see item costs. The lines are still a full replace.
+    /// </summary>
+    public int? Id { get; init; }
+
     [Range(1, int.MaxValue)]
     public int ItemId { get; init; }
 
@@ -343,9 +355,13 @@ public sealed class SaveStockDocumentLineRequest
     [Range(1, int.MaxValue)]
     public int Quantity { get; init; }
 
-    /// <summary>Per unit, base currency. Null is 0 on an In; ignored on an Out, which takes the average cost.</summary>
+    /// <summary>
+    /// Per unit, base currency. Null on an In = the line's saved cost when Id names a saved line of the same item and unit
+    /// and the type's cost is editable, else the item's last cost x packing (its average when it has none or it is 0, else
+    /// 0); always dropped for a reader without View item costs; ignored on an Out, which takes the average.
+    /// </summary>
     [Range(0, double.MaxValue)]
-    public decimal? UnitCost { get; init; }
+    public decimal? UnitCost { get; set; }
 
     [StringLength(300)]
     public string? Notes { get; init; }
@@ -420,7 +436,9 @@ public sealed class StockDocumentQuery
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }
 
-    public string SortBy { get; init; } = "DocumentDate";
+    /// <summary>(94) TotalCost sorts by DocumentDate for a reader without View item costs: the order would reveal the figure.</summary>
+    public string SortBy { get; set; } = "DocumentDate";
+
     public string SortDir { get; init; } = "desc";
 
     public int Page { get; init; } = 1;

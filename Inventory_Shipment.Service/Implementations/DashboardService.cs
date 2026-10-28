@@ -3,6 +3,7 @@ using Inventory_Shipment.Model.DTOs.Dashboard;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 
 namespace Inventory_Shipment.Service.Implementations;
 
@@ -137,6 +138,12 @@ public sealed class DashboardService : IDashboardService
         if (s.StockAlerts is not null && !Has(Permissions.Inventory.StockLevelsView))
         {
             s.StockAlerts.BelowWarehouseMin = null;
+        }
+
+        // (94) The inventory value and the value by warehouse are stock at the average cost: View item costs.
+        if (!Has(Permissions.Inventory.CostsView))
+        {
+            ItemCosts.Strip(s);
         }
 
         var containers = Has(Permissions.Containers.View);

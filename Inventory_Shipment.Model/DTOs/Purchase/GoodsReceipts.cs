@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using Inventory_Shipment.Model.DTOs.Documents;
 
 namespace Inventory_Shipment.Model.DTOs.Purchase;
@@ -149,8 +150,11 @@ public sealed class GoodsReceiptListItemDto
     /// <summary>Received pieces matched to posted supplier invoices.</summary>
     public int InvoicedBase { get; init; }
 
-    /// <summary>Current value of the lines in base currency; an estimate on a draft (<see cref="IsValueEstimate"/>).</summary>
-    public decimal ValueBase { get; init; }
+    /// <summary>
+    /// Current value of the lines in base currency; an estimate on a draft (<see cref="IsValueEstimate"/>). (94) Null
+    /// without View item costs.
+    /// </summary>
+    public decimal? ValueBase { get; set; }
 
     public bool IsValueEstimate { get; init; }
     public DateTime? PostedAtUtc { get; init; }
@@ -168,7 +172,9 @@ public sealed class GoodsReceiptListItemDto
 public sealed class GoodsReceiptListTotalsDto
 {
     public int ReceivedNotInvoicedBase { get; init; }
-    public decimal ReceivedNotInvoicedValueBase { get; init; }
+
+    /// <summary>(94) Null without View item costs (the pieces stay).</summary>
+    public decimal? ReceivedNotInvoicedValueBase { get; set; }
     public int ReceiptCount { get; init; }
     public int DraftCount { get; init; }
 }
@@ -234,7 +240,8 @@ public sealed class GoodsReceiptQuery
     public bool NotReceived { get; init; }
 
     /// <summary>DocumentNumber, DocumentDate, SupplierName, Status, ReceivedBase, ValueBase, CreatedAtUtc, PostedAtUtc.</summary>
-    public string SortBy { get; init; } = "DocumentDate";
+    /// <remarks>(94) ValueBase sorts by DocumentDate for a reader without View item costs: the order would reveal the figure.</remarks>
+    public string SortBy { get; set; } = "DocumentDate";
 
     public string SortDir { get; init; } = "desc";
     public int Page { get; init; } = 1;
@@ -362,11 +369,11 @@ public sealed record GoodsReceiptDto
 
     public int TotalInvoicedBase { get; init; }
 
-    /// <summary>Σ received × cost at receipt, fixed at posting.</summary>
-    public decimal ValueAtReceiptBase { get; init; }
+    /// <summary>Σ received × cost at receipt, fixed at posting. (94) Null, with the value now, without View item costs.</summary>
+    public decimal? ValueAtReceiptBase { get; init; }
 
     /// <summary>The value now, after the cost adjustments; an estimate on a draft (<see cref="IsValueEstimate"/>).</summary>
-    public decimal CurrentValueBase { get; init; }
+    public decimal? CurrentValueBase { get; init; }
 
     public bool IsValueEstimate { get; init; }
     public string? BaseCurrencyCode { get; init; }
@@ -477,29 +484,31 @@ public sealed class GoodsReceiptLineDto
     public int? LoadedBase { get; init; }
     public DateTime? ExpiryDate { get; init; }
 
+    /* (94) The costs and values of a line below are null without View item costs (the source names stay). */
+
     /// <summary>Order price per piece in base currency, frozen at posting.</summary>
-    public decimal? PoFobBase { get; init; }
+    public decimal? PoFobBase { get; set; }
 
     /// <summary>The order price per piece (frozen, or as it stands on a draft).</summary>
-    public decimal? OrderPriceBase { get; init; }
+    public decimal? OrderPriceBase { get; set; }
 
     /// <summary>The typed cost per piece of a line without an order.</summary>
-    public decimal? ManualUnitCostBase { get; init; }
+    public decimal? ManualUnitCostBase { get; set; }
 
     /// <summary>Current FOB per piece (the container line's for a container line).</summary>
-    public decimal? FobCostBase { get; init; }
+    public decimal? FobCostBase { get; set; }
 
     /// <summary>Current charges per piece (the container line's posted charges ÷ received for a container line).</summary>
-    public decimal? ChargesBase { get; init; }
+    public decimal? ChargesBase { get; set; }
 
     /// <summary>Current landed cost per piece.</summary>
-    public decimal? UnitCostBase { get; init; }
+    public decimal? UnitCostBase { get; set; }
 
     /// <summary>The cost is an estimate (a draft).</summary>
     public bool IsCostEstimate { get; init; }
 
     /// <summary>The cost written on the stock movement at posting.</summary>
-    public decimal? CostAtReceiptBase { get; init; }
+    public decimal? CostAtReceiptBase { get; set; }
 
     /// <summary>Order | Invoice | Mixed | Manual: where the current cost comes from.</summary>
     public string? CostSource { get; init; }
@@ -512,10 +521,16 @@ public sealed class GoodsReceiptLineDto
     public int NotInvoicedBase { get; init; }
 
     /// <summary>Received × current cost.</summary>
-    public decimal? ValueBase { get; init; }
+    public decimal? ValueBase { get; set; }
 
     public string? Notes { get; init; }
+
+    /// <summary>(94) Server only: the item's current costs are not a purchase document's figure, and no page drew them.</summary>
+    [JsonIgnore]
     public decimal? ItemLastCost { get; init; }
+
+    /// <summary>(94) Server only, as <see cref="ItemLastCost"/>.</summary>
+    [JsonIgnore]
     public decimal? ItemAverageCost { get; init; }
 }
 
@@ -533,8 +548,11 @@ public sealed class GoodsReceiptMatchDto
     public DateTime? InvoicePostedAtUtc { get; init; }
     public int InvoiceLineNumber { get; init; }
     public int QuantityBase { get; init; }
-    public decimal? InvoiceFobBase { get; init; }
-    public decimal? InvoiceUnitCostBase { get; init; }
+
+    /// <summary>(94) Null, with the invoice's unit cost, without View item costs.</summary>
+    public decimal? InvoiceFobBase { get; set; }
+
+    public decimal? InvoiceUnitCostBase { get; set; }
     public DateTime MatchedAtUtc { get; init; }
 }
 
@@ -574,13 +592,14 @@ public sealed class GoodsReceiptCostChangeDto
     public string? CauseNumber { get; init; }
     public int ReceivedBase { get; init; }
     public decimal InStockBase { get; init; }
-    public decimal? FobBefore { get; init; }
-    public decimal? FobAfter { get; init; }
-    public decimal? UnitCostBefore { get; init; }
-    public decimal? UnitCostAfter { get; init; }
-    public decimal AmountBase { get; init; }
-    public decimal InventoryBase { get; init; }
-    public decimal CogsBase { get; init; }
+    /* (94) The figures below are null without View item costs (the cause, the document, the date and the pieces stay). */
+    public decimal? FobBefore { get; set; }
+    public decimal? FobAfter { get; set; }
+    public decimal? UnitCostBefore { get; set; }
+    public decimal? UnitCostAfter { get; set; }
+    public decimal? AmountBase { get; set; }
+    public decimal? InventoryBase { get; set; }
+    public decimal? CogsBase { get; set; }
     public int? CreatedBy { get; init; }
     public string? CreatedByName { get; init; }
 }
@@ -592,7 +611,11 @@ public sealed class GoodsReceiptAuditDto
     /// <summary>Created, Updated, Posted, Cancelled, CostAdjusted, FileAdded, FileUpdated, FileDeleted.</summary>
     public string Action { get; init; } = string.Empty;
 
-    public string? Details { get; init; }
+    /// <summary>
+    /// The history's sentence. (94) A CostAdjusted row names its amounts ("…(invoice posted): 400.00 (stock 400.00, cost
+    /// of sales 0.00)"): they leave without them for a reader who may not see item costs (settable for that strip).
+    /// </summary>
+    public string? Details { get; set; }
     public int? UserId { get; init; }
     public string? UserName { get; init; }
     public DateTime AtUtc { get; init; }
@@ -611,6 +634,12 @@ public sealed class GoodsReceiptSaveLineRequest
 {
     /// <summary>Ignored: the lines are numbered 1..n in the order sent.</summary>
     public int? LineNumber { get; init; }
+
+    /// <summary>
+    /// (94) The line's id as it was read (null on a new row): lets the server keep the typed cost of a saved line without
+    /// an order for a reader who may not see item costs. The lines are still a full replace.
+    /// </summary>
+    public int? Id { get; init; }
 
     [Range(1, int.MaxValue)]
     public int ItemId { get; init; }
@@ -642,9 +671,13 @@ public sealed class GoodsReceiptSaveLineRequest
     /// <summary>"Nothing more will come" (a line of an order; a reason required).</summary>
     public bool CloseShort { get; init; }
 
-    /// <summary>The typed cost per piece of a line without an order; null = the item's last cost.</summary>
+    /// <summary>
+    /// The typed cost per piece of a line without an order; null = the item's last cost (its average when it has none).
+    /// (94) For a reader without View item costs it is dropped: the line keeps the cost it was saved with when Id names a
+    /// saved line of the same item and unit, else it takes the item's last cost, else its average.
+    /// </summary>
     [Range(0, double.MaxValue)]
-    public decimal? ManualUnitCostBase { get; init; }
+    public decimal? ManualUnitCostBase { get; set; }
 
     public DateOnly? ExpiryDate { get; init; }
 
@@ -692,6 +725,14 @@ public sealed class GoodsReceiptSaveRequest
     public IReadOnlyList<GoodsReceiptSaveLineRequest> Lines { get; init; } = [];
 
     public string? RowVersion { get; init; }
+
+    /// <summary>
+    /// (94) The page drew no cost (its reader may not see item costs, or the receipt it holds was read without them): a
+    /// line without an order keeps the cost it was saved with when its id names a stored line of the same item and unit,
+    /// whatever it carries - as for a reader without View item costs - and any other takes the procedure's default. It can
+    /// only keep a stored figure, never set or reveal one. False (the default) keeps today's rule.
+    /// </summary>
+    public bool CostsHidden { get; init; }
 }
 
 public sealed class GoodsReceiptPostRequest
@@ -995,8 +1036,11 @@ public sealed class ReceivableLineDto
     /// <summary>What the dialog starts with: 0 on an order or invoice shipped in containers, else <see cref="ToReceiveBase"/>.</summary>
     public int DefaultReceiveBase { get; init; }
 
-    /// <summary>The price per piece in base currency: the order's (container and order lines) or the invoice's.</summary>
-    public decimal? UnitPriceBase { get; init; }
+    /// <summary>
+    /// The price per piece in base currency: the order's (container and order lines) or the invoice's. (94) Null without
+    /// View item costs: the invoice's is the FOB the goods take.
+    /// </summary>
+    public decimal? UnitPriceBase { get; set; }
 }
 
 /// <summary>An order or an invoice of the dialog, with its totals.</summary>
