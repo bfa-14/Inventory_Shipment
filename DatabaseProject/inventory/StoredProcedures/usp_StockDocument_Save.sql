@@ -1,3 +1,9 @@
+/* ================================================================== 2. inventory.usp_StockDocument_Save */
+
+-- Re-created (94) from the body of script 29: + A LINE WITHOUT A COST ON AN IN TAKES THE ITEM'S COST - its last cost
+-- when it is not 0, else its average (else 0), per unit of the line (it took 0). Only the INSERT of the lines changes;
+-- every other statement is script 29's word for word. A last cost of 0 never wins over a real average: a free goods
+-- receipt line sets LastCost = 0 (script 79 learnt the same, "so goods never enter at nothing").
 CREATE   PROCEDURE inventory.usp_StockDocument_Save
     @Id               INT            = NULL,   -- NULL = create
     @DocumentTypeCode NVARCHAR(20),
@@ -71,12 +77,18 @@ BEGIN
         END
 
         -- Lines: each line carries its OWN warehouse; Out documents take the item's moving average cost (per unit).
+        -- (94) A LINE WITHOUT A COST on an In - a reader who may not see item costs, a type whose cost cannot be typed, an
+        --      import row without one - takes the item's last cost (when it is not 0), else its average (else 0), per
+        --      unit of the line: the default the page proposes. It took 0. The API keeps a saved line's own cost by
+        --      sending it back; a NULL here always means "the item's cost".
         INSERT INTO inventory.StockDocumentLines (DocumentId, LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, PackingFormula, UnitCost, Notes)
         SELECT @Id, l.LineNumber, l.ItemId, l.ItemUnitId, l.WarehouseId, l.ExpiryDate, l.Quantity, iu.PackingFormula,
-               CASE WHEN @Direction = -1 THEN ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * iu.PackingFormula ELSE ISNULL(l.UnitCost, 0) END,
+               CASE WHEN @Direction = -1 THEN ISNULL(inventory.fn_AverageCost(l.ItemId), 0) * iu.PackingFormula
+                    ELSE ISNULL(l.UnitCost, ROUND(COALESCE(NULLIF(i.LastCost, 0), i.AverageCost, 0) * iu.PackingFormula, 4)) END,
                NULLIF(LTRIM(RTRIM(l.Notes)), N'')
         FROM @Lines l
-        INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId;
+        INNER JOIN inventory.ItemUnits iu ON iu.Id = l.ItemUnitId
+        INNER JOIN inventory.Items i      ON i.Id = l.ItemId;
 
         UPDATE d SET TotalItems = x.Items, TotalQuantity = x.Qty, TotalCost = x.Cost
         FROM inventory.StockDocuments d
