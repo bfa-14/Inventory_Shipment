@@ -113,6 +113,15 @@ for good (shown on the order, printed on the dispatch note, exported, found from
 stock ledger carries the expiry date; no cost and no stock figure moves; nothing changes for an item until someone ticks
 its Tracking (glossary, 3.3, 3.8, 3.10, 4.16, 5.2, 5.4, 6.1, 6.3, 8.5; `docs/notes/costing-rules.md`, "Transfers").*
 
+*Updated on 28 October 2026 for **who may see item costs** (script 94, prompt 51): one permission, **View item costs**
+(`inventory.costs.view`), decides who sees what an item costs - average, last and FOB cost and stock value - on Item
+Definition, Stock Balance and Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfer orders
+and the Dashboard; granted once to every role that saw such a cost, so nobody loses a figure at the release; the server
+sends the figures empty to anybody else and the pages draw no column; it hides, it never blocks: an Inventory In line
+saved without a cost takes the item's last cost, else its average (it took 0, also for a type whose cost cannot be typed
+and for an import row without one), and a goods receipt line without an order the same; a line's cost follows a change of
+its unit (glossary, 1.6, 3.3, 3.8, 4.9, 4.11, 4.12, 4.13, 4.17, 5.2, 5.4, 6.1, 8.5; `docs/notes/costing-rules.md`).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -235,6 +244,10 @@ Since script 92 a user may also be limited to some warehouses (Users & Permissio
 action): the roles say what a user may do, the warehouses where they may move stock. Every user keeps every warehouse
 until an administrator restricts them; system administrators always use every warehouse (see 4.15).
 
+Since script 94 a role sees what an item costs only with **View item costs** (4.17): the roles that saw costs on the
+day of the release got it once; the owner unticks it for the storekeepers and sales staff who must count and sell
+without seeing costs, and View Stock Valuation for those who must see no value at all.
+
 ### 1.7 The people and tools on the project
 - **Bilal**: the developer I work with, and the one who talks to the business. He is on Ubuntu and uses VS Code with
   the Claude Code extension, which I call "VS Code Claude". Folders:
@@ -347,6 +360,7 @@ until an administrator restricts them; system administrators always use every wa
 | **Tracking (item)** | Script 93, Item Definition › Inventory Parameters (`inventory.Items.TrackingMode` 0 None / 1 Batch numbers / 2 Serial numbers, `RequiresExpiry`, `SerialLength`): how the pieces of an item are told apart when they leave on a **transfer dispatch** - and only there: goods receipts, sales and Inventory In / Out do not ask. Three **kinds**, worked out from the two fields and never stored on the item: **Serial** (Serial numbers: one serial no. per piece), **Batch** (Batch numbers: rows of batch no., expiry and pcs), **Expiry** (None + Requires expiry date: rows of expiry and pcs); None without an expiry = untracked, as every item before script 93. "+ expiry" on a serial or batch item means each serial or batch also gives its date. A change applies to the next dispatches; goods on the way keep the kind they left with (4.16). Shown as a badge on the item's header and under a transfer line's Item Name ("Serial nos.", "Batches", "Expiry dates", "… + expiry"). |
 | **Serial no.** | A number that names ONE piece (a TVS chassis no., 17 characters): letters, digits, `.` `/` `-`, no spaces, at most 50 characters, kept in capitals, exactly the item's Serial no. length when it has one. Typed on a dispatch of a serial item, one per piece (scanned into the dialog's box, pasted as a list, or ticked from "Known at {From}": the serials transfers received into the source and did not send since). Once in a dispatch and **never on the way twice** (62017); received, still coming or lost one by one. What transfers know of a number's earlier place gives warnings ("last received into LUB-01 … not into LKS-01", "written off as lost"), never refusals: no other module records serials yet (4.16). |
 | **Batch no.** | A lot number shared by many pieces: letters, digits, spaces, `.` `/` `_` `#` `-`, at most 50 characters, capitals. A dispatch of a batch item gives rows of batch no., expiry date (required when the item requires it) and pcs adding up to the line, one row per batch; a receipt says what arrived of each row. **Expiry rows** (an item of kind Expiry) are the same without the batch no., one row per date. The stock ledger then carries the expiry date on each leg (`StockMovements.ExpiryDate`, one row per leg and date) - information: no stock per batch or expiry is kept, no FEFO, no alert (4.16). |
+| **View item costs** | Script 94, `inventory.costs.view` (Inventory, 406, right after View Stock Valuation): who sees **what an item costs** - its average, last and FOB cost and its stock value - on Item Definition (card, list, item search), the item's Stock Balance and Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfer orders and the Dashboard. Without it the server sends those figures empty (never 0), the exports leave their columns out, no list sorts by them and the pages draw no column, tile or pill; nothing is refused for want of it. Given once, when the script first ran, to the system roles and to every role that saw such a cost then; unticked on Role Permissions it never comes back by itself. Not Stock Valuation (View Stock Valuation), not purchase prices, landed cost adjustments, container charges, nor sales margins (View Sales Profit) (4.17). |
 | **Schema.sql** | `Inventory_Shipment.Repository/Database/Schema.sql`: every SQL script appended in order, re-applied at **every API start**. |
 | **Batch** | A group of prompt steps. Batch 8 = prompt 32, 9 = 33, 10 = 34/36, 11 = 37. |
 | **A / B steps** | A1, A2… run in the API project; B1, B2… in the Web project. |
@@ -405,6 +419,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   **(check the code)**.
 - **Inventory In / Inventory Out:** manual stock documents; a document type can require a reason (`RequiresReason`).
   Cancelling a posted one writes the opposite of its own rows and replays its items' average cost (script 89).
+  Since script 94 an In line saved without a cost takes the item's last cost, else its average, per unit of the line
+  (it took 0): a line of a user who may not see item costs, of a type whose "Price / cost editable" is off, or of an
+  import row without a cost; a typed cost, 0 included, is stored as typed. An Out always takes the average (4.17).
 - **BIVAC Out:** an Inventory Out of BIVAC items only, with its own list, numbers and permissions (see 4.9).
 - **Transfer Orders** (script 90): stock moved from one warehouse to another, of any branch, without changing its
   cost. A dispatch (TRD) takes it out of From onto the destination branch's On the way warehouse, a transfer receipt
@@ -623,7 +640,8 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 
     The system role gets all ten. A role unticked afterwards is never re-granted. Dispatch and receive needs dispatch
     and receive. The values on a transfer (on the way, a posting's value, a loss's value, the frozen costs) need
-    `inventory.valuation.view`: the server sends them empty to others. Adding lines also needs View Items
+    View item costs (`inventory.costs.view`, script 94; `inventory.valuation.view` before it): the server sends them
+    empty to others. Adding lines also needs View Items
     (`inventory.items.view`) for the item search and the item's units, as on Inventory In / Out.
   - Stock levels per warehouse (script 91, module Inventory): `inventory.stocklevels.view` (432, "View Stock Levels":
     Inventory › Stock Levels and Item Definition's "Stock levels per warehouse" card) and `inventory.stocklevels.edit`
@@ -641,6 +659,13 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     Orders (`inventory.transfers.view`; a posting of another order answers 404); the item's Tracking fields come with
     Edit Items (`inventory.items.edit`). Script 92's warehouse access applies unchanged: the access refusal comes before
     any tracking rule, and the split ledger rows pass the ledger trigger like any row.
+
+  - Item costs (script 94, module Inventory): `inventory.costs.view` (406, "View item costs"), the one permission of
+    4.17. Granted once per database - the step `94.CostsViewGrant` in `inventory.OneTimeSteps` - to the system roles
+    and to every role then holding one of the 14 permissions whose screens showed an item cost: View / Create / Edit
+    Items, View Stock Valuation, View or Create Inventory In, Inventory Out, BIVAC Out, Shortage Plans or Goods
+    Receipts (on a new database: Admin, Manager and Owner). A role unticked afterwards is never re-granted; the start-up sync
+    of the catalog gives it to the system roles only. No other permission changes; nothing new is refused.
 
 ### 3.9 End-to-end flows
 
@@ -1428,6 +1453,12 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   holds an item that is short, the warning adds "A goods receipt is waiting to be posted: GRN draft of KTG-2026-0031."
   (readers who may see goods receipts). **[Implemented]**
 - **Inventory Out** may require a reason (`RequiresReason`). **(unsure)**
+- **An Inventory In line without a cost takes the item's cost** (script 94): its last cost when it is not 0, else its
+  average (else 0), per unit of the line - the page proposes the same figure (it proposed 0 for an item that only ever
+  entered by Inventory In), a type whose cost cannot be typed stores it (it posted at 0 and dragged the average down),
+  an import row with an empty Unit Cost takes it (it was saved at 0), and a user who may not see item costs types no
+  cost at all. A cost typed on a line is stored as typed, 0 included; changing a line's unit scales its cost by the
+  packing (a Box of 12 costs twelve pieces: it kept the cost of one). **[Implemented – script 94]**
 - **BIVAC Out** (Inventory › BIVAC Out, document type `BIV_OUT`): **[Implemented – script 66]**
   - The units really leave stock at the average cost, like an Inventory Out: refused when the stock is short
     (62007); cancelling needs a reason and reverses the movements.
@@ -1462,6 +1493,10 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   permissions (`settings.email.manage`, `purchase.approval.manage`) are administrator-only by default. **[Implemented]**
 - **Warehouses per user** (script 92): besides the permissions of their roles, a user may be limited to some
   warehouses, where they may move stock (never what they may see); system administrators use every warehouse (4.15).
+  **[Implemented]**
+- **Item costs** (script 94): who sees what an item costs - on Item Definition, Inventory In / Out / BIVAC Out, goods
+  receipts, Shortages, transfers and the Dashboard - is one permission, View item costs, granted once to the roles that
+  saw costs; the server strips the figures for everybody else and the pages draw nothing in their place (4.17).
   **[Implemented]**
 - **Secrets:** approval links never decide on GET; tokens never appear in logs or API responses; the SMTP password is
   never returned or logged. **[Implemented]**
@@ -1611,6 +1646,17 @@ status 6 keeps the name "Offloaded".
 21. **Last cost, FOB cost, last supplier** come from the latest posted goods receipt line, after its adjustments.
 22. **Invoice lines a goods receipt refers to** cannot be linked to or unlinked from containers (65028: "Line {n}
     ({item}): {goods receipt GRN-… | a draft goods receipt} refers to this invoice line: delete or cancel it first.").
+
+**Who sees the costs** (script 94)
+22a. The costs of a goods receipt - the lines' order price, FOB, charges, landed cost and value, the receipt's "Value
+    at cost", the Cost adjustments' before / after and amounts, the list's Value (USD) and the value in "Received not
+    invoiced", the export's cost columns, and the typed cost of a line without an order - need **View item costs**
+    (4.17). A reader without it sees the lines with a "Cost source" column (Order, Invoice, Manual, "n of m pcs
+    invoiced") and no figure; "+ New › Without an order" reads "Goods of a supplier with no purchase order, at the item's
+    last cost (its average when it has none)." and each of its lines is saved at the item's last cost when it is not 0,
+    else its average - the rule of an Inventory In line, applied by the API before `usp_GoodsReceipt_Save` (which on
+    its own took the last cost even when it was 0); a line a colleague priced keeps its cost when such a reader edits
+    the draft (same line, item and unit). The print page shows no cost for anybody, as before.
 
 **The switch ("from now") and why it is one-way**
 23. **The switch** is script 65's first run on a database (each API start applies Schema.sql). In one transaction it
@@ -1859,7 +1905,8 @@ are pcs unless said; only posted, not reversed dispatches and receipts count.
     TRD-BR-003-000004.)". Late container charges, LCAs and the goods receipt true-up already split on the company's
     stock (script 89), so a transfer changes none of them. Sales Profit's COGS adjustments stay in the branch that
     received the goods (its header says so on hover): no module keeps per-piece tracking.
-35. **Values** (on the way, a posting's value and loss, the frozen costs) only with `inventory.valuation.view`: the
+35. **Values** (on the way, a posting's value and loss, the frozen costs) only with View item costs
+    (`inventory.costs.view`, script 94; `inventory.valuation.view` before it): the
     server sends them empty to others, never 0, and the export leaves them out. The dispatch note never shows a cost.
 
 **Changed from the feedback, and why**
@@ -2589,6 +2636,76 @@ the item's "Tracking must be None, Batch or Serial." Every sentence is the datab
 
 ---
 
+### 4.17 Item costs: who may see them **[Implemented – script 94, prompt 51]**
+
+The feedback asked for "a company-wide View costs that hides costs on the item card, the item search, Inventory In / Out
+and their export"; the owner put it in scope. Until script 94 anybody who could open an item, an Inventory In or a goods
+receipt saw what the goods cost. Now **one permission, View item costs** (`inventory.costs.view`), decides it everywhere
+an item cost is shown outside the screens that already had their own permission, and it was given once to every role that
+saw such a cost, so nothing changed for anybody on the day of the release. Built as recommended: the server strips, the
+page hides, nothing is refused.
+
+**The rules**
+1. **What it covers**: an item's average, last and FOB cost and its stock value on Item Definition (the card's "Stock &
+   Costs", the list's Avg. Cost and Inventory Value, the item search behind every scan box), the item's Stock Balance (the
+   value tile, column and total) and Stock Movement (Unit Cost), Inventory In / Out / BIVAC Out (the lines' Unit Cost and
+   Total Cost, the summary, the list's Total Cost, the import preview, the typed cost), goods receipts (4.12 rule 22a),
+   Shortages (Last cost on the live view and the plans, and a plan's purchase order amounts unless the reader may view
+   purchase orders), the Dashboard ("Inventory value" becomes "Items in stock" with the count; no "Stock value by
+   warehouse") and transfer orders (4.13 rule 35). Exports leave the cost columns out (not blank); the lists of Inventory
+   In / Out and goods receipts sorted by a hidden figure fall back to the date.
+2. **Granted once** (3.8): to the system roles and to every role that held one of the 14 permissions whose screens showed
+   a cost; recorded in `inventory.OneTimeSteps` (`94.CostsViewGrant`), so a database whose permission row the API's
+   catalog sync created first is still granted at the script's first run. Untick it on Role Permissions for the roles that
+   must not see costs; it never comes back by itself. A new role gets nothing.
+3. **The server strips, the page hides.** Every such field leaves the API **null, never 0**, on every read, save, post and
+   cancel answer; the page decides **by the permission, never by the data** whether to draw the column, row, tile or pill
+   (nothing, not a column of dashes, which would name the hidden figure). With the permission every screen is exactly
+   what it was.
+4. **It hides, it never blocks**: no new refusal, no new error number. A user without it still counts goods in: on an
+   Inventory In there is no cost column, under the lines "You may not see item costs: each line is saved at the item's
+   last cost (its average when it has none)." (+ " A user who may see item costs can change it before the document is
+   posted." when the type's cost may be typed), and each line is saved at the item's last cost when it is not 0, else its
+   average, per unit of the line; a line a colleague priced keeps its cost when such a user edits the draft (same line,
+   item and unit); the costs in an import file are not used ("Unit costs in the file are not used: you may not see item
+   costs, so each line is saved at the item's last cost (its average when it has none)."). A goods receipt without an
+   order: the same (4.12 rule 22a). An Out takes the average, whatever is sent.
+5. **A hidden figure is never saved back as a real one.** A line read without its cost is sent back without one
+   (`unitCost: null` with the line's id) until a different cost is typed; the server keeps a saved line's cost by its id
+   whenever the cost comes null, for a viewer too, and prices any other line. A document or receipt the server sent
+   without its costs draws no cost column even to a reader who may now see them, and is read again when the permission
+   changes; a list total the server stripped reads "—", never 0.00.
+6. **Not this permission's**: Stock Valuation (View Stock Valuation, a screen that is all costs), purchase orders, invoices
+   and returns (supplier prices; a purchase line of such a user starts without a price and is priced at save at the
+   item's last cost × packing × rate, as a line left empty always was), landed cost adjustments, containers (their
+   invoices, charges, estimates and landed cost per item), sales cost, margin and Sales Profit (View Sales Profit). To hide
+   every cost from a role, untick View item costs, View Stock Valuation and View Sales Profit, and View Containers, View
+   and Post Purchase Invoices, View Landed Cost Adjustments and Create Purchase Orders as well.
+7. **When a change applies**: at the user's next sign-in or token refresh (within 15 minutes), as for every permission -
+   except where a hidden cost could be saved back wrong: the reads, saves, posts and cancels of Inventory In / Out / BIVAC
+   Out and goods receipts confirm a token that lacks the code with the database once, so a grant is seen there at once
+   (every token of the first 15 minutes after the release lacks the code, and a page still showing costs must not lose
+   them). An untick waits for the next token everywhere.
+8. **Fixes on the same screens**, for everybody: the In page proposes the item's last cost, else its average (it proposed
+   0 for an item that only entered by Inventory In, 4.9); a line's cost follows a change of its unit; a type whose
+   "Price / cost editable" is off stores the item's cost (it posted at 0, and since script 89 kept the switch the defect
+   was permanent); an import row without a cost is priced by the server (it was saved at 0; the import template says so:
+   "Blank on an Inventory In: the item's last cost (its average when it has none)."); the tooltip of a cost that cannot be
+   typed reads "The item's last cost (its average when it has none) is applied automatically" on an In ("Average cost is
+   applied automatically" was written for an Out); the item's current costs no longer ride on every purchase and goods
+   receipt line of the API (fields no page drew: `[JsonIgnore]`).
+9. **A last cost of 0 never wins over a real average** (the In's rule `COALESCE(NULLIF(LastCost, 0), AverageCost, 0)`;
+   the API applies the same to an order-less goods receipt line): a free goods receipt line sets the last cost to 0, and
+   goods must never enter stock at nothing.
+
+**What does not change:** a reader who holds the permission gets the same API answers and screens as before (the fixes
+of rule 8 apart); Stock Valuation, sales, purchase documents, landed cost adjustments, container charges; how an Inventory
+In posts and costs (`usp_StockDocument_Post`, `usp_Item_ApplyReceipts`, `usp_Item_RebuildCosts`); a cost typed on a
+line; every other permission and grant. No table, column, type, view or error number; `usp_StockDocument_Save` is script
+29's body plus the one INSERT of the lines; `usp_GoodsReceipt_Save` is not re-created.
+
+**Errors:** none new. HTTP 403 "Forbidden" is never answered for want of this permission.
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -2613,7 +2730,7 @@ inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventor
 sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
 28–31 have no file there; prompts 32–50 were given outside the repositories (5.2 and section 4 say what they asked).
 
-### 5.2 Prompts 32–50
+### 5.2 Prompts 32–51
 
 | Prompt | Title / what it does | Status |
 |---|---|---|
@@ -2636,6 +2753,7 @@ sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-type
 | **48** | Stock levels per warehouse and Fill to Max (script 91): each warehouse's own Min / Max per item on Item Definition's "Stock levels per warehouse" card and on Inventory › Stock Levels (Per warehouse, and Company (Item Definition): the company Minimum / Maximum Quantity), the Excel import and export, Projected from released transfer orders, "Fill to Max…" and "Add items below Min…" on a draft transfer order, "Create transfer order…" from ticked rows, Min / Max / Projected at {To} on the order's lines, the Dashboard's "Warehouse levels below Min" and its "Items below their minimum" opening the company view (A1, A2, B1) | Done: 4.14 |
 | **49** | Warehouse access per user (script 92): All warehouses or only the ticked ones (a parent gives its tree; system administrators use every warehouse), set in Users & Permissions › Users › "Warehouses of {username}" with its history and the Users list's Warehouses column; it limits moving stock in every family (post, cancel, reverse, a draft line by line, delete, imports, goods receipts, transfers by From / To, stock levels), never viewing; one sentence, 50010 / 403, said on the disabled buttons, the pickers offering the reader's warehouses only; the ledger trigger under every posting; the Transfer Orders list's Warehouses filter and the menu's "to receive" count (A1, A2, B1) | Done: 4.15 |
 | **50** | Batch, serial and expiry on transfers (script 93): Item Definition's Tracking (None / Batch numbers / Serial numbers), Requires expiry date and Serial no. length; a transfer dispatch asks, per line of a tracked item, its serial numbers (scan box, Paste list, Known at {From}), batches or expiry dates in a dialog whose Done checks the rules on the server (errors, warnings); a serial no. is never on the way twice; the receipt ticks the serials that arrived (a scan session) or lowers each batch / expiry row, the rest Still coming or Lost; Dispatch and receive, Reverse, the order page's badges and "{n} serial nos." viewer, the dispatch note, the export's sheet "Batch, serial and expiry", the list's "Batch or serial no." filter, the item statement's expiry line; the ledger's rows per expiry date; no new permission (A1, A2, B1) | Done: 4.16 |
+| **51** | Who may see item costs (script 94): the permission View item costs (`inventory.costs.view`), granted once to the roles that saw costs; the server strips every item cost and stock value for a reader without it (Item Definition, Stock Balance, Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfers, the Dashboard) and the pages draw no column, tile or pill; exports without the cost columns; it hides, it never blocks - an Inventory In or order-less goods receipt line of such a user is saved at the item's last cost, else its average; the In fixes (the page's proposal, a unit change, a non-editable type, an import row without a cost, the tooltip); the token confirmed by the database on the stock document and goods receipt reads, saves, posts and cancels (A1, A2, B1) | Done: 4.17 |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -2718,6 +2836,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `91_Inventory_StockLevels_FillToMax.sql` | Stock levels per warehouse and Fill to Max (prompt 48): new tables `inventory.ItemWarehouseLevels` (an item's Min / Max in a warehouse at the bottom of the tree, at most 1,000,000,000 pcs, owned by the item and the warehouse: two cascading keys) and `inventory.ItemWarehouseLevelAudit`; four frozen table types (`tvp_ItemWarehouseLevel`, `tvp_ItemWarehouseLevelImport`, `tvp_TransferFillItem`, `tvp_TransferFillCandidate`); `inventory.fn_StockLevelState` (Projected, the status, To reach Max: the one formula), `fn_TransferPositions` (what released transfer orders bring to and take from every warehouse, every pair at once), `fn_StockPosition` (one pair, on 90's `fn_TransferPosition`), `fn_TransferFill_Plan` (the Fill to Max rule), `fn_TransferFill_Message`, `fn_TransferFill_FromWarning`, `fn_TransferFill_OtherOrdersWarning`, `fn_ItemWarehouseLevel_ImportJudge` (the import's judgement, read by the check and the import), `masterdata.fn_Warehouse_IsUsedInTransactions` (90's `fn_Warehouse_IsUsed` body, moved); the procedures `inventory.usp_StockLevel_Search` / `_CompanySearch`, `usp_ItemWarehouseLevel_Set` / `_Remove` / `_History` / `_ImportCheck` / `_Import`, `usp_TransferOrder_FillToMax` (preview and apply, Fill and Add) / `_BelowMinCandidates` / `_CreateFromLevels` (through 90's `usp_TransferOrder_Save`), `reporting.usp_Dashboard_StockLevels`; the permissions `inventory.stocklevels.view` / `.edit` (432, 434) granted once; re-created: `masterdata.fn_Warehouse_IsUsed` (+ stock levels), `inventory.fn_TransferOrder_Blocks` (+ FillToMax, AddBelowMin), `masterdata.usp_Warehouse_Create` / `_Update` (the levels sentence of 52000) and `_Lookup` (+ `IsUsedInTransactions`, `HasStockLevels`), `inventory.usp_Item_Delete` (from 11: the cascading keys are not references; + `@UserId` and a "Removed" history row per level), `inventory.usp_TransferOrder_Get` and `_Availability` (from 90: + To's and From's levels and Projected; Get also the two abilities). `reporting.usp_Dashboard_Summary` and `masterdata.usp_Warehouse_Delete` are not changed |
 | `92_Security_WarehouseAccess.sql` | Warehouse access per user (prompt 49): new column `security.Users.AllWarehouses` (default 1: every existing and new user keeps every warehouse, no data step); new tables `security.UserWarehouses` (the ticks, both keys cascading: a tick never stops a warehouse's delete) and `security.UserWarehouseAudit`; the rule in five functions, `security.fn_User_IsUnrestricted` (All warehouses or an active system role), `fn_User_CanUseWarehouse` (a ticked ancestor gives the warehouse; On the way warehouses never refused), `fn_User_Warehouses`, `fn_User_WarehouseRefusal` (THE sentence, 50010), `fn_User_WarehouseAccessText` (the history's words); the ledger trigger `inventory.TR_StockMovements_WarehouseAccess` (AFTER INSERT; it reads only the users who wrote the rows; disabled by hand, it is enabled again at the next start); new `security.usp_User_WarehouseRefusal` (the API's early check), `usp_User_Warehouses_Get` / `_SetWarehouses` (the dialog, 50011), `usp_User_WarehouseSummaries` (the Users list), `inventory.usp_TransferOrder_ToReceiveCount` (the menu); re-created: `masterdata.usp_Warehouse_Lookup` (from 91: + `@UserId`, `CanUse`), `usp_Warehouse_Delete` (from 90: the history of the users who ticked it), `usp_Warehouse_Update` (from 91: a move to another parent that changes users' warehouses needs an unrestricted editor with `security.users.edit`, and writes their history), `inventory.fn_TransferOrder_Blocks` (from 91: the access rows, From / To), `usp_TransferOrder_Save` (from 90: the From), `usp_TransferOrder_Search` (from 90: + `@UserId`, `@Mine`), `usp_ItemWarehouseLevel_Set` / `_Remove` / `_ImportCheck` / `_Import` (from 91: the level's warehouse). No stock, sales, purchase, goods receipt, container or movement procedure is re-created, and `security.usp_User_GetAccess` (sign-in) is not changed; no permission added |
 | `93_Inventory_TransferTracking.sql` | Batch, serial and expiry on transfers (prompt 50): new columns `inventory.Items.TrackingMode` / `RequiresExpiry` / `SerialLength` (`CK_Items_Tracking`) and `inventory.TransferPostingLines.TrackingKind` (the kind a dispatch line left with, copied by its receipt line); new table `inventory.TransferPostingTracking` (one row per serial no., batch or expiry date of a posting line; a receipt row points at the dispatch row it receives, `DispatchTrackingId`; a dispatch row's `SettledBase` = received + written off by posted receipts; a serial once per posting by a unique index; the filtered index `IX_TransferPostingTracking_ItemSerial` the forced seeks of the serial rules read) and two new, optional table types `inventory.tvp_TransferDispatchTracking` / `tvp_TransferReceiptTracking` (90's types stay frozen); `inventory.fn_TrackingNo_Normalize` (trim, capitals: the one place of the number rule), `fn_TransferSerial_LastEvent` (a serial's latest posted event, by row id), `fn_TransferDispatch_TrackingProblems` (the one source of the dispatch rules: errors Seq 5-24 by number, 62017 at Seq 90, warnings 100-103; read by the dialog's Check and by the posting); new `inventory.usp_Item_SetTracking`, `usp_TransferPosting_Tracking` (the rows and their state), `usp_TransferOrder_CheckDispatchTracking` (no lock, nothing written), `usp_TransferOrder_TrackingSuggestions` (the serials received into the source and not sent since); re-created: `inventory.usp_Item_Get` (from 87: + the three columns), `fn_TransferPosting_ReverseBlock` (from 90: + Seq 3, a receipt whose serial left again, 62013), `usp_TransferOrder_DispatchCore` (from 90: + `@Tracking`, the format rules BEFORE the source lock, one application lock per serial item `inventory.TransferSerial.{ItemId}` after it (62010 after 30 s), 62017 after the stock check, the rows, the ledger per expiry date, the audit's counts), `usp_TransferOrder_Dispatch`, `usp_TransferOrder_ReceiveCore` (from 90: + the receipt rules, the rows, the ledger per expiry date, the dispatch rows' Settled), `usp_TransferOrder_Receive`, `usp_TransferOrder_DispatchAndReceive` (every row of the new dispatch received), `usp_TransferPosting_Reverse` (from 90: the serial locks of a receipt, its rows back on the way), `usp_TransferOrder_Get` (from 91, its `@SP` fix kept: + the item's tracking per line, the kind and count per posting line - never the rows), `usp_TransferOrder_Search` (from 92: + `@TrackingNo`, `MatchedTracking`, the matching orders found once with `OPTION (RECOMPILE)`). Errors 62016 (400 `TRANSFER_TRACKING`) and 62017 (409 `SERIAL_ON_THE_WAY`) new; 62000, 62006, 62010, 62012, 62013, 56000, 56006 reused. The ledger is not altered (its `ExpiryDate` is written); the cost replay, on hand, the valuation, the Dashboard, Shortages and Stock Levels are not touched; no permission added |
+| `94_Inventory_ItemCostsPermission.sql` | Who may see item costs (prompt 51): the permission `inventory.costs.view` "View item costs" (Inventory, 406) upserted and granted once per database (`inventory.OneTimeSteps` step `94.CostsViewGrant`) to the system roles and to every role holding one of the 14 permissions whose screens showed an item cost; `inventory.usp_StockDocument_Save` re-created from the body of script 29 with one changed statement: an In line without a cost takes `COALESCE(NULLIF(LastCost, 0), AverageCost, 0)` × the unit's packing (it took 0). No table, column, type, view or error number; the stripping is the API's (`Inventory_Shipment.Service/Security/ItemCosts.cs`), the order-less goods receipt rule the API's too (`usp_GoodsReceipt_Save` not re-created). Requires scripts 29, 75 and 89 |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -2747,7 +2866,11 @@ Every written prompt (32–50) is built, and so is every script up to the last o
    administrator ticks some (Users & Permissions › Users › Warehouses); script 93 changes nothing for any item until
    its Tracking is ticked - **tell the owner: tick Tracking on the items that need it (motorcycles: Serial numbers, 17
    characters; dated goods such as oil, if stocked: Batch numbers + Requires expiry date)**, in Item Definition, Edit
-   Items; `update.sh` backs the database up first.
+   Items; script 94 grants View item costs once to every role that saw item costs, so nobody loses a figure -
+   **tell the owner: in Users & Permissions › Role Permissions untick "View item costs" for the roles that must not see
+   what the goods cost (storekeepers, sales), and "View Stock Valuation" for those that must see no value at all** (and
+   View Sales Profit, View Containers, View / Post Purchase Invoices, View Landed Cost Adjustments and Create Purchase
+   Orders to hide every cost, 4.17 rule 6); `update.sh` backs the database up first.
 2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
 3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
    `enable-github-deploy.sh` on the server and its secrets in both repositories.
@@ -3238,5 +3361,9 @@ every step that did not behave as described.
   all", "Still coming | Lost", "Mark the {n} not ticked as lost"; the order's "{n} serial nos." / "{n} batches" / "{n}
   expiry dates" viewer with "Find a number" and "Copy list"; the list's "Batch or serial no."; the export's sheet "Batch,
   serial and expiry". The word is **tracking**, never "details" ("Save details" is the header).
+- **Item costs (script 94):** "View item costs" (Role Permissions, Inventory, after View Stock Valuation); the
+  sentences "You may not see item costs: each line is saved at the item's last cost (its average when it has none)." and
+  "Unit costs in the file are not used: …"; the goods receipt's "Cost source" column; the Dashboard's "Items in stock";
+  the tooltip "The item's last cost (its average when it has none) is applied automatically".
 
 *End of the handoff.*
