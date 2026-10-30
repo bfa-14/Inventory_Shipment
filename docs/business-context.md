@@ -1,3 +1,4 @@
+| `95_Logistics_ContainerReport.sql` | The Container Report (prompt 52): the permission `containers.report.view` "View Container Report" (Containers, 1408) upserted and granted once per database (`inventory.OneTimeSteps` step `95.ContainerReportGrant`) to the system roles and the roles holding View Containers; new `logistics.usp_ContainerReport` (three result sets: the rows, their charges per type, the charge types; set-based over the rows, their legs read once); re-created `logistics.fn_ItemPcsPerContainer` (from 54): a packing formula of 1 is "not specified" (NULL), so capacity is not judged for it. Requires scripts 54, 82 and 89 |
 # Inventory & Shipment: business handoff (Katanga TVS Motor Company)
 
 *Written on 7 October 2026 by the Claude session that has been writing the prompts with Bilal, for the Claude Code
@@ -121,6 +122,14 @@ sends the figures empty to anybody else and the pages draw no column; it hides, 
 saved without a cost takes the item's last cost, else its average (it took 0, also for a type whose cost cannot be typed
 and for an import row without one), and a goods receipt line without an order the same; a line's cost follows a change of
 its unit (glossary, 1.6, 3.3, 3.8, 4.9, 4.11, 4.12, 4.13, 4.17, 5.2, 5.4, 6.1, 8.5; `docs/notes/costing-rules.md`).*
+
+*Updated on 30 October 2026 for **the Container Report** (script 95, prompt 52): Reports › Container Report is the
+purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
+load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
+pending - November 2026", "In transit India → Dar es Salaam", "Dar es Salaam → Mokambo", "Offloaded in Lubumbashi"), the
+lead time from the order date to the offload, an Excel export laid out like the sheet; its own permission, View Container
+Report; and a Container unit's packing formula of 1 now means "not specified": no capacity is judged for it (3.1, 3.8,
+4.5, 4.18, 5.2, 5.4).*
 
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
@@ -378,6 +387,8 @@ without seeing costs, and View Stock Valuation for those who must see no value a
   warehouse's Min / Max and where it stands, and the company view; View Stock Levels), Stock Valuation, Shortages
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
+- **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 95: every container and order still
+  to load, by stage; View Container Report), Customer Statement, Out-of-Stock Sales
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
 - **Sales:** Sales Invoices, Sales Profit, Receipts, Customer Statement, Out-of-Stock Sales
 - **Backoffice › Master Data:** Branches / Sites, Warehouses, Currencies, Exchange Rates, Item Families, Brands,
@@ -612,6 +623,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
     Delete Containers).
   - Shipments board: `containers.shipments.view` (1406, "View Shipments", script 82), granted once, when it was first
     created, to the roles holding View Movements, View Tracking or Manage Shipment Movements.
+  - Container Report: `containers.report.view` (1408, "View Container Report", script 95), granted once, when it was
+    first created, to the system roles and the roles holding View Containers. Its charge columns also need View
+    Container Charges, its payment columns View Supplier Payments: the server sends them empty to others.
   - Purchase: `purchase.orders.approve` (now "(not used)"), `purchase.orders.post`, `purchase.approval.manage`;
     `purchase.invoices.post` is now "payable; adjusts the cost of goods already received".
   - Goods receipts: `purchase.goodsreceipts.view / create / post / cancel / delete` (1102–1110, script 64). Granted
@@ -1049,6 +1063,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Fill % = Σ quantity ÷ pieces per container. A 40HC with 84 motorcycles of an 84-piece item = 100% (it showed
     70% before).
   - An item without a Container unit: fill unknown ("—", with a link to set it), no warning, Auto-plan refuses it.
+  - **A packing formula of 1 means "not specified"** (script 95, the owner): the item is treated as having no Container
+    unit for capacity (`logistics.fn_ItemPcsPerContainer`, the one place): fill unknown, no warning, Auto-plan asks
+    for it. The unit itself stays and can still be bought in.
   - Max Units is gone from Container Types and every container form (the database column and the procedures'
     parameters stay, unread). Max Weight and Max Volume stay.
   - The over-capacity message names the item: "This container would be 112 % full: 94 pcs of TEST38-A (84 per
@@ -2706,6 +2723,45 @@ line; every other permission and grant. No table, column, type, view or error nu
 
 **Errors:** none new. HTTP 403 "Forbidden" is never answered for want of this permission.
 
+### 4.18 The Container Report **[Implemented – script 95, prompt 52]**
+
+The purchasing team followed its containers on a hand-kept sheet (the owner's "tracking report sample"): sections by stage,
+rows moved between them by hand, subtotals and lead times typed. Reports › Container Report works it out from the system.
+
+1. **Rows:** one per container line (a cancelled container is left out) and one per approved order line with pieces still
+   to load (ordered − loaded on containers not cancelled − received outside containers − settled short). An item that does
+   not exist simply has no row: the report reads what the system holds, it never creates anything.
+2. **The stage**, the first that applies (`logistics.usp_ContainerReport`): received → "Offloaded in {the To of its last
+   Delivery leg, else its warehouse}"; a vessel leg in progress → "In transit {From} → {To}"; a Port leg → "{port}"; a stay
+   (Customs, or From = To) → "{place}"; a road leg → "{From} → {To}"; never moved, or an order line still to load → "Order
+   pending - {month}" (the container's order month, else the order date's); last leg a Delivery, not received →
+   "Delivered to {To}, to receive"; else the To of its last leg. The places name the stages, so the two routes in use
+   (India → Dar es Salaam → Lubumbashi, and India → Dar es Salaam → Mokambo → Lubumbashi) give the sheet's sections by
+   themselves, and a new place gets its own. Ordered as the sheet: pending (newest month first), at sea, at a port, on the
+   road from a port, at a border or inland place, on the road from there, delivered, offloaded.
+3. **The journey** from the legs not cancelled: dispatch = the first start of a Sea leg; arrived in port = the last end of
+   a Sea leg; left port = the first start of a leg leaving a sea port by land; final destination = the places reached
+   after the port, in order ("Mokambo → Lubumbashi"); trucks = their vehicles; offloaded = the container's offload date.
+   **Lead time (months)** = (offloaded − order date) / 30 days (the sheet's rule: 14/03/2026 → 26/10/2026 = 7.53); before
+   the offload it is counted to today and marked "so far".
+4. **Amounts** in the base currency. FOB = pieces × the invoice price once received, else the container page's estimate
+   (an order line still to load: the order price), marked "est.". Charges = the line's share of the posted charges, one
+   column per charge type the rows carry; Freight / Shipping and Inland Transportation are the transport charges: their
+   invoices are listed per container ("05/11/2025 · 2500323 · 10,000.00") and summed in TOTAL TRANSPORT AMOUNT. Total
+   expenses = FOB + charges; cost per unit = the landed cost (an estimate until received). Invoices, PI exporter's refs,
+   commercial invoice numbers, payment dates and references are listed when there are several.
+5. **Alerts** per row: Late (the leg's ETA has passed), Free time over, Not invoiced, Not paid, Partly paid, No container
+   no., No B/L.
+6. **The page:** filters (search, supplier, item, family, branch, order dates, offloaded dates, "Orders still to load",
+   "Received containers"), one tile per stage (containers, lines, pieces, value; a click shows that stage only), the grid
+   grouped by stage with each group's totals and a grand total, the container ref pinned. **Export to Excel** writes the
+   sheet's layout: one frozen header, a title row per stage, its rows, its subtotal, the grand total; estimates in grey
+   italics.
+7. **Who:** View Container Report (3.8). Without View Container Charges the charge columns are left out; without View
+   Supplier Payments the payment columns. Nobody is refused anything else.
+8. **Not in it yet:** the oil value ("FOB with oil", "Oil", "FOB without oil" in the sheet): the invoice price includes it,
+   the owner will deal with it later.
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -2746,6 +2802,7 @@ sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-type
 | **41** | Containers from the purchase invoice (script 43): "Shipped in containers", Link / Unlink, Add container / Auto-plan from the PI, container counts | Done. It ran **before** 37, so 37 was adapted |
 | **42** | Approval follow-ups after 36: 65016 rule, withdraw reason, create-and-approve warnings, UTC "Z", test emails, Approve confirmation | Done: script 44 (the 65016 rule, the withdraw reason), UTC "Z" (`UtcDateTimeJson.cs`), the create-and-approve warnings, the Approve confirmation. "Prompt 42" ≠ "script 42" |
 | **43** | Movement: add containers with checkboxes, Excel / paste list, the place rule (Save / Start checks) | Done, partly superseded by 45. Bilal then saw 404 / 405 (stale API: restart) and a movement started with a never-moved container |
+| **52** | The Container Report (script 95): Reports › Container Report, every container line and every approved order line still to load with its order, PI, invoices, payments, journey, charges (one column per charge type, transport summed) and cost, grouped by stage from the movements and goods receipts ("Order pending - {month}", "In transit India → Dar es Salaam", "Dar es Salaam → Mokambo", "Offloaded in Lubumbashi"), lead time to the offload, alerts, tiles per stage, an Excel export laid out like the tracking sheet; the permission View Container Report; a Container unit of 1 means "not specified" for capacity (A1, A2, B1) | Done: 4.18 |
 | **44** | Create containers from a purchase invoice: CHECK what exists, then make it work with every validation; Containers card on every PI with reasons | Done: script 51 and the PI's Containers card with its reasons ("Turn on 'Shipped in containers'"). The "missing button" reported earlier was explained: invoice 1227 fully linked; invoice 1322 posted without the switch |
 | **45** | Movement: one list with checkboxes that follows the From; Save / Start guards; never-moved rule; validated Excel import, result download, template file | Done: script 53; the movement's container list, the never-moved rule, the validated import ("Tick the {n} valid containers", "Download the result") and the template in `public/templates/` |
 | **46** | Container capacity from one place, the item's Container unit; Max Units removed | Done: script 54; capacity from the item's Container unit only, Max Units gone from the screens |

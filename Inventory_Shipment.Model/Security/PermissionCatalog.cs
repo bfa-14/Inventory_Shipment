@@ -338,6 +338,13 @@ public static class Permissions
         /// created, to the roles holding View Movements, View Tracking or Manage Shipment Movements.
         /// </summary>
         public const string ShipmentsView = "containers.shipments.view";
+
+        /// <summary>
+        /// Reports › Container Report (script 95): every container and order still to load with its order, invoices,
+        /// payments, journey, charges and cost, by stage. Granted once, when first created, to the roles holding View
+        /// Containers. Its charge figures also need View Container Charges, its payments View Supplier Payments.
+        /// </summary>
+        public const string ReportView = "containers.report.view";
         public const string ChargesView = "containers.charges.view";
         public const string ChargesCreate = "containers.charges.create";
         public const string ChargesPost = "containers.charges.post";
@@ -657,6 +664,9 @@ public static class Permissions
             "Logistics › Shipments: the containers on their way, by stage.", 1406),
         new(Containers.TrackingView, "View Tracking", ContainersModule,
             "Open the Tracking board (a container's own page shows its route with View Containers).", 1407),
+        // Name, description and sort order match script 95's MERGE, so the start-up sync changes nothing.
+        new(Containers.ReportView, "View Container Report", ContainersModule,
+            "Reports › Container Report: every container and order still to load with its order, invoices, payments, journey, charges and cost, by stage.", 1408),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,
