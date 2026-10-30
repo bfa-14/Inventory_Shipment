@@ -1,6 +1,7 @@
--- (set 2) read the estimate of what the goods receipt will give the line (fn_ContainerLine_FobEstimate): the invoice
--- pieces its matching will give it, those of an invoice that does not change item costs (script 79) at the order price,
--- as at the receipt. A received line keeps its final cost. Nothing else changes.
+/* ================================================================== 4. The container page: the same */
+
+-- Re-created (95) from the body of script 82: + the journey columns, CanReceive by fn_Container_ReceiveBlock and its
+-- reason. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_Container_Get
     @Id INT
 AS
@@ -58,7 +59,9 @@ BEGIN
            GoodsReceiptCreatedAtUtc = gr.CreatedAtUtc,
            DeliveredDate = dl.EndDate, DeliveryMovementId = dl.MovementId, DeliveryMovementNo = dl.MovementNo,
            DeliveryPlaceName = dl.PlaceName,
-           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT),
+           -- (95) Receive goods... only once delivered (fn_Container_ReceiveBlock)
+           CanReceive = CAST(CASE WHEN rbk.Reason IS NULL THEN 1 ELSE 0 END AS BIT), ReceiveBlockedReason = rbk.Reason,
+           jr.JourneyStatus, jr.JourneyFromName, jr.JourneyToName, jr.JourneySince, jr.JourneyMovementNo,   -- (95)
            CloseBlockedReason = cb.Reason,
            -- (80) the shipment (fn_Container_ShipState): where it is, the movement in progress carrying it, its next
            -- planned movement (why it cannot start yet, its earliest start) and its last completed one
@@ -89,6 +92,8 @@ BEGIN
     OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
     OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
     CROSS APPLY logistics.fn_Container_ShipState(c.Id) ss       -- (80) the shipment
+    CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95)
+    CROSS APPLY logistics.fn_Container_Journey(c.Id) jr         -- (95)
     OUTER APPLY logistics.fn_Container_NextStep(c.Id) nx        -- (81) its next step
     LEFT  JOIN purchase.GoodsReceipts gr    ON gr.Id = rb.GoodsReceiptId
     LEFT  JOIN masterdata.Warehouses gw     ON gw.Id = gr.WarehouseId

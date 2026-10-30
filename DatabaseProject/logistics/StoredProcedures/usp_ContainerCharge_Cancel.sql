@@ -1,9 +1,6 @@
--- the transaction, without a lock, so a cancel decided "not in the goods' cost" while a goods receipt was freezing the
--- charge (AppliedAtOffload) - the cost stayed in the received goods with the charge cancelled. Now, inside the
--- transaction, the container is read WITH (UPDLOCK, HOLDLOCK) first (the order goods receipt Post and Cancel lock in),
--- then the charge: the cancel waits for a receipt in progress and decides on what it committed. The refusals are
--- unchanged (same numbers and words), only made inside the transaction.
--- Cancels a POSTED charge. When it is already in the cost of offloaded goods, the cost is reversed the same way.
+/* ================================================================== 9. Cancel */
+
+-- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge is cancelled with it. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
@@ -48,6 +45,16 @@ BEGIN
 
         EXEC logistics.usp_Container_RecalcCosts @ContainerId;
         IF @InCost = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @Id, -1, @UserId;
+
+        -- (97) the BIVAC Out of a BIVAC charge is cancelled with it (its own rules and words: the BIVAC item comes back)
+        DECLARE @BivacOut INT = (SELECT ch.BivacOutDocumentId FROM logistics.ContainerCharges ch
+                                 INNER JOIN inventory.StockDocuments d ON d.Id = ch.BivacOutDocumentId AND d.Status = 2
+                                 WHERE ch.Id = @Id);
+        IF @BivacOut IS NOT NULL
+        BEGIN
+            DECLARE @BivacReason NVARCHAR(300) = LEFT(N'BIVAC charge cancelled: ' + @Reason, 300);
+            EXEC inventory.usp_StockDocument_Cancel @Id = @BivacOut, @Reason = @BivacReason, @UserId = @UserId;
+        END
 
         INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
         VALUES (@ContainerId, N'Updated', LEFT(N'Charge cancelled: ' + @Label + N' - ' + @Reason

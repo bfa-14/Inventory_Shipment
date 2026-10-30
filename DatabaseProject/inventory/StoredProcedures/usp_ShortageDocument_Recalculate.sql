@@ -17,10 +17,14 @@ BEGIN
     INSERT INTO @Lines (LineNumber, ItemId, RequiredQty, ExpectedMonthlySalesManual, PcPerContainer, Notes)
     SELECT LineNumber, ItemId, RequiredQty, ExpectedMonthlySalesManual, PcPerContainer, Notes
     FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id;
+    -- (98) A lead time typed on a line is kept; the others are worked out again.
+    DECLARE @LeadTimes inventory.tvp_ShortageLeadTime;
+    INSERT INTO @LeadTimes (ItemId, LeadTimeMonths)
+    SELECT ItemId, LeadTimeManual FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id AND LeadTimeManual IS NOT NULL;
 
     BEGIN TRY
         BEGIN TRANSACTION;
-        EXEC inventory.usp_ShortageDocument_WriteLines @Id, @Lines;
+        EXEC inventory.usp_ShortageDocument_WriteLines @Id, @Lines, @LeadTimes;   -- (98)
         UPDATE inventory.ShortageDocuments SET UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
         INSERT INTO inventory.ShortageDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Recalculated', N'Live figures refreshed', @UserId);
         COMMIT TRANSACTION;

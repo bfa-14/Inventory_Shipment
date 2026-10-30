@@ -1,7 +1,8 @@
--- four formulas of the table) and in the sum of the suggested RequiredQty. Nothing else.
+-- (history, own, the header's); stored with LeadTimeManual and LeadTimeSource. Nothing else.
 CREATE   PROCEDURE inventory.usp_ShortageDocument_WriteLines
-    @Id     INT,
-    @Lines  inventory.tvp_ShortageLine READONLY
+    @Id        INT,
+    @Lines     inventory.tvp_ShortageLine READONLY,
+    @LeadTimes inventory.tvp_ShortageLeadTime READONLY   -- (98) the lead times typed on lines; an item left out takes its own
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -19,15 +20,22 @@ BEGIN
     ORDER BY l.LineNumber;
     IF @Msg IS NOT NULL THROW 66000, @Msg, 1;
     IF EXISTS (SELECT ItemId FROM @Lines GROUP BY ItemId HAVING COUNT(*) > 1) THROW 66000, 'An item appears more than once.', 1;
+    -- (98) A lead time typed on a line: above 0, at most 60 months.
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the lead time must be above 0 and at most 60 months.'
+    FROM @LeadTimes t INNER JOIN @Lines l ON l.ItemId = t.ItemId
+    WHERE t.LeadTimeMonths <= 0 OR t.LeadTimeMonths > 60
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 66000, @Msg, 1;
 
     DELETE FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id;
 
     INSERT INTO inventory.ShortageDocumentLines (DocumentId, LineNumber, ItemId, CurrentInventoryBase, TransitBase, TransfersInBase, OutstandingOrderBase,
-                                                 ExpectedMonthlySalesBase, ExpectedMonthlySalesManual, LeadTimeMonths,
+                                                 ExpectedMonthlySalesBase, ExpectedMonthlySalesManual, LeadTimeMonths, LeadTimeManual, LeadTimeSource,   -- (98)
                                                  PurchaseItemUnitId, PurchasePackingFormula, RequiredQty, PcPerContainer, PcPerContainerFromUnit,
                                                  MinQuantity, MaxQuantity, LastCost, Notes)
     SELECT @Id, l.LineNumber, l.ItemId, x.CurrentInventoryBase, x.TransitBase, x.TransfersInBase, x.OutstandingOrderBase,   -- (90)
-           x.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, @LeadTime,
+           x.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, ISNULL(t.LeadTimeMonths, lt.LeadTimeMonths), t.LeadTimeMonths,   -- (98)
+           CASE WHEN t.LeadTimeMonths IS NOT NULL THEN N'Manual' ELSE lt.Source END,
            x.PurchaseItemUnitId, x.PurchasePackingFormula,
            RequiredQty = ISNULL(l.RequiredQty,
                                 CASE WHEN s.ShortageBase > 0 THEN CEILING(CAST(s.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) ELSE 0 END),
@@ -36,8 +44,11 @@ BEGIN
            x.MinQuantity, x.MaxQuantity, x.LastCost, NULLIF(LTRIM(RTRIM(l.Notes)), N'')
     FROM @Lines l
     INNER JOIN inventory.fn_Shortage_Live(@WarehouseId, @Months) x ON x.ItemId = l.ItemId
-    CROSS APPLY (SELECT ShortageBase = CASE WHEN ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * @LeadTime - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) > 0
-                                            THEN CONVERT(INT, CEILING(ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * @LeadTime - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase)))
+    LEFT  JOIN @LeadTimes t ON t.ItemId = l.ItemId                                                                 -- (98)
+    CROSS APPLY inventory.fn_Item_LeadTime(l.ItemId, @LeadTime) lt                                                -- (98)
+    CROSS APPLY (SELECT LT = ISNULL(t.LeadTimeMonths, lt.LeadTimeMonths)) e                                        -- (98)
+    CROSS APPLY (SELECT ShortageBase = CASE WHEN ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * e.LT - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) > 0
+                                            THEN CONVERT(INT, CEILING(ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * e.LT - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase)))
                                             ELSE 0 END) s
     WHERE x.PurchaseItemUnitId IS NOT NULL;
 

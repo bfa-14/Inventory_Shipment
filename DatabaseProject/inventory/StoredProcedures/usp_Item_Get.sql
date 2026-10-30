@@ -1,7 +1,3 @@
-/* ================================================================== 7. The item procedures */
-
--- Re-created (93) from the body of script 87: + TrackingMode, RequiresExpiry, SerialLength after Note, Link (the first
--- result set; read by name). Nothing else.
 CREATE   PROCEDURE inventory.usp_Item_Get
     @Id INT
 AS
@@ -25,6 +21,7 @@ BEGIN
            i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
            i.Note, i.Link,                           -- (87)
            i.TrackingMode, i.RequiresExpiry, i.SerialLength,   -- (93)
+           i.LeadTimeMonths, LeadTimeHistoryMonths = lh.Months, LeadTimeHistoryReceipts = lh.Receipts,   -- (98)
            i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
            i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
     FROM inventory.Items i
@@ -41,6 +38,7 @@ BEGIN
         FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
         WHERE u.ItemId = i.Id AND t.IsContainer = 1
     ) cnt
+    OUTER APPLY inventory.fn_Item_LeadTimeHistory(i.Id) lh   -- (98)
     WHERE i.Id = @Id;
 
     SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,

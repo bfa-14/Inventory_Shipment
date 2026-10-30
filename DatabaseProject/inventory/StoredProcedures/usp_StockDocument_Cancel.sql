@@ -1,5 +1,7 @@
--- In), since the document's PostedAtUtc. Everything of 89 kept word for word: the matching lock first, the document's
--- own rows only, the refusal when it has none, the cost replay of its items, DEADLOCK_PRIORITY LOW (the API retries).
+/* ================================================================== 12. A BIVAC Out of a charge goes with its charge */
+
+-- Re-created (97) from the body of script 90: + a BIVAC Out made by a posted BIVAC charge is cancelled by that charge's
+-- Cancel only. Nothing else changes.
 CREATE   PROCEDURE inventory.usp_StockDocument_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
@@ -29,6 +31,18 @@ BEGIN
         IF @Status <> 2 THROW 62010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 62004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+        -- (97) A BIVAC OUT MADE BY A BIVAC CHARGE goes with its charge: cancelling the charge cancels it (the charge is then
+        -- already cancelled when this runs)
+        DECLARE @ChargeOf NVARCHAR(30) = (SELECT TOP (1) c.ContainerRef FROM logistics.ContainerCharges ch
+                                          INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+                                          WHERE ch.BivacOutDocumentId = @Id AND ch.Status = 2);
+        IF @ChargeOf IS NOT NULL
+        BEGIN
+            DECLARE @ChargeMsg NVARCHAR(400) = N'This BIVAC Out was made by the BIVAC charge of container ' + @ChargeOf
+                                             + N': cancel that charge instead (its BIVAC Out is cancelled with it).';
+            THROW 62010, @ChargeMsg, 1;
+        END
 
         -- Cancelling an incoming document removes stock again: it must still be there.
         IF @Direction = 1

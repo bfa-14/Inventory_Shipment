@@ -1,3 +1,6 @@
+/* ================================================================== 7. A draft charge changed */
+
+-- Re-created (97) from the body of script 96: a BIVAC charge keeps its type, no other charge becomes one. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Update
     @Id               INT,
     @MovementId       INT            = NULL,
@@ -49,6 +52,13 @@ BEGIN
     IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
     IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
         THROW 70000, 'The provider is not found or inactive.', 1;
+    -- (97) a BIVAC charge keeps its type (its BIVAC item goes with it); another charge does not become one here
+    DECLARE @WasBivac BIT = CASE WHEN EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND BivacItemId IS NOT NULL) THEN 1 ELSE 0 END;
+    DECLARE @IsBivacType BIT = CASE WHEN EXISTS (SELECT 1 FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND ChargeCode = N'BIV') THEN 1 ELSE 0 END;
+    IF @WasBivac = 1 AND @IsBivacType = 0
+        THROW 70000, 'A BIVAC charge keeps its charge type: delete this draft and add the charge again with Add charge.', 1;
+    IF @WasBivac = 0 AND @IsBivacType = 1
+        THROW 70000, 'A BIVAC charge is added with Add charge, where its BIVAC item is chosen: delete this draft and add it there.', 1;
     IF @MovementId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
                                                WHERE mc.MovementId = @MovementId AND mc.ContainerId = @ContainerId AND m.Status <> 4)
         THROW 70000, 'The container is not part of this movement (or the movement is cancelled).', 1;
@@ -77,6 +87,19 @@ BEGIN
 
     BEGIN TRY
         BEGIN TRANSACTION;
+
+        -- (96) a provider's invoice is entered once: the charges of this charge's own group keep it
+        IF @Reference IS NOT NULL
+        BEGIN
+            EXEC sp_getapplock @Resource = N'logistics.ContainerChargeReference', @LockMode = N'Exclusive',
+                 @LockOwner = N'Transaction', @LockTimeout = 30000;
+            DECLARE @Clash NVARCHAR(400) = (SELECT r.Message
+                                            FROM logistics.fn_ContainerCharge_ReferenceClash(
+                                                     @ProviderPartyId, @Reference,
+                                                     (SELECT GroupId FROM logistics.ContainerCharges WHERE Id = @Id), @Id) r);
+            IF @Clash IS NOT NULL THROW 70001, @Clash, 1;
+        END
+
         UPDATE logistics.ContainerCharges
         SET MovementId = @MovementId, ChargeTypeId = @ChargeTypeId, Description = @Description, ProviderPartyId = @ProviderPartyId,
             Reference = @Reference, ChargeDate = @ChargeDate, CurrencyId = @CurrencyId, RateType = @RateType, ExchangeRate = @Rate,
