@@ -55,6 +55,13 @@ public sealed class SaveItemRequest
     [Range(0, 3650)]
     public int? LeadTimeDays { get; init; }
 
+    /// <summary>
+    /// (98) Months between ordering and receiving, one decimal, 0 to 60: what Item Definition types now. Sent: it wins and
+    /// the days follow (x 30); left out by an older client: the days typed are kept, as months (/ 30, to the half month).
+    /// </summary>
+    [Range(0, 60)]
+    public decimal? LeadTimeMonths { get; init; }
+
     /// <summary>Pieces (base units) that fit in one container; the shortage plan turns a required quantity into containers with it.</summary>
     [Range(1, int.MaxValue)]
     public int? PcPerContainer { get; init; }

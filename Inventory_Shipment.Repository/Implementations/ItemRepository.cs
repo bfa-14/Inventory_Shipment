@@ -650,6 +650,25 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
+    public async Task SetLeadTimeAsync(int id, decimal? leadTimeMonths, int? userId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("@Id", id, DbType.Int32);
+            parameters.Add("@LeadTimeMonths", leadTimeMonths, DbType.Decimal, precision: 5, scale: 1);
+            parameters.Add("@UserId", userId, DbType.Int32);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_Item_SetLeadTime", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public async Task SetTrackingAsync(
         int id, Model.Enums.TrackingMode trackingMode, bool requiresExpiry, int? serialLength, int? userId,
         CancellationToken cancellationToken = default)

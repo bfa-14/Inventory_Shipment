@@ -110,6 +110,15 @@ public sealed class ItemDetailsDto
     /// <summary>Days between ordering and receiving — what the shortage report compares days of cover with.</summary>
     public int? LeadTimeDays { get; init; }
 
+    /// <summary>(98) The item's own lead time in months (one decimal); the days are months x 30.</summary>
+    public decimal? LeadTimeMonths { get; init; }
+
+    /// <summary>(98) What its purchase history says: order approval to goods receipt, last 12 months (null without one).</summary>
+    public decimal? LeadTimeHistoryMonths { get; init; }
+
+    /// <summary>(98) The goods receipts that history counts.</summary>
+    public int? LeadTimeHistoryReceipts { get; init; }
+
     /// <summary>Pieces (base units) per container — the default of a shortage plan line. Only the item's own Get returns it.</summary>
     public int? PcPerContainer { get; init; }
 

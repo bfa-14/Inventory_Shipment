@@ -45,6 +45,21 @@ public static class ContainerStatus
     }
 }
 
+/// <summary>(95) Where a container is on its journey (logistics.fn_Container_Journey), and the list's Journey filter.</summary>
+public static class ContainerJourney
+{
+    public const string NotDispatched = "NotDispatched";
+    public const string OnTheWay = "OnTheWay";
+    public const string Arrived = "Arrived";
+    public const string Received = "Received";
+
+    public static readonly IReadOnlyList<string> All = [NotDispatched, OnTheWay, Arrived, Received];
+
+    /// <summary>The canonical spelling of a filter value, null when it is none of them.</summary>
+    public static string? Normalize(string? value)
+        => All.FirstOrDefault(v => string.Equals(v, value?.Trim(), StringComparison.OrdinalIgnoreCase));
+}
+
 public static class ShippingMethods
 {
     public static readonly string[] All = ["Sea", "Air", "Road"];
@@ -115,10 +130,30 @@ public abstract record ContainerStatusFlags
     public DateTime? DeliveredDate { get; init; }
 
     /// <summary>
-    /// "Receive goods...": Confirmed to Cleared with no open goods receipt (decision 6: no Delivery needed). From the
-    /// procedure, which tests the receipt the same way the creation does.
+    /// "Receive goods...": Confirmed to Cleared with no open goods receipt and (95) delivered - a container that travels
+    /// with movements is received only once a Delivery leg is completed; one followed by typed dates only keeps the rule
+    /// of before. From logistics.fn_Container_ReceiveBlock, which the creation reads too.
     /// </summary>
     public bool CanReceive { get; init; }
+
+    /// <summary>(95) Why "Receive goods..." cannot be used now ("KTG-2026-0031 has not been delivered yet: …"), null when it can.</summary>
+    public string? ReceiveBlockedReason { get; init; }
+
+    /* (95) THE JOURNEY (logistics.fn_Container_Journey): the latest leg that started, for the list's "From -> To" and
+       "Journey" columns. See ContainerJourney. */
+
+    /// <summary>NotDispatched, OnTheWay, Arrived or Received; null for a cancelled container.</summary>
+    public string? JourneyStatus { get; init; }
+
+    public string? JourneyFromName { get; init; }
+
+    public string? JourneyToName { get; init; }
+
+    /// <summary>Since when: the leg's start (on the way, a stay), its end (arrived), the receipt (received).</summary>
+    public DateTime? JourneySince { get; init; }
+
+    /// <summary>The movement of that leg, null when no leg started (typed dates, not dispatched).</summary>
+    public string? JourneyMovementNo { get; init; }
 
     /// <summary>Everything before the goods arrive: the header can still change (with a goods receipt too, rule 21).</summary>
     public bool CanEdit => Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared;
@@ -1302,6 +1337,9 @@ public sealed class ContainerQuery
     /// open drafts included). Worked out on the server, so it holds across the pages.
     /// </summary>
     public string? NextStep { get; init; }
+
+    /// <summary>(95) NotDispatched, OnTheWay, Arrived or Received (<see cref="ContainerJourney"/>).</summary>
+    public string? Journey { get; init; }
 
     public string SortBy { get; init; } = "OrderDate";
     public string SortDir { get; init; } = "desc";

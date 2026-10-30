@@ -92897,3 +92897,2872 @@ GO
 
 SET NOEXEC OFF;
 GO
+
+-- ===== 95: Logistics - where a container is on its journey, and Receive goods only once delivered =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 95: LOGISTICS - WHERE A CONTAINER IS ON ITS JOURNEY, AND RECEIVE GOODS ONLY ONCE DELIVERED
+
+     1. THE JOURNEY OF A CONTAINER (logistics.fn_Container_Journey), for the Containers list's columns "From -> To" and
+        "Journey" and its filter: the latest leg that started (in progress or completed, never planned or cancelled):
+          On the way    a leg in progress that moves (From <> To): "Dar es Salaam -> Kasumbalesa"
+          Arrived       the latest leg is completed, or a stay (Port, Customs, Border) is in progress: at its To since
+                        its end (a stay: its start)
+          Not dispatched no leg started yet: From -> To = its port of loading -> port of destination (the journey ahead)
+          Received      offloaded or closed (6, 7): at its warehouse
+        A container followed by typed dates only (no leg) follows its status: In Transit on the way to its port of
+        destination, At Port arrived there, Cleared arrived at its final destination (else its port of destination).
+        A cancelled container has none (NULL).
+     2. RECEIVE GOODS... ONLY ONCE DELIVERED (logistics.fn_Container_ReceiveBlock, the one place of the rule and its
+        words): a container that travels with movements is received only after one of its Delivery legs is completed -
+        "KTG-2026-0031 has not been delivered yet: complete its Delivery movement first, then receive its goods." (63010).
+        Before, any container from Confirmed to Cleared could be received by hand. One followed by typed dates only (no
+        movement at all) keeps the rule of before (it can have no Delivery). Read by the Containers list and page
+        (CanReceive, ReceiveBlockedReason), the goods receipt dialogs (the API) and Receive goods... itself.
+
+   Objects
+     New          logistics.fn_Container_Journey, logistics.fn_Container_ReceiveBlock
+     Re-created   logistics.usp_Container_Search (from 81: + @Journey, the journey columns, CanReceive by the rule,
+                  ReceiveBlockedReason), logistics.usp_Container_Get (from 82: the same columns),
+                  purchase.usp_GoodsReceipt_CreateForContainer (from 72: the rule for Receive goods..., not for the
+                  Delivery hook)
+
+   Errors: no new number (63010).
+   Not changed: the automatic draft of a completed Delivery, the posting of a goods receipt, movements, the Shipments
+   board, the next step of a container (its "Receive goods..." already came after its Delivery).
+
+   Requires scripts 65 and 82. Idempotent, additive: re-applied at every API start-up, and builds an empty database.
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'logistics.fn_Container_ShipState', N'IF') IS NULL OR OBJECT_ID(N'logistics.fn_Container_LastDelivery', N'IF') IS NULL
+    THROW 69000, 'Script 95 requires scripts 65 and 82: apply them first.', 1;
+GO
+
+/* ================================================================== 1. The journey of a container */
+
+-- (95) ONE ROW PER CONTAINER (none for an unknown id): its latest leg that started, by movement id as everywhere (the
+-- legs follow the travel order), else its status for a container followed by typed dates. Names, not ids: a list column.
+CREATE OR ALTER FUNCTION logistics.fn_Container_Journey (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT c.Id AS ContainerId,
+       JourneyStatus = CAST(CASE
+           WHEN c.Status = 8 THEN NULL
+           WHEN c.Status IN (6, 7) THEN N'Received'
+           WHEN lg.Id IS NOT NULL THEN CASE WHEN lg.Status = 2 AND lg.FromPlaceId <> lg.ToPlaceId THEN N'OnTheWay' ELSE N'Arrived' END
+           WHEN c.Status = 3 THEN N'OnTheWay'
+           WHEN c.Status IN (4, 5) THEN N'Arrived'
+           ELSE N'NotDispatched' END AS NVARCHAR(20)),
+       JourneyFromName = CASE WHEN c.Status = 8 THEN NULL WHEN lg.Id IS NOT NULL THEN fp.PortName ELSE pl.PortName END,
+       JourneyToName = CASE WHEN c.Status = 8 THEN NULL
+                            WHEN c.Status IN (6, 7) AND lg.Id IS NULL THEN COALESCE(w.WarehouseName, fd.PortName, pd.PortName)
+                            WHEN lg.Id IS NOT NULL THEN tp.PortName
+                            WHEN c.Status = 5 THEN COALESCE(fd.PortName, pd.PortName)
+                            ELSE pd.PortName END,
+       JourneySince = CASE WHEN c.Status = 8 THEN NULL
+                           WHEN c.Status IN (6, 7) THEN c.OffloadedDate
+                           WHEN lg.Id IS NOT NULL THEN CASE WHEN lg.Status = 3 THEN lg.EndDate ELSE lg.StartDate END
+                           WHEN c.Status = 3 THEN c.DispatchDate
+                           WHEN c.Status = 4 THEN c.ActualPortArrival
+                           WHEN c.Status = 5 THEN c.CustomsReleaseDate END,
+       JourneyMovementNo = CASE WHEN c.Status = 8 THEN NULL ELSE lg.MovementNo END
+FROM logistics.Containers c
+LEFT JOIN masterdata.Ports pl      ON pl.Id = c.PortOfLoadingId
+LEFT JOIN masterdata.Ports pd      ON pd.Id = c.PortOfDestinationId
+LEFT JOIN masterdata.Ports fd      ON fd.Id = c.FinalDestinationId
+LEFT JOIN masterdata.Warehouses w  ON w.Id = c.WarehouseId
+OUTER APPLY (SELECT TOP (1) m.Id, m.MovementNo, m.Status, m.FromPlaceId, m.ToPlaceId, m.StartDate, m.EndDate
+             FROM logistics.MovementContainers mc
+             INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+             WHERE mc.ContainerId = c.Id AND m.Status IN (2, 3)
+             ORDER BY m.Id DESC) lg
+LEFT JOIN masterdata.Ports fp ON fp.Id = lg.FromPlaceId
+LEFT JOIN masterdata.Ports tp ON tp.Id = lg.ToPlaceId
+WHERE c.Id = @ContainerId;
+GO
+
+/* ================================================================== 2. Why a container cannot be received now */
+
+-- (95) ONE ROW PER CONTAINER: Reason NULL when "Receive goods..." can make its draft now, else the first that applies,
+-- in the words of usp_GoodsReceipt_CreateForContainer.
+CREATE OR ALTER FUNCTION logistics.fn_Container_ReceiveBlock (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT c.Id AS ContainerId,
+       Reason = CAST(CASE
+           WHEN c.Status = 8 THEN N'This container is cancelled.'
+           WHEN c.Status IN (6, 7) OR og.Status = 2 THEN N'This container is received: its journey is over.'
+           WHEN og.Status = 1 THEN N'Container ' + c.ContainerRef + N' already has a draft goods receipt. Open it instead.'
+           WHEN c.Status = 1 THEN N'Confirm the container first: a draft container is not received.'
+           WHEN mv.Cnt > 0 AND dl.MovementId IS NULL
+               THEN c.ContainerRef + N' has not been delivered yet: complete its Delivery movement first, then receive its goods.'
+           END AS NVARCHAR(400))
+FROM logistics.Containers c
+OUTER APPLY (SELECT TOP (1) g.Status FROM purchase.GoodsReceipts g
+             WHERE g.ContainerId = c.Id AND g.Status < 3 ORDER BY g.Status DESC, g.Id DESC) og
+OUTER APPLY (SELECT Cnt = COUNT(*)
+             FROM logistics.MovementContainers mc
+             INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+             WHERE mc.ContainerId = c.Id AND m.Status <> 4) mv
+OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl
+WHERE c.Id = @ContainerId;
+GO
+
+/* ================================================================== 3. The Containers list: the journey and the receive rule */
+
+-- Re-created (95) from the body of script 81: + @Journey (the list's Journey filter, read in step 1 only when given),
+-- the journey columns, CanReceive by fn_Container_ReceiveBlock and its reason. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Search
+    @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
+    @ContainerRef        NVARCHAR(30)  = NULL,
+    @ContainerNo         NVARCHAR(20)  = NULL,
+    @SupplierId          INT           = NULL,
+    @PurchaseDocumentId  INT           = NULL,   -- a purchase ORDER or a purchase INVOICE linked to the container
+    @PurchaseOrderId     INT           = NULL,   -- containers carrying lines of this order
+    @CommercialInvoiceNo NVARCHAR(50)  = NULL,
+    @ItemId              INT           = NULL,
+    @BlNo                NVARCHAR(30)  = NULL,
+    @Status              TINYINT       = NULL,
+    @PortId              INT           = NULL,
+    @WarehouseId         INT           = NULL,
+    @BranchId            INT           = NULL,
+    @MovementId          INT           = NULL,   -- containers of this movement
+    @OrderMonthKey       INT           = NULL,   -- e.g. 202601
+    @DateFrom            DATE          = NULL,   -- order date
+    @DateTo              DATE          = NULL,
+    @SortColumn          NVARCHAR(30)  = N'OrderDate',  -- ContainerRef | ContainerNo | OrderDate | DispatchDate | Eta | Status | CreatedAtUtc
+    @SortDirection       NVARCHAR(4)   = N'DESC',
+    @PageNumber          INT           = 1,
+    @PageSize            INT           = 10,
+    @DeliveredNotReceived BIT          = 0,      -- (65) 1 = delivered (or with a draft receipt) and not received yet
+    @NextStep            NVARCHAR(20)  = NULL,   -- (81) Ship | StartPlanned | Complete | NextLeg | Receive (the to-do list)
+    @Journey             NVARCHAR(20)  = NULL    -- (95) NotDispatched | OnTheWay | Arrived | Received (fn_Container_Journey)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 10;
+    -- (78) PAGES OF UP TO 5,000 (200 before): every container's figures are worked out before the OFFSET, so each page
+    -- costs about the whole search - the 2,000 containers of one order took ten calls of 2 s each. The order's Containers
+    -- card and a movement's list now ask for them in one page; the grids keep asking for pages of 200 or less.
+    -- (81) Since the page is found first (step 1), only the page's rows are worked out; the cap stays.
+    IF @PageSize > 5000 SET @PageSize = 5000;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    SET @ContainerRef = NULLIF(LTRIM(RTRIM(@ContainerRef)), N'');
+    SET @ContainerNo = NULLIF(LTRIM(RTRIM(@ContainerNo)), N'');
+    SET @CommercialInvoiceNo = NULLIF(LTRIM(RTRIM(@CommercialInvoiceNo)), N'');
+    SET @BlNo = NULLIF(LTRIM(RTRIM(@BlNo)), N'');
+    SET @NextStep = NULLIF(LTRIM(RTRIM(@NextStep)), N'');
+    SET @Journey = NULLIF(LTRIM(RTRIM(@Journey)), N'');
+    IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ContainerRef', N'ContainerNo', N'OrderDate', N'DispatchDate', N'Eta', N'Status', N'CreatedAtUtc')
+        SET @SortColumn = N'OrderDate';
+    IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
+    SET @SortDirection = UPPER(@SortDirection);
+
+    -- (81) 1. THE PAGE FIRST: the filters and the order of before, on what they read only (the container, who received
+    -- it, its latest Delivery, its next step for @NextStep), then every figure of the list for the page's rows only.
+    -- They were worked out for every container before the OFFSET: 9.5 s a page on 50,000 containers. RECOMPILE: an
+    -- empty filter costs nothing (the next step of every container is read only for @NextStep, the latest Delivery
+    -- only for @DeliveredNotReceived).
+    CREATE TABLE #Pg (Ord INT NOT NULL PRIMARY KEY, Id INT NOT NULL, TotalCount INT NOT NULL);
+    INSERT INTO #Pg (Ord, Id, TotalCount)
+    SELECT Ord = ROW_NUMBER() OVER (ORDER BY
+        -- (78) a ref sorts by its length first: KTG-2026-9999 before KTG-2026-10000 (numbers past NumberLength)
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'ContainerRef' THEN LEN(c.ContainerRef) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'ContainerRef' THEN LEN(c.ContainerRef) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ContainerNo' THEN c.ContainerNo END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'ContainerRef' THEN c.ContainerRef WHEN N'ContainerNo' THEN c.ContainerNo END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  THEN CASE @SortColumn WHEN N'OrderDate' THEN c.OrderDate WHEN N'DispatchDate' THEN c.DispatchDate WHEN N'Eta' THEN c.Eta END END ASC,
+        CASE WHEN @SortDirection = N'DESC' THEN CASE @SortColumn WHEN N'OrderDate' THEN c.OrderDate WHEN N'DispatchDate' THEN c.DispatchDate WHEN N'Eta' THEN c.Eta END END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'Status' THEN CAST(c.Status AS INT) END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'Status' THEN CAST(c.Status AS INT) END DESC,
+        CASE WHEN @SortDirection = N'ASC'  AND @SortColumn = N'CreatedAtUtc' THEN c.CreatedAtUtc END ASC,
+        CASE WHEN @SortDirection = N'DESC' AND @SortColumn = N'CreatedAtUtc' THEN c.CreatedAtUtc END DESC,
+        c.OrderDate DESC, c.Id DESC), c.Id, COUNT(*) OVER ()
+    FROM logistics.Containers c
+    -- one row each for a container: OUTER, so that the ones a filter does not read are not read at all
+    OUTER APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl
+    OUTER APPLY logistics.fn_Container_ShipState(c.Id) ss
+    OUTER APPLY logistics.fn_Container_NextStepKind(c.Id, c.Status, ss.MovementCount, ss.ActiveMovementId, ss.PlannedMovementId,
+                                                    NULL, ss.LastMovementId, dl.MovementId, rb.GoodsReceiptStatus) nk
+    OUTER APPLY logistics.fn_Container_Journey(c.Id) jr                 -- (95) read only for @Journey
+    WHERE (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
+           OR c.BlNo LIKE N'%' + @Search + N'%' OR c.VesselName LIKE N'%' + @Search + N'%'
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                      INNER JOIN masterdata.Parties sp        ON sp.Id = d.SupplierId
+                      WHERE cl.ContainerId = c.Id AND (d.DocumentNumber LIKE N'%' + @Search + N'%' OR sp.PartyName LIKE N'%' + @Search + N'%'))
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                      INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                      WHERE cl.ContainerId = c.Id AND d.Status <> 3
+                        AND (d.DocumentNumber LIKE N'%' + @Search + N'%' OR d.CommercialInvoiceNo LIKE N'%' + @Search + N'%'
+                             OR d.ExporterReference LIKE N'%' + @Search + N'%')))
+      AND (@ContainerRef IS NULL OR c.ContainerRef LIKE N'%' + @ContainerRef + N'%')
+      AND (@ContainerNo IS NULL OR c.ContainerNo LIKE N'%' + @ContainerNo + N'%')
+      AND (@BlNo IS NULL OR c.BlNo LIKE N'%' + @BlNo + N'%')
+      AND (@Status IS NULL OR c.Status = @Status)
+      AND (@BranchId IS NULL OR c.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR c.WarehouseId = @WarehouseId)
+      AND (@PortId IS NULL OR c.PortOfLoadingId = @PortId OR c.PortOfDestinationId = @PortId OR c.FinalDestinationId = @PortId)
+      AND (@OrderMonthKey IS NULL OR c.OrderMonthKey = @OrderMonthKey)
+      AND (@DateFrom IS NULL OR c.OrderDate >= @DateFrom)
+      AND (@DateTo IS NULL OR c.OrderDate <= @DateTo)
+      AND (@SupplierId IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                                          INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                                          WHERE cl.ContainerId = c.Id AND d.SupplierId = @SupplierId))
+      AND (@PurchaseOrderId IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id AND cl.PurchaseOrderId = @PurchaseOrderId))
+      AND (@PurchaseDocumentId IS NULL
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id AND cl.PurchaseOrderId = @PurchaseDocumentId)
+           OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                      INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                      WHERE cl.ContainerId = c.Id AND pil.DocumentId = @PurchaseDocumentId))
+      AND (@CommercialInvoiceNo IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                                                   INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                                                   INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                                                   WHERE cl.ContainerId = c.Id AND d.Status <> 3
+                                                     AND d.CommercialInvoiceNo LIKE N'%' + @CommercialInvoiceNo + N'%'))
+      AND (@ItemId IS NULL OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id AND cl.ItemId = @ItemId))
+      AND (@MovementId IS NULL OR EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.ContainerId = c.Id AND mc.MovementId = @MovementId))
+      AND (ISNULL(@DeliveredNotReceived, 0) = 0
+           OR (c.Status BETWEEN 2 AND 5 AND ISNULL(rb.ReceivedBy, N'') <> N'GRN'
+               AND (dl.MovementId IS NOT NULL OR rb.GoodsReceiptStatus = 1)))
+      AND (@NextStep IS NULL OR nk.Kind = @NextStep                                     -- (81) the to-do list
+           OR (@NextStep = N'Receive' AND nk.Kind = N'OpenReceipt'))
+      AND (@Journey IS NULL OR jr.JourneyStatus = @Journey)                       -- (95)
+    ORDER BY Ord
+    OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY
+    OPTION (RECOMPILE);
+
+    -- 2. the list's figures, for the page's rows. Why a planned movement cannot start yet (fn_Movement_StartBlock) is
+    -- read once per planned movement of the page, apart: read through each row's ship state it cost seconds a page.
+    SELECT p.MovementId, b.Reason, b.StartNotBefore
+    INTO #Sb
+    FROM (SELECT DISTINCT MovementId = ss.PlannedMovementId
+          FROM #Pg pg CROSS APPLY logistics.fn_Container_ShipState(pg.Id) ss
+          WHERE ss.PlannedMovementId IS NOT NULL) p
+    CROSS APPLY logistics.fn_Movement_StartBlock(p.MovementId) b;
+
+    SELECT c.Id, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, ct.TypeName AS ContainerTypeName,
+           c.OrderDate, c.OrderMonthKey, OrderMonth = FORMAT(c.OrderDate, N'MMM-yyyy', N'en-US'),
+           c.BranchId, b.BranchCode, b.BranchName, c.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           c.PurchaseOrderId, mpo.DocumentNumber AS PurchaseOrderNumber,
+           OrderCount = ISNULL(po.OrderCount, 0),
+           OrderNumbers = CASE WHEN ISNULL(po.OrderCount, 0) = 0 THEN NULL
+                               WHEN po.OrderCount = 1 THEN po.FirstOrder
+                               ELSE po.FirstOrder + N' +' + CAST(po.OrderCount - 1 AS NVARCHAR(10)) END,
+           SupplierCount = ISNULL(po.SupplierCount, 0),
+           SupplierNames = CASE WHEN ISNULL(po.SupplierCount, 0) = 0 THEN NULL
+                                WHEN po.SupplierCount = 1 THEN po.FirstSupplier
+                                ELSE po.FirstSupplier + N' +' + CAST(po.SupplierCount - 1 AS NVARCHAR(10)) END,
+           InvoiceCount = ISNULL(inv.InvoiceCount, 0),
+           InvoiceNumbers = CASE WHEN ISNULL(inv.InvoiceCount, 0) = 0 THEN NULL
+                                 WHEN inv.InvoiceCount = 1 THEN inv.FirstInvoice
+                                 ELSE inv.FirstInvoice + N' +' + CAST(inv.InvoiceCount - 1 AS NVARCHAR(10)) END,
+           CommercialInvoiceNos = CASE WHEN inv.CiCount = 1 THEN inv.FirstCi
+                                       WHEN inv.CiCount > 1 THEN inv.FirstCi + N' +' + CAST(inv.CiCount - 1 AS NVARCHAR(10)) END,
+           ExporterReferences = CASE WHEN inv.ErCount = 1 THEN inv.FirstEr
+                                     WHEN inv.ErCount > 1 THEN inv.FirstEr + N' +' + CAST(inv.ErCount - 1 AS NVARCHAR(10)) END,
+           ItemCount = ISNULL(ln.ItemCount, 0),
+           ItemSummary = CASE WHEN ISNULL(ln.ItemCount, 0) = 0 THEN NULL
+                              WHEN ln.ItemCount = 1 THEN ln.FirstItem
+                              ELSE N'Mixed - ' + CAST(ln.ItemCount AS NVARCHAR(10)) + N' items' END,
+           TotalQtyBase = ISNULL(ln.Qty, 0),
+           InvoicedQtyBase = ISNULL(inv.PostedQty, 0),
+           InvoicingStatus = CASE WHEN ISNULL(inv.PostedQty, 0) = 0 THEN 0
+                                  WHEN inv.PostedQty >= ISNULL(ln.Qty, 0) THEN 2 ELSE 1 END,     -- 0 none, 1 partly, 2 fully (posted)
+           TotalReceivedBase = c.TotalReceivedBase, c.TotalOilQty,
+           fl.FillPct, fl.CapacityKnown, fl.MissingContainerUnitItems, fl.RemainingPcs, fl.IsOverCapacity,
+           c.BlNo, c.BlDate, c.DispatchDate, c.Eta, c.ActualPortArrival, c.CustomsReleaseDate, c.OffloadedDate,
+           c.FreeDays, c.LastFreeDay,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, CAST(SYSUTCDATETIME() AS DATE))) END,
+           c.CurrentLocation, c.Status, c.StatusNote,
+           CurrentMovementId = mv.Id, CurrentMovementNo = mv.MovementNo, CurrentMovementStatus = mv.Status,
+           ChargesPostedBase = ISNULL(chg.Posted, 0), ChargesDraftBase = ISNULL(chg.Draft, 0),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ContainerId = c.Id),
+           pl.PortName AS PortOfLoadingName, pd.PortName AS PortOfDestinationName,
+           c.CreatedAtUtc, c.CreatedBy, cu.FullName AS CreatedByName, c.UpdatedAtUtc, c.RowVersion,
+           pg.TotalCount,                                              -- (81) of the search (step 1)
+           -- (65) goods receipts
+           rb.ReceivedBy, rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
+           DeliveredDate = dl.EndDate,
+           -- (95) Receive goods... only once delivered (fn_Container_ReceiveBlock: one place for the rule and its words)
+           CanReceive = CAST(CASE WHEN rbk.Reason IS NULL THEN 1 ELSE 0 END AS BIT), ReceiveBlockedReason = rbk.Reason,
+           -- (95) the journey: the latest leg's From -> To and whether it is on its way or arrived there
+           jr.JourneyStatus, jr.JourneyFromName, jr.JourneyToName, jr.JourneySince, jr.JourneyMovementNo,
+           CloseBlockedReason = cb.Reason,
+           -- (80) the shipment (fn_Container_ShipState): where it is, the movement in progress carrying it, its next
+           -- planned movement (why it cannot start yet, its earliest start) and its last completed one
+           ss.MovementCount, ss.PlaceId, ss.PlaceName, ss.PlaceSince,
+           ss.ActiveMovementId, ss.ActiveMovementNo, ss.ActiveMovementTypeName, ss.ActiveMovementStage,
+           ss.ActiveMovementFromName, ss.ActiveMovementToName, ss.ActiveMovementStartDate, ss.ActiveMovementEta,
+           ss.ActiveMovementContainerCount,
+           ss.PlannedMovementId, ss.PlannedMovementNo, ss.PlannedMovementTypeName, ss.PlannedMovementStage,
+           ss.PlannedMovementFromName, ss.PlannedMovementToName, ss.PlannedMovementDate, ss.PlannedMovementContainerCount,
+           PlannedMovementBlockedReason = sb.Reason, PlannedMovementNotBefore = sb.StartNotBefore,   -- (81) once per movement
+           ss.LastMovementId, ss.LastMovementNo, ss.LastMovementEndDate,
+           -- (81) its next step (fn_Container_NextStepKind), and the planned movement's refusal for this page's rows
+           NextStepKind = nk.Kind, NextStepBlockedReason = nk.BlockedReason,
+           SortOrd = pg.Ord
+    INTO #Page
+    FROM #Pg pg
+    INNER JOIN logistics.Containers c       ON c.Id = pg.Id      -- (81) the page's rows only
+    INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
+    INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    LEFT  JOIN masterdata.Ports pl          ON pl.Id = c.PortOfLoadingId
+    LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
+    LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
+    LEFT  JOIN security.Users cu            ON cu.Id = c.CreatedBy
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
+    CROSS APPLY logistics.fn_Container_ShipState(c.Id) ss       -- (80) the shipment
+    LEFT  JOIN #Sb sb                       ON sb.MovementId = ss.PlannedMovementId          -- (81)
+    CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95)
+    CROSS APPLY logistics.fn_Container_Journey(c.Id) jr         -- (95)
+    CROSS APPLY logistics.fn_Container_NextStepKind(c.Id, c.Status, ss.MovementCount, ss.ActiveMovementId, ss.PlannedMovementId,
+                                                    sb.Reason, ss.LastMovementId, dl.MovementId,
+                                                    rb.GoodsReceiptStatus) nk   -- (81) its next step
+    OUTER APPLY (SELECT OrderCount = COUNT(DISTINCT cl.PurchaseOrderId), SupplierCount = COUNT(DISTINCT d.SupplierId),
+                        FirstOrder = MIN(d.DocumentNumber), FirstSupplier = MIN(sp.PartyName)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = cl.PurchaseOrderId
+                 INNER JOIN masterdata.Parties sp        ON sp.Id = d.SupplierId
+                 WHERE cl.ContainerId = c.Id) po
+    OUTER APPLY (SELECT InvoiceCount = COUNT(DISTINCT d.Id),
+                        CiCount = COUNT(DISTINCT d.CommercialInvoiceNo), ErCount = COUNT(DISTINCT d.ExporterReference),
+                        FirstInvoice = MIN(d.DocumentNumber), FirstCi = MIN(d.CommercialInvoiceNo), FirstEr = MIN(d.ExporterReference),
+                        PostedQty = SUM(CASE WHEN d.Status IN (2, 4) THEN pil.QuantityBase ELSE 0 END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                 INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                 WHERE cl.ContainerId = c.Id AND d.Status <> 3) inv
+    OUTER APPLY (SELECT ItemCount = COUNT(DISTINCT cl.ItemId), Qty = SUM(cl.QuantityBase), FirstItem = MIN(i.ItemName)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                 WHERE cl.ContainerId = c.Id) ln
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN ch.Status = 2 THEN ch.AmountBase END),
+                        Draft  = SUM(CASE WHEN ch.Status = 1 THEN ch.AmountBase END)
+                 FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id) chg
+    OUTER APPLY (SELECT TOP (1) m.Id, m.MovementNo, m.Status
+                 FROM logistics.MovementContainers mc
+                 INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                 WHERE mc.ContainerId = c.Id AND m.Status IN (2, 3)
+                 ORDER BY CASE WHEN m.Status = 2 THEN 0 ELSE 1 END, COALESCE(m.EndDate, m.StartDate) DESC, m.Id DESC) mv;
+
+    -- 3. THE PROPOSED NEXT LEG (Ship, NextLeg: "Inland transport to Kasumbalesa..."), the usual leg from a place worked
+    -- out once per (place, last stage) of the page, not once per row.
+    SELECT p.Id AS ContainerId, p.PlaceId, LastStage = CASE WHEN p.MovementCount = 0 THEN NULL ELSE lt.Stage END,
+           IsCleared = CAST(CASE WHEN p.Status = 5 THEN 1 ELSE 0 END AS BIT)
+    INTO #Leg
+    FROM #Page p
+    LEFT JOIN logistics.Movements lm      ON lm.Id = p.LastMovementId
+    LEFT JOIN masterdata.MovementTypes lt ON lt.Id = lm.MovementTypeId
+    WHERE p.NextStepKind IN (N'Ship', N'NextLeg');
+
+    SELECT g.PlaceId, g.LastStage, h.MovementTypeId, h.ToPlaceId, h.Legs
+    INTO #Hist
+    FROM (SELECT DISTINCT PlaceId, LastStage FROM #Leg WHERE PlaceId IS NOT NULL) g
+    CROSS APPLY logistics.fn_Movement_NextLegHistory(g.PlaceId, g.LastStage) h;
+
+    SELECT p.*,
+           ProposedTypeId = pr.TypeId, ProposedTypeCode = pr.TypeCode, ProposedTypeName = pr.TypeName, ProposedStage = pr.Stage,
+           ProposedFromPlaceId = pr.FromPlaceId, ProposedFromName = pr.FromName,
+           ProposedToPlaceId = pr.ToPlaceId, ProposedToName = pr.ToName,
+           ProposalSource = pr.Source, ProposalLegs = pr.Legs, ProposedIsStay = pr.IsStay
+    FROM #Page p
+    LEFT JOIN #Leg l  ON l.ContainerId = p.Id
+    LEFT JOIN #Hist h ON h.PlaceId = l.PlaceId AND ISNULL(h.LastStage, N'') = ISNULL(l.LastStage, N'')
+    OUTER APPLY (SELECT x.*
+                 FROM logistics.fn_Container_NextLegProposal(p.Id, l.PlaceId, l.LastStage, l.IsCleared,
+                                                             h.MovementTypeId, h.ToPlaceId, h.Legs) x
+                 WHERE l.ContainerId IS NOT NULL) pr
+    ORDER BY p.SortOrd;
+END
+GO
+
+/* ================================================================== 4. The container page: the same */
+
+-- Re-created (95) from the body of script 82: + the journey columns, CanReceive by fn_Container_ReceiveBlock and its
+-- reason. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_Container_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT c.Id, c.DocumentTypeId, c.ContainerRef, c.ContainerNo,
+           c.ContainerTypeId, ct.TypeCode AS ContainerTypeCode, ct.TypeName AS ContainerTypeName,
+           ct.MaxWeightKg, ct.MaxVolumeCbm,
+           c.SealNo, c.CustomsSealNo, c.Description,
+           c.OrderDate, c.OrderMonthKey, OrderMonth = FORMAT(c.OrderDate, N'MMM-yyyy', N'en-US'),
+           c.ShippingMethod, c.CountryOfOrigin,
+           c.PurchaseOrderId, mpo.DocumentNumber AS PurchaseOrderNumber, mpo.SupplierId AS PurchaseOrderSupplierId,
+           mps.PartyName AS PurchaseOrderSupplierName,
+           c.ForwarderId, fw.PartyName AS ForwarderName, c.TransporterId, tr.PartyName AS TransporterName,
+           c.ShippingLine, c.VesselName, c.VoyageNo, c.BookingNo,
+           c.PortOfLoadingId, pl.PortName AS PortOfLoadingName, pl.CountryCode AS PortOfLoadingCountry,
+           c.PortOfDestinationId, pd.PortName AS PortOfDestinationName, pd.CountryCode AS PortOfDestinationCountry,
+           c.FinalDestinationId, fd.PortName AS FinalDestinationName,
+           c.DispatchDate, c.Eta, c.FreeDays, c.LastFreeDay, c.GrossWeightKg, c.VolumeCbm, c.Packages,
+           c.BlNo, c.BlDate, c.BlNotes,
+           c.TotalLines, c.TotalAllocatedBase, c.TotalReceivedBase, c.TotalOilQty,
+           fl.FillPct, fl.CapacityKnown, fl.MissingContainerUnitItems, fl.RemainingPcs, fl.IsOverCapacity,
+           c.BranchId, b.BranchCode, b.BranchName, c.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           c.TruckNo, c.WaybillNo, c.DeclarationNo, c.FeriNo,
+           c.ActualPortArrival, c.BorderCrossingDate, c.CustomsReleaseDate,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, CAST(SYSUTCDATETIME() AS DATE))) END,
+           c.OffloadedDate, c.OffloadedAtUtc, c.OffloadedBy, ou.FullName AS OffloadedByName,
+           c.Status, c.StatusNote, c.CurrentLocation, c.Notes,
+           c.DatesFromMovements,
+           HasMovements = CAST(CASE WHEN EXISTS (SELECT 1 FROM logistics.MovementContainers mc
+                                                 INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                                                 WHERE mc.ContainerId = c.Id AND m.Status IN (2, 3)) THEN 1 ELSE 0 END AS BIT),
+           InvoicedPostedBase = ISNULL(inv.Posted, 0), InvoicedDraftBase = ISNULL(inv.Draft, 0),
+           IsFullyInvoiced = CAST(CASE WHEN c.TotalAllocatedBase > 0 AND NOT EXISTS
+                                       (SELECT 1 FROM logistics.ContainerLines cl
+                                        OUTER APPLY (SELECT Q = SUM(pil.QuantityBase) FROM purchase.PurchaseDocumentLines pil
+                                                     INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                                                     WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (2, 4)) q
+                                        WHERE cl.ContainerId = c.Id AND ISNULL(q.Q, 0) < cl.QuantityBase) THEN 1 ELSE 0 END AS BIT),
+           ChargesPostedBase = ISNULL(chg.Posted, 0), ChargesDraftBase = ISNULL(chg.Draft, 0),
+           ChargesLandedPostedBase = ISNULL(chg.LandedPosted, 0),
+           FobTotalBase = cost.Fob, LandedTotalBase = cost.Fob + ISNULL(chg.LandedPosted, 0),
+           c.ConfirmedAtUtc, c.ConfirmedBy, fu.FullName AS ConfirmedByName,
+           c.ClosedAtUtc, c.ClosedBy, ku.FullName AS ClosedByName,
+           c.CancelledAtUtc, c.CancelledBy, xu.FullName AS CancelledByName, c.CancelReason,
+           c.CreatedAtUtc, c.CreatedBy, cu.FullName AS CreatedByName,
+           c.UpdatedAtUtc, c.UpdatedBy, uu.FullName AS UpdatedByName, c.RowVersion,
+           -- (65) goods receipts
+           rb.ReceivedBy,
+           rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
+           GoodsReceiptDate = gr.DocumentDate, GoodsReceiptIsAuto = gr.IsAuto,
+           GoodsReceiptWarehouseId = gr.WarehouseId, GoodsReceiptWarehouseCode = gw.WarehouseCode,
+           GoodsReceiptCreatedAtUtc = gr.CreatedAtUtc,
+           DeliveredDate = dl.EndDate, DeliveryMovementId = dl.MovementId, DeliveryMovementNo = dl.MovementNo,
+           DeliveryPlaceName = dl.PlaceName,
+           -- (95) Receive goods... only once delivered (fn_Container_ReceiveBlock)
+           CanReceive = CAST(CASE WHEN rbk.Reason IS NULL THEN 1 ELSE 0 END AS BIT), ReceiveBlockedReason = rbk.Reason,
+           jr.JourneyStatus, jr.JourneyFromName, jr.JourneyToName, jr.JourneySince, jr.JourneyMovementNo,   -- (95)
+           CloseBlockedReason = cb.Reason,
+           -- (80) the shipment (fn_Container_ShipState): where it is, the movement in progress carrying it, its next
+           -- planned movement (why it cannot start yet, its earliest start) and its last completed one
+           ss.MovementCount, ss.PlaceId, ss.PlaceName, ss.PlaceSince,
+           ss.ActiveMovementId, ss.ActiveMovementNo, ss.ActiveMovementTypeName, ss.ActiveMovementStage,
+           ss.ActiveMovementFromName, ss.ActiveMovementToName, ss.ActiveMovementStartDate, ss.ActiveMovementEta,
+           ss.ActiveMovementContainerCount,
+           ss.PlannedMovementId, ss.PlannedMovementNo, ss.PlannedMovementTypeName, ss.PlannedMovementStage,
+           ss.PlannedMovementFromName, ss.PlannedMovementToName, ss.PlannedMovementDate, ss.PlannedMovementContainerCount,
+           ss.PlannedMovementBlockedReason, ss.PlannedMovementNotBefore,
+           ss.LastMovementId, ss.LastMovementNo, ss.LastMovementEndDate,
+           -- (81) its next step (fn_Container_NextStep): the label of its button, the proposed next leg, and for a movement
+           -- to complete the leg proposed after it
+           NextStepKind = nx.Kind, NextStepBlockedReason = nx.BlockedReason, nx.HasTypedDates, nx.PlaceKind, nx.LastStage,
+           NextStepMovementId = nx.MovementId, NextStepMovementNo = nx.MovementNo, NextStepMovementStage = nx.MovementStage,
+           NextStepMovementTypeName = nx.MovementTypeName, NextStepMovementToName = nx.MovementToName,
+           NextStepMovementContainerCount = nx.MovementContainerCount, NextStepNotBefore = nx.MovementNotBefore,
+           nx.ProposedTypeId, nx.ProposedTypeCode, nx.ProposedTypeName, nx.ProposedStage,
+           nx.ProposedFromPlaceId, nx.ProposedFromName, nx.ProposedToPlaceId, nx.ProposedToName,
+           nx.ProposalSource, nx.ProposalLegs, nx.ProposedIsStay,
+           nx.ThenTypeId, nx.ThenTypeName, nx.ThenStage, nx.ThenToPlaceId, nx.ThenToName, nx.ThenIsStay, nx.ThenDefault
+    FROM logistics.Containers c
+    INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
+    INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
+    LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
+    CROSS APPLY logistics.fn_Container_ShipState(c.Id) ss       -- (80) the shipment
+    CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95)
+    CROSS APPLY logistics.fn_Container_Journey(c.Id) jr         -- (95)
+    OUTER APPLY logistics.fn_Container_NextStep(c.Id) nx        -- (81) its next step
+    LEFT  JOIN purchase.GoodsReceipts gr    ON gr.Id = rb.GoodsReceiptId
+    LEFT  JOIN masterdata.Warehouses gw     ON gw.Id = gr.WarehouseId
+    LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
+    LEFT  JOIN masterdata.Parties mps       ON mps.Id = mpo.SupplierId
+    LEFT  JOIN masterdata.Parties fw        ON fw.Id = c.ForwarderId
+    LEFT  JOIN masterdata.Parties tr        ON tr.Id = c.TransporterId
+    LEFT  JOIN masterdata.Ports pl          ON pl.Id = c.PortOfLoadingId
+    LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
+    LEFT  JOIN masterdata.Ports fd          ON fd.Id = c.FinalDestinationId
+    LEFT  JOIN security.Users ou ON ou.Id = c.OffloadedBy
+    LEFT  JOIN security.Users fu ON fu.Id = c.ConfirmedBy
+    LEFT  JOIN security.Users ku ON ku.Id = c.ClosedBy
+    LEFT  JOIN security.Users xu ON xu.Id = c.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = c.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = c.UpdatedBy
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN d.Status IN (2, 4) THEN pil.QuantityBase END),
+                        Draft  = SUM(CASE WHEN d.Status = 1 THEN pil.QuantityBase END)
+                 FROM logistics.ContainerLines cl
+                 INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+                 INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+                 WHERE cl.ContainerId = c.Id) inv
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN ch.Status = 2 THEN ch.AmountBase END),
+                        Draft  = SUM(CASE WHEN ch.Status = 1 THEN ch.AmountBase END),
+                        LandedPosted = SUM(CASE WHEN ch.Status = 2 AND ch.IncludeInLandedCost = 1 THEN ch.AmountBase END)
+                 FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id) chg
+    OUTER APPLY (SELECT Fob = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(18,6)) * ISNULL(u.UnitFob, 0))
+                 FROM logistics.ContainerLines cl
+                 -- (82) the received value, else the estimate of the cost rule (fn_ContainerLine_FobEstimate)
+                 OUTER APPLY (SELECT UnitFob = e.UnitFobBase FROM logistics.fn_ContainerLine_FobEstimate(cl.Id) e) u
+                 WHERE cl.ContainerId = c.Id) cost
+    WHERE c.Id = @Id;
+
+    -- 2: lines. FOB per unit: once the goods are received the container line's value (frozen by an offload of before; set by
+    -- the goods receipt and moved by the invoices since), else (82) the estimate of what the goods receipt will give it: the
+    -- invoice pieces its matching will give the line, those of invoices that change item costs at their price, every other
+    -- piece at the order price (fn_ContainerLine_FobEstimate).
+    SELECT cl.Id, cl.ContainerId, cl.LineNumber,
+           cl.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber, po.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           cl.PoLineId, pol.LineNumber AS PoLineNumber,
+           cl.ItemId, i.ItemCode, i.ItemName, i.Model, br.BrandName,
+           cl.ItemUnitId, ut.UnitTypeName, cl.PackingFormula,
+           PoUnitTypeName = pt.UnitTypeName, PoPackingFormula = pol.PackingFormula,
+           PcsPerContainer = ipc.PcsPerContainer,
+           cl.Quantity, cl.QuantityBase, cl.OilIncluded, cl.OilQtyPerUnit, cl.TotalOilQty,
+           OrderedBase = pol.QuantityBase,
+           LoadedElsewhereBase = ISNULL(oth.Qty, 0),
+           InvoicedPostedBase = ISNULL(inv.Posted, 0), InvoicedDraftBase = ISNULL(inv.Draft, 0),
+           AvailableToInvoiceBase = cl.QuantityBase - ISNULL(inv.Posted, 0) - ISNULL(inv.Draft, 0),
+           InvoiceNumbers = inv.Numbers,
+           cl.ReceivedQuantityBase, cl.VarianceReason, cl.Notes,
+           UnitFobBase = COALESCE(cl.FobCostBase, fe.EstimatedFobBase),                    -- (82)
+           FobSource = fe.FobSource,                                                     -- (82)
+           cl.FobCostBase, cl.ChargesBase,
+           DraftChargesBase = ISNULL(dch.Draft, 0),
+           ChargesPerUnitBase = cl.ChargesBase / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0),
+           LandedCostBase = COALESCE(cl.LandedCostBase,
+                                     fe.EstimatedFobBase + cl.ChargesBase / NULLIF(cl.QuantityBase, 0)),   -- (82)
+           IsLandedFinal = CAST(CASE WHEN cl.LandedCostBase IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           i.WeightKg, i.VolumeCbm
+    FROM logistics.ContainerLines cl
+    INNER JOIN purchase.PurchaseDocuments po     ON po.Id = cl.PurchaseOrderId
+    INNER JOIN masterdata.Parties sp             ON sp.Id = po.SupplierId
+    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = cl.PoLineId
+    INNER JOIN inventory.ItemUnits piu           ON piu.Id = pol.ItemUnitId
+    INNER JOIN masterdata.UnitTypes pt           ON pt.Id = piu.UnitTypeId
+    INNER JOIN inventory.Items i                 ON i.Id = cl.ItemId
+    INNER JOIN masterdata.Brands br              ON br.Id = i.BrandId
+    INNER JOIN inventory.ItemUnits iu            ON iu.Id = cl.ItemUnitId
+    INNER JOIN masterdata.UnitTypes ut           ON ut.Id = iu.UnitTypeId
+    CROSS APPLY logistics.fn_ItemPcsPerContainer(cl.ItemId) ipc
+    OUTER APPLY (SELECT Qty = SUM(o.QuantityBase) FROM logistics.ContainerLines o
+                 INNER JOIN logistics.Containers oc ON oc.Id = o.ContainerId
+                 WHERE o.PoLineId = cl.PoLineId AND o.ContainerId <> cl.ContainerId AND oc.Status <> 8) oth
+    OUTER APPLY (SELECT Posted = SUM(CASE WHEN d.Status IN (2, 4) THEN pil.QuantityBase END),
+                        Draft  = SUM(CASE WHEN d.Status = 1 THEN pil.QuantityBase END),
+                        UnitValue = SUM(pil.LineTotal / d.ExchangeRate) / NULLIF(SUM(pil.QuantityBase), 0),
+                        Numbers = STRING_AGG(d.DocumentNumber, N', ')
+                 FROM purchase.PurchaseDocumentLines pil
+                 INNER JOIN purchase.PurchaseDocuments d ON d.Id = pil.DocumentId
+                 WHERE pil.ContainerLineId = cl.Id AND d.Status <> 3) inv
+    CROSS APPLY logistics.fn_ContainerLine_FobEstimate(cl.Id) fe                    -- (82) the estimate of the cost rule
+    OUTER APPLY (SELECT Draft = SUM(a.AmountBase) FROM logistics.ContainerChargeAllocations a
+                 INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
+                 WHERE a.ContainerLineId = cl.Id AND ch.Status = 1) dch
+    WHERE cl.ContainerId = @Id
+    ORDER BY cl.LineNumber;
+
+    -- 3: invoices of the container (derived from the invoice lines)
+    SELECT d.Id AS PurchaseDocumentId, d.DocumentNumber, d.DocumentDate, d.Status AS InvoiceStatus, d.ReceiptMode,
+           d.SourceDocumentId AS PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.CurrencyId, cur.CurrencyCode, cur.Symbol AS CurrencySymbol, d.ExchangeRate,
+           d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo,
+           QtyInContainerBase = SUM(pil.QuantityBase),
+           AmountInContainer = SUM(pil.LineTotal),
+           AmountInContainerBase = SUM(pil.LineTotal / d.ExchangeRate),
+           d.TotalAmount, d.TotalAmountBase
+    FROM logistics.ContainerLines cl
+    INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id
+    INNER JOIN purchase.PurchaseDocuments d        ON d.Id = pil.DocumentId
+    INNER JOIN masterdata.Parties sp               ON sp.Id = d.SupplierId
+    INNER JOIN masterdata.Currencies cur           ON cur.Id = d.CurrencyId
+    LEFT  JOIN purchase.PurchaseDocuments po       ON po.Id = d.SourceDocumentId
+    WHERE cl.ContainerId = @Id AND d.Status <> 3
+    GROUP BY d.Id, d.DocumentNumber, d.DocumentDate, d.Status, d.ReceiptMode, d.SourceDocumentId, po.DocumentNumber,
+             d.SupplierId, sp.PartyCode, sp.PartyName, d.CurrencyId, cur.CurrencyCode, cur.Symbol, d.ExchangeRate,
+             d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.TotalAmount, d.TotalAmountBase
+    ORDER BY d.DocumentDate, d.Id;
+
+    -- 4: movements of the container (the route), oldest first
+    SELECT m.Id AS MovementId, m.MovementNo, m.MovementTypeId, mt.TypeCode, mt.TypeName, mt.Stage,
+           m.FromPlaceId, fp.PortCode AS FromCode, fp.PortName AS FromName, fp.CountryCode AS FromCountry, fp.Kind AS FromKind,
+           m.ToPlaceId, tp.PortCode AS ToCode, tp.PortName AS ToName, tp.CountryCode AS ToCountry, tp.Kind AS ToKind,
+           m.PlannedDate, m.StartDate, m.Eta, m.EndDate, m.Status,
+           m.CarrierPartyId, cp.PartyName AS CarrierName, m.VehicleOrVessel, m.VoyageNo, m.Reference, m.Notes,
+           ContainerCount = (SELECT COUNT(*) FROM logistics.MovementContainers x WHERE x.MovementId = m.Id),
+           ChargesBase = (SELECT SUM(ch.AmountBase) FROM logistics.ContainerCharges ch
+                          WHERE ch.ContainerId = @Id AND ch.MovementId = m.Id AND ch.Status = 2),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ContainerId = @Id AND a.MovementId = m.Id)
+    FROM logistics.MovementContainers mc
+    INNER JOIN logistics.Movements m       ON m.Id = mc.MovementId
+    INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
+    INNER JOIN masterdata.Ports fp         ON fp.Id = m.FromPlaceId
+    INNER JOIN masterdata.Ports tp         ON tp.Id = m.ToPlaceId
+    LEFT  JOIN masterdata.Parties cp       ON cp.Id = m.CarrierPartyId
+    WHERE mc.ContainerId = @Id
+    ORDER BY CASE m.Status WHEN 4 THEN 1 ELSE 0 END, COALESCE(m.StartDate, m.PlannedDate, CAST(m.CreatedAtUtc AS DATE)), m.Id;
+
+    -- 5: charges of the container
+    SELECT ch.Id, ch.ContainerId, ch.MovementId, m.MovementNo, ch.GroupId,
+           GroupSize = CASE WHEN ch.GroupId IS NULL THEN 1 ELSE (SELECT COUNT(*) FROM logistics.ContainerCharges g WHERE g.GroupId = ch.GroupId) END,
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName AS ProviderName, ch.Reference,
+           ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload,
+           AllocatedBase = (SELECT SUM(a.AmountBase) FROM logistics.ContainerChargeAllocations a WHERE a.ChargeId = ch.Id),
+           AttachmentCount = (SELECT COUNT(*) FROM logistics.ContainerAttachments a WHERE a.ChargeId = ch.Id),
+           ch.Notes, ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, ch.CancelReason,
+           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.RowVersion
+    FROM logistics.ContainerCharges ch
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    LEFT  JOIN logistics.Movements m     ON m.Id = ch.MovementId
+    LEFT  JOIN security.Users pu         ON pu.Id = ch.PostedBy
+    LEFT  JOIN security.Users cu         ON cu.Id = ch.CreatedBy
+    WHERE ch.ContainerId = @Id
+    ORDER BY ch.ChargeDate, ch.Id;
+
+    -- 6: how every charge is divided over the lines (the real cost of each item)
+    SELECT a.ChargeId, a.ContainerLineId, cl.LineNumber, cl.ItemId, i.ItemCode, i.ItemName,
+           a.Basis, a.AmountBase, a.IsManual,
+           PerUnitBase = a.AmountBase / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0)
+    FROM logistics.ContainerChargeAllocations a
+    INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
+    INNER JOIN logistics.ContainerLines cl   ON cl.Id = a.ContainerLineId
+    INNER JOIN inventory.Items i             ON i.Id = cl.ItemId
+    WHERE ch.ContainerId = @Id
+    ORDER BY a.ChargeId, cl.LineNumber;
+
+    -- 7: attachments (general, per movement, per charge); SharedWith = other containers holding the same file
+    SELECT a.Id, a.ContainerId, a.MovementId, m.MovementNo, a.ChargeId, a.AttachmentTypeId, at.Category, at.SubType,
+           a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.GroupId,
+           SharedWith = (SELECT COUNT(*) FROM logistics.ContainerAttachments s WHERE s.FileId = a.FileId AND s.Id <> a.Id),
+           a.CreatedAtUtc, a.CreatedBy, u.FullName AS CreatedByName
+    FROM logistics.ContainerAttachments a
+    INNER JOIN logistics.Files f ON f.Id = a.FileId
+    LEFT  JOIN masterdata.AttachmentTypes at ON at.Id = a.AttachmentTypeId
+    LEFT  JOIN logistics.Movements m         ON m.Id = a.MovementId
+    LEFT  JOIN security.Users u              ON u.Id = a.CreatedBy
+    WHERE a.ContainerId = @Id
+    ORDER BY a.CreatedAtUtc DESC, a.Id DESC;
+
+    -- 8: audit
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM logistics.ContainerAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.ContainerId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+END
+
+GO
+
+/* ================================================================== 5. Receive goods... on a container: only once delivered */
+
+-- Re-created (95) from the body of script 72: + the rule of fn_Container_ReceiveBlock for "Receive goods..." (@Silent =
+-- 0); the Delivery hook (@Silent = 1) runs once the Delivery is completed and is unchanged. Nothing else changes.
+CREATE OR ALTER PROCEDURE purchase.usp_GoodsReceipt_CreateForContainer
+    @ContainerId  INT,
+    @DocumentDate DATE         = NULL,
+    @MovementId   INT          = NULL,
+    @UserId       INT          = NULL,
+    @Silent       BIT          = 0,
+    @NewId        INT          = NULL OUTPUT,
+    @SkipReason   NVARCHAR(20) = NULL OUTPUT,
+    @WarehouseId  INT          = NULL,
+    @Lines        purchase.tvp_GoodsReceiptLine READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @NewId = NULL;
+    SET @SkipReason = NULL;
+
+    DECLARE @Status TINYINT, @Ref NVARCHAR(30), @BranchId INT, @CtWarehouse INT, @OpenId INT, @OpenNo NVARCHAR(30),
+            @OpenStatus TINYINT, @Msg NVARCHAR(400);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        SELECT @Status = Status, @Ref = ContainerRef, @BranchId = BranchId, @CtWarehouse = WarehouseId
+        FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @ContainerId;
+        IF @Status IS NULL THROW 63006, 'Container not found.', 1;
+
+        SELECT TOP (1) @OpenId = Id, @OpenNo = DocumentNumber, @OpenStatus = Status
+        FROM purchase.GoodsReceipts WITH (UPDLOCK, HOLDLOCK)
+        WHERE ContainerId = @ContainerId AND Status < 3
+        ORDER BY Status DESC, Id DESC;
+
+        SET @SkipReason = CASE WHEN @Status = 8 THEN N'Cancelled'
+                               WHEN @Status = 1 THEN N'NotConfirmed'
+                               WHEN @Status IN (6, 7) OR @OpenStatus = 2 THEN N'Received'
+                               WHEN @OpenStatus = 1 THEN N'HasDraft'
+                               WHEN NOT EXISTS (SELECT 1 FROM logistics.ContainerLines WHERE ContainerId = @ContainerId) THEN N'NoLines' END;
+        IF @SkipReason IS NOT NULL
+        BEGIN
+            IF @Silent = 1
+            BEGIN
+                COMMIT TRANSACTION;
+                RETURN;
+            END
+            IF @OpenId IS NOT NULL
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N' already has ' + ISNULL(N'goods receipt ' + @OpenNo, N'a draft goods receipt') + N'. Open it instead.';
+                THROW 63013, @Msg, 1;
+            END
+            IF @SkipReason = N'NoLines'
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N' has no lines to receive.';
+                THROW 63009, @Msg, 1;
+            END;
+            THROW 63010, 'Only a confirmed container that is not received yet can be received.', 1;
+        END
+
+        -- (95) RECEIVE GOODS... ONLY ONCE DELIVERED: a container that travels with movements is received after its
+        -- Delivery is completed (the Delivery drafts it, or Receive goods... after it). One followed by typed dates only
+        -- (no movement) keeps the rule of before. The Delivery hook (@Silent = 1) runs after the completion: delivered.
+        IF @Silent = 0
+        BEGIN
+            SET @Msg = (SELECT b.Reason FROM logistics.fn_Container_ReceiveBlock(@ContainerId) b);
+            IF @Msg IS NOT NULL THROW 63010, @Msg, 1;
+        END
+
+        -- the received pieces given by the dialog: rows of this container's lines, each once, in a unit of the item
+        SELECT TOP (1) @Msg = N'Line ' + CAST(r.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN cl.Id IS NULL THEN N'it is not a line of container ' + @Ref + N'.'
+                 WHEN iu.Id IS NULL THEN N'the unit does not belong to the item of the container line.'
+                 WHEN r.Quantity < 0 THEN N'the received quantity cannot be negative.'
+                 ELSE N'the container line is given twice.' END
+        FROM @Lines r
+        LEFT JOIN logistics.ContainerLines cl ON cl.Id = r.ContainerLineId AND cl.ContainerId = @ContainerId
+        LEFT JOIN inventory.ItemUnits iu      ON iu.Id = r.ItemUnitId AND iu.ItemId = cl.ItemId
+        WHERE cl.Id IS NULL OR iu.Id IS NULL OR r.Quantity < 0
+           OR (SELECT COUNT(*) FROM @Lines d WHERE d.ContainerLineId = r.ContainerLineId) > 1
+        ORDER BY r.LineNumber;
+        IF @Msg IS NOT NULL THROW 63000, @Msg, 1;
+
+        DECLARE @T purchase.tvp_GoodsReceiptLine;
+        INSERT INTO @T (LineNumber, ItemId, ItemUnitId, Quantity, PoLineId, ContainerLineId, ExpectedQuantityBase,
+                        VarianceReasonCode, VarianceReason, CloseShort, ExpiryDate, Notes)
+        SELECT ROW_NUMBER() OVER (ORDER BY cl.LineNumber), cl.ItemId, COALESCE(bu.Id, cl.ItemUnitId),
+               CASE WHEN r.ContainerLineId IS NOT NULL THEN r.Quantity * iu.PackingFormula ELSE cl.QuantityBase END,
+               cl.PoLineId, cl.Id, cl.QuantityBase, r.VarianceReasonCode, r.VarianceReason, 0,
+               COALESCE(r.ExpiryDate, pol.ExpiryDate), r.Notes
+        FROM logistics.ContainerLines cl
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = cl.PoLineId
+        OUTER APPLY (SELECT TOP (1) u.Id FROM inventory.ItemUnits u WHERE u.ItemId = cl.ItemId AND u.IsBaseUnit = 1 ORDER BY u.Id) bu
+        LEFT  JOIN @Lines r                           ON r.ContainerLineId = cl.Id
+        LEFT  JOIN inventory.ItemUnits iu             ON iu.Id = r.ItemUnitId
+        WHERE cl.ContainerId = @ContainerId;
+
+        -- AN INACTIVE ITEM: Save refuses the draft (rule 12). Silent (the Delivery hook), the container is skipped with its
+        -- reason, like the other skips, so the completion goes on; otherwise Save says which line.
+        IF @Silent = 1 AND EXISTS (SELECT 1 FROM @T t INNER JOIN inventory.Items i ON i.Id = t.ItemId WHERE i.IsActive = 0)
+        BEGIN
+            SET @SkipReason = N'InactiveItem';
+            COMMIT TRANSACTION;
+            RETURN;
+        END
+
+        -- "Receive into": the container's warehouse only when it can take the goods (active, of the container's branch, and
+        -- (72) at the bottom of the tree, script 70); otherwise the draft is made without one, "to choose", and
+        -- usp_GoodsReceipt_CreateForMovement says why
+        IF @WarehouseId IS NULL
+            SET @WarehouseId = (SELECT w.Id FROM masterdata.Warehouses w WHERE w.Id = @CtWarehouse AND w.IsActive = 1 AND w.BranchId = @BranchId
+                                                                          AND masterdata.fn_Warehouse_IsLeaf(w.Id) = 1);
+        IF @DocumentDate IS NULL
+            SET @DocumentDate = COALESCE((SELECT EndDate FROM logistics.Movements WHERE Id = @MovementId), CAST(SYSUTCDATETIME() AS DATE));
+
+        EXEC purchase.usp_GoodsReceipt_Save @SourceKind = N'Container', @ContainerId = @ContainerId, @MovementId = @MovementId,
+             @DocumentDate = @DocumentDate, @BranchId = @BranchId, @WarehouseId = @WarehouseId, @Lines = @T,
+             @UserId = @UserId, @NewId = @NewId OUTPUT;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 6. Check */
+
+-- 95a: how many open containers each journey status holds; 95b: the containers that could be received by hand before
+-- and must now be delivered first (they keep a draft or receipt they already have)
+SELECT j.JourneyStatus, Containers = COUNT(*)
+FROM logistics.Containers c CROSS APPLY logistics.fn_Container_Journey(c.Id) j
+GROUP BY j.JourneyStatus ORDER BY j.JourneyStatus;
+SELECT c.ContainerRef, c.Status, b.Reason
+FROM logistics.Containers c CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) b
+WHERE c.Status BETWEEN 2 AND 5 AND b.Reason LIKE N'%has not been delivered yet%'
+ORDER BY c.ContainerRef;
+PRINT 'Script 95 applied: the containers'' journey (From -> To, Not dispatched / On the way / Arrived / Received); Receive goods... only once delivered.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 96: Logistics - a provider's invoice is entered once on container charges =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 96: LOGISTICS - A PROVIDER'S INVOICE IS ENTERED ONCE (the charge reference is unique)
+
+     1. THE REFERENCE OF A CONTAINER CHARGE (its provider's invoice / receipt number) IS UNIQUE PER PROVIDER: a charge
+        is refused when another charge that is not cancelled already carries the same reference for the same provider
+        (or, without a provider, among the charges without one) - except the charges of its own GROUP: one provider
+        invoice spread over several containers is ONE group (Add charge for several containers, Apply to other
+        containers..., the rows of one invoice in Import charges from Excel). Compared trimmed, case aside. 70001:
+        "Reference INV-0042 of TEST Forwarder is already entered: Freight on KTG-2026-0031 (12/10/2026). A provider's
+        invoice is entered once - one charge for all its containers (Apply to other containers..., or one group of rows
+        in Import charges from Excel)."
+     2. Checked by usp_ContainerCharge_Create and _Update under one application lock (two users typing the same
+        invoice cannot both pass); the import's Check says it first, row by row (the API). A cancelled charge frees its
+        reference. Charges already duplicated before this script are left as they are (96a lists them).
+
+   Objects
+     New          logistics.fn_ContainerCharge_ReferenceClash; index IX_ContainerCharges_Reference
+     Re-created   logistics.usp_ContainerCharge_Create (from 27), logistics.usp_ContainerCharge_Update (from 27):
+                  + the check, nothing else
+
+   Errors: no new number (70001 duplicate).
+   Requires script 27. Idempotent, additive: re-applied at every API start-up, and builds an empty database.
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'logistics.ContainerCharges', N'U') IS NULL
+    THROW 70000, 'Script 96 requires script 27: apply it first.', 1;
+GO
+
+/* ================================================================== 1. The lookup of a reference */
+
+IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = N'IX_ContainerCharges_Reference' AND object_id = OBJECT_ID(N'logistics.ContainerCharges'))
+    CREATE INDEX IX_ContainerCharges_Reference ON logistics.ContainerCharges (Reference, ProviderPartyId)
+        INCLUDE (Status, GroupId, ContainerId, ChargeTypeId, ChargeDate) WHERE Reference IS NOT NULL;
+GO
+
+-- (96) AT MOST ONE ROW: the first charge not cancelled that already carries @Reference for @ProviderPartyId (NULL = no
+-- provider), outside the group @GroupId and other than @ChargeId, with the sentence of the refusal.
+CREATE OR ALTER FUNCTION logistics.fn_ContainerCharge_ReferenceClash
+(
+    @ProviderPartyId INT,
+    @Reference       NVARCHAR(100),
+    @GroupId         UNIQUEIDENTIFIER,
+    @ChargeId        INT
+)
+RETURNS TABLE
+AS
+RETURN
+SELECT TOP (1) ch.Id, ch.ContainerId, c.ContainerRef,
+       Message = CAST(N'Reference ' + LTRIM(RTRIM(@Reference))
+                      + ISNULL(N' of ' + p.PartyName, N' (no provider)')
+                      + N' is already entered: ' + t.ChargeName + N' on ' + c.ContainerRef
+                      + N' (' + CONVERT(NVARCHAR(10), ch.ChargeDate, 103) + N'). A provider''s invoice is entered once - one charge'
+                      + N' for all its containers (Apply to other containers..., or one group of rows in Import charges from Excel).'
+                      AS NVARCHAR(400))
+FROM logistics.ContainerCharges ch
+INNER JOIN logistics.Containers c  ON c.Id = ch.ContainerId
+INNER JOIN purchase.ChargeTypes t  ON t.Id = ch.ChargeTypeId
+LEFT  JOIN masterdata.Parties p    ON p.Id = ch.ProviderPartyId
+WHERE ch.Reference = LTRIM(RTRIM(@Reference))
+  AND NULLIF(LTRIM(RTRIM(@Reference)), N'') IS NOT NULL
+  AND ch.Status <> 3
+  AND ((@ProviderPartyId IS NULL AND ch.ProviderPartyId IS NULL) OR ch.ProviderPartyId = @ProviderPartyId)
+  AND (@GroupId IS NULL OR ch.GroupId IS NULL OR ch.GroupId <> @GroupId)
+  AND (@ChargeId IS NULL OR ch.Id <> @ChargeId)
+ORDER BY ch.Id;
+GO
+
+/* ================================================================== 2. Add charge */
+
+-- Re-created (96) from the body of script 27: + the reference check, in the transaction. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Create
+    @ContainerIds     logistics.tvp_IdList READONLY,
+    @MovementId       INT            = NULL,
+    @ChargeTypeId     INT,
+    @Description      NVARCHAR(200)  = NULL,
+    @ProviderPartyId  INT            = NULL,
+    @Reference        NVARCHAR(100)  = NULL,
+    @ChargeDate       DATE,
+    @CurrencyId       INT            = NULL,      -- NULL = base currency
+    @RateType         TINYINT        = NULL,      -- NULL = 1 (official)
+    @ExchangeRate     DECIMAL(18,6)  = NULL,      -- NULL = the rate of the charge date
+    @TotalAmount      DECIMAL(18,2),
+    @SplitRule        NVARCHAR(10)   = N'Pieces',
+    @AllocationMethod NVARCHAR(10)   = NULL,      -- NULL = the charge type's method
+    @Notes            NVARCHAR(300)  = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @Reference = NULLIF(LTRIM(RTRIM(@Reference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @SplitRule = ISNULL(NULLIF(LTRIM(RTRIM(@SplitRule)), N''), N'Pieces');
+    SET @AllocationMethod = NULLIF(LTRIM(RTRIM(@AllocationMethod)), N'');
+    SET @RateType = ISNULL(@RateType, 1);
+
+    IF @ChargeDate IS NULL THROW 70000, 'The charge date is required.', 1;
+    IF @TotalAmount IS NULL OR @TotalAmount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @SplitRule NOT IN (N'Same', N'Equal', N'Pieces', N'Value') THROW 70000, 'Split rule must be Same, Equal, Pieces or Value.', 1;
+    IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume', N'Manual')
+        THROW 70000, 'Allocation method must be Value, Quantity, Weight, Volume or Manual.', 1;
+    IF @RateType NOT IN (1, 2, 3) THROW 70000, 'Unknown rate type.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 70000, 'The exchange rate must be greater than zero.', 1;
+
+    DECLARE @Method NVARCHAR(10), @InLanded BIT, @TypeLabel NVARCHAR(120);
+    SELECT @Method = ISNULL(@AllocationMethod, AllocationMethod), @InLanded = IncludeInLandedCost, @TypeLabel = ChargeCode + N' ' + ChargeName
+    FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsActive = 1;
+    IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
+    IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
+        THROW 70000, 'The provider is not found or inactive.', 1;
+
+    DECLARE @Ids TABLE (Id INT PRIMARY KEY);
+    INSERT INTO @Ids (Id) SELECT Id FROM @ContainerIds;
+    IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = CASE WHEN c.Id IS NULL THEN N'A selected container no longer exists.'
+                               ELSE N'Container ' + c.ContainerRef + N' is closed or cancelled.' END
+    FROM @Ids x LEFT JOIN logistics.Containers c ON c.Id = x.Id
+    WHERE c.Id IS NULL OR c.Status IN (7, 8)
+    ORDER BY c.ContainerRef;
+    IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+    IF @MovementId IS NOT NULL
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @MovementId AND Status <> 4)
+            THROW 70000, 'The movement is not found or cancelled.', 1;
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is not part of this movement.'
+        FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id
+        WHERE NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @MovementId AND mc.ContainerId = x.Id)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+    END
+
+    DECLARE @BaseCurrency INT = (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1);
+    SET @CurrencyId = ISNULL(@CurrencyId, @BaseCurrency);
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 70000, 'Currency not found or inactive.', 1;
+    DECLARE @Rate DECIMAL(18,6) = CASE WHEN @CurrencyId = @BaseCurrency THEN 1
+                                       ELSE COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @ChargeDate)) END;
+    IF @Rate IS NULL OR @Rate <= 0 THROW 70000, 'No exchange rate for this currency on the charge date. Add one or enter the rate.', 1;
+    DECLARE @CurrencyCode NVARCHAR(10) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId);
+
+    -- split of the total over the containers
+    DECLARE @Split TABLE (ContainerId INT PRIMARY KEY, Weight DECIMAL(38,10), Share DECIMAL(38,10), Amount DECIMAL(18,2));
+    INSERT INTO @Split (ContainerId, Weight)
+    SELECT x.Id, CASE @SplitRule WHEN N'Pieces' THEN ISNULL(q.Qty, 0) WHEN N'Value' THEN ISNULL(q.Val, 0) ELSE 1 END
+    FROM @Ids x
+    OUTER APPLY (SELECT Qty = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(38,10))),
+                        Val = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(38,10))
+                                  * COALESCE(cl.FobCostBase, inv.UnitValue, po.UnitValue, 0))
+                 FROM logistics.ContainerLines cl
+                 OUTER APPLY (SELECT UnitValue = SUM(pil.LineTotal / pid.ExchangeRate) / NULLIF(SUM(pil.QuantityBase), 0)
+                              FROM purchase.PurchaseDocumentLines pil
+                              INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                              WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (1, 2, 4)) inv
+                 OUTER APPLY (SELECT UnitValue = pol.LineTotal / pod.ExchangeRate / NULLIF(pol.QuantityBase, 0)
+                              FROM purchase.PurchaseDocumentLines pol
+                              INNER JOIN purchase.PurchaseDocuments pod ON pod.Id = pol.DocumentId
+                              WHERE pol.Id = cl.PoLineId) po
+                 WHERE cl.ContainerId = x.Id) q;
+
+    DECLARE @Count INT = (SELECT COUNT(*) FROM @Split), @W DECIMAL(38,10) = (SELECT SUM(Weight) FROM @Split);
+    IF @Count > 1 AND @SplitRule IN (N'Pieces', N'Value') AND (@W IS NULL OR @W <= 0)
+        THROW 70013, 'The selected containers have no items (or no value) to split the amount by. Use Equal or Same.', 1;
+
+    IF @Count = 1 OR @SplitRule = N'Same'
+        UPDATE @Split SET Amount = @TotalAmount;
+    ELSE
+    BEGIN
+        UPDATE @Split SET Share = CAST(@TotalAmount AS DECIMAL(38,10)) * Weight / @W;
+        UPDATE @Split SET Amount = FLOOR(Share * 100) / 100;
+        DECLARE @Cents INT = CAST(ROUND((@TotalAmount - (SELECT SUM(Amount) FROM @Split)) * 100, 0) AS INT);
+        IF @Cents > 0
+        BEGIN
+            WITH r AS (SELECT ContainerId, Rn = ROW_NUMBER() OVER (ORDER BY Share * 100 - FLOOR(Share * 100) DESC, Weight DESC, ContainerId) FROM @Split)
+            UPDATE s SET Amount = s.Amount + 0.01
+            FROM @Split s INNER JOIN r ON r.ContainerId = s.ContainerId
+            WHERE r.Rn <= @Cents;
+        END
+    END
+
+    DECLARE @Group UNIQUEIDENTIFIER = CASE WHEN @Count > 1 THEN NEWID() END;
+    DECLARE @New TABLE (Id INT PRIMARY KEY, ContainerId INT);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (96) A PROVIDER'S INVOICE IS ENTERED ONCE: the reference of a provider (or of no provider) is refused when a charge
+        -- not cancelled already carries it - one charge for all its containers (this call, Apply to other containers..., or
+        -- the import, which keep one group). Under one lock, so two users typing the same invoice cannot both pass.
+        IF @Reference IS NOT NULL
+        BEGIN
+            EXEC sp_getapplock @Resource = N'logistics.ContainerChargeReference', @LockMode = N'Exclusive',
+                 @LockOwner = N'Transaction', @LockTimeout = 30000;
+            SET @Msg = (SELECT r.Message FROM logistics.fn_ContainerCharge_ReferenceClash(@ProviderPartyId, @Reference, NULL, NULL) r);
+            IF @Msg IS NOT NULL THROW 70001, @Msg, 1;
+        END
+
+        INSERT INTO logistics.ContainerCharges (ContainerId, MovementId, GroupId, ChargeTypeId, Description, ProviderPartyId, Reference, ChargeDate,
+                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy)
+        OUTPUT inserted.Id, inserted.ContainerId INTO @New (Id, ContainerId)
+        SELECT s.ContainerId, @MovementId, @Group, @ChargeTypeId, @Description, @ProviderPartyId, @Reference, @ChargeDate,
+               @CurrencyId, @RateType, @Rate, s.Amount, ROUND(s.Amount / @Rate, 2), @Method, @InLanded, @Notes, @UserId
+        FROM @Split s;
+
+        DECLARE @ChargeId INT;
+        DECLARE newc CURSOR LOCAL FAST_FORWARD FOR SELECT Id FROM @New ORDER BY Id;
+        OPEN newc;
+        FETCH NEXT FROM newc INTO @ChargeId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_ContainerCharge_Allocate @ChargeId, 1;
+            FETCH NEXT FROM newc INTO @ChargeId;
+        END
+        CLOSE newc;
+        DEALLOCATE newc;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT n.ContainerId, N'Updated',
+               LEFT(N'Charge added (draft): ' + @TypeLabel + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + @CurrencyCode
+                    + CASE WHEN @Count > 1 THEN N' (' + @SplitRule + N' split of ' + CAST(@TotalAmount AS NVARCHAR(30)) + N' over '
+                                                + CAST(@Count AS NVARCHAR(10)) + N' containers)' ELSE N'' END, 500),
+               @UserId
+        FROM @New n INNER JOIN logistics.ContainerCharges ch ON ch.Id = n.Id;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, ch.GroupId, ch.Amount, ch.AmountBase, ch.Status, ch.RowVersion
+    FROM @New n
+    INNER JOIN logistics.ContainerCharges ch ON ch.Id = n.Id
+    INNER JOIN logistics.Containers c        ON c.Id = ch.ContainerId
+    ORDER BY c.ContainerRef;
+END
+GO
+
+/* ================================================================== 3. A draft charge changed */
+
+-- Re-created (96) from the body of script 27: + the reference check (its own group keeps it). Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Update
+    @Id               INT,
+    @MovementId       INT            = NULL,
+    @ChargeTypeId     INT,
+    @Description      NVARCHAR(200)  = NULL,
+    @ProviderPartyId  INT            = NULL,
+    @Reference        NVARCHAR(100)  = NULL,
+    @ChargeDate       DATE,
+    @CurrencyId       INT            = NULL,
+    @RateType         TINYINT        = NULL,
+    @ExchangeRate     DECIMAL(18,6)  = NULL,
+    @Amount           DECIMAL(18,2),
+    @AllocationMethod NVARCHAR(10)   = NULL,
+    @Notes            NVARCHAR(300)  = NULL,
+    @Manual           logistics.tvp_ChargeManual READONLY,
+    @RowVersion       BINARY(8)      = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @Reference = NULLIF(LTRIM(RTRIM(@Reference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @AllocationMethod = NULLIF(LTRIM(RTRIM(@AllocationMethod)), N'');
+    SET @RateType = ISNULL(@RateType, 1);
+
+    DECLARE @ContainerId INT, @Status TINYINT, @CtStatus TINYINT;
+    SELECT @ContainerId = ch.ContainerId, @Status = ch.Status, @CtStatus = c.Status
+    FROM logistics.ContainerCharges ch INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+    WHERE ch.Id = @Id;
+    IF @ContainerId IS NULL THROW 70006, 'Charge not found.', 1;
+    IF @Status <> 1 THROW 70005, 'Only a draft charge can be changed. Cancel a posted charge and enter it again.', 1;
+    IF @CtStatus IN (7, 8) THROW 70010, 'The container is closed or cancelled.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+    IF @ChargeDate IS NULL THROW 70000, 'The charge date is required.', 1;
+    IF @Amount IS NULL OR @Amount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume', N'Manual')
+        THROW 70000, 'Allocation method must be Value, Quantity, Weight, Volume or Manual.', 1;
+    IF @RateType NOT IN (1, 2, 3) THROW 70000, 'Unknown rate type.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 70000, 'The exchange rate must be greater than zero.', 1;
+
+    DECLARE @Method NVARCHAR(10), @InLanded BIT;
+    SELECT @Method = ISNULL(@AllocationMethod, AllocationMethod), @InLanded = IncludeInLandedCost
+    FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsActive = 1;
+    IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
+    IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
+        THROW 70000, 'The provider is not found or inactive.', 1;
+    IF @MovementId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                                               WHERE mc.MovementId = @MovementId AND mc.ContainerId = @ContainerId AND m.Status <> 4)
+        THROW 70000, 'The container is not part of this movement (or the movement is cancelled).', 1;
+
+    DECLARE @BaseCurrency INT = (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1);
+    SET @CurrencyId = ISNULL(@CurrencyId, @BaseCurrency);
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 70000, 'Currency not found or inactive.', 1;
+    DECLARE @Rate DECIMAL(18,6) = CASE WHEN @CurrencyId = @BaseCurrency THEN 1
+                                       ELSE COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @ChargeDate)) END;
+    IF @Rate IS NULL OR @Rate <= 0 THROW 70000, 'No exchange rate for this currency on the charge date. Add one or enter the rate.', 1;
+    DECLARE @AmountBase DECIMAL(18,2) = ROUND(@Amount / @Rate, 2);
+
+    IF @Method = N'Manual' AND @InLanded = 1 AND EXISTS (SELECT 1 FROM @Manual)
+    BEGIN
+        IF EXISTS (SELECT 1 FROM @Manual m WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.Id = m.ContainerLineId AND cl.ContainerId = @ContainerId))
+            THROW 70000, 'A manual share refers to a line that is not in the container.', 1;
+        IF EXISTS (SELECT 1 FROM @Manual WHERE AmountBase < 0) THROW 70000, 'Manual shares cannot be negative.', 1;
+        IF ABS((SELECT SUM(AmountBase) FROM @Manual) - @AmountBase) > 0.01
+        BEGIN
+            DECLARE @Msg NVARCHAR(400) = N'The manual shares (' + CAST((SELECT SUM(AmountBase) FROM @Manual) AS NVARCHAR(30))
+                                       + N') must add up to the charge in base currency (' + CAST(@AmountBase AS NVARCHAR(30)) + N').';
+            THROW 70013, @Msg, 1;
+        END
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (96) a provider's invoice is entered once: the charges of this charge's own group keep it
+        IF @Reference IS NOT NULL
+        BEGIN
+            EXEC sp_getapplock @Resource = N'logistics.ContainerChargeReference', @LockMode = N'Exclusive',
+                 @LockOwner = N'Transaction', @LockTimeout = 30000;
+            DECLARE @Clash NVARCHAR(400) = (SELECT r.Message
+                                            FROM logistics.fn_ContainerCharge_ReferenceClash(
+                                                     @ProviderPartyId, @Reference,
+                                                     (SELECT GroupId FROM logistics.ContainerCharges WHERE Id = @Id), @Id) r);
+            IF @Clash IS NOT NULL THROW 70001, @Clash, 1;
+        END
+
+        UPDATE logistics.ContainerCharges
+        SET MovementId = @MovementId, ChargeTypeId = @ChargeTypeId, Description = @Description, ProviderPartyId = @ProviderPartyId,
+            Reference = @Reference, ChargeDate = @ChargeDate, CurrencyId = @CurrencyId, RateType = @RateType, ExchangeRate = @Rate,
+            Amount = @Amount, AmountBase = @AmountBase, AllocationMethod = @Method, IncludeInLandedCost = @InLanded, Notes = @Notes,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        IF @Method = N'Manual' AND @InLanded = 1
+        BEGIN
+            IF EXISTS (SELECT 1 FROM @Manual)
+            BEGIN
+                DELETE FROM logistics.ContainerChargeAllocations WHERE ChargeId = @Id;
+                INSERT INTO logistics.ContainerChargeAllocations (ChargeId, ContainerLineId, Basis, AmountBase, IsManual)
+                SELECT @Id, ContainerLineId, NULL, AmountBase, 1 FROM @Manual WHERE AmountBase > 0;
+            END
+            ELSE
+                DELETE FROM logistics.ContainerChargeAllocations WHERE ChargeId = @Id AND IsManual = 0;
+        END
+        ELSE
+            EXEC logistics.usp_ContainerCharge_Allocate @Id, 1;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT @ContainerId, N'Updated', LEFT(N'Charge changed (draft): ' + t.ChargeCode + N' ' + t.ChargeName + N' '
+                                               + CAST(@Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode, 500), @UserId
+        FROM purchase.ChargeTypes t CROSS JOIN masterdata.Currencies cur
+        WHERE t.Id = @ChargeTypeId AND cur.Id = @CurrencyId;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 4. Check */
+
+-- 96a: the references already entered twice before this script (left as they are)
+SELECT ch.Reference, Provider = p.PartyName, Charges = COUNT(*), Groups = COUNT(DISTINCT ISNULL(CAST(ch.GroupId AS NVARCHAR(36)), CAST(ch.Id AS NVARCHAR(36))))
+FROM logistics.ContainerCharges ch LEFT JOIN masterdata.Parties p ON p.Id = ch.ProviderPartyId
+WHERE ch.Reference IS NOT NULL AND ch.Status <> 3
+GROUP BY ch.Reference, p.PartyName
+HAVING COUNT(DISTINCT ISNULL(CAST(ch.GroupId AS NVARCHAR(36)), CAST(ch.Id AS NVARCHAR(36)))) > 1;
+PRINT 'Script 96 applied: a provider''s invoice reference is entered once on container charges.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 97: BIVAC - the cost of a BIVAC item per port, and the BIVAC Out of a BIVAC charge =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 97: BIVAC - THE COST OF A BIVAC ITEM PER PORT, AND THE BIVAC OUT OF A BIVAC CHARGE
+
+     1. A BIVAC ITEM HAS A COST PER PORT (inventory.ItemBivacPortCosts: item, port, cost in the base currency), kept on
+        Item Definition ("BIVAC cost per port", Edit Items) for items with "BIVAC Item" ticked only. Each port once;
+        0 or more. A port whose cost is removed simply has none.
+     2. A BIVAC CHARGE NAMES ITS BIVAC ITEM. In Add charge, the charge type BIVAC / Inspection (code BIV) asks "Which
+        BIVAC?" (the active BIVAC items); each container's charge is that item's cost at the container's port (its port
+        of destination, else its final destination, else its port of loading), in the base currency - the amount,
+        currency and split typed are not used. Refused (70000) when the item is not an active BIVAC item, when a
+        container's port has no cost for it ("TEST-BIV has no BIVAC cost for Dar es Salaam: set it on Item Definition
+        (BIVAC cost per port)."), when a BIV charge names no item, or another charge type names one. A draft keeps its
+        amount editable; it keeps its type (another type is refused, and no other charge becomes a BIVAC one on edit).
+        "Apply to other containers..." copies the item, at the cost of each target container's port.
+     3. POSTING A BIVAC CHARGE POSTS A BIVAC OUT (Inventory > BIVAC Out): 1 piece of its BIVAC item out of the
+        container's warehouse, dated the charge date, Reference No. the container's ref, linked to the charge
+        (ContainerCharges.BivacOutDocumentId), in the post's transaction - refused with the BIVAC Out's own words
+        (not enough stock 62007, a warehouse that is not at the bottom of the tree, a warehouse the user may not use
+        50010), and then nothing of the post is kept. A container without a usable warehouse: "Container KTG-...
+        has no warehouse to take its BIVAC from: set the container's warehouse first." (70010).
+     4. CANCELLING A BIVAC CHARGE CANCELS ITS BIVAC OUT (the item comes back, the BIVAC Out shows Cancelled with
+        "BIVAC charge cancelled: {reason}"). A BIVAC Out made by a charge is not cancelled on its own page: the
+        charge's Cancel does it (62010 says so).
+     5. The Excel import of charges does not take BIVAC rows (the item is chosen in Add charge): the API's check says so.
+
+   Objects
+     New tables / columns   inventory.ItemBivacPortCosts; inventory.tvp_ItemPortCost;
+                            logistics.ContainerCharges.BivacItemId, .BivacOutDocumentId
+     New                    logistics.fn_Container_BivacPort, fn_Container_BivacCost, fn_ContainerCharge_BivacBlock,
+                            logistics.usp_ContainerCharge_PostBivacOut, logistics.usp_ContainerCharge_BivacOptions,
+                            inventory.usp_Item_BivacPortCosts_Get, inventory.usp_Item_SetBivacPortCosts
+     Re-created             logistics.usp_ContainerCharge_Create, _Update (from 96), _Post (from 65), _Cancel (from 65),
+                            _Get (from 67), _CopyToContainers (from 28); inventory.usp_StockDocument_Cancel (from 90:
+                            a BIVAC Out of a charge is cancelled by its charge)
+
+   Errors: no new number (70000, 70010, and the BIVAC Out's own 62xxx).
+   Requires scripts 66 and 96. Idempotent, additive: re-applied at every API start-up, and builds an empty database.
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF COL_LENGTH(N'inventory.Items', N'IsBivac') IS NULL OR OBJECT_ID(N'logistics.fn_ContainerCharge_ReferenceClash', N'IF') IS NULL
+    THROW 70000, 'Script 97 requires scripts 66 and 96: apply them first.', 1;
+GO
+
+/* ================================================================== 1. Tables and columns */
+
+IF OBJECT_ID(N'inventory.ItemBivacPortCosts', N'U') IS NULL
+BEGIN
+    CREATE TABLE inventory.ItemBivacPortCosts
+    (
+        Id           INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ItemBivacPortCosts PRIMARY KEY CLUSTERED,
+        ItemId       INT           NOT NULL CONSTRAINT FK_ItemBivacPortCosts_Item REFERENCES inventory.Items (Id) ON DELETE CASCADE,
+        PortId       INT           NOT NULL CONSTRAINT FK_ItemBivacPortCosts_Port REFERENCES masterdata.Ports (Id),
+        CostBase     DECIMAL(18,2) NOT NULL CONSTRAINT CK_ItemBivacPortCosts_Cost CHECK (CostBase >= 0),
+        UpdatedAtUtc DATETIME2(3)  NOT NULL CONSTRAINT DF_ItemBivacPortCosts_Updated DEFAULT (SYSUTCDATETIME()),
+        UpdatedBy    INT           NULL,
+        CONSTRAINT UQ_ItemBivacPortCosts UNIQUE (ItemId, PortId)
+    );
+    PRINT 'Created inventory.ItemBivacPortCosts';
+END
+GO
+
+IF TYPE_ID(N'inventory.tvp_ItemPortCost') IS NULL
+    CREATE TYPE inventory.tvp_ItemPortCost AS TABLE (PortId INT NOT NULL PRIMARY KEY, CostBase DECIMAL(18,2) NULL);
+GO
+
+IF COL_LENGTH(N'logistics.ContainerCharges', N'BivacItemId') IS NULL
+    ALTER TABLE logistics.ContainerCharges ADD BivacItemId INT NULL
+        CONSTRAINT FK_ContainerCharges_BivacItem REFERENCES inventory.Items (Id);
+GO
+IF COL_LENGTH(N'logistics.ContainerCharges', N'BivacOutDocumentId') IS NULL
+    ALTER TABLE logistics.ContainerCharges ADD BivacOutDocumentId INT NULL
+        CONSTRAINT FK_ContainerCharges_BivacOut REFERENCES inventory.StockDocuments (Id);
+GO
+
+/* ================================================================== 2. The port of a container, and the BIVAC cost there */
+
+-- (97) The port a container's BIVAC is paid at: its port of destination, else its final destination, else its port of loading.
+CREATE OR ALTER FUNCTION logistics.fn_Container_BivacPort (@ContainerId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT c.Id AS ContainerId, PortId = p.Id, PortName = p.PortName
+FROM logistics.Containers c
+LEFT JOIN masterdata.Ports p ON p.Id = COALESCE(c.PortOfDestinationId, c.FinalDestinationId, c.PortOfLoadingId)
+WHERE c.Id = @ContainerId;
+GO
+
+-- (97) One row: the cost of @ItemId at the container's BIVAC port (CostBase NULL when none is set there).
+CREATE OR ALTER FUNCTION logistics.fn_Container_BivacCost (@ContainerId INT, @ItemId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT bp.ContainerId, bp.PortId, bp.PortName, pc.CostBase
+FROM logistics.fn_Container_BivacPort(@ContainerId) bp
+LEFT JOIN inventory.ItemBivacPortCosts pc ON pc.ItemId = @ItemId AND pc.PortId = bp.PortId;
+GO
+
+-- (97) At most one row: why a charge of @ChargeTypeId naming @BivacItemId cannot be made for @ContainerIds (NULL Reason
+-- = it can): a BIV charge needs an active BIVAC item with a cost at every container's port; another type names none.
+CREATE OR ALTER FUNCTION logistics.fn_ContainerCharge_BivacBlock
+(
+    @ChargeTypeId INT,
+    @BivacItemId  INT,
+    @ContainerIds logistics.tvp_IdList READONLY
+)
+RETURNS TABLE
+AS
+RETURN
+SELECT Reason = CAST(CASE
+    WHEN t.ChargeCode = N'BIV' AND @BivacItemId IS NULL
+        THEN N'A BIVAC charge names its BIVAC: choose which BIVAC item (Item Definition''s items with BIVAC Item ticked).'
+    WHEN ISNULL(t.ChargeCode, N'') <> N'BIV' AND @BivacItemId IS NOT NULL
+        THEN N'Only a BIVAC / Inspection charge names a BIVAC item.'
+    WHEN @BivacItemId IS NOT NULL AND (i.Id IS NULL OR i.IsBivac = 0 OR i.IsActive = 0)
+        THEN N'The BIVAC item is not an active item with BIVAC Item ticked.'
+    WHEN @BivacItemId IS NOT NULL
+        THEN (SELECT TOP (1) i.ItemCode + N' has no BIVAC cost for ' + ISNULL(bc.PortName, N'the port of container ' + c.ContainerRef)
+                             + N': set it on Item Definition (BIVAC cost per port).'
+              FROM @ContainerIds x
+              INNER JOIN logistics.Containers c ON c.Id = x.Id
+              CROSS APPLY logistics.fn_Container_BivacCost(x.Id, @BivacItemId) bc
+              WHERE bc.CostBase IS NULL
+              ORDER BY c.ContainerRef)
+    END AS NVARCHAR(400))
+FROM (SELECT Dummy = 1) d
+LEFT JOIN purchase.ChargeTypes t ON t.Id = @ChargeTypeId
+LEFT JOIN inventory.Items i      ON i.Id = @BivacItemId;
+GO
+
+/* ================================================================== 3. The BIVAC cost per port of an item */
+
+CREATE OR ALTER PROCEDURE inventory.usp_Item_BivacPortCosts_Get
+    @ItemId INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT pc.PortId, p.PortCode, p.PortName, p.CountryCode, pc.CostBase, pc.UpdatedAtUtc, u.FullName AS UpdatedByName
+    FROM inventory.ItemBivacPortCosts pc
+    INNER JOIN masterdata.Ports p ON p.Id = pc.PortId
+    LEFT  JOIN security.Users u   ON u.Id = pc.UpdatedBy
+    WHERE pc.ItemId = @ItemId
+    ORDER BY p.PortName;
+END
+GO
+
+-- (97) THE WHOLE LIST AT ONCE: the ports given are the item's costs, a port left out has none. A BIVAC item only.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_SetBivacPortCosts
+    @ItemId INT,
+    @Costs  inventory.tvp_ItemPortCost READONLY,
+    @UserId INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @IsBivac BIT = (SELECT IsBivac FROM inventory.Items WHERE Id = @ItemId);
+    IF @IsBivac IS NULL THROW 56006, 'Item not found.', 1;
+    IF @IsBivac = 0 AND EXISTS (SELECT 1 FROM @Costs)
+        THROW 56000, 'Only a BIVAC item has a cost per port: tick BIVAC Item and save the item first.', 1;
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = CASE WHEN p.Id IS NULL THEN N'A port was not found: reload the page and try again.'
+                               WHEN x.CostBase IS NULL THEN p.PortName + N': type the cost, or remove the port.'
+                               ELSE p.PortName + N': the cost cannot be negative.' END
+    FROM @Costs x LEFT JOIN masterdata.Ports p ON p.Id = x.PortId
+    WHERE p.Id IS NULL OR x.CostBase IS NULL OR x.CostBase < 0;
+    IF @Msg IS NOT NULL THROW 56000, @Msg, 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        DELETE pc FROM inventory.ItemBivacPortCosts pc
+        WHERE pc.ItemId = @ItemId AND NOT EXISTS (SELECT 1 FROM @Costs x WHERE x.PortId = pc.PortId);
+        UPDATE pc SET CostBase = x.CostBase, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        FROM inventory.ItemBivacPortCosts pc INNER JOIN @Costs x ON x.PortId = pc.PortId
+        WHERE pc.ItemId = @ItemId AND pc.CostBase <> x.CostBase;
+        INSERT INTO inventory.ItemBivacPortCosts (ItemId, PortId, CostBase, UpdatedBy)
+        SELECT @ItemId, x.PortId, x.CostBase, @UserId FROM @Costs x
+        WHERE NOT EXISTS (SELECT 1 FROM inventory.ItemBivacPortCosts pc WHERE pc.ItemId = @ItemId AND pc.PortId = x.PortId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+    EXEC inventory.usp_Item_BivacPortCosts_Get @ItemId;
+END
+GO
+
+/* ================================================================== 4. What Add charge offers for a BIVAC charge */
+
+-- (97) The active BIVAC items, each with its cost at each container's port (NULL = none there) and the total.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_BivacOptions
+    @ContainerIds logistics.tvp_IdList READONLY
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SELECT i.Id AS ItemId, i.ItemCode, i.ItemName,
+           Containers = (SELECT COUNT(*) FROM @ContainerIds),
+           Priced = (SELECT COUNT(*) FROM @ContainerIds x CROSS APPLY logistics.fn_Container_BivacCost(x.Id, i.Id) bc WHERE bc.CostBase IS NOT NULL),
+           TotalBase = (SELECT SUM(bc.CostBase) FROM @ContainerIds x CROSS APPLY logistics.fn_Container_BivacCost(x.Id, i.Id) bc),
+           MissingPorts = STUFF((SELECT DISTINCT N', ' + ISNULL(bc.PortName, N'(no port)')
+                                 FROM @ContainerIds x CROSS APPLY logistics.fn_Container_BivacCost(x.Id, i.Id) bc
+                                 WHERE bc.CostBase IS NULL
+                                 FOR XML PATH(N''), TYPE).value(N'.', N'NVARCHAR(400)'), 1, 2, N'')
+    FROM inventory.Items i
+    WHERE i.IsBivac = 1 AND i.IsActive = 1
+    ORDER BY i.ItemCode;
+
+    SELECT x.Id AS ContainerId, c.ContainerRef, bp.PortId, bp.PortName
+    FROM @ContainerIds x
+    INNER JOIN logistics.Containers c ON c.Id = x.Id
+    CROSS APPLY logistics.fn_Container_BivacPort(x.Id) bp
+    ORDER BY c.ContainerRef;
+END
+GO
+
+/* ================================================================== 5. The BIVAC Out of a BIVAC charge */
+
+-- (97) Called by usp_ContainerCharge_Post, in its transaction: a BIVAC Out (BIV_OUT) of 1 piece of the charge's BIVAC
+-- item from the container's warehouse, saved and posted with the BIVAC Out's own procedures, linked to the charge.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_PostBivacOut
+    @ChargeId INT,
+    @UserId   INT = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    DECLARE @ItemId INT, @Date DATE, @BranchId INT, @WarehouseId INT, @Ref NVARCHAR(30), @ChargeRef NVARCHAR(100), @Msg NVARCHAR(400);
+    SELECT @ItemId = ch.BivacItemId, @Date = ch.ChargeDate, @BranchId = c.BranchId, @Ref = c.ContainerRef, @ChargeRef = ch.Reference,
+           @WarehouseId = (SELECT w.Id FROM masterdata.Warehouses w
+                           WHERE w.Id = c.WarehouseId AND w.IsActive = 1 AND masterdata.fn_Warehouse_IsLeaf(w.Id) = 1)
+    FROM logistics.ContainerCharges ch INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+    WHERE ch.Id = @ChargeId;
+    IF @ItemId IS NULL RETURN;
+    IF @WarehouseId IS NULL
+    BEGIN
+        SET @Msg = N'Container ' + @Ref + N' has no warehouse to take its BIVAC from (active, at the bottom of the tree): set the container''s warehouse first.';
+        THROW 70010, @Msg, 1;
+    END
+    IF @Date > CAST(SYSUTCDATETIME() AS DATE) SET @Date = CAST(SYSUTCDATETIME() AS DATE);
+
+    DECLARE @Lines inventory.tvp_StockDocumentLine, @DocId INT;
+    INSERT INTO @Lines (LineNumber, ItemId, ItemUnitId, WarehouseId, ExpiryDate, Quantity, UnitCost, Notes)
+    SELECT 1, @ItemId, u.Id, @WarehouseId, NULL, 1, NULL, LEFT(N'BIVAC of container ' + @Ref, 300)
+    FROM (SELECT TOP (1) Id FROM inventory.ItemUnits WHERE ItemId = @ItemId ORDER BY CASE WHEN IsBaseUnit = 1 THEN 0 ELSE 1 END, Id) u;
+    IF NOT EXISTS (SELECT 1 FROM @Lines)
+    BEGIN
+        SET @Msg = N'The BIVAC item has no unit: add its base unit on Item Definition first.';
+        THROW 70010, @Msg, 1;
+    END
+    DECLARE @Notes NVARCHAR(1000) = N'Made by the BIVAC charge of container ' + @Ref + ISNULL(N' (' + @ChargeRef + N')', N'') + N'.';
+    EXEC inventory.usp_StockDocument_Save @DocumentTypeCode = N'BIV_OUT', @DocumentDate = @Date, @BranchId = @BranchId,
+         @WarehouseId = @WarehouseId, @ReferenceNo = @Ref, @Notes = @Notes, @Lines = @Lines, @UserId = @UserId, @NewId = @DocId OUTPUT;
+    EXEC inventory.usp_StockDocument_Post @Id = @DocId, @UserId = @UserId;
+    UPDATE logistics.ContainerCharges SET BivacOutDocumentId = @DocId WHERE Id = @ChargeId;
+END
+GO
+
+/* ================================================================== 6. Add charge */
+
+-- Re-created (97) from the body of script 96: + @BivacItemId (fn_ContainerCharge_BivacBlock; a BIVAC charge's amount
+-- is the item's cost at each container's port, in the base currency). Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Create
+    @ContainerIds     logistics.tvp_IdList READONLY,
+    @MovementId       INT            = NULL,
+    @ChargeTypeId     INT,
+    @Description      NVARCHAR(200)  = NULL,
+    @ProviderPartyId  INT            = NULL,
+    @Reference        NVARCHAR(100)  = NULL,
+    @ChargeDate       DATE,
+    @CurrencyId       INT            = NULL,      -- NULL = base currency
+    @RateType         TINYINT        = NULL,      -- NULL = 1 (official)
+    @ExchangeRate     DECIMAL(18,6)  = NULL,      -- NULL = the rate of the charge date
+    @TotalAmount      DECIMAL(18,2),
+    @SplitRule        NVARCHAR(10)   = N'Pieces',
+    @AllocationMethod NVARCHAR(10)   = NULL,      -- NULL = the charge type's method
+    @Notes            NVARCHAR(300)  = NULL,
+    @UserId           INT            = NULL,
+    @BivacItemId      INT            = NULL       -- (97) the BIVAC item of a BIVAC charge (charge type BIV)
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @Reference = NULLIF(LTRIM(RTRIM(@Reference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @SplitRule = ISNULL(NULLIF(LTRIM(RTRIM(@SplitRule)), N''), N'Pieces');
+    SET @AllocationMethod = NULLIF(LTRIM(RTRIM(@AllocationMethod)), N'');
+    SET @RateType = ISNULL(@RateType, 1);
+
+    IF @ChargeDate IS NULL THROW 70000, 'The charge date is required.', 1;
+    IF @TotalAmount IS NULL OR @TotalAmount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @SplitRule NOT IN (N'Same', N'Equal', N'Pieces', N'Value') THROW 70000, 'Split rule must be Same, Equal, Pieces or Value.', 1;
+    IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume', N'Manual')
+        THROW 70000, 'Allocation method must be Value, Quantity, Weight, Volume or Manual.', 1;
+    IF @RateType NOT IN (1, 2, 3) THROW 70000, 'Unknown rate type.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 70000, 'The exchange rate must be greater than zero.', 1;
+
+    DECLARE @Method NVARCHAR(10), @InLanded BIT, @TypeLabel NVARCHAR(120);
+    SELECT @Method = ISNULL(@AllocationMethod, AllocationMethod), @InLanded = IncludeInLandedCost, @TypeLabel = ChargeCode + N' ' + ChargeName
+    FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsActive = 1;
+    IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
+    IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
+        THROW 70000, 'The provider is not found or inactive.', 1;
+
+    DECLARE @Ids TABLE (Id INT PRIMARY KEY);
+    INSERT INTO @Ids (Id) SELECT Id FROM @ContainerIds;
+    IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+
+    -- (97) A BIVAC CHARGE NAMES ITS BIVAC ITEM, whose cost at each container's port is the charge of that container (in
+    -- the base currency): the amount, the currency and the split typed are not used. Its posting takes 1 piece of the
+    -- item out of the container's warehouse with a BIVAC Out (usp_ContainerCharge_Post).
+    SET @Msg = (SELECT b.Reason FROM logistics.fn_ContainerCharge_BivacBlock(@ChargeTypeId, @BivacItemId, @ContainerIds) b);
+    IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+    SELECT TOP (1) @Msg = CASE WHEN c.Id IS NULL THEN N'A selected container no longer exists.'
+                               ELSE N'Container ' + c.ContainerRef + N' is closed or cancelled.' END
+    FROM @Ids x LEFT JOIN logistics.Containers c ON c.Id = x.Id
+    WHERE c.Id IS NULL OR c.Status IN (7, 8)
+    ORDER BY c.ContainerRef;
+    IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+    IF @MovementId IS NOT NULL
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @MovementId AND Status <> 4)
+            THROW 70000, 'The movement is not found or cancelled.', 1;
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' is not part of this movement.'
+        FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id
+        WHERE NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc WHERE mc.MovementId = @MovementId AND mc.ContainerId = x.Id)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+    END
+
+    DECLARE @BaseCurrency INT = (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1);
+    SET @CurrencyId = ISNULL(@CurrencyId, @BaseCurrency);
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 70000, 'Currency not found or inactive.', 1;
+    DECLARE @Rate DECIMAL(18,6) = CASE WHEN @CurrencyId = @BaseCurrency THEN 1
+                                       ELSE COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @ChargeDate)) END;
+    IF @Rate IS NULL OR @Rate <= 0 THROW 70000, 'No exchange rate for this currency on the charge date. Add one or enter the rate.', 1;
+    DECLARE @CurrencyCode NVARCHAR(10) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId);
+
+    -- split of the total over the containers
+    DECLARE @Split TABLE (ContainerId INT PRIMARY KEY, Weight DECIMAL(38,10), Share DECIMAL(38,10), Amount DECIMAL(18,2));
+    INSERT INTO @Split (ContainerId, Weight)
+    SELECT x.Id, CASE @SplitRule WHEN N'Pieces' THEN ISNULL(q.Qty, 0) WHEN N'Value' THEN ISNULL(q.Val, 0) ELSE 1 END
+    FROM @Ids x
+    OUTER APPLY (SELECT Qty = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(38,10))),
+                        Val = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(38,10))
+                                  * COALESCE(cl.FobCostBase, inv.UnitValue, po.UnitValue, 0))
+                 FROM logistics.ContainerLines cl
+                 OUTER APPLY (SELECT UnitValue = SUM(pil.LineTotal / pid.ExchangeRate) / NULLIF(SUM(pil.QuantityBase), 0)
+                              FROM purchase.PurchaseDocumentLines pil
+                              INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
+                              WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (1, 2, 4)) inv
+                 OUTER APPLY (SELECT UnitValue = pol.LineTotal / pod.ExchangeRate / NULLIF(pol.QuantityBase, 0)
+                              FROM purchase.PurchaseDocumentLines pol
+                              INNER JOIN purchase.PurchaseDocuments pod ON pod.Id = pol.DocumentId
+                              WHERE pol.Id = cl.PoLineId) po
+                 WHERE cl.ContainerId = x.Id) q;
+
+    DECLARE @Count INT = (SELECT COUNT(*) FROM @Split), @W DECIMAL(38,10) = (SELECT SUM(Weight) FROM @Split);
+    IF @Count > 1 AND @SplitRule IN (N'Pieces', N'Value') AND (@W IS NULL OR @W <= 0)
+        THROW 70013, 'The selected containers have no items (or no value) to split the amount by. Use Equal or Same.', 1;
+
+    IF @Count = 1 OR @SplitRule = N'Same'
+        UPDATE @Split SET Amount = @TotalAmount;
+    ELSE
+    BEGIN
+        UPDATE @Split SET Share = CAST(@TotalAmount AS DECIMAL(38,10)) * Weight / @W;
+        UPDATE @Split SET Amount = FLOOR(Share * 100) / 100;
+        DECLARE @Cents INT = CAST(ROUND((@TotalAmount - (SELECT SUM(Amount) FROM @Split)) * 100, 0) AS INT);
+        IF @Cents > 0
+        BEGIN
+            WITH r AS (SELECT ContainerId, Rn = ROW_NUMBER() OVER (ORDER BY Share * 100 - FLOOR(Share * 100) DESC, Weight DESC, ContainerId) FROM @Split)
+            UPDATE s SET Amount = s.Amount + 0.01
+            FROM @Split s INNER JOIN r ON r.ContainerId = s.ContainerId
+            WHERE r.Rn <= @Cents;
+        END
+    END
+
+    -- (97) a BIVAC charge: each container's amount is the item's cost at its port, in the base currency
+    IF @BivacItemId IS NOT NULL
+    BEGIN
+        SET @CurrencyId = @BaseCurrency;
+        SET @Rate = 1;
+        SET @CurrencyCode = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @BaseCurrency);
+        UPDATE s SET Amount = bc.CostBase
+        FROM @Split s CROSS APPLY logistics.fn_Container_BivacCost(s.ContainerId, @BivacItemId) bc;
+        SET @TotalAmount = (SELECT SUM(Amount) FROM @Split);
+        SET @SplitRule = N'Same';
+    END
+
+    DECLARE @Group UNIQUEIDENTIFIER = CASE WHEN @Count > 1 THEN NEWID() END;
+    DECLARE @New TABLE (Id INT PRIMARY KEY, ContainerId INT);
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (96) A PROVIDER'S INVOICE IS ENTERED ONCE: the reference of a provider (or of no provider) is refused when a charge
+        -- not cancelled already carries it - one charge for all its containers (this call, Apply to other containers..., or
+        -- the import, which keep one group). Under one lock, so two users typing the same invoice cannot both pass.
+        IF @Reference IS NOT NULL
+        BEGIN
+            EXEC sp_getapplock @Resource = N'logistics.ContainerChargeReference', @LockMode = N'Exclusive',
+                 @LockOwner = N'Transaction', @LockTimeout = 30000;
+            SET @Msg = (SELECT r.Message FROM logistics.fn_ContainerCharge_ReferenceClash(@ProviderPartyId, @Reference, NULL, NULL) r);
+            IF @Msg IS NOT NULL THROW 70001, @Msg, 1;
+        END
+
+        INSERT INTO logistics.ContainerCharges (ContainerId, MovementId, GroupId, ChargeTypeId, Description, ProviderPartyId, Reference, ChargeDate,
+                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy,
+                                                BivacItemId)
+        OUTPUT inserted.Id, inserted.ContainerId INTO @New (Id, ContainerId)
+        SELECT s.ContainerId, @MovementId, @Group, @ChargeTypeId, @Description, @ProviderPartyId, @Reference, @ChargeDate,
+               @CurrencyId, @RateType, @Rate, s.Amount, ROUND(s.Amount / @Rate, 2), @Method, @InLanded, @Notes, @UserId,
+               @BivacItemId
+        FROM @Split s;
+
+        DECLARE @ChargeId INT;
+        DECLARE newc CURSOR LOCAL FAST_FORWARD FOR SELECT Id FROM @New ORDER BY Id;
+        OPEN newc;
+        FETCH NEXT FROM newc INTO @ChargeId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_ContainerCharge_Allocate @ChargeId, 1;
+            FETCH NEXT FROM newc INTO @ChargeId;
+        END
+        CLOSE newc;
+        DEALLOCATE newc;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT n.ContainerId, N'Updated',
+               LEFT(N'Charge added (draft): ' + @TypeLabel + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + @CurrencyCode
+                    + CASE WHEN @Count > 1 THEN N' (' + @SplitRule + N' split of ' + CAST(@TotalAmount AS NVARCHAR(30)) + N' over '
+                                                + CAST(@Count AS NVARCHAR(10)) + N' containers)' ELSE N'' END, 500),
+               @UserId
+        FROM @New n INNER JOIN logistics.ContainerCharges ch ON ch.Id = n.Id;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, ch.GroupId, ch.Amount, ch.AmountBase, ch.Status, ch.RowVersion
+    FROM @New n
+    INNER JOIN logistics.ContainerCharges ch ON ch.Id = n.Id
+    INNER JOIN logistics.Containers c        ON c.Id = ch.ContainerId
+    ORDER BY c.ContainerRef;
+END
+GO
+
+/* ================================================================== 7. A draft charge changed */
+
+-- Re-created (97) from the body of script 96: a BIVAC charge keeps its type, no other charge becomes one. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Update
+    @Id               INT,
+    @MovementId       INT            = NULL,
+    @ChargeTypeId     INT,
+    @Description      NVARCHAR(200)  = NULL,
+    @ProviderPartyId  INT            = NULL,
+    @Reference        NVARCHAR(100)  = NULL,
+    @ChargeDate       DATE,
+    @CurrencyId       INT            = NULL,
+    @RateType         TINYINT        = NULL,
+    @ExchangeRate     DECIMAL(18,6)  = NULL,
+    @Amount           DECIMAL(18,2),
+    @AllocationMethod NVARCHAR(10)   = NULL,
+    @Notes            NVARCHAR(300)  = NULL,
+    @Manual           logistics.tvp_ChargeManual READONLY,
+    @RowVersion       BINARY(8)      = NULL,
+    @UserId           INT            = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @Reference = NULLIF(LTRIM(RTRIM(@Reference)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    SET @AllocationMethod = NULLIF(LTRIM(RTRIM(@AllocationMethod)), N'');
+    SET @RateType = ISNULL(@RateType, 1);
+
+    DECLARE @ContainerId INT, @Status TINYINT, @CtStatus TINYINT;
+    SELECT @ContainerId = ch.ContainerId, @Status = ch.Status, @CtStatus = c.Status
+    FROM logistics.ContainerCharges ch INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+    WHERE ch.Id = @Id;
+    IF @ContainerId IS NULL THROW 70006, 'Charge not found.', 1;
+    IF @Status <> 1 THROW 70005, 'Only a draft charge can be changed. Cancel a posted charge and enter it again.', 1;
+    IF @CtStatus IN (7, 8) THROW 70010, 'The container is closed or cancelled.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+    IF @ChargeDate IS NULL THROW 70000, 'The charge date is required.', 1;
+    IF @Amount IS NULL OR @Amount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume', N'Manual')
+        THROW 70000, 'Allocation method must be Value, Quantity, Weight, Volume or Manual.', 1;
+    IF @RateType NOT IN (1, 2, 3) THROW 70000, 'Unknown rate type.', 1;
+    IF @ExchangeRate IS NOT NULL AND @ExchangeRate <= 0 THROW 70000, 'The exchange rate must be greater than zero.', 1;
+
+    DECLARE @Method NVARCHAR(10), @InLanded BIT;
+    SELECT @Method = ISNULL(@AllocationMethod, AllocationMethod), @InLanded = IncludeInLandedCost
+    FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsActive = 1;
+    IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
+    IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
+        THROW 70000, 'The provider is not found or inactive.', 1;
+    -- (97) a BIVAC charge keeps its type (its BIVAC item goes with it); another charge does not become one here
+    DECLARE @WasBivac BIT = CASE WHEN EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND BivacItemId IS NOT NULL) THEN 1 ELSE 0 END;
+    DECLARE @IsBivacType BIT = CASE WHEN EXISTS (SELECT 1 FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND ChargeCode = N'BIV') THEN 1 ELSE 0 END;
+    IF @WasBivac = 1 AND @IsBivacType = 0
+        THROW 70000, 'A BIVAC charge keeps its charge type: delete this draft and add the charge again with Add charge.', 1;
+    IF @WasBivac = 0 AND @IsBivacType = 1
+        THROW 70000, 'A BIVAC charge is added with Add charge, where its BIVAC item is chosen: delete this draft and add it there.', 1;
+    IF @MovementId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.MovementContainers mc INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                                               WHERE mc.MovementId = @MovementId AND mc.ContainerId = @ContainerId AND m.Status <> 4)
+        THROW 70000, 'The container is not part of this movement (or the movement is cancelled).', 1;
+
+    DECLARE @BaseCurrency INT = (SELECT TOP (1) Id FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1);
+    SET @CurrencyId = ISNULL(@CurrencyId, @BaseCurrency);
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Currencies WHERE Id = @CurrencyId AND IsActive = 1)
+        THROW 70000, 'Currency not found or inactive.', 1;
+    DECLARE @Rate DECIMAL(18,6) = CASE WHEN @CurrencyId = @BaseCurrency THEN 1
+                                       ELSE COALESCE(@ExchangeRate, masterdata.fn_GetRate(@CurrencyId, @RateType, @ChargeDate)) END;
+    IF @Rate IS NULL OR @Rate <= 0 THROW 70000, 'No exchange rate for this currency on the charge date. Add one or enter the rate.', 1;
+    DECLARE @AmountBase DECIMAL(18,2) = ROUND(@Amount / @Rate, 2);
+
+    IF @Method = N'Manual' AND @InLanded = 1 AND EXISTS (SELECT 1 FROM @Manual)
+    BEGIN
+        IF EXISTS (SELECT 1 FROM @Manual m WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.Id = m.ContainerLineId AND cl.ContainerId = @ContainerId))
+            THROW 70000, 'A manual share refers to a line that is not in the container.', 1;
+        IF EXISTS (SELECT 1 FROM @Manual WHERE AmountBase < 0) THROW 70000, 'Manual shares cannot be negative.', 1;
+        IF ABS((SELECT SUM(AmountBase) FROM @Manual) - @AmountBase) > 0.01
+        BEGIN
+            DECLARE @Msg NVARCHAR(400) = N'The manual shares (' + CAST((SELECT SUM(AmountBase) FROM @Manual) AS NVARCHAR(30))
+                                       + N') must add up to the charge in base currency (' + CAST(@AmountBase AS NVARCHAR(30)) + N').';
+            THROW 70013, @Msg, 1;
+        END
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (96) a provider's invoice is entered once: the charges of this charge's own group keep it
+        IF @Reference IS NOT NULL
+        BEGIN
+            EXEC sp_getapplock @Resource = N'logistics.ContainerChargeReference', @LockMode = N'Exclusive',
+                 @LockOwner = N'Transaction', @LockTimeout = 30000;
+            DECLARE @Clash NVARCHAR(400) = (SELECT r.Message
+                                            FROM logistics.fn_ContainerCharge_ReferenceClash(
+                                                     @ProviderPartyId, @Reference,
+                                                     (SELECT GroupId FROM logistics.ContainerCharges WHERE Id = @Id), @Id) r);
+            IF @Clash IS NOT NULL THROW 70001, @Clash, 1;
+        END
+
+        UPDATE logistics.ContainerCharges
+        SET MovementId = @MovementId, ChargeTypeId = @ChargeTypeId, Description = @Description, ProviderPartyId = @ProviderPartyId,
+            Reference = @Reference, ChargeDate = @ChargeDate, CurrencyId = @CurrencyId, RateType = @RateType, ExchangeRate = @Rate,
+            Amount = @Amount, AmountBase = @AmountBase, AllocationMethod = @Method, IncludeInLandedCost = @InLanded, Notes = @Notes,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        IF @Method = N'Manual' AND @InLanded = 1
+        BEGIN
+            IF EXISTS (SELECT 1 FROM @Manual)
+            BEGIN
+                DELETE FROM logistics.ContainerChargeAllocations WHERE ChargeId = @Id;
+                INSERT INTO logistics.ContainerChargeAllocations (ChargeId, ContainerLineId, Basis, AmountBase, IsManual)
+                SELECT @Id, ContainerLineId, NULL, AmountBase, 1 FROM @Manual WHERE AmountBase > 0;
+            END
+            ELSE
+                DELETE FROM logistics.ContainerChargeAllocations WHERE ChargeId = @Id AND IsManual = 0;
+        END
+        ELSE
+            EXEC logistics.usp_ContainerCharge_Allocate @Id, 1;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT @ContainerId, N'Updated', LEFT(N'Charge changed (draft): ' + t.ChargeCode + N' ' + t.ChargeName + N' '
+                                               + CAST(@Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode, 500), @UserId
+        FROM purchase.ChargeTypes t CROSS JOIN masterdata.Currencies cur
+        WHERE t.Id = @ChargeTypeId AND cur.Id = @CurrencyId;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 8. Post */
+
+-- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge (usp_ContainerCharge_PostBivacOut). Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Post
+    @Id         INT       = NULL,
+    @Ids        logistics.tvp_IdList READONLY,
+    @RowVersion BINARY(8) = NULL,     -- checked with @Id only
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @List TABLE (Id INT PRIMARY KEY);
+    INSERT INTO @List (Id) SELECT Id FROM @Ids;
+    IF @Id IS NOT NULL AND NOT EXISTS (SELECT 1 FROM @List WHERE Id = @Id) INSERT INTO @List (Id) VALUES (@Id);
+    IF NOT EXISTS (SELECT 1 FROM @List) THROW 70000, 'Select at least one charge.', 1;
+    IF @Id IS NOT NULL AND @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = CASE WHEN ch.Id IS NULL THEN N'A selected charge no longer exists.'
+                               WHEN ch.Status <> 1 THEN N'A charge of container ' + c.ContainerRef + N' is not a draft.'
+                               ELSE N'Container ' + c.ContainerRef + N' is closed or cancelled.' END
+    FROM @List x
+    LEFT JOIN logistics.ContainerCharges ch ON ch.Id = x.Id
+    LEFT JOIN logistics.Containers c        ON c.Id = ch.ContainerId
+    WHERE ch.Id IS NULL OR ch.Status <> 1 OR c.Status IN (7, 8);
+    IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) the containers of the charges, held until the commit, before anything is written (see above)
+        DECLARE @HeldContainers INT = (SELECT COUNT(*) FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK)
+                                       WHERE c.Id IN (SELECT ch.ContainerId FROM @List x INNER JOIN logistics.ContainerCharges ch ON ch.Id = x.Id));
+
+        DECLARE @ChargeId INT, @ContainerId INT, @CtStatus TINYINT, @Method NVARCHAR(10), @InLanded BIT,
+                @AmountBase DECIMAL(18,2), @Ref NVARCHAR(30), @Label NVARCHAR(200), @After BIT;
+        DECLARE posts CURSOR LOCAL FAST_FORWARD FOR
+            SELECT ch.Id FROM @List x INNER JOIN logistics.ContainerCharges ch ON ch.Id = x.Id ORDER BY ch.ContainerId, ch.Id;
+        OPEN posts;
+        FETCH NEXT FROM posts INTO @ChargeId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            -- (65) the container's status as committed: a goods receipt of it has finished (or not begun)
+            SELECT @ContainerId = ch.ContainerId, @CtStatus = c.Status, @Method = ch.AllocationMethod, @InLanded = ch.IncludeInLandedCost,
+                   @AmountBase = ch.AmountBase, @Ref = c.ContainerRef,
+                   @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
+            FROM logistics.ContainerCharges ch
+            INNER JOIN logistics.Containers c WITH (UPDLOCK, HOLDLOCK) ON c.Id = ch.ContainerId
+            INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+            INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+            WHERE ch.Id = @ChargeId;
+
+            SET @After = CASE WHEN @CtStatus = 6 AND @InLanded = 1 THEN 1 ELSE 0 END;
+
+            IF @InLanded = 1 AND @Method <> N'Manual'
+                EXEC logistics.usp_ContainerCharge_Allocate @ChargeId, 0;
+            IF @InLanded = 1 AND @Method = N'Manual'
+               AND ABS(ISNULL((SELECT SUM(AmountBase) FROM logistics.ContainerChargeAllocations WHERE ChargeId = @ChargeId), 0) - @AmountBase) > 0.01
+            BEGIN
+                SET @Msg = N'Container ' + @Ref + N': the manual shares of ' + @Label + N' must add up to '
+                         + CAST(@AmountBase AS NVARCHAR(30)) + N' (base currency). Edit the charge first.';
+                THROW 70013, @Msg, 1;
+            END
+
+            UPDATE logistics.ContainerCharges
+            SET Status = 2, PostedAtUtc = SYSUTCDATETIME(), PostedBy = @UserId, AdjustedAfterOffload = @After,
+                UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @ChargeId;
+
+            EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+            IF @After = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @ChargeId, 1, @UserId;
+
+            -- (97) A BIVAC CHARGE TAKES ITS BIVAC OUT OF THE CONTAINER'S WAREHOUSE: 1 piece of its BIVAC item, posted with
+            -- the charge (Inventory > BIVAC Out shows it, Reference No. the container); refused with the BIVAC Out's own
+            -- words (not enough stock, a warehouse the user may not use...), and then nothing of the post is kept.
+            IF EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @ChargeId AND BivacItemId IS NOT NULL AND BivacOutDocumentId IS NULL)
+                EXEC logistics.usp_ContainerCharge_PostBivacOut @ChargeId, @UserId;
+
+            INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+            VALUES (@ContainerId, N'Updated', LEFT(N'Charge posted: ' + @Label
+                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END
+                                                   + ISNULL((SELECT N' (BIVAC Out ' + d.DocumentNumber + N')'
+                                                             FROM logistics.ContainerCharges x
+                                                             INNER JOIN inventory.StockDocuments d ON d.Id = x.BivacOutDocumentId
+                                                             WHERE x.Id = @ChargeId), N''), 500), @UserId);
+
+            FETCH NEXT FROM posts INTO @ChargeId;
+        END
+        CLOSE posts;
+        DEALLOCATE posts;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 9. Cancel */
+
+-- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge is cancelled with it. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 70000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- (65) under lock: the container first, then the charge (a charge never changes container)
+        DECLARE @ContainerId INT = (SELECT ContainerId FROM logistics.ContainerCharges WHERE Id = @Id);
+        DECLARE @Status TINYINT, @CtStatus TINYINT, @InCost BIT, @Label NVARCHAR(200);
+        SELECT @CtStatus = c.Status FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK) WHERE c.Id = @ContainerId;
+        SELECT @Status = ch.Status,
+               @InCost = CASE WHEN @CtStatus = 6 AND ch.IncludeInLandedCost = 1 AND (ch.AppliedAtOffload = 1 OR ch.AdjustedAfterOffload = 1) THEN 1 ELSE 0 END,
+               @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
+        FROM logistics.ContainerCharges ch WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+        INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+        WHERE ch.Id = @Id AND ch.ContainerId = @ContainerId;
+
+        IF @Status IS NULL THROW 70006, 'Charge not found.', 1;
+        IF @Status <> 2 THROW 70010, 'Only a posted charge can be cancelled (delete a draft instead).', 1;
+        -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
+        IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+                   WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+            THROW 70010, 'This charge cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
+        IF @CtStatus = 7 THROW 70010, 'The container is closed. Reopen it first.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
+
+        UPDATE logistics.ContainerCharges
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        EXEC logistics.usp_Container_RecalcCosts @ContainerId;
+        IF @InCost = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @Id, -1, @UserId;
+
+        -- (97) the BIVAC Out of a BIVAC charge is cancelled with it (its own rules and words: the BIVAC item comes back)
+        DECLARE @BivacOut INT = (SELECT ch.BivacOutDocumentId FROM logistics.ContainerCharges ch
+                                 INNER JOIN inventory.StockDocuments d ON d.Id = ch.BivacOutDocumentId AND d.Status = 2
+                                 WHERE ch.Id = @Id);
+        IF @BivacOut IS NOT NULL
+        BEGIN
+            DECLARE @BivacReason NVARCHAR(300) = LEFT(N'BIVAC charge cancelled: ' + @Reason, 300);
+            EXEC inventory.usp_StockDocument_Cancel @Id = @BivacOut, @Reason = @BivacReason, @UserId = @UserId;
+        END
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        VALUES (@ContainerId, N'Updated', LEFT(N'Charge cancelled: ' + @Label + N' - ' + @Reason
+                                               + CASE WHEN @InCost = 1 THEN N' (item costs adjusted back)' ELSE N'' END, 500), @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 10. Get */
+
+-- Re-created (97) from the body of script 67: + the BIVAC item and the BIVAC Out. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, c.Status AS ContainerStatus,
+           ch.MovementId, m.MovementNo, ch.GroupId,
+           ch.ChargeTypeId, t.ChargeCode, t.ChargeName, ch.Description, ch.ProviderPartyId, pp.PartyName AS ProviderName, ch.Reference,
+           ch.ChargeDate, ch.CurrencyId, cur.CurrencyCode, ch.RateType, ch.ExchangeRate, ch.Amount, ch.AmountBase,
+           ch.AllocationMethod, ch.IncludeInLandedCost, ch.Status, ch.AppliedAtOffload, ch.AdjustedAfterOffload, ch.Notes,
+           ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, xu.FullName AS CancelledByName, ch.CancelReason,
+           ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion,
+           -- (47) supplier payments: posted charges only (NULL otherwise)
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (97) a BIVAC charge: its BIVAC item, and the BIVAC Out its posting made
+           ch.BivacItemId, BivacItemCode = bi.ItemCode, BivacItemName = bi.ItemName,
+           ch.BivacOutDocumentId, BivacOutNumber = bo.DocumentNumber, BivacOutStatus = bo.Status
+    FROM logistics.ContainerCharges ch
+    LEFT  JOIN inventory.Items bi          ON bi.Id = ch.BivacItemId
+    LEFT  JOIN inventory.StockDocuments bo ON bo.Id = ch.BivacOutDocumentId
+    OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
+    INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+    INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
+    INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
+    LEFT  JOIN masterdata.Parties pp     ON pp.Id = ch.ProviderPartyId
+    LEFT  JOIN logistics.Movements m     ON m.Id = ch.MovementId
+    LEFT  JOIN security.Users pu ON pu.Id = ch.PostedBy
+    LEFT  JOIN security.Users xu ON xu.Id = ch.CancelledBy
+    LEFT  JOIN security.Users cu ON cu.Id = ch.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = ch.UpdatedBy
+    WHERE ch.Id = @Id;
+
+    SELECT cl.Id AS ContainerLineId, cl.LineNumber, cl.ItemId, i.ItemCode, i.ItemName,
+           QuantityBase = ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase),
+           a.Basis, AmountBase = ISNULL(a.AmountBase, 0), IsManual = ISNULL(a.IsManual, 0),
+           PerUnitBase = ISNULL(a.AmountBase, 0) / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0)
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.ContainerLines cl ON cl.ContainerId = ch.ContainerId
+    INNER JOIN inventory.Items i           ON i.Id = cl.ItemId
+    LEFT  JOIN logistics.ContainerChargeAllocations a ON a.ChargeId = ch.Id AND a.ContainerLineId = cl.Id
+    WHERE ch.Id = @Id
+    ORDER BY cl.LineNumber;
+
+    SELECT a.Id, a.ContainerId, a.MovementId, a.AttachmentTypeId, at.Category, at.SubType,
+           IsOther = CAST(CASE WHEN at.Id IS NULL OR (at.SubType = N'Other' AND at.Category IN (N'Other', N'General')) THEN 1 ELSE 0 END AS BIT),   -- (67)
+           a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.CreatedAtUtc, u.FullName AS CreatedByName
+    FROM logistics.ContainerAttachments a
+    INNER JOIN logistics.Files f ON f.Id = a.FileId
+    LEFT  JOIN masterdata.AttachmentTypes at ON at.Id = a.AttachmentTypeId
+    LEFT  JOIN security.Users u ON u.Id = a.CreatedBy
+    WHERE a.ChargeId = @Id
+    ORDER BY a.CreatedAtUtc DESC;
+
+    SELECT g.Id, g.ContainerId, c.ContainerRef, c.ContainerNo, g.Amount, g.AmountBase, g.Status, g.RowVersion
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.ContainerCharges g ON g.GroupId = ch.GroupId AND g.Id <> ch.Id
+    INNER JOIN logistics.Containers c       ON c.Id = g.ContainerId
+    WHERE ch.Id = @Id AND ch.GroupId IS NOT NULL
+    ORDER BY c.ContainerRef;
+END
+GO
+
+/* ================================================================== 11. Apply to other containers */
+
+-- Re-created (97) from the body of script 28: + a copy of a BIVAC charge takes its item at each container's port cost. Nothing else changes.
+CREATE OR ALTER PROCEDURE logistics.usp_ContainerCharge_CopyToContainers
+    @ChargeId         INT,
+    @ContainerIds     logistics.tvp_IdList READONLY,
+    @Amount           DECIMAL(18,2) = NULL,
+    @ChargeDate       DATE          = NULL,
+    @AllocationMethod NVARCHAR(10)  = NULL,
+    @Post             BIT           = 0,
+    @UserId           INT           = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET @AllocationMethod = NULLIF(LTRIM(RTRIM(@AllocationMethod)), N'');
+
+    DECLARE @SrcContainer INT, @SrcRef NVARCHAR(30), @SrcStatus TINYINT, @GroupId UNIQUEIDENTIFIER, @SrcMovement INT,
+            @TypeId INT, @SrcMethod NVARCHAR(10), @SrcAmount DECIMAL(18,2), @SrcDate DATE, @CurrencyId INT, @RateType TINYINT,
+            @Rate DECIMAL(18,6), @InLanded BIT, @Description NVARCHAR(200), @ProviderId INT, @Reference NVARCHAR(100),
+            @Notes NVARCHAR(300), @SrcBivac INT;
+    SELECT @SrcBivac = ch.BivacItemId,   -- (97)
+           @SrcContainer = ch.ContainerId, @SrcRef = c.ContainerRef, @SrcStatus = ch.Status, @GroupId = ch.GroupId,
+           @SrcMovement = ch.MovementId, @TypeId = ch.ChargeTypeId, @SrcMethod = ch.AllocationMethod, @SrcAmount = ch.Amount,
+           @SrcDate = ch.ChargeDate, @CurrencyId = ch.CurrencyId, @RateType = ch.RateType, @Rate = ch.ExchangeRate,
+           @InLanded = ch.IncludeInLandedCost, @Description = ch.Description, @ProviderId = ch.ProviderPartyId,
+           @Reference = ch.Reference, @Notes = ch.Notes
+    FROM logistics.ContainerCharges ch
+    INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+    WHERE ch.Id = @ChargeId;
+
+    IF @SrcContainer IS NULL THROW 70006, 'Charge not found.', 1;
+    IF @SrcStatus = 3 THROW 70010, 'A cancelled charge cannot be copied.', 1;
+    IF @Amount IS NOT NULL AND @Amount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume')
+        THROW 70000, 'Allocation method of the copies must be Value, Quantity, Weight or Volume (a manual split can be typed on each draft afterwards).', 1;
+
+    DECLARE @TypeMethod NVARCHAR(10), @TypeLabel NVARCHAR(120);
+    SELECT @TypeMethod = AllocationMethod, @TypeLabel = ChargeCode + N' ' + ChargeName
+    FROM purchase.ChargeTypes WHERE Id = @TypeId AND IsActive = 1;
+    IF @TypeLabel IS NULL THROW 70000, 'The charge type of this charge is no longer active.', 1;
+
+    DECLARE @Method NVARCHAR(10) = COALESCE(@AllocationMethod, CASE WHEN @SrcMethod = N'Manual' THEN @TypeMethod ELSE @SrcMethod END);
+    IF @Method IS NULL OR @Method NOT IN (N'Value', N'Quantity', N'Weight', N'Volume') SET @Method = N'Value';
+    SET @Amount = ISNULL(@Amount, @SrcAmount);
+    SET @ChargeDate = ISNULL(@ChargeDate, @SrcDate);
+    DECLARE @AmountBase DECIMAL(18,2) = ROUND(@Amount / @Rate, 2);
+    DECLARE @CurrencyCode NVARCHAR(10) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId);
+
+    -- the original's container is skipped (it already has the charge)
+    DECLARE @Ids TABLE (Id INT NOT NULL PRIMARY KEY);
+    INSERT INTO @Ids (Id) SELECT Id FROM @ContainerIds WHERE Id <> @SrcContainer;
+    IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one other container.', 1;
+
+    DECLARE @Msg NVARCHAR(400);
+    SELECT TOP (1) @Msg = CASE WHEN c.Id IS NULL THEN N'A selected container no longer exists.'
+                               ELSE N'Container ' + c.ContainerRef + N' is closed or cancelled.' END
+    FROM @Ids x LEFT JOIN logistics.Containers c ON c.Id = x.Id
+    WHERE c.Id IS NULL OR c.Status IN (7, 8)
+    ORDER BY c.ContainerRef;
+    IF @Msg IS NOT NULL THROW 70010, @Msg, 1;
+
+    IF @GroupId IS NOT NULL
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' already has this charge.'
+        FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id
+        WHERE EXISTS (SELECT 1 FROM logistics.ContainerCharges g WHERE g.GroupId = @GroupId AND g.ContainerId = x.Id AND g.Status <> 3)
+        ORDER BY c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70001, @Msg, 1;
+    END
+
+    -- (97) a copy of a BIVAC charge: the same BIVAC item, at the cost of each container's own port
+    IF @SrcBivac IS NOT NULL
+    BEGIN
+        DECLARE @Targets logistics.tvp_IdList;
+        INSERT INTO @Targets (Id) SELECT Id FROM @Ids;
+        SET @Msg = (SELECT b.Reason FROM logistics.fn_ContainerCharge_BivacBlock(@TypeId, @SrcBivac, @Targets) b);
+        IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+    END
+
+    DECLARE @New TABLE (Id INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
+    DECLARE @NewChargeId INT, @Ref NVARCHAR(30) = NULL;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        -- read again under lock: two users copying the same charge at the same moment
+        SELECT @GroupId = GroupId, @SrcStatus = Status
+        FROM logistics.ContainerCharges WITH (UPDLOCK, HOLDLOCK)
+        WHERE Id = @ChargeId;
+        IF @@ROWCOUNT = 0 THROW 70006, 'Charge not found.', 1;
+        IF @SrcStatus = 3 THROW 70010, 'A cancelled charge cannot be copied.', 1;
+        IF @GroupId IS NOT NULL
+        BEGIN
+            SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' already has this charge.'
+            FROM @Ids x INNER JOIN logistics.Containers c ON c.Id = x.Id
+            WHERE EXISTS (SELECT 1 FROM logistics.ContainerCharges g WHERE g.GroupId = @GroupId AND g.ContainerId = x.Id AND g.Status <> 3)
+            ORDER BY c.ContainerRef;
+            IF @Msg IS NOT NULL THROW 70001, @Msg, 1;
+        END
+        ELSE
+        BEGIN
+            SET @GroupId = NEWID();
+            UPDATE logistics.ContainerCharges SET GroupId = @GroupId WHERE Id = @ChargeId;
+        END
+
+        INSERT INTO logistics.ContainerCharges (ContainerId, MovementId, GroupId, ChargeTypeId, Description, ProviderPartyId, Reference, ChargeDate,
+                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy,
+                                                BivacItemId)
+        OUTPUT inserted.Id, inserted.ContainerId INTO @New (Id, ContainerId)
+        SELECT x.Id,
+               CASE WHEN @SrcMovement IS NOT NULL
+                         AND EXISTS (SELECT 1 FROM logistics.MovementContainers mc
+                                     INNER JOIN logistics.Movements m ON m.Id = mc.MovementId
+                                     WHERE mc.MovementId = @SrcMovement AND mc.ContainerId = x.Id AND m.Status <> 4)
+                    THEN @SrcMovement END,
+               @GroupId, @TypeId, @Description, @ProviderId, @Reference, @ChargeDate,
+               @CurrencyId, @RateType, @Rate,
+               CASE WHEN @SrcBivac IS NOT NULL THEN bc.CostBase ELSE @Amount END,
+               CASE WHEN @SrcBivac IS NOT NULL THEN ROUND(bc.CostBase / @Rate, 2) ELSE @AmountBase END,
+               @Method, @InLanded, @Notes, @UserId, @SrcBivac
+        FROM @Ids x
+        OUTER APPLY logistics.fn_Container_BivacCost(x.Id, @SrcBivac) bc;
+
+        DECLARE new_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR SELECT Id FROM @New ORDER BY Id;
+        OPEN new_cur;
+        FETCH NEXT FROM new_cur INTO @NewChargeId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC logistics.usp_ContainerCharge_Allocate @NewChargeId, 1;
+            FETCH NEXT FROM new_cur INTO @NewChargeId;
+        END
+        CLOSE new_cur;
+        DEALLOCATE new_cur;
+
+        INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
+        SELECT n.ContainerId, N'Updated',
+               LEFT(N'Charge added (draft): ' + @TypeLabel + N' ' + CAST(@Amount AS NVARCHAR(30)) + N' ' + ISNULL(@CurrencyCode, N'')
+                    + N' (copied from ' + @SrcRef + N')', 500),
+               @UserId
+        FROM @New n;
+
+        IF ISNULL(@Post, 0) = 1
+        BEGIN
+            DECLARE post_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR
+                SELECT n.Id, c.ContainerRef FROM @New n INNER JOIN logistics.Containers c ON c.Id = n.ContainerId ORDER BY c.ContainerRef;
+            OPEN post_cur;
+            FETCH NEXT FROM post_cur INTO @NewChargeId, @Ref;
+            WHILE @@FETCH_STATUS = 0
+            BEGIN
+                EXEC logistics.usp_ContainerCharge_Post @Id = @NewChargeId, @UserId = @UserId;
+                FETCH NEXT FROM post_cur INTO @NewChargeId, @Ref;
+            END
+            CLOSE post_cur;
+            DEALLOCATE post_cur;
+            SET @Ref = NULL;
+        END
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        DECLARE @ErrNo INT = ERROR_NUMBER(), @ErrMsg NVARCHAR(2048) = ERROR_MESSAGE();
+        IF @ErrNo >= 50000 AND @Ref IS NOT NULL
+        BEGIN
+            SET @ErrMsg = LEFT(@Ref + N': ' + @ErrMsg, 2048);
+            THROW @ErrNo, @ErrMsg, 1;
+        END;
+        THROW;
+    END CATCH
+
+    SELECT ch.Id, ch.ContainerId, c.ContainerRef, c.ContainerNo, ch.GroupId, ch.Amount, ch.AmountBase, ch.AllocationMethod, ch.Status, ch.RowVersion
+    FROM @New n
+    INNER JOIN logistics.ContainerCharges ch ON ch.Id = n.Id
+    INNER JOIN logistics.Containers c        ON c.Id = ch.ContainerId
+    ORDER BY c.ContainerRef;
+END
+GO
+
+/* ================================================================== 12. A BIVAC Out of a charge goes with its charge */
+
+-- Re-created (97) from the body of script 90: + a BIVAC Out made by a posted BIVAC charge is cancelled by that charge's
+-- Cancel only. Nothing else changes.
+CREATE OR ALTER PROCEDURE inventory.usp_StockDocument_Cancel
+    @Id         INT,
+    @Reason     NVARCHAR(300),
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+    SET DEADLOCK_PRIORITY LOW;                                                           -- (89) 4
+
+    SET @Reason = NULLIF(LTRIM(RTRIM(@Reason)), N'');
+    IF @Reason IS NULL THROW 62000, 'A cancellation reason is required.', 1;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        EXEC purchase.usp_GoodsReceipt_LockMatching;                                     -- (89) 1
+
+        DECLARE @Status TINYINT, @Direction SMALLINT, @Number NVARCHAR(30), @TypeCode NVARCHAR(20), @BranchId INT, @ReasonCode NVARCHAR(20);
+        SELECT @Status = d.Status, @Direction = dt.StockDirection, @Number = d.DocumentNumber, @TypeCode = dt.Code, @BranchId = d.BranchId, @ReasonCode = r.ReasonCode
+        FROM inventory.StockDocuments d WITH (UPDLOCK, HOLDLOCK)
+        INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+        LEFT  JOIN inventory.StockReasons r ON r.Id = d.ReasonId
+        WHERE d.Id = @Id;
+
+        IF @Status IS NULL THROW 62006, 'Document not found.', 1;
+        IF @Status <> 2 THROW 62010, 'Only posted documents can be cancelled (delete drafts instead).', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.StockDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 62004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+        -- (97) A BIVAC OUT MADE BY A BIVAC CHARGE goes with its charge: cancelling the charge cancels it (the charge is then
+        -- already cancelled when this runs)
+        DECLARE @ChargeOf NVARCHAR(30) = (SELECT TOP (1) c.ContainerRef FROM logistics.ContainerCharges ch
+                                          INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+                                          WHERE ch.BivacOutDocumentId = @Id AND ch.Status = 2);
+        IF @ChargeOf IS NOT NULL
+        BEGIN
+            DECLARE @ChargeMsg NVARCHAR(400) = N'This BIVAC Out was made by the BIVAC charge of container ' + @ChargeOf
+                                             + N': cancel that charge instead (its BIVAC Out is cancelled with it).';
+            THROW 62010, @ChargeMsg, 1;
+        END
+
+        -- Cancelling an incoming document removes stock again: it must still be there.
+        IF @Direction = 1
+        BEGIN
+            DECLARE @Msg NVARCHAR(400);
+            -- (90) + the dispatches that moved the goods away since this document was posted (FB rule 39)
+            DECLARE @PostedAtUtc DATETIME2(3) = (SELECT PostedAtUtc FROM inventory.StockDocuments WHERE Id = @Id);
+            SELECT TOP (1) @Msg = N'Cannot cancel: ' + i.ItemCode + N' in ' + w.WarehouseCode + N' has only '
+                                 + CAST(inventory.fn_StockOnHand(x.ItemId, x.WarehouseId) AS NVARCHAR(20)) + N' left, but this document added ' + CAST(x.Qty AS NVARCHAR(20)) + N'.'
+                                 + ISNULL(inventory.fn_Transfer_MovedOutNote(x.ItemId, x.WarehouseId, @PostedAtUtc,
+                                                                             x.Qty - inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)), N'')   -- (90)
+            FROM (SELECT ItemId, WarehouseId, SUM(QuantityBase) AS Qty FROM inventory.StockDocumentLines WHERE DocumentId = @Id GROUP BY ItemId, WarehouseId) x
+            INNER JOIN inventory.Items i ON i.Id = x.ItemId
+            INNER JOIN masterdata.Warehouses w ON w.Id = x.WarehouseId
+            WHERE x.Qty > inventory.fn_StockOnHand(x.ItemId, x.WarehouseId)
+            ORDER BY i.ItemCode;
+            IF @Msg IS NOT NULL THROW 62007, @Msg, 1;
+        END
+
+        -- (89) 2. its own rows only; none is refused (a posted document has one row per line: inventory.usp_StockDocument_Post)
+        IF NOT EXISTS (SELECT 1 FROM inventory.StockMovements m
+                       WHERE m.DocumentFamily = N'Inventory' AND m.DocumentTypeCode = @TypeCode AND m.DocumentId = @Id AND m.IsReversal = 0)
+            THROW 62010, 'This document has no stock movements of its own to reverse. Ask the administrator to check the stock ledger.', 1;
+
+        INSERT INTO inventory.StockMovements (MovementDate, ItemId, WarehouseId, BranchId, QuantityBase, UnitCostBase,
+                                              DocumentFamily, DocumentTypeCode, DocumentId, DocumentLineId, DocumentNumber, ReasonCode, ExpiryDate, IsReversal, CreatedBy)
+        SELECT SYSUTCDATETIME(), m.ItemId, m.WarehouseId, m.BranchId, -m.QuantityBase, m.UnitCostBase,
+               m.DocumentFamily, m.DocumentTypeCode, m.DocumentId, m.DocumentLineId, m.DocumentNumber, m.ReasonCode, m.ExpiryDate, 1, @UserId
+        FROM inventory.StockMovements m
+        WHERE m.DocumentFamily = N'Inventory' AND m.DocumentTypeCode = @TypeCode AND m.DocumentId = @Id AND m.IsReversal = 0;
+
+        UPDATE inventory.StockDocuments
+        SET Status = 3, CancelledAtUtc = SYSUTCDATETIME(), CancelledBy = @UserId, CancelReason = @Reason,
+            UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+        WHERE Id = @Id;
+
+        INSERT INTO inventory.StockDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Cancelled', @Reason, @UserId);
+
+        -- (89) 3. every cancelled stock document: replay the cost history of its items
+        DECLARE @ItemId INT;
+        DECLARE items CURSOR LOCAL FAST_FORWARD FOR SELECT DISTINCT ItemId FROM inventory.StockDocumentLines WHERE DocumentId = @Id;
+        OPEN items; FETCH NEXT FROM items INTO @ItemId;
+        WHILE @@FETCH_STATUS = 0
+        BEGIN
+            EXEC inventory.usp_Item_RebuildCosts @ItemId;
+            FETCH NEXT FROM items INTO @ItemId;
+        END
+        CLOSE items; DEALLOCATE items;
+
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+/* ================================================================== 13. Check */
+
+-- 97a: the BIVAC items and how many ports have a cost; 97b: the BIVAC charges and their BIVAC Out
+SELECT i.ItemCode, i.ItemName, i.IsActive, Ports = (SELECT COUNT(*) FROM inventory.ItemBivacPortCosts pc WHERE pc.ItemId = i.Id)
+FROM inventory.Items i WHERE i.IsBivac = 1 ORDER BY i.ItemCode;
+SELECT ch.Id, c.ContainerRef, ch.Status, BivacItem = i.ItemCode, BivacOut = d.DocumentNumber, BivacOutStatus = d.Status
+FROM logistics.ContainerCharges ch
+INNER JOIN logistics.Containers c ON c.Id = ch.ContainerId
+INNER JOIN inventory.Items i      ON i.Id = ch.BivacItemId
+LEFT  JOIN inventory.StockDocuments d ON d.Id = ch.BivacOutDocumentId
+ORDER BY ch.Id DESC;
+PRINT 'Script 97 applied: BIVAC cost per port on BIVAC items; a BIVAC charge names its BIVAC item and posts its BIVAC Out.';
+GO
+
+SET NOEXEC OFF;
+GO
+
+-- ===== 98: Inventory - lead time per item, in months, and from its purchase history on shortages =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 98: INVENTORY - LEAD TIME PER ITEM, IN MONTHS, AND FROM ITS PURCHASE HISTORY ON SHORTAGES
+
+     1. ITEM DEFINITION KEEPS THE LEAD TIME IN MONTHS (inventory.Items.LeadTimeMonths, one decimal, 0 to 60). The days
+        typed before are converted ONCE per database (inventory.OneTimeSteps, step 98.LeadTimeMonths): days / 30, rounded
+        to the half month (45 days -> 1.5). LeadTimeDays stays, kept equal to months x 30 for the readers that use it.
+     2. THE LEAD TIME OF AN ITEM'S HISTORY (inventory.fn_Item_LeadTimeHistory): over the goods receipts posted in the
+        last 12 months whose lines come from a purchase order, the time from the order's approval (its posting) to the
+        receipt's posting, weighted by the pieces received, in months of 30 days, one decimal (at least 0.1).
+     3. THE LEAD TIME A SHORTAGE USES, PER ITEM (inventory.fn_Item_LeadTime), the first that has one: the history (2),
+        the item's own (1), else the plan's header. Source History / Item / Plan says which; a line's lead time typed on a
+        draft plan wins (Manual) and is kept by Recalculate.
+     4. THE LIVE VIEW AND THE PLAN LINES COMPUTE EACH LINE WITH ITS OWN LEAD TIME: Expected requirement and Shortage
+        = monthly sales x the line's lead time.
+
+   New: inventory.Items.LeadTimeMonths; inventory.ShortageDocumentLines.LeadTimeManual / LeadTimeSource; type
+        inventory.tvp_ShortageLeadTime; inventory.fn_Item_LeadTimeHistory, fn_Item_LeadTime, usp_Item_SetLeadTime.
+   Re-created: inventory.usp_Item_Get (from 93), usp_Shortage_Calculate, usp_ShortageDocument_WriteLines and _Get
+        (from 90), usp_ShortageDocument_Save and _Recalculate (from 25: + the line lead times).
+   Errors: no new number (56000, 56006, 66000).
+   Requires scripts 25, 89 and 90. Idempotent, additive: re-applied at every API start-up, and builds an empty database.
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'inventory.OneTimeSteps', N'U') IS NULL OR COL_LENGTH(N'inventory.ShortageDocumentLines', N'TransfersInBase') IS NULL
+    THROW 66000, 'Script 98 requires scripts 89 and 90: apply them first.', 1;
+GO
+
+/* ================================================================== 1. Columns and type */
+
+IF COL_LENGTH(N'inventory.Items', N'LeadTimeMonths') IS NULL
+BEGIN
+    ALTER TABLE inventory.Items ADD LeadTimeMonths DECIMAL(5,1) NULL
+        CONSTRAINT CK_Items_LeadTimeMonths CHECK (LeadTimeMonths IS NULL OR (LeadTimeMonths >= 0 AND LeadTimeMonths <= 60));
+    PRINT 'Items: added LeadTimeMonths';
+END
+GO
+
+IF COL_LENGTH(N'inventory.ShortageDocumentLines', N'LeadTimeManual') IS NULL
+BEGIN
+    ALTER TABLE inventory.ShortageDocumentLines ADD
+        LeadTimeManual DECIMAL(6,2) NULL,      -- (98) typed on the line; NULL = worked out
+        LeadTimeSource NVARCHAR(10) NULL;      -- (98) Manual | History | Item | Plan (NULL: a line saved before script 98)
+    PRINT 'ShortageDocumentLines: added LeadTimeManual, LeadTimeSource';
+END
+GO
+
+IF TYPE_ID(N'inventory.tvp_ShortageLeadTime') IS NULL
+BEGIN
+    CREATE TYPE inventory.tvp_ShortageLeadTime AS TABLE
+    (
+        ItemId         INT          NOT NULL PRIMARY KEY,
+        LeadTimeMonths DECIMAL(6,2) NOT NULL
+    );
+    PRINT 'Created type inventory.tvp_ShortageLeadTime';
+END
+GO
+
+/* ================================================================== 2. The days typed before, converted once */
+
+IF NOT EXISTS (SELECT 1 FROM inventory.OneTimeSteps WHERE StepCode = N'98.LeadTimeMonths')
+BEGIN
+    BEGIN TRANSACTION;
+    UPDATE inventory.Items
+    SET LeadTimeMonths = CASE WHEN LeadTimeDays / 30.0 > 60 THEN 60
+                              ELSE CAST(ROUND(LeadTimeDays / 30.0 * 2, 0) / 2 AS DECIMAL(5,1)) END
+    WHERE LeadTimeDays IS NOT NULL AND LeadTimeMonths IS NULL;
+    DECLARE @Converted INT = @@ROWCOUNT;
+    INSERT INTO inventory.OneTimeSteps (StepCode, DoneAtUtc, Progress, Details)
+    VALUES (N'98.LeadTimeMonths', SYSUTCDATETIME(), @Converted, N'Item lead times converted once from days to months (/ 30, to the half month).');
+    COMMIT TRANSACTION;
+    PRINT 'Lead times converted once to months: ' + CAST(@Converted AS NVARCHAR(10)) + ' item(s).';
+END
+GO
+
+/* ================================================================== 3. The lead time of the history, and the one a shortage uses */
+
+-- (98) One row per item (all items when @ItemId is NULL) that had goods received from a purchase order in the last 12
+-- months: the time from the order's approval (PostedAtUtc) to the receipt's posting, weighted by the pieces received.
+CREATE OR ALTER FUNCTION inventory.fn_Item_LeadTimeHistory (@ItemId INT)
+RETURNS TABLE
+AS
+RETURN
+SELECT l.ItemId,
+       Months = CAST(CASE WHEN SUM(CAST(DATEDIFF(DAY, po.PostedAtUtc, g.PostedAtUtc) AS DECIMAL(18,2)) * l.QuantityBase) / SUM(l.QuantityBase) / 30.0 < 0.1 THEN 0.1
+                          ELSE ROUND(SUM(CAST(DATEDIFF(DAY, po.PostedAtUtc, g.PostedAtUtc) AS DECIMAL(18,2)) * l.QuantityBase) / SUM(l.QuantityBase) / 30.0, 1) END
+                     AS DECIMAL(5,1)),
+       Receipts = COUNT(DISTINCT g.Id)
+FROM purchase.GoodsReceiptLines l
+INNER JOIN purchase.GoodsReceipts g          ON g.Id = l.GoodsReceiptId AND g.Status = 2
+                                            AND g.PostedAtUtc >= DATEADD(MONTH, -12, SYSUTCDATETIME())
+INNER JOIN purchase.PurchaseDocumentLines pl ON pl.Id = l.PoLineId
+INNER JOIN purchase.PurchaseDocuments po     ON po.Id = pl.DocumentId AND po.PostedAtUtc IS NOT NULL AND po.PostedAtUtc <= g.PostedAtUtc
+WHERE l.QuantityBase > 0
+  AND (@ItemId IS NULL OR l.ItemId = @ItemId)
+GROUP BY l.ItemId;
+GO
+
+-- (98) The lead time a shortage uses for an item, the first that has one: its history, its own, else @PlanMonths.
+CREATE OR ALTER FUNCTION inventory.fn_Item_LeadTime (@ItemId INT, @PlanMonths DECIMAL(6,2))
+RETURNS TABLE
+AS
+RETURN
+SELECT LeadTimeMonths = CAST(COALESCE(h.Months, NULLIF(i.LeadTimeMonths, 0), @PlanMonths) AS DECIMAL(6,2)),
+       Source = CAST(CASE WHEN h.Months IS NOT NULL THEN N'History' WHEN NULLIF(i.LeadTimeMonths, 0) IS NOT NULL THEN N'Item' ELSE N'Plan' END AS NVARCHAR(10)),
+       HistoryMonths = h.Months, Receipts = h.Receipts
+FROM inventory.Items i
+OUTER APPLY inventory.fn_Item_LeadTimeHistory(i.Id) h
+WHERE i.Id = @ItemId;
+GO
+
+/* ================================================================== 4. The item's lead time in months */
+
+-- (98) Written the way usp_Item_SetTracking writes its fields: the API calls it after the item is created or updated.
+-- LeadTimeDays follows (months x 30) for the readers of the days. Nothing written when nothing differs.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_SetLeadTime
+    @Id             INT,
+    @LeadTimeMonths DECIMAL(5,1) = NULL,
+    @UserId         INT          = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    IF NOT EXISTS (SELECT 1 FROM inventory.Items WHERE Id = @Id) THROW 56006, 'Item not found.', 1;
+    IF @LeadTimeMonths IS NOT NULL AND (@LeadTimeMonths < 0 OR @LeadTimeMonths > 60)
+        THROW 56000, 'Lead time must be between 0 and 60 months.', 1;
+    UPDATE inventory.Items
+    SET LeadTimeMonths = @LeadTimeMonths,
+        LeadTimeDays = CASE WHEN @LeadTimeMonths IS NULL THEN NULL ELSE CAST(ROUND(@LeadTimeMonths * 30, 0) AS INT) END,
+        UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+    WHERE Id = @Id
+      AND (ISNULL(LeadTimeMonths, -1) <> ISNULL(@LeadTimeMonths, -1)
+           OR ISNULL(LeadTimeDays, -1) <> ISNULL(CAST(ROUND(@LeadTimeMonths * 30, 0) AS INT), -1));
+END
+GO
+
+-- Re-created (98) from the body of script 93: + LeadTimeMonths and the lead time of its history. Nothing else.
+CREATE OR ALTER PROCEDURE inventory.usp_Item_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT i.Id, i.ItemCode, i.ItemName, i.BrandId, b.BrandName, i.Model,
+           i.ItemFamilyId, f.FamilyCode, f.FamilyName, i.CountryOfOrigin,
+           i.DefaultWarehouseId, w.WarehouseCode, w.WarehouseName, i.Description,
+           i.WarrantyMonths, i.MinQuantity, i.MaxQuantity, i.IsBivac, i.IsActive,
+           OnHand = inventory.fn_StockOnHand(i.Id, NULL),
+           FobCost = CAST(i.FobCost AS DECIMAL(18,2)),
+           LastCost = CAST(i.LastCost AS DECIMAL(18,2)),
+           AverageCost = CAST(i.AverageCost AS DECIMAL(18,2)),
+           InventoryValue = CAST(inventory.fn_StockOnHand(i.Id, NULL) * i.AverageCost AS DECIMAL(18,2)),
+           LastPurchaseCost = CAST(i.FobCost AS DECIMAL(18,2)),      -- kept for the current API mapping (= FOB)
+           i.DefaultSupplierId, ds.PartyCode AS DefaultSupplierCode, ds.PartyName AS DefaultSupplierName, i.LeadTimeDays,
+           PcPerContainer = cnt.PackingFormula,      -- from the item's Container unit
+           PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           i.WeightKg, i.VolumeCbm, i.OilQtyPerUnit,
+           i.LastSupplierId, ls.PartyName AS LastSupplierName, i.LastPurchaseAtUtc,
+           i.Note, i.Link,                           -- (87)
+           i.TrackingMode, i.RequiresExpiry, i.SerialLength,   -- (93)
+           i.LeadTimeMonths, LeadTimeHistoryMonths = lh.Months, LeadTimeHistoryReceipts = lh.Receipts,   -- (98)
+           i.CreatedAtUtc, i.CreatedBy, cu.FullName AS CreatedByName,
+           i.UpdatedAtUtc, i.UpdatedBy, uu.FullName AS UpdatedByName, i.RowVersion
+    FROM inventory.Items i
+    INNER JOIN masterdata.Brands b       ON b.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f ON f.Id = i.ItemFamilyId
+    INNER JOIN masterdata.Warehouses w   ON w.Id = i.DefaultWarehouseId
+    LEFT  JOIN masterdata.Parties ds     ON ds.Id = i.DefaultSupplierId
+    LEFT  JOIN masterdata.Parties ls     ON ls.Id = i.LastSupplierId
+    LEFT  JOIN security.Users cu ON cu.Id = i.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = i.UpdatedBy
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.PackingFormula
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id AND t.IsContainer = 1
+    ) cnt
+    OUTER APPLY inventory.fn_Item_LeadTimeHistory(i.Id) lh   -- (98)
+    WHERE i.Id = @Id;
+
+    SELECT u.Id, u.ItemId, u.UnitTypeId, ut.UnitTypeName, u.PackingFormula, u.SkuCode, u.Barcode,
+           u.IsSalesUnit, u.IsPurchaseUnit, u.IsBaseUnit, IsContainerUnit = ut.IsContainer,
+           u.LengthCm, u.WidthCm, u.HeightCm, u.WeightKg, u.RowVersion
+    FROM inventory.ItemUnits u
+    INNER JOIN masterdata.UnitTypes ut ON ut.Id = u.UnitTypeId
+    WHERE u.ItemId = @Id
+    ORDER BY u.IsBaseUnit DESC, u.PackingFormula, ut.UnitTypeName;
+
+    SELECT fl.Id, fl.ItemId, fl.FileName, fl.ContentType, fl.SizeBytes, fl.IsItemImage, fl.CreatedAtUtc
+    FROM inventory.ItemFiles fl
+    WHERE fl.ItemId = @Id
+    ORDER BY fl.IsItemImage DESC, fl.CreatedAtUtc DESC;
+END
+GO
+
+/* ================================================================== 5. Shortages: each line with its own lead time */
+
+-- Re-created (98) from the body of script 90: each row with its item's lead time (fn_Item_LeadTime, the request's
+-- @LeadTimeMonths the fallback), + LeadTimeSource, LeadTimeHistoryMonths, LeadTimeReceipts. Nothing else.
+CREATE OR ALTER PROCEDURE inventory.usp_Shortage_Calculate
+    @WarehouseId     INT,
+    @SupplierId      INT           = NULL,
+    @LeadTimeMonths  DECIMAL(6,2)  = 6,
+    @MonthsOfHistory INT           = 3,
+    @ItemFamilyId    INT           = NULL,
+    @BrandId         INT           = NULL,
+    @Search          NVARCHAR(200) = NULL,
+    @OnlyShortages   BIT           = 1
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
+    IF @LeadTimeMonths IS NULL OR @LeadTimeMonths <= 0 SET @LeadTimeMonths = 6;
+    IF @MonthsOfHistory IS NULL OR @MonthsOfHistory < 1 SET @MonthsOfHistory = 3;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1) THROW 66000, 'Warehouse not found or inactive.', 1;
+
+    SELECT x.ItemId, x.ItemCode, x.ItemName, b.BrandName, f.FamilyName, x.IsBivac,
+           x.CurrentInventoryBase, x.TransitBase, x.TransfersInBase, x.OutstandingOrderBase,      -- (90) + TransfersInBase
+           StockPlusTransitBase   = x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase,
+           TotalExpectedStockBase = x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase,
+           x.ExpectedMonthlySalesBase, x.SoldInPeriodBase, MonthsOfHistory = @MonthsOfHistory, LeadTimeMonths = lt.LeadTimeMonths,   -- (98) the item's
+           LeadTimeSource = lt.Source, LeadTimeHistoryMonths = lt.HistoryMonths, LeadTimeReceipts = lt.Receipts,                     -- (98)
+           ExpectedRequirementBase = CONVERT(DECIMAL(18,2), x.ExpectedMonthlySalesBase * lt.LeadTimeMonths),
+           ShortageBase = c.ShortageBase,
+           CoverageMonths = CASE WHEN x.ExpectedMonthlySalesBase > 0
+                                 THEN CONVERT(DECIMAL(9,2), (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) / x.ExpectedMonthlySalesBase) END,
+           x.PurchaseItemUnitId, x.PurchaseUnitName, x.PurchasePackingFormula,
+           SuggestedRequiredQty = CASE WHEN c.ShortageBase > 0 THEN CEILING(CAST(c.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) ELSE 0 END,
+           PcPerContainer = x.ItemPcPerContainer, PcPerContainerFromUnit = x.PcPerContainerFromUnit,
+           ContainerRequirement = CASE WHEN x.ItemPcPerContainer > 0 AND c.ShortageBase > 0
+                                       THEN CONVERT(DECIMAL(9,2), CEILING(CAST(c.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) * x.PurchasePackingFormula * 1.0 / x.ItemPcPerContainer) END,
+           x.MinQuantity, x.MaxQuantity, x.LastCost, x.AverageCost, x.LeadTimeDays,
+           SupplierId = COALESCE(x.DefaultSupplierId, x.LastSupplierId), SupplierName = COALESCE(ds.PartyName, ls.PartyName),
+           SupplierIsDefault = CASE WHEN x.DefaultSupplierId IS NOT NULL THEN 1 ELSE 0 END
+    FROM inventory.fn_Shortage_Live(@WarehouseId, @MonthsOfHistory) x
+    CROSS APPLY inventory.fn_Item_LeadTime(x.ItemId, @LeadTimeMonths) lt                                                          -- (98)
+    CROSS APPLY (SELECT ShortageBase = CASE WHEN x.ExpectedMonthlySalesBase * lt.LeadTimeMonths - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) > 0
+                                            THEN CONVERT(INT, CEILING(x.ExpectedMonthlySalesBase * lt.LeadTimeMonths - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase))) ELSE 0 END) c
+    INNER JOIN masterdata.Brands b ON b.Id = x.BrandId
+    INNER JOIN masterdata.ItemFamilies f ON f.Id = x.ItemFamilyId
+    LEFT  JOIN masterdata.Parties ds ON ds.Id = x.DefaultSupplierId
+    LEFT  JOIN masterdata.Parties ls ON ls.Id = x.LastSupplierId
+    WHERE x.PurchaseItemUnitId IS NOT NULL
+      AND (@SupplierId IS NULL OR COALESCE(x.DefaultSupplierId, x.LastSupplierId) = @SupplierId)
+      AND (@ItemFamilyId IS NULL OR x.ItemFamilyId IN (SELECT Id FROM masterdata.fn_ItemFamily_Subtree(@ItemFamilyId)))
+      AND (@BrandId IS NULL OR x.BrandId = @BrandId)
+      AND (@Search IS NULL OR x.ItemCode LIKE N'%' + @Search + N'%' OR x.ItemName LIKE N'%' + @Search + N'%')
+      AND (@OnlyShortages = 0 OR c.ShortageBase > 0)
+    ORDER BY CASE WHEN c.ShortageBase > 0 THEN 0 ELSE 1 END, c.ShortageBase DESC, x.ItemCode;
+END
+GO
+
+-- Re-created (98) from the body of script 90: + @LeadTimes (optional), each line's lead time typed, else its item's
+-- (history, own, the header's); stored with LeadTimeManual and LeadTimeSource. Nothing else.
+CREATE OR ALTER PROCEDURE inventory.usp_ShortageDocument_WriteLines
+    @Id        INT,
+    @Lines     inventory.tvp_ShortageLine READONLY,
+    @LeadTimes inventory.tvp_ShortageLeadTime READONLY   -- (98) the lead times typed on lines; an item left out takes its own
+AS
+BEGIN
+    SET NOCOUNT ON;
+    DECLARE @WarehouseId INT, @Months INT, @LeadTime DECIMAL(6,2);
+    SELECT @WarehouseId = WarehouseId, @Months = MonthsOfHistory, @LeadTime = LeadTimeMonths FROM inventory.ShortageDocuments WHERE Id = @Id;
+
+    DECLARE @Msg NVARCHAR(300);
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+                          CASE WHEN i.Id IS NULL THEN N'item not found.' WHEN i.IsActive = 0 THEN N'item ' + i.ItemCode + N' is inactive.'
+                               WHEN l.RequiredQty < 0 THEN N'required quantity cannot be negative.'
+                               WHEN l.ExpectedMonthlySalesManual < 0 THEN N'expected monthly sales cannot be negative.'
+                               WHEN l.PcPerContainer <= 0 THEN N'PC per container must be greater than zero.' END
+    FROM @Lines l LEFT JOIN inventory.Items i ON i.Id = l.ItemId
+    WHERE i.Id IS NULL OR i.IsActive = 0 OR l.RequiredQty < 0 OR l.ExpectedMonthlySalesManual < 0 OR l.PcPerContainer <= 0
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 66000, @Msg, 1;
+    IF EXISTS (SELECT ItemId FROM @Lines GROUP BY ItemId HAVING COUNT(*) > 1) THROW 66000, 'An item appears more than once.', 1;
+    -- (98) A lead time typed on a line: above 0, at most 60 months.
+    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': the lead time must be above 0 and at most 60 months.'
+    FROM @LeadTimes t INNER JOIN @Lines l ON l.ItemId = t.ItemId
+    WHERE t.LeadTimeMonths <= 0 OR t.LeadTimeMonths > 60
+    ORDER BY l.LineNumber;
+    IF @Msg IS NOT NULL THROW 66000, @Msg, 1;
+
+    DELETE FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id;
+
+    INSERT INTO inventory.ShortageDocumentLines (DocumentId, LineNumber, ItemId, CurrentInventoryBase, TransitBase, TransfersInBase, OutstandingOrderBase,
+                                                 ExpectedMonthlySalesBase, ExpectedMonthlySalesManual, LeadTimeMonths, LeadTimeManual, LeadTimeSource,   -- (98)
+                                                 PurchaseItemUnitId, PurchasePackingFormula, RequiredQty, PcPerContainer, PcPerContainerFromUnit,
+                                                 MinQuantity, MaxQuantity, LastCost, Notes)
+    SELECT @Id, l.LineNumber, l.ItemId, x.CurrentInventoryBase, x.TransitBase, x.TransfersInBase, x.OutstandingOrderBase,   -- (90)
+           x.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, ISNULL(t.LeadTimeMonths, lt.LeadTimeMonths), t.LeadTimeMonths,   -- (98)
+           CASE WHEN t.LeadTimeMonths IS NOT NULL THEN N'Manual' ELSE lt.Source END,
+           x.PurchaseItemUnitId, x.PurchasePackingFormula,
+           RequiredQty = ISNULL(l.RequiredQty,
+                                CASE WHEN s.ShortageBase > 0 THEN CEILING(CAST(s.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) ELSE 0 END),
+           COALESCE(x.ItemPcPerContainer, l.PcPerContainer),            -- the Container unit always wins; else what the user typed
+           CAST(CASE WHEN x.ItemPcPerContainer IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           x.MinQuantity, x.MaxQuantity, x.LastCost, NULLIF(LTRIM(RTRIM(l.Notes)), N'')
+    FROM @Lines l
+    INNER JOIN inventory.fn_Shortage_Live(@WarehouseId, @Months) x ON x.ItemId = l.ItemId
+    LEFT  JOIN @LeadTimes t ON t.ItemId = l.ItemId                                                                 -- (98)
+    CROSS APPLY inventory.fn_Item_LeadTime(l.ItemId, @LeadTime) lt                                                -- (98)
+    CROSS APPLY (SELECT LT = ISNULL(t.LeadTimeMonths, lt.LeadTimeMonths)) e                                        -- (98)
+    CROSS APPLY (SELECT ShortageBase = CASE WHEN ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * e.LT - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) > 0
+                                            THEN CONVERT(INT, CEILING(ISNULL(l.ExpectedMonthlySalesManual, x.ExpectedMonthlySalesBase) * e.LT - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase)))
+                                            ELSE 0 END) s
+    WHERE x.PurchaseItemUnitId IS NOT NULL;
+
+    IF EXISTS (SELECT 1 FROM @Lines l WHERE NOT EXISTS (SELECT 1 FROM inventory.ShortageDocumentLines s WHERE s.DocumentId = @Id AND s.ItemId = l.ItemId))
+        THROW 66000, 'An item has no units configured and cannot be planned.', 1;
+
+    UPDATE d
+    SET TotalLines = x.Lines, TotalShortageBase = x.Shortage, TotalRequiredBase = x.Required,
+        TotalContainers = x.Containers, ContainersRounded = CEILING(x.Containers),
+        ContainerUtilizationPct = CASE WHEN x.Containers > 0 THEN CONVERT(DECIMAL(5,2), 100.0 * x.Containers / CEILING(x.Containers)) END,
+        CalculatedAtUtc = SYSUTCDATETIME()
+    FROM inventory.ShortageDocuments d
+    CROSS APPLY (SELECT COUNT(*) AS Lines, ISNULL(SUM(ShortageBase), 0) AS Shortage, ISNULL(SUM(RequiredBase), 0) AS Required,
+                        ISNULL(SUM(ContainerRequirement), 0) AS Containers
+                 FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id) x
+    WHERE d.Id = @Id;
+END
+GO
+
+-- Re-created (98) from the body of script 25: + @LeadTimes, passed to WriteLines. Nothing else.
+CREATE OR ALTER PROCEDURE inventory.usp_ShortageDocument_Save
+    @Id              INT            = NULL,   -- NULL = create (number assigned now)
+    @Description     NVARCHAR(200),
+    @DocumentDate    DATE,
+    @BranchId        INT,
+    @WarehouseId     INT,
+    @SupplierId      INT,
+    @LeadTimeMonths  DECIMAL(6,2),
+    @MonthsOfHistory INT            = 3,
+    @Notes           NVARCHAR(1000) = NULL,
+    @Lines           inventory.tvp_ShortageLine READONLY,
+    @LeadTimes       inventory.tvp_ShortageLeadTime READONLY,   -- (98) the lead times typed on lines
+    @RowVersion      BINARY(8)      = NULL,
+    @UserId          INT            = NULL,
+    @NewId           INT OUTPUT
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    SET @Description = NULLIF(LTRIM(RTRIM(@Description)), N'');
+    SET @Notes = NULLIF(LTRIM(RTRIM(@Notes)), N'');
+    IF @Description IS NULL THROW 66000, 'Description is required.', 1;
+    IF @DocumentDate IS NULL THROW 66000, 'Date is required.', 1;
+    IF @LeadTimeMonths IS NULL OR @LeadTimeMonths <= 0 THROW 66000, 'Lead Time (Month) must be greater than zero.', 1;
+    IF @MonthsOfHistory IS NULL OR @MonthsOfHistory NOT BETWEEN 1 AND 36 THROW 66000, 'Months of history must be between 1 and 36.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Branches WHERE Id = @BranchId AND IsActive = 1) THROW 66000, 'Branch not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1) THROW 66000, 'Warehouse not found or inactive.', 1;
+    IF NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @SupplierId AND IsSupplier = 1 AND IsActive = 1) THROW 66000, 'Supplier not found, inactive, or not flagged as a supplier.', 1;
+
+    IF @Id IS NOT NULL
+    BEGIN
+        DECLARE @Status TINYINT = (SELECT Status FROM inventory.ShortageDocuments WHERE Id = @Id);
+        IF @Status IS NULL THROW 66006, 'Shortage document not found.', 1;
+        IF @Status <> 1 THROW 66005, 'Only draft shortage documents can be edited.', 1;
+        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.ShortageDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+            THROW 66004, 'This document was modified by another user. Reload the page and try again.', 1;
+    END
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+
+        IF @Id IS NULL
+        BEGIN
+            DECLARE @Number NVARCHAR(30), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'SHR');
+            EXEC inventory.usp_DocumentType_NextNumber N'SHR', @Number OUTPUT, @BranchId;
+
+            INSERT INTO inventory.ShortageDocuments (DocumentTypeId, DocumentNumber, Description, DocumentDate, BranchId, WarehouseId, SupplierId,
+                                                     LeadTimeMonths, MonthsOfHistory, Notes, Status, CreatedBy)
+            VALUES (@TypeId, @Number, @Description, @DocumentDate, @BranchId, @WarehouseId, @SupplierId, @LeadTimeMonths, @MonthsOfHistory, @Notes, 1, @UserId);
+            SET @Id = SCOPE_IDENTITY();
+            INSERT INTO inventory.ShortageDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Created', N'Draft ' + @Number, @UserId);
+        END
+        ELSE
+        BEGIN
+            UPDATE inventory.ShortageDocuments
+            SET Description = @Description, DocumentDate = @DocumentDate, BranchId = @BranchId, WarehouseId = @WarehouseId, SupplierId = @SupplierId,
+                LeadTimeMonths = @LeadTimeMonths, MonthsOfHistory = @MonthsOfHistory, Notes = @Notes, UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
+            WHERE Id = @Id;
+            INSERT INTO inventory.ShortageDocumentAudit (DocumentId, Action, Details, UserId)
+            VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
+        END
+
+        EXEC inventory.usp_ShortageDocument_WriteLines @Id, @Lines, @LeadTimes;   -- (98)
+
+        SET @NewId = @Id;
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (98) from the body of script 25: a lead time typed on a line is kept. Nothing else.
+CREATE OR ALTER PROCEDURE inventory.usp_ShortageDocument_Recalculate
+    @Id         INT,
+    @RowVersion BINARY(8) = NULL,
+    @UserId     INT       = NULL
+AS
+BEGIN
+    SET NOCOUNT ON;
+    SET XACT_ABORT ON;
+
+    DECLARE @Status TINYINT = (SELECT Status FROM inventory.ShortageDocuments WHERE Id = @Id);
+    IF @Status IS NULL THROW 66006, 'Shortage document not found.', 1;
+    IF @Status <> 1 THROW 66005, 'Only draft shortage documents can be recalculated.', 1;
+    IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM inventory.ShortageDocuments WHERE Id = @Id AND RowVersion = @RowVersion)
+        THROW 66004, 'This document was modified by another user. Reload the page and try again.', 1;
+
+    DECLARE @Lines inventory.tvp_ShortageLine;
+    INSERT INTO @Lines (LineNumber, ItemId, RequiredQty, ExpectedMonthlySalesManual, PcPerContainer, Notes)
+    SELECT LineNumber, ItemId, RequiredQty, ExpectedMonthlySalesManual, PcPerContainer, Notes
+    FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id;
+    -- (98) A lead time typed on a line is kept; the others are worked out again.
+    DECLARE @LeadTimes inventory.tvp_ShortageLeadTime;
+    INSERT INTO @LeadTimes (ItemId, LeadTimeMonths)
+    SELECT ItemId, LeadTimeManual FROM inventory.ShortageDocumentLines WHERE DocumentId = @Id AND LeadTimeManual IS NOT NULL;
+
+    BEGIN TRY
+        BEGIN TRANSACTION;
+        EXEC inventory.usp_ShortageDocument_WriteLines @Id, @Lines, @LeadTimes;   -- (98)
+        UPDATE inventory.ShortageDocuments SET UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId WHERE Id = @Id;
+        INSERT INTO inventory.ShortageDocumentAudit (DocumentId, Action, Details, UserId) VALUES (@Id, N'Recalculated', N'Live figures refreshed', @UserId);
+        COMMIT TRANSACTION;
+    END TRY
+    BEGIN CATCH
+        IF @@TRANCOUNT > 0 ROLLBACK TRANSACTION;
+        THROW;
+    END CATCH
+END
+GO
+
+-- Re-created (98) from the body of script 90: the lines + LeadTimeManual, LeadTimeSource. Nothing else.
+CREATE OR ALTER PROCEDURE inventory.usp_ShortageDocument_Get
+    @Id INT
+AS
+BEGIN
+    SET NOCOUNT ON;
+
+    SELECT d.Id, d.DocumentNumber, d.Description, d.DocumentDate,
+           d.BranchId, b.BranchCode, b.BranchName, d.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           d.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
+           d.LeadTimeMonths, d.MonthsOfHistory, d.Notes, d.Status,
+           d.TotalLines, d.TotalShortageBase, d.TotalRequiredBase, d.TotalContainers, d.ContainersRounded, d.ContainerUtilizationPct,
+           d.CalculatedAtUtc, d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
+           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName, d.RowVersion
+    FROM inventory.ShortageDocuments d
+    INNER JOIN masterdata.Branches b ON b.Id = d.BranchId
+    INNER JOIN masterdata.Warehouses w ON w.Id = d.WarehouseId
+    INNER JOIN masterdata.Parties sp ON sp.Id = d.SupplierId
+    LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
+    LEFT  JOIN security.Users uu ON uu.Id = d.UpdatedBy
+    LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
+    WHERE d.Id = @Id;
+
+    SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName, br.BrandName, f.FamilyName, i.IsBivac,
+           l.CurrentInventoryBase, l.TransitBase, l.TransfersInBase, l.OutstandingOrderBase, l.StockPlusTransitBase, l.TotalExpectedStockBase,   -- (90)
+           l.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, l.EffectiveMonthlySales, l.LeadTimeMonths,
+           l.LeadTimeManual, l.LeadTimeSource,                                                                 -- (98)
+           l.ExpectedRequirementBase, l.ShortageBase, l.CoverageMonths,
+           l.PurchaseItemUnitId, ut.UnitTypeName AS PurchaseUnitName, l.PurchasePackingFormula,
+           l.RequiredQty, l.RequiredBase, l.PcPerContainer, l.PcPerContainerFromUnit, l.ContainerRequirement,
+           l.MinQuantity, l.MaxQuantity, l.LastCost, l.Notes
+    FROM inventory.ShortageDocumentLines l
+    INNER JOIN inventory.Items i ON i.Id = l.ItemId
+    INNER JOIN masterdata.Brands br ON br.Id = i.BrandId
+    INNER JOIN masterdata.ItemFamilies f ON f.Id = i.ItemFamilyId
+    INNER JOIN inventory.ItemUnits iu ON iu.Id = l.PurchaseItemUnitId
+    INNER JOIN masterdata.UnitTypes ut ON ut.Id = iu.UnitTypeId
+    WHERE l.DocumentId = @Id
+    ORDER BY l.LineNumber;
+
+    -- (77) + InvoicingStatus (0 / 1 / 2: Saved, Partially posted, Posted on an approved order)
+    SELECT p.Id, p.DocumentNumber, p.DocumentDate, p.Status, p.TotalAmount, c.CurrencyCode, p.CreatedAtUtc,
+           inv.InvoicingStatus
+    FROM purchase.PurchaseDocuments p
+    INNER JOIN masterdata.Currencies c ON c.Id = p.CurrencyId
+    OUTER APPLY purchase.fn_PurchaseOrder_Invoicing(p.Id) inv
+    WHERE p.SourceShortageId = @Id
+    ORDER BY p.CreatedAtUtc;
+
+    SELECT a.Id, a.Action, a.Details, a.UserId, u.FullName AS UserName, a.AtUtc
+    FROM inventory.ShortageDocumentAudit a
+    LEFT JOIN security.Users u ON u.Id = a.UserId
+    WHERE a.DocumentId = @Id
+    ORDER BY a.AtUtc DESC, a.Id DESC;
+END
+GO
+
+/* ================================================================== 6. Check */
+
+-- 98a: items with a lead time, their months and what their history says
+SELECT TOP (50) i.ItemCode, i.LeadTimeDays, i.LeadTimeMonths, HistoryMonths = h.Months, h.Receipts
+FROM inventory.Items i
+LEFT JOIN inventory.fn_Item_LeadTimeHistory(NULL) h ON h.ItemId = i.Id
+WHERE i.LeadTimeDays IS NOT NULL OR h.ItemId IS NOT NULL
+ORDER BY i.ItemCode;
+PRINT 'Script 98 applied: item lead times in months; shortages take each item''s lead time from its purchase history.';
+GO
+
+SET NOEXEC OFF;
+GO

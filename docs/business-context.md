@@ -122,6 +122,16 @@ saved without a cost takes the item's last cost, else its average (it took 0, al
 and for an import row without one), and a goods receipt line without an order the same; a line's cost follows a change of
 its unit (glossary, 1.6, 3.3, 3.8, 4.9, 4.11, 4.12, 4.13, 4.17, 5.2, 5.4, 6.1, 8.5; `docs/notes/costing-rules.md`).*
 
+*Updated on 30 October 2026 for **the container's journey, BIVAC charges and lead times** (scripts 95-98, prompt 52):
+the Containers list shows each container's leg (From → To, from its movements) and a Journey status (Not dispatched,
+On the way, Arrived, Received) with its filter; Receive goods… on a container that has movements waits until its
+Delivery is completed, and an order's or an invoice's Receive goods… is hidden when everything still to receive
+travels in containers; a provider's invoice reference is entered once per provider on container charges (one group may
+share it); a BIVAC item keeps a cost per port, and a BIVAC / Inspection charge names its BIVAC item, takes that cost at
+each container's port and posts a BIVAC Out of 1 pc (cancelled with the charge); Item Definition's lead time is in
+months, and Shortages give each line its own lead time - its purchase history (order approval to goods receipt, last
+12 months), else the item's, else the plan's, or typed on the line (glossary, 4.18, 5.2, 5.4, 6.1).*
+
 *Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
 `bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
 
@@ -2706,6 +2716,63 @@ line; every other permission and grant. No table, column, type, view or error nu
 
 **Errors:** none new. HTTP 403 "Forbidden" is never answered for want of this permission.
 
+### 4.18 The container's journey, BIVAC charges and lead times **[Implemented – scripts 95-98, prompt 52]**
+
+**Where a container is (script 95)**
+1. **The Containers list shows the leg** a container is on, from its movements (`logistics.fn_Container_Journey`): the
+   From → To of its latest movement started or completed, else its port of loading → port of destination ("Not
+   dispatched"). **Journey status**: **Not dispatched** (no leg started), **On the way** (a leg in progress), **Arrived**
+   (its last leg completed, goods not received), **Received** (Offloaded or Closed); a container followed by typed dates
+   takes the status its dates give. Columns "From → To" and "Journey" (with "since {date}"), a Journey filter, and both in
+   the CSV.
+2. **Receive goods… on a container waits for its Delivery** (`logistics.fn_Container_ReceiveBlock`): a container with
+   movements is received only once a movement of the Delivery stage is completed - "{ref} has not been delivered yet:
+   complete its Delivery movement first, then receive its goods." (63010), on the disabled button (page and row menu) and
+   from the server. A container without movements keeps the old rule (Confirmed to Cleared, typed dates). The other
+   reasons are unchanged (draft: "Confirm the container first: …", received, a draft goods receipt waits).
+3. **Receive goods… on an order or an invoice is hidden** when everything still to receive travels in containers (it was
+   disabled with "Everything still to receive travels in containers: …"): those goods come with their containers.
+
+**A provider's invoice once (script 96)**
+4. **A charge reference is unique per provider** (`logistics.fn_ContainerCharge_ReferenceClash`): a charge that is not
+   cancelled may not carry a reference (trimmed, any case) that another charge of the same provider (or both without a
+   provider) already has, outside its own group. "Reference INV-1 of {provider} is already entered: {charge type} on
+   {container} ({date}). A provider's invoice is entered once - one charge for all its containers (Apply to other
+   containers..., or one group of rows in Import charges from Excel)." (70001, 409). One charge for several containers,
+   Apply to other containers and one import group share it; a charge without a reference is never refused. The import
+   refuses such rows too (a reference already entered, or the same provider + reference split over two groups).
+
+**BIVAC charges (script 97)**
+5. **A BIVAC item has a cost per port** (`inventory.ItemBivacPortCosts`, base currency, 0 or more, each port once), kept on
+   Item Definition's card "BIVAC cost per port" (Edit Items) for items with BIVAC Item ticked: "Only a BIVAC item has a cost
+   per port: tick BIVAC Item and save the item first." (56000).
+6. **A BIVAC / Inspection charge (type BIV) names its BIVAC item**: Add charge asks "Which BIVAC?" (the active BIVAC items,
+   from `usp_ContainerCharge_BivacOptions`), and each container's charge is that item's cost at the container's port (its
+   port of destination, else its final destination, else its port of loading): no amount, currency or split is typed.
+   Refused: "A BIVAC charge names its BIVAC: choose which BIVAC item …", "Only a BIVAC / Inspection charge names a BIVAC
+   item.", "{item} has no BIVAC cost for {port}: set it on Item Definition (BIVAC cost per port)." Apply to other
+   containers takes each target's port cost.
+7. **Posting the charge posts a BIVAC Out** of 1 pc of the item from the container's warehouse, Reference No. = the
+   container, at the average cost (`usp_ContainerCharge_PostBivacOut`); without stock the post is refused with the BIVAC
+   Out's own sentence (62007, nothing posted). **Cancelling the charge cancels its BIVAC Out**; the BIVAC Out alone cannot
+   be cancelled: "This BIVAC Out was made by the BIVAC charge of container {ref}: cancel that charge instead …" (62010).
+   The charge drawer shows its BIVAC item and BIVAC Out. The charge import refuses BIV rows ("A BIVAC charge is entered
+   with Add charge…").
+
+**Lead time per item (script 98)**
+8. **Item Definition's lead time is in months** (`inventory.Items.LeadTimeMonths`, one decimal, 0 to 60). The days typed
+   before were converted once per database (`98.LeadTimeMonths` in `inventory.OneTimeSteps`: days ÷ 30, to the half
+   month); LeadTimeDays stays = months × 30. An older client that sends only days gets them as months.
+9. **The lead time of the history** (`inventory.fn_Item_LeadTimeHistory`): over the goods receipts posted in the last 12
+   months whose lines come from a purchase order, the time from the order's approval (its posting) to the receipt's
+   posting, weighted by the pieces, in months of 30 days (at least 0.1). Item Definition shows it under the field.
+10. **Shortages give each line its own lead time** (`inventory.fn_Item_LeadTime`), the first that has one: the history,
+    the item's, the plan's header - or typed on a draft's line (Manual, kept by Recalculate; above 0, at most 60).
+    Expected requirement and shortage = monthly sales × the line's lead time; the line shows where it comes from ("from
+    purchase history", "from Item Definition", "the plan's", "typed"), and Load items a Lead Time column.
+
+**Errors:** no new number (63010, 70001, 56000, 56006, 62007, 62010, 66000).
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -2754,6 +2821,7 @@ sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-type
 | **49** | Warehouse access per user (script 92): All warehouses or only the ticked ones (a parent gives its tree; system administrators use every warehouse), set in Users & Permissions › Users › "Warehouses of {username}" with its history and the Users list's Warehouses column; it limits moving stock in every family (post, cancel, reverse, a draft line by line, delete, imports, goods receipts, transfers by From / To, stock levels), never viewing; one sentence, 50010 / 403, said on the disabled buttons, the pickers offering the reader's warehouses only; the ledger trigger under every posting; the Transfer Orders list's Warehouses filter and the menu's "to receive" count (A1, A2, B1) | Done: 4.15 |
 | **50** | Batch, serial and expiry on transfers (script 93): Item Definition's Tracking (None / Batch numbers / Serial numbers), Requires expiry date and Serial no. length; a transfer dispatch asks, per line of a tracked item, its serial numbers (scan box, Paste list, Known at {From}), batches or expiry dates in a dialog whose Done checks the rules on the server (errors, warnings); a serial no. is never on the way twice; the receipt ticks the serials that arrived (a scan session) or lowers each batch / expiry row, the rest Still coming or Lost; Dispatch and receive, Reverse, the order page's badges and "{n} serial nos." viewer, the dispatch note, the export's sheet "Batch, serial and expiry", the list's "Batch or serial no." filter, the item statement's expiry line; the ledger's rows per expiry date; no new permission (A1, A2, B1) | Done: 4.16 |
 | **51** | Who may see item costs (script 94): the permission View item costs (`inventory.costs.view`), granted once to the roles that saw costs; the server strips every item cost and stock value for a reader without it (Item Definition, Stock Balance, Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfers, the Dashboard) and the pages draw no column, tile or pill; exports without the cost columns; it hides, it never blocks - an Inventory In or order-less goods receipt line of such a user is saved at the item's last cost, else its average; the In fixes (the page's proposal, a unit change, a non-editable type, an import row without a cost, the tooltip); the token confirmed by the database on the stock document and goods receipt reads, saves, posts and cancels (A1, A2, B1) | Done: 4.17 |
+| **52** | The container's journey, BIVAC charges and lead times (scripts 95-98): the Containers list's From → To and Journey status with its filter; Receive goods… on a container waits for its Delivery, and is hidden on an order or invoice whose goods all travel in containers; a provider's invoice reference once on container charges; BIVAC cost per port, the BIVAC charge's "Which BIVAC?" and its BIVAC Out; lead time in months on Item Definition, and each shortage line its own lead time from the purchase history, the item or the plan, or typed | Done: 4.18 |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -2837,6 +2905,10 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `92_Security_WarehouseAccess.sql` | Warehouse access per user (prompt 49): new column `security.Users.AllWarehouses` (default 1: every existing and new user keeps every warehouse, no data step); new tables `security.UserWarehouses` (the ticks, both keys cascading: a tick never stops a warehouse's delete) and `security.UserWarehouseAudit`; the rule in five functions, `security.fn_User_IsUnrestricted` (All warehouses or an active system role), `fn_User_CanUseWarehouse` (a ticked ancestor gives the warehouse; On the way warehouses never refused), `fn_User_Warehouses`, `fn_User_WarehouseRefusal` (THE sentence, 50010), `fn_User_WarehouseAccessText` (the history's words); the ledger trigger `inventory.TR_StockMovements_WarehouseAccess` (AFTER INSERT; it reads only the users who wrote the rows; disabled by hand, it is enabled again at the next start); new `security.usp_User_WarehouseRefusal` (the API's early check), `usp_User_Warehouses_Get` / `_SetWarehouses` (the dialog, 50011), `usp_User_WarehouseSummaries` (the Users list), `inventory.usp_TransferOrder_ToReceiveCount` (the menu); re-created: `masterdata.usp_Warehouse_Lookup` (from 91: + `@UserId`, `CanUse`), `usp_Warehouse_Delete` (from 90: the history of the users who ticked it), `usp_Warehouse_Update` (from 91: a move to another parent that changes users' warehouses needs an unrestricted editor with `security.users.edit`, and writes their history), `inventory.fn_TransferOrder_Blocks` (from 91: the access rows, From / To), `usp_TransferOrder_Save` (from 90: the From), `usp_TransferOrder_Search` (from 90: + `@UserId`, `@Mine`), `usp_ItemWarehouseLevel_Set` / `_Remove` / `_ImportCheck` / `_Import` (from 91: the level's warehouse). No stock, sales, purchase, goods receipt, container or movement procedure is re-created, and `security.usp_User_GetAccess` (sign-in) is not changed; no permission added |
 | `93_Inventory_TransferTracking.sql` | Batch, serial and expiry on transfers (prompt 50): new columns `inventory.Items.TrackingMode` / `RequiresExpiry` / `SerialLength` (`CK_Items_Tracking`) and `inventory.TransferPostingLines.TrackingKind` (the kind a dispatch line left with, copied by its receipt line); new table `inventory.TransferPostingTracking` (one row per serial no., batch or expiry date of a posting line; a receipt row points at the dispatch row it receives, `DispatchTrackingId`; a dispatch row's `SettledBase` = received + written off by posted receipts; a serial once per posting by a unique index; the filtered index `IX_TransferPostingTracking_ItemSerial` the forced seeks of the serial rules read) and two new, optional table types `inventory.tvp_TransferDispatchTracking` / `tvp_TransferReceiptTracking` (90's types stay frozen); `inventory.fn_TrackingNo_Normalize` (trim, capitals: the one place of the number rule), `fn_TransferSerial_LastEvent` (a serial's latest posted event, by row id), `fn_TransferDispatch_TrackingProblems` (the one source of the dispatch rules: errors Seq 5-24 by number, 62017 at Seq 90, warnings 100-103; read by the dialog's Check and by the posting); new `inventory.usp_Item_SetTracking`, `usp_TransferPosting_Tracking` (the rows and their state), `usp_TransferOrder_CheckDispatchTracking` (no lock, nothing written), `usp_TransferOrder_TrackingSuggestions` (the serials received into the source and not sent since); re-created: `inventory.usp_Item_Get` (from 87: + the three columns), `fn_TransferPosting_ReverseBlock` (from 90: + Seq 3, a receipt whose serial left again, 62013), `usp_TransferOrder_DispatchCore` (from 90: + `@Tracking`, the format rules BEFORE the source lock, one application lock per serial item `inventory.TransferSerial.{ItemId}` after it (62010 after 30 s), 62017 after the stock check, the rows, the ledger per expiry date, the audit's counts), `usp_TransferOrder_Dispatch`, `usp_TransferOrder_ReceiveCore` (from 90: + the receipt rules, the rows, the ledger per expiry date, the dispatch rows' Settled), `usp_TransferOrder_Receive`, `usp_TransferOrder_DispatchAndReceive` (every row of the new dispatch received), `usp_TransferPosting_Reverse` (from 90: the serial locks of a receipt, its rows back on the way), `usp_TransferOrder_Get` (from 91, its `@SP` fix kept: + the item's tracking per line, the kind and count per posting line - never the rows), `usp_TransferOrder_Search` (from 92: + `@TrackingNo`, `MatchedTracking`, the matching orders found once with `OPTION (RECOMPILE)`). Errors 62016 (400 `TRANSFER_TRACKING`) and 62017 (409 `SERIAL_ON_THE_WAY`) new; 62000, 62006, 62010, 62012, 62013, 56000, 56006 reused. The ledger is not altered (its `ExpiryDate` is written); the cost replay, on hand, the valuation, the Dashboard, Shortages and Stock Levels are not touched; no permission added |
 | `94_Inventory_ItemCostsPermission.sql` | Who may see item costs (prompt 51): the permission `inventory.costs.view` "View item costs" (Inventory, 406) upserted and granted once per database (`inventory.OneTimeSteps` step `94.CostsViewGrant`) to the system roles and to every role holding one of the 14 permissions whose screens showed an item cost; `inventory.usp_StockDocument_Save` re-created from the body of script 29 with one changed statement: an In line without a cost takes `COALESCE(NULLIF(LastCost, 0), AverageCost, 0)` × the unit's packing (it took 0). No table, column, type, view or error number; the stripping is the API's (`Inventory_Shipment.Service/Security/ItemCosts.cs`), the order-less goods receipt rule the API's too (`usp_GoodsReceipt_Save` not re-created). Requires scripts 29, 75 and 89 |
+| `95_Logistics_ContainerJourneyAndReceipt.sql` | The container's journey and Receive goods only once delivered (prompt 52): new `logistics.fn_Container_Journey` (From, To, status, since) and `fn_Container_ReceiveBlock` (why a container cannot be received now); re-created `usp_Container_Search` (from 81: + `@Journey`, the journey columns, CanReceive and ReceiveBlockedReason from the block) and `usp_Container_Get` (from 82), `purchase.usp_GoodsReceipt_CreateForContainer` (from 72: refuses with the block's sentence, 63010) |
+| `96_Logistics_ChargeReferenceUnique.sql` | A provider's invoice once (prompt 52): index `IX_ContainerCharges_Reference`, new `logistics.fn_ContainerCharge_ReferenceClash`; `usp_ContainerCharge_Create` / `_Update` re-created from 27 with the check under an application lock (70001); Check 96a lists the duplicates already there |
+| `97_Logistics_BivacChargeAndPortCosts.sql` | BIVAC cost per port and the BIVAC charge (prompt 52): new table `inventory.ItemBivacPortCosts`, type `inventory.tvp_ItemPortCost`, columns `ContainerCharges.BivacItemId` / `BivacOutDocumentId`; functions `fn_Container_BivacPort`, `fn_Container_BivacCost`, `fn_ContainerCharge_BivacBlock`; procedures `inventory.usp_Item_BivacPortCosts_Get`, `usp_Item_SetBivacPortCosts`, `logistics.usp_ContainerCharge_BivacOptions`, `_PostBivacOut`; re-created `usp_ContainerCharge_Create` / `_Update` (from 96), `_Post` / `_Cancel` (from 65), `_Get` (from 67), `_CopyToContainers` (from 28), `inventory.usp_StockDocument_Cancel` (from 90) |
+| `98_Inventory_LeadTimePerItem.sql` | Lead time per item (prompt 52): `inventory.Items.LeadTimeMonths` (days converted once, step `98.LeadTimeMonths`), `ShortageDocumentLines.LeadTimeManual` / `LeadTimeSource`, type `inventory.tvp_ShortageLeadTime`; new `inventory.fn_Item_LeadTimeHistory`, `fn_Item_LeadTime`, `usp_Item_SetLeadTime`; re-created `usp_Item_Get` (from 93), `usp_Shortage_Calculate`, `usp_ShortageDocument_WriteLines` and `_Get` (from 90), `_Save` and `_Recalculate` (from 25) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -2870,7 +2942,11 @@ Every written prompt (32–50) is built, and so is every script up to the last o
    **tell the owner: in Users & Permissions › Role Permissions untick "View item costs" for the roles that must not see
    what the goods cost (storekeepers, sales), and "View Stock Valuation" for those that must see no value at all** (and
    View Sales Profit, View Containers, View / Post Purchase Invoices, View Landed Cost Adjustments and Create Purchase
-   Orders to hide every cost, 4.17 rule 6); `update.sh` backs the database up first.
+   Orders to hide every cost, 4.17 rule 6); scripts 95-98 (prompt 52) change no data but the lead times, converted once
+   from days to months - **tell the owner: enter the BIVAC cost per port on each BIVAC item (Item Definition) before the
+   first BIVAC charge, and keep BIVAC stock in the containers' warehouses (each BIVAC charge posts a BIVAC Out of 1 pc);
+   container charges that already repeat a provider's reference stay as they are (script 96's Check 96a lists them); only new ones are refused**; `update.sh`
+   backs the database up first.
 2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
 3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
    `enable-github-deploy.sh` on the server and its secrets in both repositories.

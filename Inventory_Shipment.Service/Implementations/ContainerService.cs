@@ -52,6 +52,13 @@ public sealed class ContainerService : IContainerService
             }
         }
 
+        // (95) The Journey filter: a typo is refused, as the Next step filter.
+        if (!string.IsNullOrWhiteSpace(query.Journey) && ContainerJourney.Normalize(query.Journey) is null)
+        {
+            return Result<PagedResult<ContainerListDto>>.Failure(
+                ErrorType.Validation, "journey must be NotDispatched, OnTheWay, Arrived or Received.", "VALIDATION");
+        }
+
         var (items, totalCount) = await _containers.SearchAsync(query, cancellationToken);
 
         return Result<PagedResult<ContainerListDto>>.Success(new PagedResult<ContainerListDto>
