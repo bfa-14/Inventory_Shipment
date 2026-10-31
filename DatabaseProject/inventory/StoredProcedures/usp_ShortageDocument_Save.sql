@@ -9,6 +9,7 @@ CREATE   PROCEDURE inventory.usp_ShortageDocument_Save
     @MonthsOfHistory INT            = 3,
     @Notes           NVARCHAR(1000) = NULL,
     @Lines           inventory.tvp_ShortageLine READONLY,
+    @LeadTimes       inventory.tvp_ShortageLeadTime READONLY,   -- (98) the lead times typed on lines
     @RowVersion      BINARY(8)      = NULL,
     @UserId          INT            = NULL,
     @NewId           INT OUTPUT
@@ -60,7 +61,7 @@ BEGIN
             VALUES (@Id, N'Updated', N'Header and ' + CAST((SELECT COUNT(*) FROM @Lines) AS NVARCHAR(10)) + N' line(s) saved', @UserId);
         END
 
-        EXEC inventory.usp_ShortageDocument_WriteLines @Id, @Lines;
+        EXEC inventory.usp_ShortageDocument_WriteLines @Id, @Lines, @LeadTimes;   -- (98)
 
         SET @NewId = @Id;
         COMMIT TRANSACTION;

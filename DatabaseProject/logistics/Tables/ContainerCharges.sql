@@ -29,11 +29,15 @@ CREATE TABLE [logistics].[ContainerCharges] (
     [UpdatedAtUtc]         DATETIME2 (3)    NULL,
     [UpdatedBy]            INT              NULL,
     [RowVersion]           ROWVERSION       NOT NULL,
+    [BivacItemId]          INT              NULL,
+    [BivacOutDocumentId]   INT              NULL,
     CONSTRAINT [PK_ContainerCharges] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_ContainerCharges_Amount] CHECK ([Amount]>=(0)),
     CONSTRAINT [CK_ContainerCharges_Method] CHECK ([AllocationMethod]=N'Manual' OR [AllocationMethod]=N'Volume' OR [AllocationMethod]=N'Weight' OR [AllocationMethod]=N'Quantity' OR [AllocationMethod]=N'Value'),
     CONSTRAINT [CK_ContainerCharges_Rate] CHECK ([ExchangeRate]>(0)),
     CONSTRAINT [CK_ContainerCharges_Status] CHECK ([Status]>=(1) AND [Status]<=(3)),
+    CONSTRAINT [FK_ContainerCharges_BivacItem] FOREIGN KEY ([BivacItemId]) REFERENCES [inventory].[Items] ([Id]),
+    CONSTRAINT [FK_ContainerCharges_BivacOut] FOREIGN KEY ([BivacOutDocumentId]) REFERENCES [inventory].[StockDocuments] ([Id]),
     CONSTRAINT [FK_ContainerCharges_CancelledBy] FOREIGN KEY ([CancelledBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_ContainerCharges_Container] FOREIGN KEY ([ContainerId]) REFERENCES [logistics].[Containers] ([Id]),
     CONSTRAINT [FK_ContainerCharges_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
@@ -48,8 +52,8 @@ CREATE TABLE [logistics].[ContainerCharges] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Movement]
-    ON [logistics].[ContainerCharges]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Container]
+    ON [logistics].[ContainerCharges]([ContainerId] ASC, [Status] ASC);
 
 
 GO
@@ -60,8 +64,15 @@ CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Group]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Container]
-    ON [logistics].[ContainerCharges]([ContainerId] ASC, [Status] ASC);
+CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Movement]
+    ON [logistics].[ContainerCharges]([MovementId] ASC) WHERE ([MovementId] IS NOT NULL);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_ContainerCharges_Reference]
+    ON [logistics].[ContainerCharges]([Reference] ASC, [ProviderPartyId] ASC)
+    INCLUDE([Status], [GroupId], [ContainerId], [ChargeTypeId], [ChargeDate]) WHERE ([Reference] IS NOT NULL);
 
 
 GO

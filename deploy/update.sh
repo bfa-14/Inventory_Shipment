@@ -9,8 +9,8 @@
 # restarts what changed. The API applies Schema.sql as it starts, so database changes need no step
 # of their own. Users see a short "server not reachable" message while the API restarts.
 #
-# The GitHub "Deploy to server" workflow runs this same script (README.md, "Deploying automatically from
-# GitHub"). Two updates (or restores) of the same environment never run at once: the second waits.
+# The GitHub "Deploy to server" button runs this same script (README.md, "Deploying with a button"). Two updates
+# (or restores) of the same environment never run at once: the second waits.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
@@ -53,7 +53,7 @@ if [ "${UPDATE_STAGE:-}" != "build" ]; then
         fi
     fi
 
-    if [ -n "$(docker compose ps -q --status running db)" ]; then
+    if sql_running; then
         ./backup.sh
     fi
 
@@ -77,6 +77,19 @@ fi
 
 # Checked again here: an update.sh from before the two environments may have pulled and exec'd into this one.
 require_proxy_web "$web"
+
+# ONE SQL SERVER FOR BOTH ENVIRONMENTS (README.md): testing's login and database in production's SQL Server, as
+# testing's deploy/.env says (set again if they drifted); production keeps answering testing on the shared network.
+if [ "$env_name" = "testing" ] && shared_sql; then
+    require_compose 2.24
+    ensure_sql_network
+    sql_host_ready \
+        || die "Production's SQL Server does not answer testing on the network $SQL_NETWORK. In $(production_deploy): sudo docker compose up -d db (its COMPOSE_FILE must list $SQL_HOST_FILE), then run this again."
+    ensure_shared_database
+elif [ "$env_name" = "production" ] && testing_shares_sql; then
+    write_sql_host "$(pwd)"
+    ensure_sql_network
+fi
 
 say "Building"
 docker compose build --pull

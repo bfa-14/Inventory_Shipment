@@ -24,6 +24,8 @@ public static class DependencyInjection
 
         services.TryAddScoped<IAuthService, AuthService>();
         services.TryAddScoped<IUserService, UserService>();
+        // (92) Warehouse access per user: the early check of every family that moves stock (no cache, M8).
+        services.TryAddScoped<IWarehouseAccessService, WarehouseAccessService>();
         services.TryAddScoped<IRoleService, RoleService>();
         services.TryAddScoped<IPermissionService, PermissionService>();
         services.TryAddScoped<ILoginAuditService, LoginAuditService>();
@@ -49,12 +51,18 @@ public static class DependencyInjection
         services.TryAddScoped<IPurchaseDocumentService, PurchaseDocumentService>();
         // Goods receipts (scripts 64 and 65): the only way goods enter stock.
         services.TryAddScoped<IGoodsReceiptService, GoodsReceiptService>();
+        services.TryAddScoped<ITransferOrderService, TransferOrderService>();
+        // Stock levels per warehouse (script 91): the list, the item card, the Excel import (its reader holds nothing per request).
+        services.TryAddScoped<IStockLevelService, StockLevelService>();
+        services.TryAddSingleton<StockLevelImportParser>();
+        services.TryAddScoped<IStockLevelImportService, StockLevelImportService>();
         services.TryAddScoped<IShortageDocumentService, ShortageDocumentService>();
         services.TryAddScoped<IChargeTypeService, ChargeTypeService>();
         services.TryAddScoped<ILandedCostAdjustmentService, LandedCostAdjustmentService>();
         services.TryAddScoped<ILateChargeService, LateChargeService>();
         services.TryAddScoped<IPurchaseInvoiceContainerService, PurchaseInvoiceContainerService>();
         services.TryAddScoped<ICostingReportService, CostingReportService>();
+        services.TryAddScoped<IContainerReportService, ContainerReportService>();
         services.TryAddScoped<IContainerService, ContainerService>();
         services.TryAddScoped<IContainerTypeService, ContainerTypeService>();
         services.TryAddScoped<IPaymentMethodService, PaymentMethodService>();
@@ -67,6 +75,7 @@ public static class DependencyInjection
         services.TryAddScoped<IMovementTypeService, MovementTypeService>();
         services.TryAddScoped<IMovementService, MovementService>();
         services.TryAddScoped<IContainerChargeService, ContainerChargeService>();
+        services.TryAddScoped<IBivacCostService, BivacCostService>();   // (97)
         // Container charges from Excel: the reader and writer hold nothing per request, like the invoice import's.
         services.TryAddSingleton<ContainerChargeImportParser>();
         services.TryAddSingleton<ContainerChargeImportWorkbooks>();
@@ -84,6 +93,7 @@ public static class DependencyInjection
 
         // Purchase order approval: who approves is SQL's (Settings > Purchase approval); the mailer queues the emails.
         services.TryAddScoped<IPurchaseApprovalMailer, PurchaseApprovalMailer>();
+        services.TryAddScoped<ITransferApprovalMailer, TransferApprovalMailer>();
         services.TryAddScoped<IPurchaseApprovalService, PurchaseApprovalService>();
         services.TryAddScoped<IDataSeeder, AdminSeeder>();
 

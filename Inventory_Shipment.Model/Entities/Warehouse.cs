@@ -37,7 +37,26 @@ public class Warehouse
     /// <summary>Named by a stock movement or a document (lookup only): such a warehouse cannot become a parent.</summary>
     public bool IsUsed { get; set; }
 
+    /// <summary>(91) Used by stock or a document (lookup only): <see cref="IsUsed"/> without the stock levels.</summary>
+    public bool IsUsedInTransactions { get; set; }
+
+    /// <summary>(91) Holds stock levels per warehouse (lookup only): it cannot become a parent for them either.</summary>
+    public bool HasStockLevels { get; set; }
+
     public bool IsMainWarehouse { get; set; }
+
+    /// <summary>
+    /// (90) The hidden "On the way" warehouse of its branch: it holds the goods of transfer orders between their dispatch
+    /// and their receipt. One per branch, created with the branch, never a parent, a main warehouse or a line's
+    /// warehouse; only its name and address change.
+    /// </summary>
+    public bool IsTransit { get; set; }
+
+    /// <summary>
+    /// (92) The reader may move stock here (lookup only, worked out per request for the caller): All warehouses, a system
+    /// administrator, or the warehouse or one of its parents ticked. Never true on an On the way warehouse.
+    /// </summary>
+    public bool CanUse { get; set; } = true;
 
     /// <summary>Out-of-stock sales: true allows, false disallows, null follows the global setting.</summary>
     public bool? AllowOutOfStockOverride { get; set; }

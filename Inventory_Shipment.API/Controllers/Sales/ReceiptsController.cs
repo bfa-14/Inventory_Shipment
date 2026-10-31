@@ -70,7 +70,7 @@ public sealed class ReceiptsController : ControllerBase
 
     /// <summary>A customer's account in the base currency, optionally for a period.</summary>
     [HttpGet("statement")]
-    [HasPermission(Permissions.Sales.ReceiptsView)]
+    [HasPermission(Permissions.Sales.StatementView)]
     [ProducesResponseType<CustomerStatementDto>(StatusCodes.Status200OK)]
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<CustomerStatementDto>> Statement(

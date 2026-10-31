@@ -11,14 +11,18 @@ public interface IMovementRepository
     Task<(IReadOnlyList<MovementListDto> Items, int TotalCount)> SearchAsync(
         MovementQuery query, CancellationToken cancellationToken = default);
 
-    /// <summary>The four result sets of logistics.usp_Movement_Get; null when there is no such movement.</summary>
+    /// <summary>The result sets of logistics.usp_Movement_Get (82: its history too); null when there is no such movement.</summary>
     Task<MovementDto?> GetAsync(int id, CancellationToken cancellationToken = default);
 
     /// <summary>Creates (id null, the number MOV-yyyy-nnnnnn is assigned now) or updates; returns the id.</summary>
     Task<int> SaveAsync(SaveMovementRequest request, int? id, int userId, CancellationToken cancellationToken = default);
 
-    /// <summary>Start, Complete or Cancel: the containers' status, dates and location follow.</summary>
-    Task SetStatusAsync(
+    /// <summary>
+    /// Start, Complete or Cancel: the containers' status, dates and location follow. (82) A Cancel of a split-off movement
+    /// undoes the split - its containers go back onto the movement they were split from - and answers where they went (the
+    /// procedure's one row); null for every other call.
+    /// </summary>
+    Task<MovementSplitUndoneDto?> SetStatusAsync(
         int id, string action, DateOnly? date, string? reason, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default);
 
@@ -42,11 +46,40 @@ public interface IMovementRepository
         ShipContainersRequest request, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// (81) logistics.usp_Container_NextStepPreview: the next step of each container (an unknown id too, Found false),
+    /// the groups that can move on together and the ones that cannot, by reason. canConfirm: the reader holds
+    /// containers.confirm (a draft that never moved can ship only then).
+    /// </summary>
+    Task<NextStepPreviewDto> NextStepPreviewAsync(
+        IEnumerable<int> containerIds, bool canConfirm, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (81) logistics.usp_Movement_AddLeg: a new leg for a group of containers from where they are, started or planned,
+    /// one movement or one per container, through usp_Movement_Save and usp_Movement_SetStatus - all or nothing, the
+    /// refusal naming the container. One row per movement made.
+    /// </summary>
+    Task<IReadOnlyList<AddedLegDto>> AddLegAsync(
+        AddLegCommand command, bool confirmDrafts, int userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (82) logistics.usp_Movement_SplitContainers: the ticked containers of a movement in progress leave it for a copy of it,
+    /// in progress, with their rows, charges and documents filed under it - one transaction; the new movement's row.
+    /// completeDate: the completion that follows, checked first (70000: in the future, before the start). 70006 not found,
+    /// 70004 changed by another user, 70010 not in progress / every container ticked / a later leg, 70000 a container not on it.
+    /// </summary>
+    Task<MovementSplitDto> SplitContainersAsync(
+        int movementId, IReadOnlyList<int> containerIds, byte[]? rowVersion, DateOnly? completeDate, int userId,
+        CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// logistics.usp_Movement_ContainerCandidates: one page (at most 200) and the count across the pages.
     /// 70006 / 70005 for a movement not found or no longer editable, 70000 without a From.
     /// </summary>
     Task<(IReadOnlyList<MovementContainerCandidateDto> Items, int TotalCount)> ContainerCandidatesAsync(
         MovementContainerCandidateQuery query, int page, int pageSize, CancellationToken cancellationToken = default);
+
+    /// <summary>(80) logistics.usp_Movement_JoinCandidates: the planned movements the container can join, newest first. 70006 without it.</summary>
+    Task<IReadOnlyList<MovementJoinCandidateDto>> JoinCandidatesAsync(int containerId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// logistics.usp_Movement_MatchContainers: one row per non-empty number, rowNo = its position in the list

@@ -57,6 +57,7 @@ public interface IInvoiceImportService
         int? priceListId,
         bool checkStock,
         string documentTypeCode,
+        int userId,
         IReadOnlySet<string> userPermissions,
         CancellationToken cancellationToken = default);
 

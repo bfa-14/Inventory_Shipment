@@ -1,8 +1,3 @@
-/* ================================================================== 6. Container numbers matched for a movement */
-
--- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId, as the candidates.
--- One row per number (empty ones ignored), in the input order. Result: Ready | AlreadyOnMovement | NotFound |
--- Ambiguous | Blocked | Duplicate; Reason and Note are the texts of the candidates (fn_Movement_ContainerCheck).
 CREATE   PROCEDURE logistics.usp_Movement_MatchContainers
     @MovementId  INT = NULL,
     @FromPlaceId INT,
@@ -20,7 +15,9 @@ BEGIN
     FROM @Numbers n
     CROSS APPLY logistics.fn_ContainerNumberKey(n.Value) k
     WHERE k.NumberKey <> N'';
-    IF (SELECT COUNT(*) FROM @Rows) > 500 THROW 70000, 'At most 500 container numbers at a time.', 1;
+    -- (78) 10,000 numbers a call (500 before): a movement's file may list any number of containers, and a file cut in
+    -- calls of 500 could no longer say "Already in the list, row N" for a number repeated in two parts.
+    IF (SELECT COUNT(*) FROM @Rows) > 10000 THROW 70000, 'At most 10,000 container numbers at a time.', 1;
 
     IF @FromPlaceId IS NULL THROW 70000, 'Choose the From first.', 1;
     IF NOT EXISTS (SELECT 1 FROM masterdata.Ports WHERE Id = @FromPlaceId AND IsActive = 1)

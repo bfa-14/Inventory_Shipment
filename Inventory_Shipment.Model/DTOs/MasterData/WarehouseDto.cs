@@ -35,6 +35,12 @@ public sealed class WarehouseDto
     /// </summary>
     public bool? AllowOutOfStockOverride { get; init; }
 
+    /// <summary>
+    /// (90) The "On the way" warehouse of its branch, managed by transfer orders: only its name and address may be
+    /// changed, and it is never deactivated or deleted on its own.
+    /// </summary>
+    public bool IsTransit { get; init; }
+
     /// <summary>The row's ROWVERSION as Base64. Send it back on update to detect concurrent edits.</summary>
     public string RowVersion { get; init; } = string.Empty;
 }
@@ -68,4 +74,26 @@ public sealed class WarehouseLookupDto
 
     /// <summary>Already used in transactions: it cannot be chosen as a parent (script 71).</summary>
     public bool IsUsed { get; init; }
+
+    /// <summary>
+    /// (91) <see cref="IsUsed"/> is the sum of these two: used by stock or a document, and holding stock levels per
+    /// warehouse - the picker says which ("has stock levels, cannot be a parent"), the delete what goes with it.
+    /// </summary>
+    public bool IsUsedInTransactions { get; init; }
+
+    public bool HasStockLevels { get; init; }
+
+    /// <summary>
+    /// (90) An "On the way" warehouse (goods of transfer orders between dispatch and receipt). Listed only when the
+    /// lookup is asked for them (includeTransit, Stock Valuation's filter) or when it is the includeId.
+    /// </summary>
+    public bool IsTransit { get; init; }
+
+    /// <summary>
+    /// (92) The caller may move stock in this warehouse (post, cancel, receive, dispatch, set its stock levels): worked
+    /// out for the reader at each request, so a change of their warehouses shows at once. False on an On the way
+    /// warehouse; true everywhere else for a reader with All warehouses. Pickers of documents that move stock offer only
+    /// these; viewing is never limited.
+    /// </summary>
+    public bool CanUse { get; init; } = true;
 }

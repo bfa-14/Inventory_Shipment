@@ -3,6 +3,7 @@ using Inventory_Shipment.Model.DTOs.Dashboard;
 using Inventory_Shipment.Model.Security;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 
 namespace Inventory_Shipment.Service.Implementations;
 
@@ -64,7 +65,12 @@ public sealed class DashboardService : IDashboardService
             return Result<DashboardSummaryDto>.Failure(ErrorType.Validation, "The previous period is not valid.", "VALIDATION");
         }
 
-        var summary = await _dashboard.GetSummaryAsync(query.BranchId, from, to, prevFrom, prevTo, today, cancellationToken);
+        // (91) "Warehouse levels below Min" is read only for a reader who sees it (Trim blanks it for anybody else): it
+        // reads every level of the scope, and nobody should wait for a figure they are never shown.
+        var warehouseLevels = permissions.Contains(Permissions.Inventory.ItemsView)
+                              && permissions.Contains(Permissions.Inventory.StockLevelsView);
+        var summary = await _dashboard.GetSummaryAsync(
+            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cancellationToken);
         Trim(summary, permissions);
         return Result<DashboardSummaryDto>.Success(summary);
     }
@@ -126,6 +132,18 @@ public sealed class DashboardService : IDashboardService
         else if (s.StockAlerts is not null && !Has(Permissions.Sales.OutOfStockAuditView))
         {
             s.StockAlerts.OutOfStockSales = null;
+        }
+
+        // (91) The warehouses' own levels are Stock Levels' screen: its line opens it.
+        if (s.StockAlerts is not null && !Has(Permissions.Inventory.StockLevelsView))
+        {
+            s.StockAlerts.BelowWarehouseMin = null;
+        }
+
+        // (94) The inventory value and the value by warehouse are stock at the average cost: View item costs.
+        if (!Has(Permissions.Inventory.CostsView))
+        {
+            ItemCosts.Strip(s);
         }
 
         var containers = Has(Permissions.Containers.View);

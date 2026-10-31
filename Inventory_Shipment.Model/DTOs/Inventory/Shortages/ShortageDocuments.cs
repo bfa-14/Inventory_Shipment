@@ -29,8 +29,8 @@ public static class ShortageDocumentStatus
 /// The figures every shortage row carries, live or saved. All quantities are BASE UNITS except
 /// RequiredQty, which is in the item's purchase unit because that is what gets ordered.
 ///
-///   Stock + Transit       = Current Inventory + Transit
-///   Total Expected Stock  = Current Inventory + Transit + Outstanding Order
+///   Stock + Transit       = Current Inventory + Transit + Transfers in                     (90: + Transfers in)
+///   Total Expected Stock  = Current Inventory + Transit + Transfers in + Outstanding Order
 ///   Expected Requirement  = Expected Monthly Sales × Lead Time (Month)
 ///   Shortage              = max(0, Requirement − Total Expected Stock)
 ///   Coverage (months)     = Total Expected Stock ÷ Expected Monthly Sales   (null when nothing sells)
@@ -53,13 +53,25 @@ public abstract class ShortageFiguresDto
     /// <summary>Still to receive on open purchase orders, EXCLUDING what is already in transit.</summary>
     public int OutstandingOrderBase { get; init; }
 
+    /// <summary>
+    /// (90) "Transfers in": goods on the way to the plan's warehouse (its tree) from other warehouses, dispatched by
+    /// released transfer orders and not received or written off yet. Counted in Stock + Transit, the expected stock,
+    /// the shortage and the coverage. 0 on a plan saved before script 90, whose figures are therefore unchanged.
+    /// </summary>
+    public int TransfersInBase { get; init; }
+
     public int StockPlusTransitBase { get; init; }
     public int TotalExpectedStockBase { get; init; }
 
     /// <summary>Sales of the last "months of history" in the warehouse ÷ months. The computed value, never the override.</summary>
     public decimal ExpectedMonthlySalesBase { get; init; }
 
+    /// <summary>(98) The line's own lead time: typed on the line, else the item's history, the item's, the plan's.</summary>
     public decimal LeadTimeMonths { get; init; }
+
+    /// <summary>(98) Where LeadTimeMonths comes from: Manual | History | Item | Plan (null on a line saved before 98).</summary>
+    public string? LeadTimeSource { get; init; }
+
     public decimal ExpectedRequirementBase { get; init; }
     public int ShortageBase { get; init; }
     public decimal? CoverageMonths { get; init; }
@@ -73,7 +85,8 @@ public abstract class ShortageFiguresDto
 
     public int? MinQuantity { get; init; }
     public int? MaxQuantity { get; init; }
-    public decimal? LastCost { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? LastCost { get; set; }
 }
 
 /// <summary>One LIVE row of inventory.usp_Shortage_Calculate — what "Load items" offers to a draft.</summary>
@@ -85,8 +98,13 @@ public sealed class ShortageLiveRowDto : ShortageFiguresDto
     /// <summary>The shortage rounded up to whole purchase units — the default Required Qty of a new line.</summary>
     public int SuggestedRequiredQty { get; init; }
 
-    public decimal? AverageCost { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? AverageCost { get; set; }
     public int? LeadTimeDays { get; init; }
+
+    /// <summary>(98) The item's purchase history: order approval to goods receipt over the last 12 months, and its receipts.</summary>
+    public decimal? LeadTimeHistoryMonths { get; init; }
+    public int? LeadTimeReceipts { get; init; }
 
     /// <summary>The default supplier, else the last one the item was bought from — what the supplier filter matches.</summary>
     public int? SupplierId { get; init; }
@@ -106,6 +124,9 @@ public sealed class ShortageDocumentLineDto : ShortageFiguresDto
     /// <summary>The planner's override of the computed monthly sales; null when the computed value stands.</summary>
     public decimal? ExpectedMonthlySalesManual { get; init; }
 
+    /// <summary>(98) The lead time typed on the line; null when it is worked out (LeadTimeSource).</summary>
+    public decimal? LeadTimeManual { get; init; }
+
     /// <summary>The override when there is one, else the computed value — what every derived figure used.</summary>
     public decimal EffectiveMonthlySales { get; init; }
 
@@ -123,7 +144,16 @@ public sealed class ShortagePurchaseOrderDto
     public string? DocumentNumber { get; init; }
     public DateTime DocumentDate { get; init; }
     public string Status { get; init; } = string.Empty;
-    public decimal TotalAmount { get; init; }
+
+    /// <summary>(77) An approved order: 0 Saved, 1 Partially posted, 2 Posted (its posted invoices).</summary>
+    public int? InvoicingStatus { get; init; }
+
+    /// <summary>
+    /// (94) Null for a reader who may see neither item costs nor purchase orders: the order is priced at the item's last
+    /// cost, so a one-item plan's total names it.
+    /// </summary>
+    public decimal? TotalAmount { get; set; }
+
     public string CurrencyCode { get; init; } = string.Empty;
     public DateTime CreatedAtUtc { get; init; }
 }
@@ -267,6 +297,10 @@ public sealed class SaveShortageDocumentLineRequest
 
     [StringLength(300)]
     public string? Notes { get; init; }
+
+    /// <summary>(98) The lead time typed on the line, in months. Null = worked out (history, the item's, the plan's).</summary>
+    [Range(0.1, 60)]
+    public decimal? LeadTimeMonths { get; init; }
 }
 
 public sealed class SaveShortageDocumentRequest

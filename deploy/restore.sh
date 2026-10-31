@@ -10,6 +10,9 @@
 #
 # RESTORE_THEN_SQL (for copy-production-to-testing.sh): T-SQL run on the restored database before the API
 # starts on it, so the API never sees the backup as it was.
+#
+# The restored database gets its owner back, inside it too: testing's own login for testing on production's SQL Server
+# (README.md, "One SQL Server for both environments"), sa otherwise, with no user of testing's login left in it.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
@@ -29,7 +32,7 @@ done
 [ -f "$source_file" ] || die "No such file: $source_file"
 
 db=$(db_name)
-[ -n "$(docker compose ps -q --status running db)" ] || die "The db container is not running (docker compose up -d db)."
+sql_running || die "The SQL Server of $(environment) is not running (sudo docker compose up -d in $(sql_home))."
 
 if [ "$assume_yes" -ne 1 ]; then
     echo "This REPLACES the database '$db' with $source_file. Everything entered since that backup is lost."
@@ -37,18 +40,19 @@ if [ "$assume_yes" -ne 1 ]; then
     [ "$answer" = "YES" ] || die "Cancelled."
 fi
 
-# Into deploy/backups, which the db container sees as /var/opt/mssql/backups, unpacked and readable
-# by SQL Server.
+# Into the folder the SQL Server's container sees as /var/opt/mssql/backups (deploy/backups, or testing's subfolder of
+# production's), unpacked and readable by SQL Server.
 ensure_backup_dir
+stage=$(sql_stage)
 name="restore-$(date -u +%Y%m%d-%H%M%S).bak"
 case "$source_file" in
-    *.gz) gunzip -c "$source_file" > "backups/$name" ;;
-    *)    cp "$source_file" "backups/$name" ;;
+    *.gz) gunzip -c "$source_file" > "$stage/$name" ;;
+    *)    cp "$source_file" "$stage/$name" ;;
 esac
-chown "$MSSQL_UID:0" "backups/$name"
-chmod 640 "backups/$name"
-inside="/var/opt/mssql/backups/$name"
-trap 'rm -f "backups/$name"' EXIT
+chown "$MSSQL_UID:0" "$stage/$name"
+chmod 640 "$stage/$name"
+inside="$(sql_stage_inside)/$name"
+trap 'rm -f "$stage/$name"' EXIT
 trap 'exit 1' INT TERM HUP
 
 # A backup remembers where its files lived (C:\Program Files\...\DATA on Windows): every file has to
@@ -74,12 +78,22 @@ say "Stopping the API"
 docker compose stop api
 
 say "Restoring $db"
-if ! sql_exec -Q "RESTORE DATABASE [$db] FROM DISK = N'$inside' WITH REPLACE, STATS = 25${moves}"; then
-    rm -f "backups/$name"
+# SINGLE_USER first, in the same batch: a session still open in it (SSMS) would refuse the restore.
+if ! sql_exec -Q "IF DB_ID(N'$db') IS NOT NULL ALTER DATABASE [$db] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                  RESTORE DATABASE [$db] FROM DISK = N'$inside' WITH REPLACE, STATS = 25${moves}"; then
+    rm -f "$stage/$name"
+    sql_exec -Q "IF DB_ID(N'$db') IS NOT NULL ALTER DATABASE [$db] SET MULTI_USER;" || true
     docker compose start api
     die "The restore failed (see above). The API was started again on the database as it was."
 fi
-rm -f "backups/$name"
+rm -f "$stage/$name"
+
+# The owner, inside the database too: a restore keeps the backup's dbo (lib.sh, own_database_by_sa).
+if shared_sql; then
+    ensure_shared_database
+else
+    own_database_by_sa "$db"
+fi
 
 if [ -n "${RESTORE_THEN_SQL:-}" ]; then
     say "Adjusting the restored database"

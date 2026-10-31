@@ -9,6 +9,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -20,15 +21,17 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
     private readonly ISalesDocumentRepository _invoices;
     private readonly IWarehouseRepository _warehouses;
+    private readonly IWarehouseAccessService _access;
     private readonly SalesOptions _options;
     private readonly ILogger<SalesInvoiceService> _logger;
 
     public SalesInvoiceService(
-        ISalesDocumentRepository invoices, IWarehouseRepository warehouses, IOptions<SalesOptions> options,
-        ILogger<SalesInvoiceService> logger)
+        ISalesDocumentRepository invoices, IWarehouseRepository warehouses, IWarehouseAccessService access,
+        IOptions<SalesOptions> options, ILogger<SalesInvoiceService> logger)
     {
         _invoices = invoices;
         _warehouses = warehouses;
+        _access = access;
         _options = options.Value;
         _logger = logger;
     }
@@ -50,14 +53,41 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     }
 
     public async Task<Result<SalesInvoiceDto>> GetAsync(
-        int id, IReadOnlySet<string>? permissions = null, CancellationToken cancellationToken = default)
+        int id, int userId, IReadOnlySet<string>? permissions = null, CancellationToken cancellationToken = default)
     {
         var invoice = await _invoices.GetAsync(id, cancellationToken);
+        if (invoice is null)
+        {
+            return Result<SalesInvoiceDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
 
-        return invoice is null
-            ? Result<SalesInvoiceDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<SalesInvoiceDto>.Success(WithCostsFor(invoice, permissions));
+        var answer = WithCostsFor(invoice, permissions);
+
+        // (92) Why this reader may not post, cancel or delete it (every warehouse of its lines and header); null when they may.
+        answer.WarehouseAccessRefusal = await _access.RefusalAsync(userId, WarehousesOf(invoice), cancellationToken: cancellationToken);
+        return Result<SalesInvoiceDto>.Success(answer);
     }
+
+    /// <summary>(92) Every warehouse a stored invoice or return moves stock in: its lines' and its header's.</summary>
+    private static IEnumerable<int?> WarehousesOf(SalesInvoiceDto? invoice)
+        => invoice is null ? [] : invoice.Lines.Select(line => (int?)line.WarehouseId).Append(invoice.WarehouseId);
+
+    /// <summary>(92) Every warehouse a request names: its lines' and its header's.</summary>
+    private static IEnumerable<int?> WarehousesOf(SaveSalesInvoiceRequest request)
+        => (request.Lines ?? []).Select(line => (int?)line.WarehouseId).Append(request.WarehouseId);
+
+    /// <summary>(92) A request as the keep rule (A8) compares it: its header warehouse and each line's stock fields.</summary>
+    private static WarehouseDraft DraftOf(SaveSalesInvoiceRequest request)
+        => new(request.WarehouseId, (request.Lines ?? [])
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId, (line.ItemUnitId, line.Quantity, line.ExpiryDate)))
+            .ToList());
+
+    /// <summary>(92) The stored invoice or return, the same way (null when it no longer exists: the save answers that).</summary>
+    private static WarehouseDraft? DraftOf(SalesInvoiceDto? invoice)
+        => invoice is null ? null : new(invoice.WarehouseId, invoice.Lines
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate is { } expiry ? DateOnly.FromDateTime(expiry) : (DateOnly?)null)))
+            .ToList());
 
     /// <summary>
     /// The invoice as this caller may see it: without sales.profit.view, every cost and margin comes
@@ -224,6 +254,18 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
            it. The procedure receives the flag and re-prices every line accordingly. */
         var allowPriceOverride = permissions.Contains(Permissions.Sales.InvoicesPriceOverride);
 
+        /* (92) A WAREHOUSE THE EDITOR NAMES MUST BE THEIRS; a line already on the stored draft in one that is not may stay
+           as it is or move to one of theirs (A8) - nothing added, changed or dropped there - and posting it is then
+           refused. The stored invoice is read only for a restricted editor. */
+        var refusal = await _access.DraftRefusalAsync(
+            userId, DraftOf(request),
+            id is { } existingId ? async () => DraftOf(await _invoices.GetAsync(existingId, cancellationToken)) : null,
+            cancellationToken);
+        if (refusal is not null)
+        {
+            return WarehouseAccess.Failure<SalesInvoiceDto>(refusal);
+        }
+
         int savedId;
         try
         {
@@ -238,7 +280,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         _logger.LogInformation("Sales invoice {InvoiceId} saved by user {UserId} (price override {Override})",
             savedId, userId, allowPriceOverride);
 
-        return await GetAsync(savedId, permissions, cancellationToken);
+        return await GetAsync(savedId, userId, permissions, cancellationToken);
     }
 
     public async Task<Result<SalesInvoiceDto>> PostAsync(
@@ -249,9 +291,10 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
            Otherwise the invoice screen would be a way to take money in that the receipt screen would
            refuse the same person. Checked before anything is attempted; the procedure still decides
            the rest. A null permission set means an internal caller that has already been authorised. */
+        SalesInvoiceDto? existing = null;
         if (permissions is not null)
         {
-            var existing = await _invoices.GetAsync(id, cancellationToken);
+            existing = await _invoices.GetAsync(id, cancellationToken);
             if (existing?.PaymentType == SalesPaymentTypes.Cash && !permissions.Contains(Permissions.Sales.ReceiptsPost))
             {
                 return Result<SalesInvoiceDto>.Failure(
@@ -259,6 +302,12 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
                     $"Posting a Cash invoice also posts its receipt, which needs the {Permissions.Sales.ReceiptsPost} permission.",
                     "FORBIDDEN");
             }
+        }
+
+        // (92) Posting moves stock in every warehouse of the stored invoice: the invoice read above, else read only for a restricted user.
+        if (await StoredRefusalAsync(id, existing, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<SalesInvoiceDto>(refusal);
         }
 
         return await ChangeAsync(id, cancellationToken,
@@ -304,7 +353,7 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
 
         _logger.LogInformation("Sales return {ReturnId} created from invoice {InvoiceId} by user {UserId}", newId, id, userId);
-        return await GetAsync(newId, permissions, cancellationToken);
+        return await GetAsync(newId, userId, permissions, cancellationToken);
     }
 
     public async Task<Result<ImportPostResult>> ImportPostAsync(
@@ -329,6 +378,13 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
         }
 
         var allowPriceOverride = permissions.Contains(Permissions.Sales.InvoicesPriceOverride);
+
+        // (92) This call saves and posts through the repository, past SaveDraftAsync: the warehouses are checked here,
+        // before a row is written, so a refused import leaves no draft behind.
+        if (await _access.RefusalAsync(userId, WarehousesOf(request), cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<ImportPostResult>(refusal);
+        }
 
         int id;
         try
@@ -412,9 +468,10 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     {
         /* CANCELLING A PAID CASH INVOICE REVERSES ITS RECEIPT IN THE SAME STEP, so it needs the right to
            reverse a receipt too: this is "the authorised reversal process" of the requirement. */
+        SalesInvoiceDto? existing = null;
         if (permissions is not null)
         {
-            var existing = await _invoices.GetAsync(id, cancellationToken);
+            existing = await _invoices.GetAsync(id, cancellationToken);
             if (existing is { ReceiptStatus: "Posted" } && !permissions.Contains(Permissions.Sales.ReceiptsReverse))
             {
                 return Result<SalesInvoiceDto>.Failure(
@@ -424,8 +481,14 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
             }
         }
 
+        // (92) Cancelling moves the stock back in every warehouse of the stored invoice.
+        if (await StoredRefusalAsync(id, existing, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<SalesInvoiceDto>(refusal);
+        }
+
         return await ChangeAsync(id, cancellationToken,
-            version => _invoices.CancelAsync(id, request.Reason, version, userId, cancellationToken),
+            version => _invoices.CancelAsync(id, request.Reason, request.CancelDate, version, userId, cancellationToken),
             request.RowVersion, userId, "cancelled", permissions);
     }
 
@@ -609,6 +672,12 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
     public async Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
     {
+        // (92) Deleting a draft needs every warehouse on it.
+        if (await StoredRefusalAsync(id, null, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure(refusal);
+        }
+
         try
         {
             await _invoices.DeleteAsync(id, userId, cancellationToken);
@@ -865,8 +934,18 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
 
         // Re-read: posting assigns the number, writes the ledger and the cost snapshot, and moves the
         // status. The document is the server's answer, not a patch of what was sent.
-        return await GetAsync(id, permissions, cancellationToken);
+        return await GetAsync(id, userId, permissions, cancellationToken);
     }
+
+    /// <summary>
+    /// (92) Whether the user may move stock in every warehouse of the stored invoice: the one already read when there is
+    /// one, else read only for a restricted user (one primary-key seek for the others). An invoice that does not exist is
+    /// never refused here: the procedure answers it.
+    /// </summary>
+    private Task<string?> StoredRefusalAsync(int id, SalesInvoiceDto? existing, int userId, CancellationToken cancellationToken)
+        => existing is not null
+            ? _access.RefusalAsync(userId, WarehousesOf(existing), cancellationToken: cancellationToken)
+            : _access.RefusalAsync(userId, async () => WarehousesOf(await _invoices.GetAsync(id, cancellationToken)), cancellationToken);
 
     private static Result<SalesInvoiceDto> Failure(BusinessRuleException exception)
         => Failure<SalesInvoiceDto>(exception);
@@ -883,6 +962,8 @@ public sealed class SalesInvoiceService : ISalesInvoiceService
     /// </summary>
     private static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) The ledger trigger's refusal (or any other 50010): the user may not move stock in that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, WarehouseAccess.Code),
         SqlErrors.SalesDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.SalesDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.SalesDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

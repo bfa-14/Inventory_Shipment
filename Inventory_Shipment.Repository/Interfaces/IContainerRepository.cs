@@ -49,6 +49,12 @@ public interface IContainerRepository
     /// <summary>The tracking board: the containers and their route legs (logistics.usp_Container_Tracking).</summary>
     Task<TrackingDto> GetTrackingAsync(TrackingQuery query, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (82) logistics.usp_Shipment_Board: every container on the board with its card, column and group (set 1), and the
+    /// containers and pieces of each column (set 2). No paging.
+    /// </summary>
+    Task<ShipmentBoardDto> GetShipmentBoardAsync(ShipmentBoardQuery query, CancellationToken cancellationToken = default);
+
     /// <summary>One upload for one or several containers: the file stored once, one record per container.</summary>
     Task<IReadOnlyList<ContainerAttachmentCreatedDto>> AddAttachmentAsync(
         ContainerAttachmentUpload upload, int userId, CancellationToken cancellationToken = default);
@@ -73,6 +79,12 @@ public interface IContainerRepository
         CancellationToken cancellationToken = default);
 
     /* ── many containers per order (script 28) ── */
+
+    /// <summary>The container pickers: the given containers, or the newest matching a search (logistics.usp_Container_Lookup).</summary>
+    Task<IReadOnlyList<ContainerLookupDto>> LookupAsync(ContainerLookupRequest request, CancellationToken cancellationToken = default);
+
+    /// <summary>What the container dialogs start with for an order (logistics.usp_Container_OrderDefaults); null when it is not one.</summary>
+    Task<ContainerOrderDefaultsDto?> GetOrderDefaultsAsync(int purchaseOrderId, CancellationToken cancellationToken = default);
 
     /// <summary>The proposed containers, their lines and the order lines (logistics.usp_Container_PlanFromOrder); nothing is saved.</summary>
     Task<AutoPlanDto> PlanFromOrderAsync(AutoPlanRequest request, CancellationToken cancellationToken = default);

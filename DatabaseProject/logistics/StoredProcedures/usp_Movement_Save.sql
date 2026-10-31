@@ -1,6 +1,8 @@
-/* ================================================================== 3. Save: every container fits the movement */
+/* ================================================================== 6b. Save: the start date of a movement in progress */
 
--- Re-created (53) from the body of script 50: the place rules of fn_ContainerFitForMovement (70015 with the reason).
+-- Re-created (80) from the body of script 53: + while the movement is in progress (the page lets its start date be
+-- changed after Start), the start date is refused in the future (70000) and before the previous leg of one of its
+-- containers ended (70018), in the words of usp_Movement_SetStatus. A planned movement has no start date: unchanged.
 -- Planned movements: everything editable. In progress: header and containers editable (start date too), no end date.
 CREATE   PROCEDURE logistics.usp_Movement_Save
     @Id              INT            = NULL,
@@ -39,10 +41,10 @@ BEGIN
         THROW 70000, 'The carrier is not found or inactive.', 1;
     IF NOT EXISTS (SELECT 1 FROM @ContainerIds) THROW 70000, 'Select at least one container.', 1;
 
-    DECLARE @Status TINYINT = 1;
+    DECLARE @Status TINYINT = 1, @MovementNo NVARCHAR(30);
     IF @Id IS NOT NULL
     BEGIN
-        SELECT @Status = Status FROM logistics.Movements WHERE Id = @Id;
+        SELECT @Status = Status, @MovementNo = MovementNo FROM logistics.Movements WHERE Id = @Id;
         IF @Status IS NULL THROW 70006, 'Movement not found.', 1;
         IF @Status NOT IN (1, 2) THROW 70005, 'A completed or cancelled movement can no longer be changed.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Movements WHERE Id = @Id AND RowVersion = @RowVersion)
@@ -52,6 +54,11 @@ BEGIN
     IF @Status = 1 SET @StartDate = NULL;
     IF @StartDate IS NOT NULL AND @Eta IS NOT NULL AND @Eta < @StartDate THROW 70000, 'The ETA cannot be earlier than the start date.', 1;
     IF @PlannedDate IS NOT NULL AND @Eta IS NOT NULL AND @Eta < @PlannedDate THROW 70000, 'The ETA cannot be earlier than the planned date.', 1;
+    -- (80) THE START DATE OF A MOVEMENT IN PROGRESS STAYS A FACT: the rule of its Start (usp_Movement_SetStatus), with the
+    -- same day of tolerance (the reader's date against the server's UTC date). Otherwise a start made today could be
+    -- moved to next month with a plain Save.
+    IF @Status = 2 AND @StartDate > DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE))
+        THROW 70000, 'The start date cannot be in the future: start the movement on the day it really leaves.', 1;
 
     DECLARE @Msg NVARCHAR(400);
     SELECT TOP (1) @Msg = CASE WHEN c.Id IS NULL THEN N'A selected container no longer exists.'
@@ -84,6 +91,22 @@ BEGIN
     WHERE p.Fits = 0
     ORDER BY c.ContainerRef;
     IF @Msg IS NOT NULL THROW 70015, @Msg, 1;
+
+    -- (80) NOT BEFORE THE PREVIOUS LEG ENDED (70018), as at Start: an edited start date, or a container added to a
+    -- movement in progress, cannot make a container set off from a place before it got there.
+    IF @Status = 2
+    BEGIN
+        SELECT TOP (1) @Msg = N'Container ' + c.ContainerRef + N' cannot start ' + @MovementNo + N' before ' + pm.MovementNo
+                              + N' reached ' + tp.PortName + N' on ' + CONVERT(NVARCHAR(10), pm.EndDate, 103) + N'.'
+        FROM @ContainerIds x
+        INNER JOIN logistics.Containers c ON c.Id = x.Id
+        INNER JOIN logistics.fn_ContainerPlaceForMovement(@Id) p ON p.ContainerId = x.Id
+        INNER JOIN logistics.Movements pm ON pm.Id = p.PreviousMovementId
+        INNER JOIN masterdata.Ports tp    ON tp.Id = pm.ToPlaceId
+        WHERE pm.Status = 3 AND pm.EndDate > @StartDate
+        ORDER BY pm.EndDate DESC, c.ContainerRef;
+        IF @Msg IS NOT NULL THROW 70018, @Msg, 1;
+    END
 
     DECLARE @Affected TABLE (ContainerId INT PRIMARY KEY);
 

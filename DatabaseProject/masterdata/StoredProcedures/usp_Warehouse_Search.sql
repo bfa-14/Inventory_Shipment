@@ -1,3 +1,4 @@
+-- rows and locks their form.
 CREATE   PROCEDURE masterdata.usp_Warehouse_Search
     @Search          NVARCHAR(150) = NULL,
     @BranchId        INT           = NULL,
@@ -27,7 +28,8 @@ BEGIN
            ParentCode = p.WarehouseCode,
            ParentName = p.WarehouseName,
            ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id),
-           COUNT(*) OVER () AS TotalCount
+           COUNT(*) OVER () AS TotalCount,
+           w.IsTransit                                                     -- (90)
     FROM masterdata.Warehouses w
     INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
     LEFT  JOIN masterdata.Warehouses p ON p.Id = w.ParentId

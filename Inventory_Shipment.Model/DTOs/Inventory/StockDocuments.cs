@@ -97,6 +97,34 @@ public sealed class DocumentTypeDto
     /// </summary>
     public bool BivacItemsOnly { get; init; }
 
+    /// <summary>
+    /// The purchase invoice type (PINV) only (script 79): true, the invoice's price and its own charges become the cost of
+    /// the goods received against it; false, those goods keep the order price (and their container's charges). Each
+    /// invoice captures it when it is posted. True on every other type, which it does not concern.
+    /// </summary>
+    public bool AffectsItemCost { get; init; } = true;
+
+    /// <summary>
+    /// The purchase invoice type (PINV) only (script 79): true, posting an invoice also receives its goods, with a goods
+    /// receipt created and posted at once (its lines not travelling in containers); false, its goods come with goods
+    /// receipts made apart. Stock still enters only through goods receipts. False on every other type.
+    /// </summary>
+    public bool AffectsOnHand { get; init; }
+
+    /// <summary>
+    /// The goods receipt type (GRN) only (script 79): true, completing a Delivery movement drafts a goods receipt per
+    /// container; false, goods receipts are made by hand with Receive goods… on each container. True on every other type.
+    /// </summary>
+    public bool AutoCreateOnDelivery { get; init; } = true;
+
+    /// <summary>
+    /// The transfer order type (TRO) only (script 90): "Needs approval before release". True, a transfer order is sent
+    /// for approval and released when a user holding Approve Transfer Orders approves it (an approver may approve and
+    /// release at once); false, Release releases it. Turning it never changes an order already waiting or released.
+    /// False on every other type.
+    /// </summary>
+    public bool NeedsApproval { get; init; }
+
     public bool IsActive { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
     public byte[] RowVersion { get; init; } = [];
@@ -144,7 +172,9 @@ public sealed class StockDocumentListDto
     /// <summary>Base units, so a Box of 12 counts as 12 — the same measure the ledger uses.</summary>
     public decimal TotalQuantity { get; init; }
 
-    public decimal TotalCost { get; init; }
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? TotalCost { get; set; }
+
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
     public DateTime CreatedAtUtc { get; init; }
@@ -190,8 +220,10 @@ public sealed class StockDocumentLineDto
     /// <summary>Quantity times the packing formula: what actually moves in the ledger.</summary>
     public decimal QuantityBase { get; init; }
 
-    public decimal UnitCost { get; init; }
-    public decimal LineTotal { get; init; }
+    /// <summary>(94) Null, with <see cref="LineTotal"/>, without View item costs.</summary>
+    public decimal? UnitCost { get; set; }
+
+    public decimal? LineTotal { get; set; }
     public string? Notes { get; init; }
 
     /// <summary>Stock in this item and warehouse right now, so the grid can warn before an Out is posted.</summary>
@@ -255,7 +287,9 @@ public sealed class StockDocumentDto
 
     public int TotalItems { get; init; }
     public decimal TotalQuantity { get; init; }
-    public decimal TotalCost { get; init; }
+
+    /// <summary>(94) Null without View item costs.</summary>
+    public decimal? TotalCost { get; set; }
 
     public DateTime? PostedAtUtc { get; init; }
     public string? PostedByName { get; init; }
@@ -286,6 +320,13 @@ public sealed class StockDocumentDto
     public IReadOnlyList<StockDocumentLineDto> Lines { get; init; } = [];
     public IReadOnlyList<StockDocumentFileDto> Files { get; init; } = [];
     public IReadOnlyList<StockDocumentAuditDto> Audit { get; init; } = [];
+
+    /// <summary>
+    /// (92) Why the reader may not post, cancel or delete this document: the server's sentence ("You have no access to
+    /// warehouse LKS-01: ask an administrator."), worked out for the reader from the document's line and header
+    /// warehouses at each read. Null when they may - always for a reader with All warehouses.
+    /// </summary>
+    public string? WarehouseAccessRefusal { get; set; }
 }
 
 /* ── requests ──────────────────────────────────────────────────────────────────────────────── */
@@ -293,6 +334,12 @@ public sealed class StockDocumentDto
 public sealed class SaveStockDocumentLineRequest
 {
     public int LineNo { get; init; }
+
+    /// <summary>
+    /// (94) The line's id as it was read (null on a new row): lets the server keep a saved line's cost for a reader who may
+    /// not see item costs. The lines are still a full replace.
+    /// </summary>
+    public int? Id { get; init; }
 
     [Range(1, int.MaxValue)]
     public int ItemId { get; init; }
@@ -308,9 +355,13 @@ public sealed class SaveStockDocumentLineRequest
     [Range(1, int.MaxValue)]
     public int Quantity { get; init; }
 
-    /// <summary>Per unit, base currency. Null is 0 on an In; ignored on an Out, which takes the average cost.</summary>
+    /// <summary>
+    /// Per unit, base currency. Null on an In = the line's saved cost when Id names a saved line of the same item and unit
+    /// and the type's cost is editable, else the item's last cost x packing (its average when it has none or it is 0, else
+    /// 0); always dropped for a reader without View item costs; ignored on an Out, which takes the average.
+    /// </summary>
     [Range(0, double.MaxValue)]
-    public decimal? UnitCost { get; init; }
+    public decimal? UnitCost { get; set; }
 
     [StringLength(300)]
     public string? Notes { get; init; }
@@ -385,7 +436,9 @@ public sealed class StockDocumentQuery
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }
 
-    public string SortBy { get; init; } = "DocumentDate";
+    /// <summary>(94) TotalCost sorts by DocumentDate for a reader without View item costs: the order would reveal the figure.</summary>
+    public string SortBy { get; set; } = "DocumentDate";
+
     public string SortDir { get; init; } = "desc";
 
     public int Page { get; init; } = 1;
@@ -425,6 +478,23 @@ public sealed class UpdateDocumentTypeRequest
 
     /// <summary>The year as a segment of the number, with a sequence per year. Null leaves the stored value alone.</summary>
     public bool? YearInNumber { get; init; }
+
+    /// <summary>
+    /// What the type does (script 79), each null when not sent so an older form never turns one off. The first two are
+    /// for the purchase invoice type (PINV), the third for the goods receipt type (GRN); sent for another type, the
+    /// database refuses them (62000). Changing one never changes an invoice already posted: it captured its values.
+    /// </summary>
+    public bool? AffectsItemCost { get; init; }
+
+    public bool? AffectsOnHand { get; init; }
+
+    public bool? AutoCreateOnDelivery { get; init; }
+
+    /// <summary>
+    /// (90) The transfer order type (TRO) only: "Needs approval before release". Null leaves it alone; sent for another
+    /// type, the database refuses it (62000).
+    /// </summary>
+    public bool? NeedsApproval { get; init; }
 
     public bool IsActive { get; init; } = true;
 

@@ -29,4 +29,14 @@ public interface IUserService
 
     /// <summary>Administrative password reset; revokes the user's refresh tokens.</summary>
     Task<Result> ResetPasswordAsync(int id, string newPassword, CancellationToken cancellationToken = default);
+
+    /// <summary>(92) "Warehouses of {user}": where the user may move stock, and the history of every change.</summary>
+    Task<Result<UserWarehousesDto>> GetWarehousesAsync(int id, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (92) All warehouses, or only these. 400 VALIDATION without a choice or for a warehouse not found / On the way
+    /// (50011's sentence), 404 for an unknown user. Answers the dialog re-read.
+    /// </summary>
+    Task<Result<UserWarehousesDto>> SetWarehousesAsync(
+        int id, SetUserWarehousesRequest request, int actingUserId, CancellationToken cancellationToken = default);
 }

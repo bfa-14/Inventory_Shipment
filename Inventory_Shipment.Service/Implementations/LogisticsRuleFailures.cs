@@ -21,6 +21,9 @@ internal static class LogisticsRuleFailures
     internal static RuleFailure Describe(BusinessRuleException exception, string duplicateCode = "DUPLICATE_CONTAINER_NO")
         => exception.Number switch
         {
+            // (92) The ledger trigger refused a Cancel Offload (a container received before goods receipts) in a warehouse
+            // the user may not use.
+            SqlErrors.WarehouseAccessDenied => new(ErrorType.Forbidden, exception.Message, Security.WarehouseAccess.Code),
             SqlErrors.ContainerValidation => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             SqlErrors.ContainerConcurrency => new(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
             SqlErrors.ContainerNotEditable => new(ErrorType.Conflict, exception.Message, "NOT_EDITABLE"),
@@ -51,6 +54,8 @@ internal static class LogisticsRuleFailures
             SqlErrors.LogisticsInUse => new(ErrorType.Conflict, exception.Message, "IN_USE"),
             SqlErrors.ContainerNotAtFrom => new(ErrorType.Conflict, exception.Message, "CONTAINER_NOT_AT_FROM"),
             SqlErrors.PreviousMovementOpen => new(ErrorType.Conflict, exception.Message, "PREVIOUS_MOVEMENT_OPEN"),
+            // Script 80: a start date before the previous leg of one of its containers ended.
+            SqlErrors.StartBeforePreviousLeg => new(ErrorType.Conflict, exception.Message, "START_BEFORE_PREVIOUS_LEG"),
             SqlErrors.ContainerAttachmentType => new(ErrorType.Validation, exception.Message, "VALIDATION"),
             SqlErrors.PurchaseExporterReferenceRequired => new(ErrorType.Validation, exception.Message, "EXPORTER_REFERENCE_REQUIRED"),
             SqlErrors.PurchaseContainerLineInvalid => new(ErrorType.Conflict, exception.Message, "CONTAINER_LINE_INVALID"),
@@ -60,6 +65,10 @@ internal static class LogisticsRuleFailures
             // Script 51: the container procedures called for an invoice check its rules first.
             SqlErrors.PurchaseInvoiceCannotTakeContainers => new(ErrorType.Conflict, exception.Message, "CANNOT_TAKE_CONTAINERS"),
             SqlErrors.PurchaseInvoiceTooManyPieces => new(ErrorType.Validation, exception.Message, "TOO_MANY_PIECES"),
+            // (97) the BIVAC Out a BIVAC charge's posting makes, refused with its own words
+            SqlErrors.StockDocumentInsufficientStock => new(ErrorType.Conflict, exception.Message, "INSUFFICIENT_STOCK"),
+            SqlErrors.StockDocumentNotDraft or SqlErrors.StockDocumentMasterInactive
+                => new(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),
         };
 

@@ -63,6 +63,14 @@ public class Item
     /// <summary>Days between ordering and receiving, for the shortage report's days-of-cover figure.</summary>
     public int? LeadTimeDays { get; set; }
 
+    /// <summary>(98) Months between ordering and receiving (usp_Item_SetLeadTime).</summary>
+    public decimal? LeadTimeMonths { get; set; }
+
+    /// <summary>(98) The lead time of its purchase history, read by usp_Item_Get only.</summary>
+    public decimal? LeadTimeHistoryMonths { get; set; }
+
+    public int? LeadTimeHistoryReceipts { get; set; }
+
     /// <summary>Pieces (base units) that fit in one container, for the shortage plan's container requirement.</summary>
     public int? PcPerContainer { get; set; }
 
@@ -82,6 +90,21 @@ public class Item
     public int? LastSupplierId { get; set; }
     public string? LastSupplierName { get; set; }
     public DateTime? LastPurchaseAtUtc { get; set; }
+
+    /// <summary>Free text, several lines (script 87).</summary>
+    public string? Note { get; set; }
+
+    /// <summary>An http(s) web address, e.g. the maker's product page (script 87).</summary>
+    public string? Link { get; set; }
+
+    /// <summary>(93) None, Batch numbers or Serial numbers: asked on transfer dispatches (usp_Item_SetTracking).</summary>
+    public Enums.TrackingMode TrackingMode { get; set; }
+
+    /// <summary>(93) Each dispatch gives the expiry date of its pieces: per batch, per serial no., or per group of pieces.</summary>
+    public bool RequiresExpiry { get; set; }
+
+    /// <summary>(93) Serial items: the exact length of every serial no. (17 = a TVS chassis no.); null = any length.</summary>
+    public int? SerialLength { get; set; }
 
     public DateTime CreatedAtUtc { get; set; }
     public int? CreatedBy { get; set; }

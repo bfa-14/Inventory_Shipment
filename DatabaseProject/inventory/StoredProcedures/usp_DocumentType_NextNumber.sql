@@ -1,3 +1,7 @@
+/* ================================================================== 1. Numbers never cut */
+
+-- Re-created (78) from the body of script 22: a sequence longer than the type's NumberLength keeps all its digits
+-- (the numbers given so far, padded to the length, read the same).
 CREATE   PROCEDURE inventory.usp_DocumentType_NextNumber
     @Code           NVARCHAR(20),
     @DocumentNumber NVARCHAR(30) OUTPUT,
@@ -41,7 +45,13 @@ BEGIN
 
     IF @YearIn = 1 SET @Middle = @Middle + CAST(@Year AS NVARCHAR(4)) + N'-';
 
-    SELECT @DocumentNumber = @Prefix + @Middle + RIGHT(REPLICATE(N'0', @Len) + CAST(Number AS NVARCHAR(10)), @Len) FROM @Taken;
+    -- (78) NEVER CUT THE SEQUENCE: padded to the type's length, but a sequence that has outgrown the length keeps all its
+    -- digits (KTG-2026-10000). RIGHT(..., @Len) alone gave container 10,000 of a year KTG-2026-0000 and the next one a
+    -- duplicate of KTG-2026-0001 (UQ_Containers_Ref), refusing every new container for the rest of the year.
+    SELECT @DocumentNumber = @Prefix + @Middle
+                           + CASE WHEN LEN(CAST(Number AS NVARCHAR(10))) >= @Len THEN CAST(Number AS NVARCHAR(10))
+                                  ELSE RIGHT(REPLICATE(N'0', @Len) + CAST(Number AS NVARCHAR(10)), @Len) END
+    FROM @Taken;
 END
 
 GO

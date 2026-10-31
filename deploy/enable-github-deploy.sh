@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# One-time setup for deploying from GitHub (.github/workflows/deploy.yml in both repositories): a push to
-# main deploys the testing environment, a push to production deploys production.
+# One-time setup for the "Deploy to server" button (.github/workflows/deploy.yml in both repositories): a person
+# presses Run workflow - on GitHub, in VS Code or in Visual Studio - and picks testing or production. A push
+# deploys nothing (README.md, "Deploying with a button").
 #
 #   sudo ./enable-github-deploy.sh        in the PRODUCTION checkout's deploy folder
 #
@@ -112,8 +113,9 @@ $(cat "$tmp/key")
 
 This key is shown only now and is not kept on the server. Never paste it anywhere but those secrets.
 
-From then on a push to main deploys testing and a push to production deploys production, from either
-repository. By hand: Actions tab > "Deploy to server" > Run workflow, or from your PC:
+From then on deploy with the button - it never runs by itself: Actions tab > "Deploy to server" > Run
+workflow (or the same button in VS Code or Visual Studio: README.md, "Deploying with a button"), choosing
+testing or production (production asks you to type production again). Or from your PC:
     ssh -t $user@$host sudo $command_path testing
 Each deployment is also logged on the server: /var/log/inventory-deploy-production.log / -testing.log
 EOF

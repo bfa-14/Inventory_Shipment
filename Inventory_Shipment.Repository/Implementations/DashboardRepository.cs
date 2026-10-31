@@ -18,7 +18,7 @@ public sealed class DashboardRepository : IDashboardRepository
     /// <summary>The fourteen result sets of the procedure, read in its order (see the header of script 68).</summary>
     public async Task<DashboardSummaryDto> GetSummaryAsync(
         int? branchId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
-        CancellationToken cancellationToken = default)
+        bool includeWarehouseLevels, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
@@ -66,6 +66,16 @@ public sealed class DashboardRepository : IDashboardRepository
         summary.SalesByFamily = (await charts.ReadAsync<DashboardSliceDto>()).AsList();
         summary.StockByWarehouse = (await charts.ReadAsync<DashboardSliceDto>()).AsList();
         summary.SalesByWeekday = (await charts.ReadAsync<DashboardWeekdayDto>()).AsList();
+
+        // (91) "Warehouse levels below Min": a third, small procedure, so the summary is not re-created for one figure -
+        // read only for a reader who may see it (the service decides): it reads every level of the scope.
+        if (includeWarehouseLevels && summary.StockAlerts is not null)
+        {
+            summary.StockAlerts.BelowWarehouseMin = await connection.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
+                "reporting.usp_Dashboard_StockLevels", new { BranchId = branchId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)) ?? 0;
+        }
+
         return summary;
     }
 }

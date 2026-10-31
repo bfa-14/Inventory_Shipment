@@ -3,6 +3,67 @@ using System.Text.Json.Serialization;
 
 namespace Inventory_Shipment.Model.DTOs.Logistics;
 
+/* ── what the container dialogs fill in by themselves (logistics.usp_Container_OrderDefaults, script 78) ── */
+
+/// <summary>
+/// GET api/logistics/containers/order-defaults/{purchaseOrderId}: what Auto-plan containers... and Add Container... start
+/// with for an order. The supplier is shown read-only (a container's goods come from its order lines); the forwarder is
+/// the one of the order's most recent container that has an active one, else the order's supplier, and stays editable;
+/// the country of origin is the supplier's.
+/// </summary>
+public sealed class ContainerOrderDefaultsDto
+{
+    public int PurchaseOrderId { get; init; }
+    public string? PurchaseOrderNumber { get; init; }
+    public int SupplierId { get; init; }
+    public string SupplierCode { get; init; } = string.Empty;
+    public string SupplierName { get; init; } = string.Empty;
+
+    /// <summary>The supplier's country (ISO 3166-1 alpha-2); null when it has none.</summary>
+    public string? CountryOfOrigin { get; init; }
+
+    public int ForwarderId { get; init; }
+    public string ForwarderCode { get; init; } = string.Empty;
+    public string ForwarderName { get; init; } = string.Empty;
+
+    /// <summary>LastContainer (the forwarder of <see cref="LastContainerRef"/>) or Supplier (the order's supplier).</summary>
+    public string ForwarderSource { get; init; } = "Supplier";
+
+    public string? LastContainerRef { get; init; }
+}
+
+/// <summary>
+/// POST api/logistics/containers/lookup (logistics.usp_Container_Lookup, script 78): the container pickers. With ids,
+/// those containers (a preset selection of any size, in one call); without, at most <see cref="Top"/> matching the search.
+/// </summary>
+public sealed class ContainerLookupRequest
+{
+    public IReadOnlyList<int>? Ids { get; init; }
+
+    [StringLength(100)]
+    public string? Search { get; init; }
+
+    /// <summary>Only containers up to this status (6 = Offloaded: a charge can still be typed for them).</summary>
+    [Range(1, 8)]
+    public byte? MaxStatus { get; init; }
+
+    [Range(1, 200)]
+    public int Top { get; init; } = 50;
+}
+
+public sealed class ContainerLookupDto
+{
+    public int Id { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string? ContainerNo { get; init; }
+    public byte Status { get; init; }
+
+    /// <summary>The pieces loaded (base units): what a "By pieces" split weighs the container by.</summary>
+    public int Pieces { get; init; }
+
+    public int? PurchaseOrderId { get; init; }
+}
+
 /* ── auto-plan: the proposal (logistics.usp_Container_PlanFromOrder, nothing saved) ────────────── */
 
 /// <summary>Pieces of one item in a full container as an older dialog typed them: accepted and IGNORED (script 54).</summary>

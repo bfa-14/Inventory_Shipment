@@ -17,3 +17,9 @@ CREATE NONCLUSTERED INDEX [IX_MovementContainers_Container]
 
 GO
 
+CREATE NONCLUSTERED INDEX [IX_MovementContainers_ContainerMovement]
+    ON [logistics].[MovementContainers]([ContainerId] ASC, [MovementId] ASC);
+
+
+GO
+

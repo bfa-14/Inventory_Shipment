@@ -25,6 +25,7 @@ public static class WarehouseMapper
         CreatedAtUtc = warehouse.CreatedAtUtc.AsUtc(),
         UpdatedAtUtc = warehouse.UpdatedAtUtc.AsUtc(),
         AllowOutOfStockOverride = warehouse.AllowOutOfStockOverride,
+        IsTransit = warehouse.IsTransit,
         RowVersion = Convert.ToBase64String(warehouse.RowVersion)
     };
 
@@ -42,7 +43,11 @@ public static class WarehouseMapper
         ParentId = warehouse.ParentId,
         Level = warehouse.Level,
         ChildCount = warehouse.ChildCount,
-        IsUsed = warehouse.IsUsed
+        IsUsed = warehouse.IsUsed,
+        IsTransit = warehouse.IsTransit,
+        IsUsedInTransactions = warehouse.IsUsedInTransactions,
+        HasStockLevels = warehouse.HasStockLevels,
+        CanUse = warehouse.CanUse
     };
 
     public static BranchLookupDto ToDto(this BranchLookup branch) => new()

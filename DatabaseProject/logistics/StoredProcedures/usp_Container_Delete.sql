@@ -6,6 +6,17 @@ BEGIN
     SET XACT_ABORT ON;
     DECLARE @Status TINYINT = (SELECT Status FROM logistics.Containers WHERE Id = @Id);
     IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+
+    -- (65) RULE 21: NOT WHILE THE CONTAINER HAS AN OPEN GOODS RECEIPT. A draft container never has one (a receipt needs
+    -- a confirmed container): the check states the rule here as Cancel and Save do, in their words.
+    DECLARE @GrnMsg NVARCHAR(400);
+    SELECT @GrnMsg = N'Container ' + c.ContainerRef + N' has ' + ISNULL(N'goods receipt ' + r.GoodsReceiptNumber, N'a draft goods receipt')
+                     + N'. Delete the draft (or cancel the receipt) first.'
+    FROM logistics.Containers c
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) r
+    WHERE c.Id = @Id AND r.GoodsReceiptId IS NOT NULL;
+    IF @GrnMsg IS NOT NULL THROW 69019, @GrnMsg, 1;
+
     IF @Status <> 1 THROW 69005, 'Only a draft container can be deleted. Cancel the others.', 1;
     IF EXISTS (SELECT 1 FROM logistics.ContainerLines cl
                INNER JOIN purchase.PurchaseDocumentLines pil ON pil.ContainerLineId = cl.Id

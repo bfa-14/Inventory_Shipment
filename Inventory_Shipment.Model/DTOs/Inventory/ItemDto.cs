@@ -32,16 +32,16 @@ public sealed class ItemListDto
     public int OnHand { get; init; }
 
     /// <summary>The moving average cost per base unit, kept on the item by the postings that add stock.</summary>
-    public decimal? AverageCost { get; init; }
+    public decimal? AverageCost { get; set; }
 
     /// <summary>What the last purchase LANDED at, per base unit.</summary>
-    public decimal? LastCost { get; init; }
+    public decimal? LastCost { get; set; }
 
     /// <summary>What the supplier charged on the last posted invoice, before the charges around it.</summary>
-    public decimal? FobCost { get; init; }
+    public decimal? FobCost { get; set; }
 
-    /// <summary>On hand × average cost, in the base currency.</summary>
-    public decimal InventoryValue { get; init; }
+    /// <summary>On hand × average cost, in the base currency. (94) The costs above and this are null without View item costs.</summary>
+    public decimal? InventoryValue { get; set; }
 
     public int? DefaultSupplierId { get; init; }
     public string? DefaultSupplierName { get; init; }
@@ -88,19 +88,19 @@ public sealed class ItemDetailsDto
     public int OnHand { get; init; }
 
     /// <summary>What the last posted purchase LANDED at, per base unit. An Inventory In does not touch it.</summary>
-    public decimal? LastCost { get; init; }
+    public decimal? LastCost { get; set; }
 
     /// <summary>The moving weighted average, moved only by the postings that add stock. What a sale is costed at.</summary>
-    public decimal? AverageCost { get; init; }
+    public decimal? AverageCost { get; set; }
 
     /// <summary>What the supplier charged per base unit on the last posted invoice, before freight, customs and the rest.</summary>
-    public decimal? FobCost { get; init; }
+    public decimal? FobCost { get; set; }
 
-    /// <summary>On hand × average cost, in the base currency.</summary>
-    public decimal InventoryValue { get; init; }
+    /// <summary>On hand × average cost, in the base currency. (94) The costs above and this are null without View item costs.</summary>
+    public decimal? InventoryValue { get; set; }
 
     /// <summary>The same figure as <see cref="FobCost"/>, under the name the item page used before landed costs existed.</summary>
-    public decimal? LastPurchaseCost { get; init; }
+    public decimal? LastPurchaseCost { get; set; }
 
     /// <summary>The supplier a purchase order for this item is raised on by default.</summary>
     public int? DefaultSupplierId { get; init; }
@@ -109,6 +109,15 @@ public sealed class ItemDetailsDto
 
     /// <summary>Days between ordering and receiving — what the shortage report compares days of cover with.</summary>
     public int? LeadTimeDays { get; init; }
+
+    /// <summary>(98) The item's own lead time in months (one decimal); the days are months x 30.</summary>
+    public decimal? LeadTimeMonths { get; init; }
+
+    /// <summary>(98) What its purchase history says: order approval to goods receipt, last 12 months (null without one).</summary>
+    public decimal? LeadTimeHistoryMonths { get; init; }
+
+    /// <summary>(98) The goods receipts that history counts.</summary>
+    public int? LeadTimeHistoryReceipts { get; init; }
 
     /// <summary>Pieces (base units) per container — the default of a shortage plan line. Only the item's own Get returns it.</summary>
     public int? PcPerContainer { get; init; }
@@ -123,6 +132,19 @@ public sealed class ItemDetailsDto
     public int? LastSupplierId { get; init; }
     public string? LastSupplierName { get; init; }
     public DateTime? LastPurchaseAtUtc { get; init; }
+
+    /// <summary>Free text, several lines. Only the item's own Get returns it.</summary>
+    public string? Note { get; init; }
+
+    /// <summary>An http(s) web address the page opens in a new tab. Only the item's own Get returns it.</summary>
+    public string? Link { get; init; }
+
+    /* (93) Tracking on transfers: None | Batch | Serial, whether each dispatch gives an expiry date, the exact length of a
+       serial no. (null = any), and what a dispatch asks for (Serial | Batch | Expiry | null). Only the item's own Get. */
+    public Enums.TrackingMode TrackingMode { get; init; }
+    public bool RequiresExpiry { get; init; }
+    public int? SerialLength { get; init; }
+    public Enums.TrackingKind? TrackingKind { get; init; }
 
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }

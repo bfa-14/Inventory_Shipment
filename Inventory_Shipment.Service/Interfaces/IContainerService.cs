@@ -67,6 +67,13 @@ public interface IContainerService
     Task<Result<TrackingDto>> GetTrackingAsync(
         TrackingQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (82) The Shipments board: { columns, containers } - every container on its way in its column by stage, with its
+    /// card and group; the received ones of the last 30 days with showReceived. Needs containers.shipments.view.
+    /// </summary>
+    Task<Result<ShipmentBoardDto>> GetShipmentBoardAsync(
+        ShipmentBoardQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     /// <summary>One upload for one or several containers; the created records. Needs containers.attachments.manage.</summary>
     Task<Result<IReadOnlyList<ContainerAttachmentCreatedDto>>> AddAttachmentAsync(
         ContainerAttachmentUpload upload, int userId, IReadOnlySet<string> permissions,
@@ -94,6 +101,17 @@ public interface IContainerService
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /* ── many containers per order ── */
+
+    /// <summary>The container pickers: the given ids, or the newest matching the search. Needs containers.view.</summary>
+    Task<Result<IReadOnlyList<ContainerLookupDto>>> LookupAsync(
+        ContainerLookupRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// What Auto-plan containers... and Add Container... fill in by themselves for an order: its supplier (read-only), the
+    /// forwarder (the order's last container's, else the supplier) and the country of origin. Needs containers.create.
+    /// </summary>
+    Task<Result<ContainerOrderDefaultsDto>> GetOrderDefaultsAsync(
+        int purchaseOrderId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>The proposed containers of an approved order for one container type; nothing is saved. Needs containers.create.</summary>
     Task<Result<AutoPlanDto>> AutoPlanAsync(

@@ -1,5 +1,12 @@
-/* ================================================================== 13. Purchase invoices and container charges learn what they were paid */
+/* ================================================================== 9. Search: received and invoiced progress, "To receive" */
 
+-- Re-created (65) from the body of script 63 (each supplier invoice's mode): ReceivedPercent of an order = pieces
+-- received (GoodsReceivedBase) / ordered - it was the invoiced percent, which InvoicedPercent still gives. + the
+-- invoice's UsesGoodsReceipts, and QuantityBase / ReceivedBase for the lists' "Received" progress (an order: ordered /
+-- received; an invoice: invoiced / received). Two filters: @ToReceive (posted or closed orders with goods still to
+-- come, the outstanding of rule 17) and @NotFullyReceived (posted or closed supplier invoices not fully received; one
+-- posted with its stock before goods receipts is). ReceivedPercent and InvoicedPercent are NULL on a draft order. Every
+-- other column, filter and sort is unchanged.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
     @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
@@ -14,7 +21,12 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @SortColumn       NVARCHAR(30) = N'DocumentDate',  -- DocumentNumber | DocumentDate | SupplierName | Status | TotalAmount | CreatedAtUtc
     @SortDirection    NVARCHAR(4)  = N'DESC',
     @PageNumber       INT          = 1,
-    @PageSize         INT          = 10
+    @PageSize         INT          = 10,
+    -- (65) goods receipts: purchase orders with goods still to come (rule 17's outstanding on a posted or closed order);
+    --      supplier invoices posted or closed whose pieces are not all received (those posted with their stock before
+    --      goods receipts are received)
+    @ToReceive        BIT          = NULL,
+    @NotFullyReceived BIT          = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -27,6 +39,8 @@ BEGIN
         SET @SortColumn = N'DocumentDate';
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
     SET @SortDirection = UPPER(@SortDirection);
+    -- (63) the setting, read once: the mode of a supplier invoice created before script 63 (OneItemOnly NULL)
+    DECLARE @OneItemSetting BIT = configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice');
 
     SELECT d.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, dt.StockDirection,
            d.DocumentNumber, d.DocumentDate, d.ExpectedDate, d.BranchId, b.BranchName, d.WarehouseId, w.WarehouseName,
@@ -35,18 +49,30 @@ BEGIN
            d.SupplierReference, d.ExporterReference, d.CommercialInvoiceNo, d.ReceiptMode,
            d.Status, d.TotalItems, d.TotalQuantity, d.Subtotal, d.TotalDiscount, d.TotalAmount, d.TotalAmountBase,
            d.SourceDocumentId, src.DocumentNumber AS SourceDocumentNumber,
-           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
-           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
+           -- (65) received = goods receipts (GoodsReceivedBase); invoiced stays below. Both NULL on a draft order: nothing
+           --      is received or invoiced against a draft, so the list shows a dash and its export writes nothing, not 0%
+           ReceivedPercent = CASE WHEN dt.Code = N'PO' AND d.Status <> 1 AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.GoodsReceived / prog.Ordered AS DECIMAL(5,1)) END,
+           InvoicedPercent = CASE WHEN dt.Code = N'PO' AND d.Status <> 1 AND ISNULL(prog.Ordered, 0) > 0 THEN CAST(100.0 * prog.Invoiced / prog.Ordered AS DECIMAL(5,1)) END,
            InvoicingStatus = CASE WHEN dt.Code <> N'PO' THEN NULL WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0
                                   WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END,
            DraftInvoiceCount = CASE WHEN dt.Code = N'PO' THEN (SELECT COUNT(*) FROM purchase.PurchaseDocuments x WHERE x.SourceDocumentId = d.Id AND x.Status = 1) END,
-           -- (45) the item of a supplier invoice (the one of its first line) and how many it holds (more than 1: made before 45)
+           -- (45) the item of a supplier invoice (the one of its first line) and how many it holds (more than 1: an invoice of
+           -- several items, 63, or one of one item made before 45)
            ItemId = itm.ItemId, ItemCode = itm.ItemCode, ItemName = itm.ItemName, ItemCount = itm.ItemCount,
+           -- (63) a supplier invoice's mode (its own, else the setting): 1 one item, 0 several items; NULL on orders and returns
+           OneItemOnly = CAST(CASE WHEN dt.Code = N'PINV' THEN COALESCE(d.OneItemOnly, @OneItemSetting) END AS BIT),
            d.ApprovalRequestedAtUtc, d.ApprovedAtUtc, apu.FullName AS ApprovedByName,
            d.PostedAtUtc, pu.FullName AS PostedByName, d.CancelledAtUtc, d.ClosedAtUtc,
            d.CreatedAtUtc, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.RowVersion,
            -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
            PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (65) the "Received" progress: pieces received of the pieces ordered (orders) or invoiced (supplier invoices; one
+           --      posted with its stock before goods receipts received everything when it was posted)
+           d.UsesGoodsReceipts,
+           QuantityBase = CASE WHEN dt.Code IN (N'PO', N'PINV') THEN ISNULL(prog.Ordered, 0) END,
+           ReceivedBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(prog.GoodsReceived, 0)
+                               WHEN dt.Code = N'PINV' AND d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1 AND d.Status IN (2, 4) THEN ISNULL(prog.Ordered, 0)
+                               WHEN dt.Code = N'PINV' THEN ISNULL(prog.Invoiced, 0) END,
            COUNT(*) OVER () AS TotalCount
     FROM purchase.PurchaseDocuments d
     OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
@@ -59,7 +85,8 @@ BEGIN
     LEFT  JOIN security.Users cu ON cu.Id = d.CreatedBy
     LEFT  JOIN security.Users pu ON pu.Id = d.PostedBy
     LEFT  JOIN security.Users apu ON apu.Id = d.ApprovedBy
-    OUTER APPLY (SELECT Ordered = SUM(QuantityBase), Invoiced = SUM(ReceivedQuantityBase)
+    -- Invoiced = ReceivedQuantityBase: invoiced on an order line, received (matched) on an invoice line
+    OUTER APPLY (SELECT Ordered = SUM(QuantityBase), Invoiced = SUM(ReceivedQuantityBase), GoodsReceived = SUM(GoodsReceivedBase)
                  FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id) prog
     OUTER APPLY (SELECT TOP (1) fl.ItemId, fi.ItemCode, fi.ItemName,
                         ItemCount = (SELECT COUNT(DISTINCT ItemId) FROM purchase.PurchaseDocumentLines WHERE DocumentId = d.Id)
@@ -81,6 +108,11 @@ BEGIN
            CASE WHEN ISNULL(prog.Invoiced, 0) = 0 THEN 0 WHEN prog.Invoiced >= prog.Ordered THEN 2 ELSE 1 END = @InvoicingStatus))
       AND (@DateFrom IS NULL OR d.DocumentDate >= @DateFrom)
       AND (@DateTo IS NULL OR d.DocumentDate <= @DateTo)
+      AND (ISNULL(@ToReceive, 0) = 0 OR (dt.Code = N'PO' AND d.Status IN (2, 4)
+           AND EXISTS (SELECT 1 FROM purchase.fn_PoLine_Progress(d.Id) p WHERE p.OutstandingBase > 0)))
+      AND (ISNULL(@NotFullyReceived, 0) = 0 OR (dt.Code = N'PINV' AND d.Status IN (2, 4)
+           AND NOT (d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1)
+           AND ISNULL(prog.Invoiced, 0) < ISNULL(prog.Ordered, 0)))
     ORDER BY
         CASE WHEN @SortDirection = N'ASC' THEN
             CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END

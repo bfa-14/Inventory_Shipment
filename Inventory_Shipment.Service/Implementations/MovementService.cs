@@ -10,15 +10,18 @@ using static Inventory_Shipment.Service.Implementations.LogisticsRuleFailures;
 
 namespace Inventory_Shipment.Service.Implementations;
 
-public sealed class MovementService : IMovementService
+public sealed partial class MovementService : IMovementService
 {
     private const string NotFoundMessage = "Movement not found.";
 
     /// <summary>The procedure's page ceiling; the export walks the pages at this size.</summary>
     private const int ExportPageSize = 200;
 
-    /// <summary>The page ceiling of logistics.usp_Movement_ContainerCandidates.</summary>
-    private const int CandidatePageSize = 200;
+    /// <summary>
+    /// The page ceiling of logistics.usp_Movement_ContainerCandidates: 5,000 since script 78 (200 before), so the movement's
+    /// list holds every candidate at its From in one call - each page costs the whole place check.
+    /// </summary>
+    private const int CandidatePageSize = 5000;
 
     /// <summary>The width of a value of logistics.tvp_TextList.</summary>
     private const int MaxNumberLength = 100;
@@ -39,9 +42,9 @@ public sealed class MovementService : IMovementService
     public async Task<Result<PagedResult<MovementListDto>>> SearchAsync(
         MovementQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        if (!permissions.Contains(Permissions.Containers.MovementsView))
         {
-            return Forbidden<PagedResult<MovementListDto>>(Permissions.Containers.View);
+            return Forbidden<PagedResult<MovementListDto>>(Permissions.Containers.MovementsView);
         }
 
         if (InvalidStatus(query) is { } invalid)
@@ -63,9 +66,10 @@ public sealed class MovementService : IMovementService
     public async Task<Result<MovementDto>> GetAsync(
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        // The Movements screen, or a container's page showing the movements it travels with (script 75).
+        if (!permissions.Contains(Permissions.Containers.MovementsView) && !permissions.Contains(Permissions.Containers.View))
         {
-            return Forbidden<MovementDto>(Permissions.Containers.View);
+            return Forbidden<MovementDto>(Permissions.Containers.MovementsView);
         }
 
         return await ReadAsync(id, cancellationToken);
@@ -233,7 +237,32 @@ public sealed class MovementService : IMovementService
         });
     }
 
-    /// <summary>More than 500 numbers is the procedure's refusal (70000 → 400), with its message.</summary>
+    public async Task<Result<IReadOnlyList<MovementJoinCandidateDto>>> JoinCandidatesAsync(
+        int containerId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<IReadOnlyList<MovementJoinCandidateDto>>(Permissions.Containers.MovementsManage);
+        }
+
+        if (containerId <= 0)
+        {
+            return Result<IReadOnlyList<MovementJoinCandidateDto>>.Failure(
+                ErrorType.Validation, "A container id must be greater than zero.", "VALIDATION");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<MovementJoinCandidateDto>>.Success(
+                await _movements.JoinCandidatesAsync(containerId, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<MovementJoinCandidateDto>>(ex);
+        }
+    }
+
+    /// <summary>More than 10,000 numbers (500 before script 78) is the procedure's refusal (70000 → 400), with its message.</summary>
     public async Task<Result<IReadOnlyList<MovementContainerMatchDto>>> MatchContainersAsync(
         MatchMovementContainersRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
@@ -280,9 +309,9 @@ public sealed class MovementService : IMovementService
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         MovementQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        if (!permissions.Contains(Permissions.Containers.MovementsView))
         {
-            return Forbidden<(byte[], string)>(Permissions.Containers.View);
+            return Forbidden<(byte[], string)>(Permissions.Containers.MovementsView);
         }
 
         if (InvalidStatus(query) is { } invalid)
@@ -392,9 +421,10 @@ public sealed class MovementService : IMovementService
             return Forbidden<MovementDto>(Permissions.Containers.MovementsManage);
         }
 
+        MovementSplitUndoneDto? undone;
         try
         {
-            await _movements.SetStatusAsync(
+            undone = await _movements.SetStatusAsync(
                 id, action, request.Date, request.Reason, ToRowVersion(request.RowVersion), userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
@@ -410,6 +440,18 @@ public sealed class MovementService : IMovementService
         var afterCommit = action == "Complete" ? CancellationToken.None : cancellationToken;
 
         var read = await ReadAsync(id, afterCommit);
+
+        // (82) A CANCEL THAT UNDID A SPLIT says where the containers went: the procedure's own row, read in its transaction.
+        if (undone is not null && read.Value is { } cancelled)
+        {
+            _logger.LogInformation("Movement {MovementNo} cancelled: the split undone, {Count} container(s) back on {BackTo}",
+                cancelled.MovementNo, undone.ContainerCount, undone.MovementNo);
+            return Result<MovementDto>.Success(cancelled with
+            {
+                SplitUndone = undone with { Message = SplitUndoneMessage(cancelled.MovementNo, undone) },
+            });
+        }
+
         if (action != "Complete"
             || read.Value is not { Status: MovementStatus.Completed } movement
             || MovementStages.Normalize(movement.Stage) != MovementStages.Delivery)
@@ -417,8 +459,19 @@ public sealed class MovementService : IMovementService
             return read;
         }
 
+        // (79) The goods receipt type makes them by hand: no draft, and the answer says what to do instead. (The procedure
+        // also stops on its own when the switch is off, should it have been turned between this read and the call.)
+        if (!movement.GoodsReceiptsAutomatic)
+        {
+            _logger.LogInformation("Movement {MovementNo} completed: goods receipts are made by hand (Document Types)", movement.MovementNo);
+            return Result<MovementDto>.Success(movement with { GoodsReceipts = [], GoodsReceiptsMessage = ByHandMessage });
+        }
+
         return Result<MovementDto>.Success(await CreateGoodsReceiptsAsync(movement, userId));
     }
+
+    /// <summary>(79) The answer to completing a Delivery when the goods receipt type does not draft them.</summary>
+    internal const string ByHandMessage = "Goods receipts are made by hand: use Receive goods… on each container.";
 
     /* ── the draft goods receipts of a completed Delivery (script 65) ─────────────────────────── */
 
@@ -479,7 +532,8 @@ public sealed class MovementService : IMovementService
         return current with
         {
             GoodsReceipts = rows,
-            GoodsReceiptsMessage = ReceiptsSummary(rows),
+            // (79) the switch turned off between the read and the call: the procedure made nothing, and says why here
+            GoodsReceiptsMessage = rows.Count == 0 && !current.GoodsReceiptsAutomatic ? ByHandMessage : ReceiptsSummary(rows),
             Warnings = rows.Where(r => r.SkipReason == MovementReceiptSkipReasons.Error)
                 .Select(r => $"{r.ContainerRef}: the draft goods receipt was not created: {WithoutFinalPeriod(r.Message ?? "refused")}. "
                              + "Use Receive goods… on the container.")
@@ -491,7 +545,9 @@ public sealed class MovementService : IMovementService
     /// The notification of rule 5: "Draft goods receipts created: KTG-2026-0031, KTG-2026-0032 (warehouse to choose).
     /// KTG-2026-0032: choose the warehouse (LUB, the container's, has warehouses under it: …). Not created: KTG-2026-0033
     /// already has GRN-BR-002-000004." Null when the movement had no container. A draft made without the container's
-    /// own warehouse says why (script 72), once per reason for the containers that share it.
+    /// own warehouse says why (script 72), once per reason for the containers that share it. Each list names at most
+    /// <see cref="SummaryNames"/> containers, then "and N more" (script 78: a Delivery of 8,000 containers wrote 8,000
+    /// refs into one message).
     /// </summary>
     internal static string? ReceiptsSummary(IReadOnlyList<MovementReceiptResultDto> rows)
     {
@@ -502,24 +558,33 @@ public sealed class MovementService : IMovementService
             .Select(r => (r.ContainerRef, Reason: WarehouseToChooseReason(r)))
             .Where(x => x.Reason is not null)
             .GroupBy(x => x.Reason!, StringComparer.Ordinal)
-            .Select(g => $"{string.Join(", ", g.Select(x => x.ContainerRef))}: {g.Key}.")
+            .Select(g => $"{NameSome(g.Select(x => x.ContainerRef).ToList(), ", ")}: {g.Key}.")
             .ToList();
         var skipped = rows.Where(r => !r.Created).Select(r => $"{r.ContainerRef} {SkipPhrase(r)}").ToList();
 
         var parts = new List<string>(2 + whyToChoose.Count);
         if (created.Count > 0)
         {
-            parts.Add($"{(created.Count == 1 ? "Draft goods receipt created" : "Draft goods receipts created")}: {string.Join(", ", created)}.");
+            parts.Add($"{(created.Count == 1 ? "Draft goods receipt created" : "Draft goods receipts created")}: {NameSome(created, ", ")}.");
             parts.AddRange(whyToChoose);
         }
 
         if (skipped.Count > 0)
         {
-            parts.Add($"Not created: {string.Join("; ", skipped)}.");
+            parts.Add($"Not created: {NameSome(skipped, "; ")}.");
         }
 
         return parts.Count > 0 ? string.Join(' ', parts) : null;
     }
+
+    /// <summary>How many containers a list of the Delivery summary names before "and N more".</summary>
+    internal const int SummaryNames = 10;
+
+    /// <summary>"KTG-2026-0001, KTG-2026-0002 and 7,998 more": the first <see cref="SummaryNames"/>, then the count.</summary>
+    private static string NameSome(IReadOnlyList<string> names, string separator) =>
+        names.Count <= SummaryNames
+            ? string.Join(separator, names)
+            : $"{string.Join(separator, names.Take(SummaryNames))} and {(names.Count - SummaryNames).ToString("N0", System.Globalization.CultureInfo.InvariantCulture)} more";
 
     private static string SkipPhrase(MovementReceiptResultDto row) => row.SkipReason switch
     {

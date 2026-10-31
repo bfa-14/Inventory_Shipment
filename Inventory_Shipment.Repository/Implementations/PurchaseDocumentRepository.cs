@@ -15,6 +15,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     private const string ShippedLineTypeName = "purchase.tvp_ShippedLine";
     private const string LineContainerTypeName = "purchase.tvp_LineContainer";
     private const string ContainerLineQtyTypeName = "logistics.tvp_ContainerLineQty";
+    private const string SourceLineSelectionTypeName = "purchase.tvp_SourceLineSelection";
 
     /// <summary>The columns the search procedure will sort by; anything else falls back to the document date.</summary>
     private static readonly string[] SortColumns =
@@ -66,6 +67,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? SourceDocumentNumber { get; init; }
         public decimal? ReceivedPercent { get; init; }
         public decimal? InvoicedPercent { get; init; }
+        public int? InvoicingStatus { get; init; }
         public bool UsesGoodsReceipts { get; init; }
         public int? QuantityBase { get; init; }
         public int? ReceivedBase { get; init; }
@@ -114,6 +116,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             CommercialInvoiceNo = CommercialInvoiceNo,
             ReceiptMode = ReceiptMode,
             Status = PurchaseDocumentStatus.From(Status),
+            InvoicingStatus = InvoicingStatus,
             TotalItems = TotalItems,
             TotalQuantity = TotalQuantity,
             Subtotal = Subtotal,
@@ -158,6 +161,12 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             query.WarehouseId,
             query.SupplierId,
             Status = PurchaseDocumentStatus.ToCode(query.Status),
+            // (77) the stage of an approved order: Saved 0, Partially posted 1, Posted 2 - orders only (the procedure
+            //      would find no invoice or return with it)
+            InvoicingStatus = PurchaseDocumentTypes.Normalize(query.DocumentTypeCode) == PurchaseDocumentTypes.Order
+                              && query.InvoicingStatus is >= 0 and <= 2
+                ? (byte?)query.InvoicingStatus
+                : null,
             DateFrom = query.DateFrom?.ToDateTime(TimeOnly.MinValue),
             DateTo = query.DateTo?.ToDateTime(TimeOnly.MinValue),
             SortColumn = ResolveSortColumn(query.SortBy),
@@ -268,6 +277,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public bool CanReceive { get; init; }
         public string? ReceiveBlockedReason { get; init; }
         public DateTime? GoodsReceiptsSinceUtc { get; init; }
+
+        // (79) what the document type makes of a supplier invoice (true / false on a database without script 79)
+        public bool AffectsCost { get; init; } = true;
+        public bool ReceiveOnPost { get; init; }
     }
 
     /// <summary>A line as the procedure returns it. LineNumber here, LineNo on the DTO — LINENO is reserved in T-SQL.</summary>
@@ -400,6 +413,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public string? DocumentNumber { get; init; }
         public DateTime DocumentDate { get; init; }
         public byte Status { get; init; }
+        public int? InvoicingStatus { get; init; }
         public decimal TotalAmount { get; init; }
         public string CurrencyCode { get; init; } = string.Empty;
 
@@ -412,6 +426,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             DocumentNumber = DocumentNumber,
             DocumentDate = DocumentDate,
             Status = PurchaseDocumentStatus.From(Status),
+            InvoicingStatus = InvoicingStatus,
             TotalAmount = TotalAmount,
             CurrencyCode = CurrencyCode,
         };
@@ -542,6 +557,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             CanReceive = header.CanReceive,
             ReceiveBlockedReason = header.ReceiveBlockedReason,
             GoodsReceiptsSinceUtc = header.GoodsReceiptsSinceUtc,
+            AffectsCost = header.AffectsCost,
+            ReceiveOnPost = header.ReceiveOnPost,
             GoodsReceipts = goodsReceipts,
             CostAdjustments = costAdjustments,
             Lines = lines.Select(l => l.ToDto()).ToList(),
@@ -663,6 +680,9 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         public decimal CostAdjustedInventoryBase { get; init; }
         public decimal CostAdjustedCogsBase { get; init; }
         public int CostAdjustedLines { get; init; }
+
+        /// <summary>(79) The type's "Affects on-hand", captured on the invoice; null from an older body.</summary>
+        public bool? ReceiveOnPost { get; init; }
     }
 
     /// <summary>
@@ -690,8 +710,10 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
                 await using var connection = _connectionFactory.Create();
                 PostRow? row = null;
+                // An invoice of any number of containers (script 78): posting reallocates the charges of each.
                 await using (var multi = await connection.QueryMultipleAsync(new CommandDefinition(
                                  "purchase.usp_PurchaseDocument_Post", parameters,
+                                 commandTimeout: _connectionFactory.BatchCommandTimeout,
                                  commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)))
                 {
                     if (!multi.IsConsumed)
@@ -715,6 +737,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
                     GoodsReceiptId = parameters.Get<int?>("@GoodsReceiptId"),
                     GoodsReceiptNumber = parameters.Get<string?>("@GoodsReceiptNumber"),
                     ReceiveWarning = parameters.Get<string?>("@ReceiveWarning"),
+                    ReceiveOnPost = row?.ReceiveOnPost ?? false,
                 };
             }, cancellationToken);
         }
@@ -743,11 +766,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Cancel",
-            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
-
-    public Task CloseAsync(int id, string? reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("purchase.usp_PurchaseDocument_Close",
-            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken,
+            _connectionFactory.BatchCommandTimeout);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("purchase.usp_PurchaseDocument_Delete", new { Id = id, UserId = userId }, cancellationToken);
@@ -792,14 +812,19 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         return ExecuteAsync("purchase.usp_PurchaseDocument_MarkShipped", parameters, cancellationToken);
     }
 
-    /// <summary>From an order: one invoice per item (or one of every item), and their rows; from an invoice: one return, no rows.</summary>
+    /// <summary>
+    /// From an order: one invoice per item (or one of every item), and their rows; from an invoice: one return, no rows.
+    /// An EMPTY selection is the procedure's "everything still available"; the table is sent either way.
+    /// </summary>
     public async Task<CreatedFromSource> CreateFromSourceAsync(
         int sourceId, string targetTypeCode, DateOnly? documentDate, string? exporterReference, string? commercialInvoiceNo,
-        bool? onePerItem, int userId, CancellationToken cancellationToken = default)
+        bool? onePerItem, int userId, IReadOnlyList<SourceLineQuantityRequest>? selection = null,
+        CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
         parameters.Add("@SourceId", sourceId, DbType.Int32);
         parameters.Add("@TargetTypeCode", targetTypeCode, DbType.String, size: 20);
+        parameters.Add("@Selection", ToSourceLineSelectionTable(selection ?? []).AsTableValuedParameter(SourceLineSelectionTypeName));
         parameters.Add("@DocumentDate", documentDate?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@ExporterReference", exporterReference, DbType.String, size: 50);
@@ -809,6 +834,22 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
 
         var invoices = await QueryCreatedAsync("purchase.usp_PurchaseDocument_CreateFromSource", parameters, cancellationToken);
         return new CreatedFromSource(parameters.Get<int>("@NewId"), invoices);
+    }
+
+    public async Task<IReadOnlyList<OrderInvoiceCandidateDto>> GetOrderInvoiceCandidatesAsync(
+        int purchaseOrderId, bool includeAll, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<OrderInvoiceCandidateDto>(new CommandDefinition(
+                "purchase.usp_PurchaseOrder_InvoiceCandidates", new { PurchaseOrderId = purchaseOrderId, IncludeAll = includeAll },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
     }
 
     /// <summary>An EMPTY selection is the procedure's "everything loaded and not yet invoiced"; the table is sent either way.</summary>
@@ -844,6 +885,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     /// <summary>
     /// The rows of the invoices a procedure created (Id, ItemId, ItemCode, ItemName, LineCount, QuantityBase,
     /// TotalAmount, RowVersion, ItemCount), in its order. A procedure that returns none (a return) gives an empty list.
+    /// Invoices are created from any number of containers (script 78): the batch timeout.
     /// </summary>
     private async Task<IReadOnlyList<CreatedPurchaseInvoiceDto>> QueryCreatedAsync(
         string procedure, DynamicParameters parameters, CancellationToken cancellationToken)
@@ -854,7 +896,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             {
                 await using var connection = _connectionFactory.Create();
                 return (await connection.QueryAsync<CreatedPurchaseInvoiceDto>(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+                    procedure, parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
             }, cancellationToken);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
@@ -948,7 +991,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
     /// updates the order's lines then its header, and a reader of that order arriving between the
     /// two is enough for one of them to be killed. The transaction rolled back; the retry is clean.
     /// </summary>
-    private async Task ExecuteAsync(string procedure, object parameters, CancellationToken cancellationToken)
+    private async Task ExecuteAsync(
+        string procedure, object parameters, CancellationToken cancellationToken, int? commandTimeout = null)
     {
         try
         {
@@ -956,7 +1000,7 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             {
                 await using var connection = _connectionFactory.Create();
                 await connection.ExecuteAsync(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure,
+                    procedure, parameters, commandTimeout: commandTimeout, commandType: CommandType.StoredProcedure,
                     cancellationToken: cancellationToken));
             }, cancellationToken);
         }
@@ -1045,6 +1089,19 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
         foreach (var line in lines)
         {
             table.Rows.Add(line.ContainerLineId, line.QuantityBase);
+        }
+
+        return table;
+    }
+
+    private static DataTable ToSourceLineSelectionTable(IReadOnlyList<SourceLineQuantityRequest> lines)
+    {
+        var table = new DataTable();
+        table.Columns.Add("SourceLineId", typeof(int));
+        table.Columns.Add("QuantityBase", typeof(int));
+        foreach (var line in lines)
+        {
+            table.Rows.Add(line.SourceLineId, line.QuantityBase);
         }
 
         return table;

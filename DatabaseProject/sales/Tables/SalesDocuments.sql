@@ -39,6 +39,7 @@ CREATE TABLE [sales].[SalesDocuments] (
     [ReceiptAccountId]     INT             NULL,
     [PaymentReference]     NVARCHAR (100)  NULL,
     [PriceListRate]        DECIMAL (18, 6) NULL,
+    [CancelDate]           DATE            NULL,
     CONSTRAINT [PK_SalesDocuments] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_SalesDocuments_DueDate] CHECK ([DueDate] IS NULL OR [DueDate]>=[DocumentDate]),
     CONSTRAINT [CK_SalesDocuments_PaymentType] CHECK ([PaymentType] IS NULL OR ([PaymentType]=(2) OR [PaymentType]=(1))),
@@ -64,8 +65,8 @@ CREATE TABLE [sales].[SalesDocuments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeStatus]
-    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [Status] ASC);
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Client]
+    ON [sales].[SalesDocuments]([ClientId] ASC, [DocumentDate] DESC);
 
 
 GO
@@ -82,14 +83,14 @@ CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeDate]
 
 GO
 
-CREATE UNIQUE NONCLUSTERED INDEX [UX_SalesDocuments_Number]
-    ON [sales].[SalesDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_SalesDocuments_TypeStatus]
+    ON [sales].[SalesDocuments]([DocumentTypeId] ASC, [Status] ASC);
 
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_SalesDocuments_Client]
-    ON [sales].[SalesDocuments]([ClientId] ASC, [DocumentDate] DESC);
+CREATE UNIQUE NONCLUSTERED INDEX [UX_SalesDocuments_Number]
+    ON [sales].[SalesDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
 
 
 GO

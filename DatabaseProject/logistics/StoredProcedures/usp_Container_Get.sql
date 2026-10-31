@@ -1,8 +1,7 @@
-/* ================================================================== 6. The container: get */
+/* ================================================================== 4. The container page: the same */
 
--- Re-created (54) from the body of script 27: the fill from the items' Container units (FillPct, CapacityKnown,
--- MissingContainerUnitItems, RemainingPcs, IsOverCapacity) instead of MaxUnits / TypeMaxUnits / UtilizationPct /
--- RemainingCapacityBase; the lines give each item's PcsPerContainer.
+-- Re-created (95) from the body of script 82: + the journey columns, CanReceive by fn_Container_ReceiveBlock and its
+-- reason. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_Container_Get
     @Id INT
 AS
@@ -29,8 +28,8 @@ BEGIN
            c.BranchId, b.BranchCode, b.BranchName, c.WarehouseId, w.WarehouseCode, w.WarehouseName,
            c.TruckNo, c.WaybillNo, c.DeclarationNo, c.FeriNo,
            c.ActualPortArrival, c.BorderCrossingDate, c.CustomsReleaseDate,
-           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL
-                             THEN DATEDIFF(DAY, c.ActualPortArrival, ISNULL(c.OffloadedDate, CAST(SYSUTCDATETIME() AS DATE))) END,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, CAST(SYSUTCDATETIME() AS DATE))) END,
            c.OffloadedDate, c.OffloadedAtUtc, c.OffloadedBy, ou.FullName AS OffloadedByName,
            c.Status, c.StatusNote, c.CurrentLocation, c.Notes,
            c.DatesFromMovements,
@@ -51,12 +50,53 @@ BEGIN
            c.ClosedAtUtc, c.ClosedBy, ku.FullName AS ClosedByName,
            c.CancelledAtUtc, c.CancelledBy, xu.FullName AS CancelledByName, c.CancelReason,
            c.CreatedAtUtc, c.CreatedBy, cu.FullName AS CreatedByName,
-           c.UpdatedAtUtc, c.UpdatedBy, uu.FullName AS UpdatedByName, c.RowVersion
+           c.UpdatedAtUtc, c.UpdatedBy, uu.FullName AS UpdatedByName, c.RowVersion,
+           -- (65) goods receipts
+           rb.ReceivedBy,
+           rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
+           GoodsReceiptDate = gr.DocumentDate, GoodsReceiptIsAuto = gr.IsAuto,
+           GoodsReceiptWarehouseId = gr.WarehouseId, GoodsReceiptWarehouseCode = gw.WarehouseCode,
+           GoodsReceiptCreatedAtUtc = gr.CreatedAtUtc,
+           DeliveredDate = dl.EndDate, DeliveryMovementId = dl.MovementId, DeliveryMovementNo = dl.MovementNo,
+           DeliveryPlaceName = dl.PlaceName,
+           -- (95) Receive goods... only once delivered (fn_Container_ReceiveBlock)
+           CanReceive = CAST(CASE WHEN rbk.Reason IS NULL THEN 1 ELSE 0 END AS BIT), ReceiveBlockedReason = rbk.Reason,
+           jr.JourneyStatus, jr.JourneyFromName, jr.JourneyToName, jr.JourneySince, jr.JourneyMovementNo,   -- (95)
+           CloseBlockedReason = cb.Reason,
+           -- (80) the shipment (fn_Container_ShipState): where it is, the movement in progress carrying it, its next
+           -- planned movement (why it cannot start yet, its earliest start) and its last completed one
+           ss.MovementCount, ss.PlaceId, ss.PlaceName, ss.PlaceSince,
+           ss.ActiveMovementId, ss.ActiveMovementNo, ss.ActiveMovementTypeName, ss.ActiveMovementStage,
+           ss.ActiveMovementFromName, ss.ActiveMovementToName, ss.ActiveMovementStartDate, ss.ActiveMovementEta,
+           ss.ActiveMovementContainerCount,
+           ss.PlannedMovementId, ss.PlannedMovementNo, ss.PlannedMovementTypeName, ss.PlannedMovementStage,
+           ss.PlannedMovementFromName, ss.PlannedMovementToName, ss.PlannedMovementDate, ss.PlannedMovementContainerCount,
+           ss.PlannedMovementBlockedReason, ss.PlannedMovementNotBefore,
+           ss.LastMovementId, ss.LastMovementNo, ss.LastMovementEndDate,
+           -- (81) its next step (fn_Container_NextStep): the label of its button, the proposed next leg, and for a movement
+           -- to complete the leg proposed after it
+           NextStepKind = nx.Kind, NextStepBlockedReason = nx.BlockedReason, nx.HasTypedDates, nx.PlaceKind, nx.LastStage,
+           NextStepMovementId = nx.MovementId, NextStepMovementNo = nx.MovementNo, NextStepMovementStage = nx.MovementStage,
+           NextStepMovementTypeName = nx.MovementTypeName, NextStepMovementToName = nx.MovementToName,
+           NextStepMovementContainerCount = nx.MovementContainerCount, NextStepNotBefore = nx.MovementNotBefore,
+           nx.ProposedTypeId, nx.ProposedTypeCode, nx.ProposedTypeName, nx.ProposedStage,
+           nx.ProposedFromPlaceId, nx.ProposedFromName, nx.ProposedToPlaceId, nx.ProposedToName,
+           nx.ProposalSource, nx.ProposalLegs, nx.ProposedIsStay,
+           nx.ThenTypeId, nx.ThenTypeName, nx.ThenStage, nx.ThenToPlaceId, nx.ThenToName, nx.ThenIsStay, nx.ThenDefault
     FROM logistics.Containers c
     INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
     INNER JOIN masterdata.Branches b        ON b.Id = c.BranchId
     LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
     CROSS APPLY logistics.fn_ContainerFill(c.Id) fl
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
+    OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
+    CROSS APPLY logistics.fn_Container_ShipState(c.Id) ss       -- (80) the shipment
+    CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95)
+    CROSS APPLY logistics.fn_Container_Journey(c.Id) jr         -- (95)
+    OUTER APPLY logistics.fn_Container_NextStep(c.Id) nx        -- (81) its next step
+    LEFT  JOIN purchase.GoodsReceipts gr    ON gr.Id = rb.GoodsReceiptId
+    LEFT  JOIN masterdata.Warehouses gw     ON gw.Id = gr.WarehouseId
     LEFT  JOIN purchase.PurchaseDocuments mpo ON mpo.Id = c.PurchaseOrderId
     LEFT  JOIN masterdata.Parties mps       ON mps.Id = mpo.SupplierId
     LEFT  JOIN masterdata.Parties fw        ON fw.Id = c.ForwarderId
@@ -82,19 +122,15 @@ BEGIN
                  FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id) chg
     OUTER APPLY (SELECT Fob = SUM(CAST(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) AS DECIMAL(18,6)) * ISNULL(u.UnitFob, 0))
                  FROM logistics.ContainerLines cl
-                 OUTER APPLY (SELECT UnitFob = COALESCE(cl.FobCostBase,
-                                                        (SELECT SUM(pil.LineTotal / pid.ExchangeRate) / NULLIF(SUM(pil.QuantityBase), 0)
-                                                         FROM purchase.PurchaseDocumentLines pil
-                                                         INNER JOIN purchase.PurchaseDocuments pid ON pid.Id = pil.DocumentId
-                                                         WHERE pil.ContainerLineId = cl.Id AND pid.Status IN (1, 2, 4)),
-                                                        (SELECT pol.LineTotal / pod.ExchangeRate / NULLIF(pol.QuantityBase, 0)
-                                                         FROM purchase.PurchaseDocumentLines pol
-                                                         INNER JOIN purchase.PurchaseDocuments pod ON pod.Id = pol.DocumentId
-                                                         WHERE pol.Id = cl.PoLineId))) u
+                 -- (82) the received value, else the estimate of the cost rule (fn_ContainerLine_FobEstimate)
+                 OUTER APPLY (SELECT UnitFob = e.UnitFobBase FROM logistics.fn_ContainerLine_FobEstimate(cl.Id) e) u
                  WHERE cl.ContainerId = c.Id) cost
     WHERE c.Id = @Id;
 
-    -- 2: lines. FOB per unit: after offload the frozen value, else the invoices (posted or draft), else the order price.
+    -- 2: lines. FOB per unit: once the goods are received the container line's value (frozen by an offload of before; set by
+    -- the goods receipt and moved by the invoices since), else (82) the estimate of what the goods receipt will give it: the
+    -- invoice pieces its matching will give the line, those of invoices that change item costs at their price, every other
+    -- piece at the order price (fn_ContainerLine_FobEstimate).
     SELECT cl.Id, cl.ContainerId, cl.LineNumber,
            cl.PurchaseOrderId, po.DocumentNumber AS PurchaseOrderNumber, po.SupplierId, sp.PartyCode AS SupplierCode, sp.PartyName AS SupplierName,
            cl.PoLineId, pol.LineNumber AS PoLineNumber,
@@ -109,14 +145,13 @@ BEGIN
            AvailableToInvoiceBase = cl.QuantityBase - ISNULL(inv.Posted, 0) - ISNULL(inv.Draft, 0),
            InvoiceNumbers = inv.Numbers,
            cl.ReceivedQuantityBase, cl.VarianceReason, cl.Notes,
-           UnitFobBase = COALESCE(cl.FobCostBase, inv.UnitValue, pol.LineTotal / po.ExchangeRate / NULLIF(pol.QuantityBase, 0)),
-           FobSource = CASE WHEN cl.FobCostBase IS NOT NULL THEN N'Offload' WHEN inv.UnitValue IS NOT NULL THEN N'Invoice' ELSE N'Order' END,
+           UnitFobBase = COALESCE(cl.FobCostBase, fe.EstimatedFobBase),                    -- (82)
+           FobSource = fe.FobSource,                                                     -- (82)
            cl.FobCostBase, cl.ChargesBase,
            DraftChargesBase = ISNULL(dch.Draft, 0),
            ChargesPerUnitBase = cl.ChargesBase / NULLIF(ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase), 0),
            LandedCostBase = COALESCE(cl.LandedCostBase,
-                                     COALESCE(inv.UnitValue, pol.LineTotal / po.ExchangeRate / NULLIF(pol.QuantityBase, 0))
-                                     + cl.ChargesBase / NULLIF(cl.QuantityBase, 0)),
+                                     fe.EstimatedFobBase + cl.ChargesBase / NULLIF(cl.QuantityBase, 0)),   -- (82)
            IsLandedFinal = CAST(CASE WHEN cl.LandedCostBase IS NOT NULL THEN 1 ELSE 0 END AS BIT),
            i.WeightKg, i.VolumeCbm
     FROM logistics.ContainerLines cl
@@ -140,6 +175,7 @@ BEGIN
                  FROM purchase.PurchaseDocumentLines pil
                  INNER JOIN purchase.PurchaseDocuments d ON d.Id = pil.DocumentId
                  WHERE pil.ContainerLineId = cl.Id AND d.Status <> 3) inv
+    CROSS APPLY logistics.fn_ContainerLine_FobEstimate(cl.Id) fe                    -- (82) the estimate of the cost rule
     OUTER APPLY (SELECT Draft = SUM(a.AmountBase) FROM logistics.ContainerChargeAllocations a
                  INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
                  WHERE a.ContainerLineId = cl.Id AND ch.Status = 1) dch

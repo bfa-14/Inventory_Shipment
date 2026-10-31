@@ -10,6 +10,7 @@ namespace Inventory_Shipment.API.Authorization;
 [AttributeUsage(AttributeTargets.Class | AttributeTargets.Method, AllowMultiple = true, Inherited = true)]
 public sealed class HasPermissionAttribute : AuthorizeAttribute
 {
+    //HasPermissionAttribute
     public HasPermissionAttribute(string permission)
     {
         Permission = permission;

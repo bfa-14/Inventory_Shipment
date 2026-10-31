@@ -14,6 +14,9 @@ public sealed class MovementRepository : IMovementRepository
 
     private const string TextListTypeName = "logistics.tvp_TextList";
 
+    /// <summary>(81) One row per container of a leg made "one per container": its truck no. (or vessel) and ETA.</summary>
+    private const string LegContainerTypeName = "logistics.tvp_LegContainer";
+
     /// <summary>The columns the search procedure will sort by; anything else falls back to the start date.</summary>
     private static readonly string[] SortColumns = ["MovementNo", "StartDate", "Eta", "EndDate", "Status", "CreatedAtUtc"];
 
@@ -79,8 +82,9 @@ public sealed class MovementRepository : IMovementRepository
         var containers = (await multi.ReadAsync<MovementContainerDto>()).AsList();
         var charges = (await multi.ReadAsync<MovementChargeDto>()).AsList();
         var attachments = (await multi.ReadAsync<MovementAttachmentDto>()).AsList();
+        var history = (await multi.ReadAsync<MovementAuditDto>()).AsList();       // (82) its splits
 
-        return header with { Containers = containers, Charges = charges, Attachments = attachments };
+        return header with { Containers = containers, Charges = charges, Attachments = attachments, History = history };
     }
 
     public async Task<int> SaveAsync(
@@ -108,12 +112,32 @@ public sealed class MovementRepository : IMovementRepository
         return parameters.Get<int>("@NewId");
     }
 
-    public Task SetStatusAsync(
+    /// <summary>
+    /// (82) The procedure answers one row only when its Cancel undid a split (read before its commit, like the split's own
+    /// answer); every other call answers none, read as null. All or nothing in the procedure, so a deadlock victim is run
+    /// again whole.
+    /// </summary>
+    public async Task<MovementSplitUndoneDto?> SetStatusAsync(
         int id, string action, DateOnly? date, string? reason, byte[]? rowVersion, int userId,
         CancellationToken cancellationToken = default)
-        => ExecuteAsync("logistics.usp_Movement_SetStatus",
-            new { Id = id, Action = action, Date = ToDate(date), Reason = reason, RowVersion = rowVersion, UserId = userId },
-            cancellationToken);
+    {
+        var parameters = new { Id = id, Action = action, Date = ToDate(date), Reason = reason, RowVersion = rowVersion, UserId = userId };
+        try
+        {
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                var rows = await connection.QueryAsync<MovementSplitUndoneDto>(new CommandDefinition(
+                    "logistics.usp_Movement_SetStatus", parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+                return rows.FirstOrDefault();
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
 
     /// <summary>
     /// NO DEADLOCK RETRY HERE: the procedure gives each container its own transaction and catches its errors, so a
@@ -128,6 +152,7 @@ public sealed class MovementRepository : IMovementRepository
             await using var connection = _connectionFactory.Create();
             return (await connection.QueryAsync<MovementReceiptResultDto>(new CommandDefinition(
                 "purchase.usp_GoodsReceipt_CreateForMovement", new { MovementId = id, UserId = userId },
+                commandTimeout: _connectionFactory.BatchCommandTimeout,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
@@ -170,6 +195,134 @@ public sealed class MovementRepository : IMovementRepository
                 await using var connection = _connectionFactory.Create();
                 return await connection.QuerySingleAsync<ShippedMovementDto>(new CommandDefinition(
                     "logistics.usp_Movement_ShipContainers", parameters,
+                    commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>
+    /// (81) logistics.usp_Container_NextStepPreview: three result sets in one round trip - one row per container asked
+    /// for, the groups, the ones that cannot move on by reason. Set-based in the procedure; the batch timeout for the
+    /// thousands of containers a selection can hold.
+    /// </summary>
+    public async Task<NextStepPreviewDto> NextStepPreviewAsync(
+        IEnumerable<int> containerIds, bool canConfirm, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@ContainerIds", ToIdTable(containerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@CanConfirm", canConfirm, DbType.Boolean);
+
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+                "logistics.usp_Container_NextStepPreview", parameters,
+                commandTimeout: _connectionFactory.BatchCommandTimeout,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            // An unknown id has no step: the procedure's functions see "no movement" and would say Ship.
+            var containers = (await multi.ReadAsync<ContainerNextStepDto>())
+                .Select(c => c.Found ? c : c with { Kind = null })
+                .ToList();
+            var groups = (await multi.ReadAsync<NextStepGroupDto>()).AsList();
+            var blocked = (await multi.ReadAsync<NextStepBlockedDto>()).AsList();
+            return new NextStepPreviewDto { Containers = containers, Groups = groups, Blocked = blocked };
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>
+    /// (81) logistics.usp_Movement_AddLeg: a new leg for a group, one movement or one per container, all or nothing; the
+    /// movements made. confirmDrafts is the one the service allows (containers.confirm), not the request's.
+    /// </summary>
+    public async Task<IReadOnlyList<AddedLegDto>> AddLegAsync(
+        AddLegCommand command, bool confirmDrafts, int userId, CancellationToken cancellationToken = default)
+    {
+        // logistics.tvp_LegContainer (ContainerId, VehicleOrVessel, Eta): the truck no. and ETA of each container
+        var perContainer = new DataTable();
+        perContainer.Columns.Add("ContainerId", typeof(int));
+        perContainer.Columns.Add("VehicleOrVessel", typeof(string));
+        perContainer.Columns.Add("Eta", typeof(DateTime));
+        foreach (var leg in command.PerContainer.GroupBy(p => p.ContainerId).Select(g => g.Last()))
+        {
+            perContainer.Rows.Add(
+                leg.ContainerId,
+                string.IsNullOrWhiteSpace(leg.VehicleOrVessel) ? DBNull.Value : leg.VehicleOrVessel.Trim(),
+                (object?)ToDate(leg.Eta) ?? DBNull.Value);
+        }
+
+        var parameters = new DynamicParameters();
+        parameters.Add("@ContainerIds", ToIdTable(command.ContainerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@MovementTypeId", command.MovementTypeId, DbType.Int32);
+        parameters.Add("@FromPlaceId", command.FromPlaceId, DbType.Int32);
+        parameters.Add("@ToPlaceId", command.ToPlaceId, DbType.Int32);
+        parameters.Add("@StartDate", ToDate(command.StartDate), DbType.Date);
+        parameters.Add("@Eta", ToDate(command.Eta), DbType.Date);
+        parameters.Add("@CarrierPartyId", command.CarrierPartyId, DbType.Int32);
+        parameters.Add("@VehicleOrVessel", command.VehicleOrVessel, DbType.String, size: 100);
+        parameters.Add("@VoyageNo", command.VoyageNo, DbType.String, size: 30);
+        parameters.Add("@Reference", command.Reference, DbType.String, size: 50);
+        parameters.Add("@BlNo", command.BlNo, DbType.String, size: 30);
+        parameters.Add("@BlDate", ToDate(command.BlDate), DbType.Date);
+        parameters.Add("@Notes", command.Notes, DbType.String, size: 1000);
+        parameters.Add("@StartNow", command.StartNow, DbType.Boolean);
+        parameters.Add("@ConfirmDrafts", confirmDrafts, DbType.Boolean);
+        parameters.Add("@UpdateContainers", command.UpdateContainers, DbType.Boolean);
+        parameters.Add("@OnePerContainer", command.OnePerContainer, DbType.Boolean);
+        parameters.Add("@PerContainer", perContainer.AsTableValuedParameter(LegContainerTypeName));
+        parameters.Add("@UserId", userId, DbType.Int32);
+
+        try
+        {
+            // All or nothing in the procedure, so a deadlock victim is simply run again.
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                return (IReadOnlyList<AddedLegDto>)(await connection.QueryAsync<AddedLegDto>(new CommandDefinition(
+                    "logistics.usp_Movement_AddLeg", parameters,
+                    commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+            }, cancellationToken);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    /// <summary>
+    /// (82) logistics.usp_Movement_SplitContainers: the ticked containers of a movement in progress get their own movement,
+    /// all or nothing in the procedure (one transaction under the movement's lock), so a deadlock victim is simply run
+    /// again. completeDate is the completion that follows, checked by the procedure before anything is split.
+    /// </summary>
+    public async Task<MovementSplitDto> SplitContainersAsync(
+        int movementId, IReadOnlyList<int> containerIds, byte[]? rowVersion, DateOnly? completeDate, int userId,
+        CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@MovementId", movementId, DbType.Int32);
+        parameters.Add("@ContainerIds", ToIdTable(containerIds).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
+        parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@CompleteDate", ToDate(completeDate), DbType.Date);
+        parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
+
+        try
+        {
+            return await SqlRetry.OnDeadlockAsync(async () =>
+            {
+                await using var connection = _connectionFactory.Create();
+                return await connection.QuerySingleAsync<MovementSplitDto>(new CommandDefinition(
+                    "logistics.usp_Movement_SplitContainers", parameters,
+                    commandTimeout: _connectionFactory.BatchCommandTimeout,
                     commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
         }
@@ -205,6 +358,21 @@ public sealed class MovementRepository : IMovementRepository
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
 
             return (rows, rows.Count > 0 ? rows[0].TotalCount : 0);
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task<IReadOnlyList<MovementJoinCandidateDto>> JoinCandidatesAsync(int containerId, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            await using var connection = _connectionFactory.Create();
+            return (await connection.QueryAsync<MovementJoinCandidateDto>(new CommandDefinition(
+                "logistics.usp_Movement_JoinCandidates", new { ContainerId = containerId },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
         {
@@ -248,7 +416,8 @@ public sealed class MovementRepository : IMovementRepository
     /// <summary>
     /// One procedure call, run again if SQL Server made it the deadlock victim: starting or completing
     /// a movement refreshes every container it carries, and a container page reading one of them at
-    /// the same moment is enough for one side to be killed.
+    /// the same moment is enough for one side to be killed. A movement may carry any number of containers
+    /// (script 78): save, start and complete get the batch timeout.
     /// </summary>
     private async Task ExecuteAsync(string procedure, object parameters, CancellationToken cancellationToken)
     {
@@ -258,8 +427,8 @@ public sealed class MovementRepository : IMovementRepository
             {
                 await using var connection = _connectionFactory.Create();
                 await connection.ExecuteAsync(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure,
-                    cancellationToken: cancellationToken));
+                    procedure, parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             }, cancellationToken);
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

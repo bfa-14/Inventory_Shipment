@@ -1,7 +1,12 @@
-/* ================================================================== 3. Save: the fill check */
-
--- Re-created (54) from the body of script 51: the capacity is the fill from the items' Container units, checked on the
--- lines written (69007, overridable); @MaxUnits is kept and ignored, a new container gets no MaxUnits.
+-- other caller is unchanged):
+--   @PlanChecked = 1   the caller checked the whole plan: the invoice's rules and what the order lines still allow
+--                      (69008). Not again for each container: both read a total that grows with every container made,
+--                      which made a plan of N containers cost N x N.
+--   @ContainerRef      the ref to give a new container instead of the next CNT number: CreateBatch gives each container
+--                      a placeholder and takes the real numbers only at its end, so the CNT counter is not held locked
+--                      (every other Add Container waiting) while the whole plan is created.
+-- And a new container skips the update of its existing lines (it has none): that join read every container line of the
+-- order line. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
     @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
@@ -48,7 +53,9 @@ CREATE   PROCEDURE logistics.usp_Container_Save
     @RowVersion          BINARY(8)      = NULL,
     @UserId              INT            = NULL,
     @ForInvoiceId        INT            = NULL,   -- (43) for this invoice of the order: the order may be closed by it
-    @NewId               INT OUTPUT
+    @NewId               INT OUTPUT,
+    @PlanChecked         BIT            = 0,      -- (78) 1 = the caller checked the whole plan (invoice rules, order lines' room)
+    @ContainerRef        NVARCHAR(30)   = NULL    -- (78) on create: this ref instead of the next CNT number
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -64,8 +71,11 @@ BEGIN
     SET @StatusNote = NULLIF(LTRIM(RTRIM(@StatusNote)), N'');
     IF @ShippingMethod IS NULL SET @ShippingMethod = N'Sea';
 
-    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created
-    IF @ForInvoiceId IS NOT NULL AND @Id IS NULL
+    -- (51) a container created for an invoice: the invoice's rules 1-8 first, before anything is created. (78) Not again
+    -- for each container of a plan: usp_Container_CreateBatch checks them once for the whole plan (@PlanChecked),
+    -- and checking each container against an invoice state that grows with every container made it quadratic - 2,205
+    -- containers from one invoice took 42 s, most of it here.
+    IF @ForInvoiceId IS NOT NULL AND @Id IS NULL AND ISNULL(@PlanChecked, 0) = 0
     BEGIN
         DECLARE @ForInvoiceQty INT = (SELECT SUM(QuantityBase) FROM @Lines);
         EXEC purchase.usp_PurchaseInvoice_CheckContainers @InvoiceId = @ForInvoiceId, @Action = N'Add', @QuantityBase = @ForInvoiceQty;
@@ -86,104 +96,125 @@ BEGIN
                                             WHERE ContainerNo = @ContainerNo AND Status < 7 AND (@Id IS NULL OR Id <> @Id))
         THROW 69013, 'Another open container already uses this container number.', 1;
 
-    DECLARE @Status TINYINT = NULL;
-    IF @Id IS NOT NULL
-    BEGIN
-        SELECT @Status = Status, @PurchaseOrderId = ISNULL(PurchaseOrderId, @PurchaseOrderId) FROM logistics.Containers WHERE Id = @Id;
-        IF @Status IS NULL THROW 69006, 'Container not found.', 1;
-        IF @Status >= 6 THROW 69005, 'An offloaded, closed or cancelled container can no longer be changed.', 1;
-        IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
-            THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
-    END
-    ELSE
-    BEGIN
-        IF @PurchaseOrderId IS NULL THROW 69000, 'The purchase order is required: a container is created from a purchase order.', 1;
-        IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
-                       WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
-                         AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)))
-            THROW 69000, 'The purchase order must be approved and still open.', 1;
-    END
-
-    DECLARE @Msg NVARCHAR(400);
-
-    IF EXISTS (SELECT PoLineId FROM @Lines GROUP BY PoLineId HAVING COUNT(*) > 1)
-        THROW 69000, 'The same order line appears twice in the container.', 1;
-
-    -- Lines: order line of an approved order (lines already loaded may belong to an order closed since), quantity, oil.
-    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
-        CASE WHEN pol.Id IS NULL OR dt.Code <> N'PO' THEN N'the purchase order line no longer exists.'
-             WHEN l.QuantityBase <= 0 THEN N'the quantity must be greater than zero.'
-             WHEN l.OilQtyPerUnit < 0 THEN N'the oil quantity cannot be negative.'
-             WHEN ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' is not approved or no longer open.'
-             WHEN ex.Id IS NOT NULL AND d.Status NOT IN (2, 4) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' was cancelled.'
-             ELSE N'item ' + i.ItemCode + N' has no base unit.' END
-    FROM @Lines l
-    LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
-    LEFT JOIN purchase.PurchaseDocuments d       ON d.Id = pol.DocumentId
-    LEFT JOIN inventory.DocumentTypes dt         ON dt.Id = d.DocumentTypeId
-    LEFT JOIN inventory.Items i                  ON i.Id = pol.ItemId
-    LEFT JOIN logistics.ContainerLines ex        ON ex.ContainerId = @Id AND ex.PoLineId = l.PoLineId
-    WHERE pol.Id IS NULL OR dt.Code <> N'PO' OR l.QuantityBase <= 0 OR l.OilQtyPerUnit < 0
-       OR (ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)) OR (ex.Id IS NOT NULL AND d.Status NOT IN (2, 4))
-       OR NOT EXISTS (SELECT 1 FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1)
-    ORDER BY l.LineNumber;
-    IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
-
-    -- Quantity still loadable on the order line.
-    SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
-                          + CAST(l.QuantityBase AS NVARCHAR(20)) + N' loaded but only '
-                          + CAST(pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) AS NVARCHAR(20))
-                          + N' remain on order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N'.'
-    FROM @Lines l
-    INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
-    INNER JOIN purchase.PurchaseDocuments d       ON d.Id = pol.DocumentId
-    INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
-    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
-                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = pol.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
-    OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
-                 INNER JOIN logistics.Containers c2 ON c2.Id = cl.ContainerId
-                 WHERE cl.PoLineId = pol.Id AND c2.Status <> 8 AND (@Id IS NULL OR cl.ContainerId <> @Id)) oth
-    WHERE l.QuantityBase > pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
-    ORDER BY l.LineNumber;
-    IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
-
-    IF @Id IS NOT NULL
-    BEGIN
-        -- Invoiced lines cannot be removed, nor loaded below what is invoiced.
-        SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
-                              + CAST(q.Invoiced AS NVARCHAR(20)) + N' already invoiced (' + ISNULL(q.Numbers, N'') + N'); '
-                              + CASE WHEN l.PoLineId IS NULL THEN N'the line cannot be removed.' ELSE N'the quantity cannot be lower.' END
-        FROM logistics.ContainerLines cl
-        INNER JOIN inventory.Items i ON i.Id = cl.ItemId
-        CROSS APPLY (SELECT Invoiced = ISNULL(SUM(pil.QuantityBase), 0), Numbers = STRING_AGG(pd.DocumentNumber, N', ')
-                     FROM purchase.PurchaseDocumentLines pil
-                     INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
-                     WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
-        LEFT JOIN @Lines l ON l.PoLineId = cl.PoLineId
-        WHERE cl.ContainerId = @Id AND q.Invoiced > 0 AND (l.PoLineId IS NULL OR l.QuantityBase < q.Invoiced)
-        ORDER BY cl.LineNumber;
-        IF @Msg IS NOT NULL THROW 69017, @Msg, 1;
-
-        -- A removed line cannot carry a manual share of a posted charge.
-        SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' carries a manual share of the posted charge '
-                              + t.ChargeName + N'. Cancel that charge before removing the line.'
-        FROM logistics.ContainerLines cl
-        INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id AND a.IsManual = 1
-        INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2
-        INNER JOIN purchase.ChargeTypes t                 ON t.Id = ch.ChargeTypeId
-        WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId)
-        ORDER BY cl.LineNumber;
-        IF @Msg IS NOT NULL THROW 70014, @Msg, 1;
-    END
-
     BEGIN TRY
         BEGIN TRANSACTION;
 
+        DECLARE @Status TINYINT = NULL;
+        IF @Id IS NOT NULL
+        BEGIN
+            SELECT @Status = Status, @PurchaseOrderId = ISNULL(PurchaseOrderId, @PurchaseOrderId)
+            FROM logistics.Containers WITH (UPDLOCK, HOLDLOCK) WHERE Id = @Id;
+            IF @Status IS NULL THROW 69006, 'Container not found.', 1;
+            IF @Status >= 6 THROW 69005, 'An offloaded, closed or cancelled container can no longer be changed.', 1;
+            IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.Containers WHERE Id = @Id AND RowVersion = @RowVersion)
+                THROW 69004, 'This container was modified by another user. Reload the page and try again.', 1;
+
+            -- (65) RULE 21: A CONTAINER WITH AN OPEN GOODS RECEIPT KEEPS ITS LOAD LINES AND ITS BRANCH (the draft
+            -- mirrors the lines, order line by order line, with the loaded pieces; its warehouse must be of the
+            -- branch). A posted receipt made the container Offloaded, refused above. The header stays editable (truck,
+            -- waybill, declaration, FERI, B/L, free days, notes, warehouse: the draft keeps its own "Receive into"),
+            -- and so do a line's oil and notes.
+            DECLARE @GrnMsg NVARCHAR(400);
+            SELECT @GrnMsg = N'Container ' + c.ContainerRef + N' has ' + ISNULL(N'goods receipt ' + r.GoodsReceiptNumber, N'a draft goods receipt')
+                             + N'. Delete the draft (or cancel the receipt) first.'
+            FROM logistics.Containers c
+            CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) r
+            WHERE c.Id = @Id AND r.GoodsReceiptId IS NOT NULL
+              AND (c.BranchId <> @BranchId
+                   OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
+                              WHERE cl.ContainerId = @Id
+                                AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId AND l.QuantityBase = cl.QuantityBase))
+                   OR EXISTS (SELECT 1 FROM @Lines l
+                              WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.ContainerId = @Id AND cl.PoLineId = l.PoLineId)));
+            IF @GrnMsg IS NOT NULL THROW 69019, @GrnMsg, 1;
+        END
+        ELSE
+        BEGIN
+            IF @PurchaseOrderId IS NULL THROW 69000, 'The purchase order is required: a container is created from a purchase order.', 1;
+            IF NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
+                           WHERE d.Id = @PurchaseOrderId AND dt.Code = N'PO'
+                             AND (d.Status = 2 OR (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)))
+                THROW 69000, 'The purchase order must be approved and still open.', 1;
+        END
+
+        DECLARE @Msg NVARCHAR(400), @IsNew BIT = 0;
+
+        IF EXISTS (SELECT PoLineId FROM @Lines GROUP BY PoLineId HAVING COUNT(*) > 1)
+            THROW 69000, 'The same order line appears twice in the container.', 1;
+
+        -- Lines: order line of an approved order (lines already loaded may belong to an order closed since), quantity, oil.
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' +
+            CASE WHEN pol.Id IS NULL OR dt.Code <> N'PO' THEN N'the purchase order line no longer exists.'
+                 WHEN l.QuantityBase <= 0 THEN N'the quantity must be greater than zero.'
+                 WHEN l.OilQtyPerUnit < 0 THEN N'the oil quantity cannot be negative.'
+                 WHEN ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' is not approved or no longer open.'
+                 WHEN ex.Id IS NOT NULL AND d.Status NOT IN (2, 4) THEN N'order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' was cancelled.'
+                 ELSE N'item ' + i.ItemCode + N' has no base unit.' END
+        FROM @Lines l
+        LEFT JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        LEFT JOIN purchase.PurchaseDocuments d       ON d.Id = pol.DocumentId
+        LEFT JOIN inventory.DocumentTypes dt         ON dt.Id = d.DocumentTypeId
+        LEFT JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        LEFT JOIN logistics.ContainerLines ex        ON ex.ContainerId = @Id AND ex.PoLineId = l.PoLineId
+        WHERE pol.Id IS NULL OR dt.Code <> N'PO' OR l.QuantityBase <= 0 OR l.OilQtyPerUnit < 0
+           OR (ex.Id IS NULL AND d.Status <> 2 AND NOT (d.Status = 4 AND purchase.fn_PurchaseInvoice_TakesContainers(d.Id, @ForInvoiceId) = 1)) OR (ex.Id IS NOT NULL AND d.Status NOT IN (2, 4))
+           OR NOT EXISTS (SELECT 1 FROM inventory.ItemUnits u WHERE u.ItemId = pol.ItemId AND u.IsBaseUnit = 1)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 69000, @Msg, 1;
+
+        -- Quantity still loadable on the order line. (65) What the order line committed outside containers is the larger of
+        -- what is invoiced and what is received (or on draft receipts) outside containers: the same goods, matched.
+        -- (78) Not for a container of a plan: CreateBatch checked the whole plan under a lock on the order (@PlanChecked).
+        IF ISNULL(@PlanChecked, 0) = 0
+        SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
+                              + CAST(l.QuantityBase AS NVARCHAR(20)) + N' loaded but only '
+                              + CAST(pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0) AS NVARCHAR(20))
+                              + N' remain on order ' + ISNULL(d.DocumentNumber, N'(draft)') + N' line ' + CAST(pol.LineNumber AS NVARCHAR(10)) + N'.'
+        FROM @Lines l
+        INNER JOIN purchase.PurchaseDocumentLines pol ON pol.Id = l.PoLineId
+        INNER JOIN purchase.PurchaseDocuments d       ON d.Id = pol.DocumentId
+        INNER JOIN inventory.Items i                  ON i.Id = pol.ItemId
+        OUTER APPLY purchase.fn_PoLine_CommittedOutside(pol.Id, NULL) dir
+        OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
+                     INNER JOIN logistics.Containers c2 ON c2.Id = cl.ContainerId
+                     WHERE cl.PoLineId = pol.Id AND c2.Status <> 8 AND (@Id IS NULL OR cl.ContainerId <> @Id)) oth
+        WHERE l.QuantityBase > pol.QuantityBase - ISNULL(dir.Qty, 0) - ISNULL(oth.Qty, 0)
+        ORDER BY l.LineNumber;
+        IF @Msg IS NOT NULL THROW 69008, @Msg, 1;
+
+        IF @Id IS NOT NULL
+        BEGIN
+            -- Invoiced lines cannot be removed, nor loaded below what is invoiced.
+            SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode + N' - '
+                                  + CAST(q.Invoiced AS NVARCHAR(20)) + N' already invoiced (' + ISNULL(q.Numbers, N'') + N'); '
+                                  + CASE WHEN l.PoLineId IS NULL THEN N'the line cannot be removed.' ELSE N'the quantity cannot be lower.' END
+            FROM logistics.ContainerLines cl
+            INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+            CROSS APPLY (SELECT Invoiced = ISNULL(SUM(pil.QuantityBase), 0), Numbers = STRING_AGG(pd.DocumentNumber, N', ')
+                         FROM purchase.PurchaseDocumentLines pil
+                         INNER JOIN purchase.PurchaseDocuments pd ON pd.Id = pil.DocumentId
+                         WHERE pil.ContainerLineId = cl.Id AND pd.Status <> 3) q
+            LEFT JOIN @Lines l ON l.PoLineId = cl.PoLineId
+            WHERE cl.ContainerId = @Id AND q.Invoiced > 0 AND (l.PoLineId IS NULL OR l.QuantityBase < q.Invoiced)
+            ORDER BY cl.LineNumber;
+            IF @Msg IS NOT NULL THROW 69017, @Msg, 1;
+
+            -- A removed line cannot carry a manual share of a posted charge.
+            SELECT TOP (1) @Msg = N'Line ' + CAST(cl.LineNumber AS NVARCHAR(10)) + N' carries a manual share of the posted charge '
+                                  + t.ChargeName + N'. Cancel that charge before removing the line.'
+            FROM logistics.ContainerLines cl
+            INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = cl.Id AND a.IsManual = 1
+            INNER JOIN logistics.ContainerCharges ch          ON ch.Id = a.ChargeId AND ch.Status = 2
+            INNER JOIN purchase.ChargeTypes t                 ON t.Id = ch.ChargeTypeId
+            WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId)
+            ORDER BY cl.LineNumber;
+            IF @Msg IS NOT NULL THROW 70014, @Msg, 1;
+        END
+
         IF @Id IS NULL
         BEGIN
-            DECLARE @Ref NVARCHAR(30), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'CNT');
-            EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Ref OUTPUT, @BranchId;
+            DECLARE @Ref NVARCHAR(30) = NULLIF(LTRIM(RTRIM(@ContainerRef)), N''), @TypeId INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'CNT');
+            IF @Ref IS NULL EXEC inventory.usp_DocumentType_NextNumber N'CNT', @Ref OUTPUT, @BranchId;
 
             INSERT INTO logistics.Containers (DocumentTypeId, ContainerRef, PurchaseOrderId, ContainerNo, ContainerTypeId, SealNo, CustomsSealNo, Description,
                                               OrderDate, ShippingMethod, CountryOfOrigin, ForwarderId, TransporterId,
@@ -198,6 +229,7 @@ BEGIN
                     NULL, @BranchId, @WarehouseId, @TruckNo, @WaybillNo, @DeclarationNo, @FeriNo,
                     @ActualPortArrival, @BorderCrossingDate, @CustomsReleaseDate, @StatusNote, @Notes, 1, @UserId);
             SET @Id = SCOPE_IDENTITY();
+            SET @IsNew = 1;
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@Id, N'Created', N'Draft ' + @Ref + ISNULL(N' from order ' + (SELECT DocumentNumber FROM purchase.PurchaseDocuments WHERE Id = @PurchaseOrderId), N''), @UserId);
         END
@@ -227,6 +259,15 @@ BEGIN
         INNER JOIN logistics.ContainerLines cl   ON cl.Id = pil.ContainerLineId
         WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
 
+        -- (65) LINES OF CANCELLED GOODS RECEIPTS LET GO OF THE REMOVED CONTAINER LINES too (FK_GoodsReceiptLines_ContainerLine):
+        -- an open receipt refused the change above (69019); a cancelled one only keeps its history, which still reads in
+        -- full (its order line, item, quantities and reason stay on the receipt line).
+        UPDATE gl SET ContainerLineId = NULL
+        FROM purchase.GoodsReceiptLines gl
+        INNER JOIN purchase.GoodsReceipts g    ON g.Id = gl.GoodsReceiptId AND g.Status = 3
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = gl.ContainerLineId
+        WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
+
         DELETE a FROM logistics.ContainerChargeAllocations a
         INNER JOIN logistics.ContainerLines cl ON cl.Id = a.ContainerLineId
         WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
@@ -234,6 +275,9 @@ BEGIN
         DELETE cl FROM logistics.ContainerLines cl
         WHERE cl.ContainerId = @Id AND NOT EXISTS (SELECT 1 FROM @Lines l WHERE l.PoLineId = cl.PoLineId);
 
+        -- (78) Only on a container that already had lines: on a new one there is nothing to update, and the join read
+        -- every container line of the order line (one more for each container of a plan).
+        IF @IsNew = 0
         UPDATE cl
         SET LineNumber = l.LineNumber, Quantity = l.QuantityBase, OilIncluded = ISNULL(l.OilIncluded, 0),
             OilQtyPerUnit = CASE WHEN ISNULL(l.OilIncluded, 0) = 1 THEN ISNULL(l.OilQtyPerUnit, i.OilQtyPerUnit) END,

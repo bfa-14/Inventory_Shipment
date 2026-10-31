@@ -127,6 +127,8 @@ public sealed class InvoiceImportController : ControllerBase
             priceListId,
             checkStock,
             documentTypeCode,
+            // (92) The reader: a row in a warehouse they may not move stock in comes back an Error.
+            User.GetUserId(),
             // FROM THE TOKEN, never from the request: whether a manual price in the file is honoured
             // is a permission, and a client that could ask for it would not need to hold it.
             User.GetPermissions(),

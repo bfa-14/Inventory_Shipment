@@ -47,7 +47,7 @@ public sealed class PurchaseDocumentsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<PurchaseDocumentDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _documents.GetAsync(id, User.GetPermissions(), cancellationToken);
+        var result = await _documents.GetAsync(id, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -125,19 +125,6 @@ public sealed class PurchaseDocumentsController : ControllerBase
         return result.ToActionResult(this);
     }
 
-    [HttpPost("{id:int}/close")]
-    [ProducesResponseType<PurchaseDocumentDto>(StatusCodes.Status200OK)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
-    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
-    public async Task<ActionResult<PurchaseDocumentDto>> Close(
-        int id, [FromBody] ClosePurchaseDocumentRequest? request, CancellationToken cancellationToken)
-    {
-        var result = await _documents.CloseAsync(
-            id, request ?? new ClosePurchaseDocumentRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
-
-        return result.ToActionResult(this);
-    }
-
     /// <summary>
     /// The charges of a DRAFT purchase invoice — freight, customs, clearing — replacing whatever was
     /// there. Sent apart from the lines: the lines are the supplier's bill and the charges are
@@ -185,11 +172,28 @@ public sealed class PurchaseDocumentsController : ControllerBase
     /* ── the chain ────────────────────────────────────────────────────────────────────────────── */
 
     /// <summary>
+    /// The order's lines still to invoice, for "Create Purchase Invoice" (script 86): per line ordered, invoiced by posted
+    /// invoices, in draft invoices and available, in base units (includeAll = the fully invoiced lines too). Needs seeing
+    /// the order.
+    /// </summary>
+    [HttpGet("{id:int}/invoice-candidates")]
+    [ProducesResponseType<IReadOnlyList<OrderInvoiceCandidateDto>>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status403Forbidden)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<IReadOnlyList<OrderInvoiceCandidateDto>>> InvoiceCandidates(
+        int id, [FromQuery] bool includeAll, CancellationToken cancellationToken)
+    {
+        var result = await _documents.GetOrderInvoiceCandidatesAsync(id, includeAll, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// Draft purchase invoices holding what remains to receive on the order: ONE PER ITEM (a supplier invoice
-    /// holds one item), or ONE holding every item. Body { documentDate?, exporterReference?, commercialInvoiceNo?,
-    /// onePerItem? } — the references are copied to every invoice; onePerItem true = one invoice per item, false = one
-    /// invoice of every item, null = the setting Purchase.OneItemPerInvoice (script 63). Answers { firstId, id
-    /// (= firstId), invoices, message }.
+    /// holds one item), or ONE holding every item. Body { documentDate?, lines?, exporterReference?,
+    /// commercialInvoiceNo?, onePerItem? } — lines [{ sourceLineId, quantityBase }] = the order lines and pieces to
+    /// take (script 86; none = everything still available); the references are copied to every invoice; onePerItem true
+    /// = one invoice per item, false = one invoice of every item, null = the setting Purchase.OneItemPerInvoice (script
+    /// 63). Answers { firstId, id (= firstId), invoices, message }.
     /// </summary>
     [HttpPost("{id:int}/create-invoice")]
     [ProducesResponseType<CreatedPurchaseInvoicesDto>(StatusCodes.Status201Created)]

@@ -1,6 +1,7 @@
 using Inventory_Shipment.Model.Common;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.Entities;
+using Inventory_Shipment.Model.Enums;
 
 namespace Inventory_Shipment.Service.Mapping;
 
@@ -68,6 +69,9 @@ public static class ItemMapper
         DefaultSupplierCode = item.DefaultSupplierCode,
         DefaultSupplierName = item.DefaultSupplierName,
         LeadTimeDays = item.LeadTimeDays,
+        LeadTimeMonths = item.LeadTimeMonths,
+        LeadTimeHistoryMonths = item.LeadTimeHistoryMonths,
+        LeadTimeHistoryReceipts = item.LeadTimeHistoryReceipts,
         PcPerContainer = item.PcPerContainer,
         WeightKg = item.WeightKg,
         VolumeCbm = item.VolumeCbm,
@@ -76,6 +80,12 @@ public static class ItemMapper
         LastSupplierId = item.LastSupplierId,
         LastSupplierName = item.LastSupplierName,
         LastPurchaseAtUtc = item.LastPurchaseAtUtc.AsUtc(),
+        Note = item.Note,
+        Link = item.Link,
+        TrackingMode = item.TrackingMode,
+        RequiresExpiry = item.RequiresExpiry,
+        SerialLength = item.SerialLength,
+        TrackingKind = Tracking.KindOf(item.TrackingMode, item.RequiresExpiry),
         CreatedAtUtc = item.CreatedAtUtc.AsUtc(),
         CreatedByName = item.CreatedByName,
         UpdatedAtUtc = item.UpdatedAtUtc.AsUtc(),

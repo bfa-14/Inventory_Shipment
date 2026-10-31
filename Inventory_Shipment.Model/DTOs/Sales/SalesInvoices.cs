@@ -355,6 +355,10 @@ public sealed class SalesInvoiceDto
     public DateTime? CancelledAtUtc { get; init; }
     public string? CancelledByName { get; init; }
     public string? CancelReason { get; init; }
+
+    /// <summary>The day it was cancelled on (script 84); null on documents cancelled before the date existed.</summary>
+    public DateTime? CancelDate { get; init; }
+
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
@@ -377,6 +381,13 @@ public sealed class SalesInvoiceDto
     public IReadOnlyList<SalesInvoiceLineDto> Lines { get; init; } = [];
     public IReadOnlyList<SalesInvoiceFileDto> Files { get; init; } = [];
     public IReadOnlyList<SalesInvoiceAuditDto> Audit { get; init; } = [];
+
+    /// <summary>
+    /// (92) Why the reader may not post, cancel or delete this document: the server's sentence ("You have no access to
+    /// warehouse LKS-01: ask an administrator."), worked out for the reader from the document's line and header
+    /// warehouses at each read. Null when they may - always for a reader with All warehouses.
+    /// </summary>
+    public string? WarehouseAccessRefusal { get; set; }
 }
 
 /// <summary>Make the sales return of a posted invoice.</summary>
@@ -700,6 +711,12 @@ public sealed class CancelSalesInvoiceRequest
     [Required]
     [StringLength(300, MinimumLength = 1)]
     public string Reason { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The day the cancellation counts on (script 84): its reversal stock movements are dated on it.
+    /// Null = today. Never in the future, never before the document date.
+    /// </summary>
+    public DateOnly? CancelDate { get; init; }
 
     public string? RowVersion { get; init; }
 }

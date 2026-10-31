@@ -13,8 +13,17 @@ public static class EmailCategories
     public const string PurchaseOrderRejected = "PurchaseOrderRejected";
     public const string PurchaseOrderToSupplier = "PurchaseOrderToSupplier";
 
+    /* (90) The approval of transfer orders: RelatedDocumentId is the TRANSFER ORDER's id, so the Email log links a
+       category starting "Transfer" to the transfer order page (every other category keeps the purchase order link). */
+    public const string TransferApproval = "TransferApproval";
+    public const string TransferApproved = "TransferApproved";
+    public const string TransferRejected = "TransferRejected";
+
     public static IReadOnlyList<string> All { get; } =
-        [Test, PurchaseApproval, PurchaseApprovalReminder, PurchaseOrderApproved, PurchaseOrderRejected, PurchaseOrderToSupplier];
+    [
+        Test, PurchaseApproval, PurchaseApprovalReminder, PurchaseOrderApproved, PurchaseOrderRejected, PurchaseOrderToSupplier,
+        TransferApproval, TransferApproved, TransferRejected,
+    ];
 }
 
 /// <summary>The outbox status: 1 Pending (waiting or being retried), 2 Sent, 3 Failed (gave up after the last attempt).</summary>

@@ -1,9 +1,6 @@
--- (the original joins a new group when it had none), same type, description, provider, reference, currency, rate
--- and landed-cost flag. Amount per container = @Amount (charge currency) or the original amount; date = @ChargeDate or
--- the original's; method = @AllocationMethod or the original's (a Manual original gives the charge type's method).
--- The movement of the original is kept for the containers that travel with it. @Post = 1 posts the copies at once.
--- Returns the created charges (Id, ContainerId, ContainerRef, ContainerNo, GroupId, Amount, AmountBase, AllocationMethod,
--- Status, RowVersion). An error while posting names the container.
+/* ================================================================== 11. Apply to other containers */
+
+-- Re-created (97) from the body of script 28: + a copy of a BIVAC charge takes its item at each container's port cost. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_CopyToContainers
     @ChargeId         INT,
     @ContainerIds     logistics.tvp_IdList READONLY,
@@ -21,8 +18,9 @@ BEGIN
     DECLARE @SrcContainer INT, @SrcRef NVARCHAR(30), @SrcStatus TINYINT, @GroupId UNIQUEIDENTIFIER, @SrcMovement INT,
             @TypeId INT, @SrcMethod NVARCHAR(10), @SrcAmount DECIMAL(18,2), @SrcDate DATE, @CurrencyId INT, @RateType TINYINT,
             @Rate DECIMAL(18,6), @InLanded BIT, @Description NVARCHAR(200), @ProviderId INT, @Reference NVARCHAR(100),
-            @Notes NVARCHAR(300);
-    SELECT @SrcContainer = ch.ContainerId, @SrcRef = c.ContainerRef, @SrcStatus = ch.Status, @GroupId = ch.GroupId,
+            @Notes NVARCHAR(300), @SrcBivac INT;
+    SELECT @SrcBivac = ch.BivacItemId,   -- (97)
+           @SrcContainer = ch.ContainerId, @SrcRef = c.ContainerRef, @SrcStatus = ch.Status, @GroupId = ch.GroupId,
            @SrcMovement = ch.MovementId, @TypeId = ch.ChargeTypeId, @SrcMethod = ch.AllocationMethod, @SrcAmount = ch.Amount,
            @SrcDate = ch.ChargeDate, @CurrencyId = ch.CurrencyId, @RateType = ch.RateType, @Rate = ch.ExchangeRate,
            @InLanded = ch.IncludeInLandedCost, @Description = ch.Description, @ProviderId = ch.ProviderPartyId,
@@ -71,6 +69,15 @@ BEGIN
         IF @Msg IS NOT NULL THROW 70001, @Msg, 1;
     END
 
+    -- (97) a copy of a BIVAC charge: the same BIVAC item, at the cost of each container's own port
+    IF @SrcBivac IS NOT NULL
+    BEGIN
+        DECLARE @Targets logistics.tvp_IdList;
+        INSERT INTO @Targets (Id) SELECT Id FROM @Ids;
+        SET @Msg = (SELECT b.Reason FROM logistics.fn_ContainerCharge_BivacBlock(@TypeId, @SrcBivac, @Targets) b);
+        IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+    END
+
     DECLARE @New TABLE (Id INT NOT NULL PRIMARY KEY, ContainerId INT NOT NULL);
     DECLARE @NewChargeId INT, @Ref NVARCHAR(30) = NULL;
 
@@ -98,7 +105,8 @@ BEGIN
         END
 
         INSERT INTO logistics.ContainerCharges (ContainerId, MovementId, GroupId, ChargeTypeId, Description, ProviderPartyId, Reference, ChargeDate,
-                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy)
+                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy,
+                                                BivacItemId)
         OUTPUT inserted.Id, inserted.ContainerId INTO @New (Id, ContainerId)
         SELECT x.Id,
                CASE WHEN @SrcMovement IS NOT NULL
@@ -107,8 +115,12 @@ BEGIN
                                      WHERE mc.MovementId = @SrcMovement AND mc.ContainerId = x.Id AND m.Status <> 4)
                     THEN @SrcMovement END,
                @GroupId, @TypeId, @Description, @ProviderId, @Reference, @ChargeDate,
-               @CurrencyId, @RateType, @Rate, @Amount, @AmountBase, @Method, @InLanded, @Notes, @UserId
-        FROM @Ids x;
+               @CurrencyId, @RateType, @Rate,
+               CASE WHEN @SrcBivac IS NOT NULL THEN bc.CostBase ELSE @Amount END,
+               CASE WHEN @SrcBivac IS NOT NULL THEN ROUND(bc.CostBase / @Rate, 2) ELSE @AmountBase END,
+               @Method, @InLanded, @Notes, @UserId, @SrcBivac
+        FROM @Ids x
+        OUTER APPLY logistics.fn_Container_BivacCost(x.Id, @SrcBivac) bc;
 
         DECLARE new_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR SELECT Id FROM @New ORDER BY Id;
         OPEN new_cur;

@@ -3,11 +3,13 @@ using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Inventory;
 using Inventory_Shipment.Model.DTOs.Purchase;
 using Inventory_Shipment.Model.Entities;
+using Inventory_Shipment.Model.Enums;
 using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
 using Inventory_Shipment.Service.Mapping;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -39,21 +41,24 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<PagedResult<ItemListDto>>> SearchAsync(
-        ItemQuery query, CancellationToken cancellationToken = default)
+        ItemQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         var (items, totalCount) = await _items.SearchAsync(query, cancellationToken);
+        var seesCosts = ItemCosts.Sees(permissions);
 
         return Result<PagedResult<ItemListDto>>.Success(new PagedResult<ItemListDto>
         {
-            Items = items.Select(i => i.ToListDto()).ToList(),
+            // (94) The list and the item search behind every scan box: the costs and the value null without View item costs.
+            Items = items.Select(i => seesCosts ? i.ToListDto() : ItemCosts.Strip(i.ToListDto())).ToList(),
             Page = query.Page,
             PageSize = query.PageSize,
             TotalCount = totalCount
         });
     }
 
-    public async Task<Result<ItemDetailsDto>> GetAsync(int id, CancellationToken cancellationToken = default)
-        => await ReadBackAsync(id, cancellationToken);
+    public async Task<Result<ItemDetailsDto>> GetAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => await ReadBackAsync(id, permissions, cancellationToken);
 
     public async Task<Result<ItemContainersDto>> GetContainersAsync(int id, CancellationToken cancellationToken = default)
     {
@@ -105,7 +110,7 @@ public sealed class ItemService : IItemService
     }
 
     public async Task<Result<ItemStockStatementDto>> GetStockStatementAsync(
-        int id, DateOnly? from, DateOnly? to, CancellationToken cancellationToken = default)
+        int id, DateOnly? from, DateOnly? to, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         if (from is not null && to is not null && to < from)
         {
@@ -121,7 +126,7 @@ public sealed class ItemService : IItemService
         var (opening, movements) = await _items.GetStockStatementAsync(id, from, to, cancellationToken);
         var totalIn = movements.Sum(m => m.QuantityIn);
         var totalOut = movements.Sum(m => m.QuantityOut);
-        return Result<ItemStockStatementDto>.Success(new ItemStockStatementDto
+        var statement = new ItemStockStatementDto
         {
             ItemId = id,
             ItemCode = loaded.Value.Item.ItemCode,
@@ -131,10 +136,14 @@ public sealed class ItemService : IItemService
             TotalOut = totalOut,
             ClosingBase = opening + totalIn - totalOut,
             Movements = movements,
-        });
+        };
+
+        // (94) Each movement's unit cost (the transfer rows too) null without View item costs.
+        return Result<ItemStockStatementDto>.Success(ItemCosts.Sees(permissions) ? statement : ItemCosts.Strip(statement));
     }
 
-    public async Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Result<ItemStockBalanceDto>> GetStockBalanceAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
         var loaded = await _items.GetAsync(id, cancellationToken);
         if (loaded is null)
@@ -143,7 +152,7 @@ public sealed class ItemService : IItemService
         }
 
         var rows = await _items.GetStockBalanceAsync(id, cancellationToken);
-        return Result<ItemStockBalanceDto>.Success(new ItemStockBalanceDto
+        var balance = new ItemStockBalanceDto
         {
             ItemId = id,
             ItemCode = loaded.Value.Item.ItemCode,
@@ -151,15 +160,18 @@ public sealed class ItemService : IItemService
             Warehouses = rows,
             TotalOnHandBase = rows.Sum(r => r.OnHandBase),
             TotalInventoryValue = rows.Sum(r => r.InventoryValue),
-        });
+        };
+
+        // (94) Stripped AFTER the total is computed: the averages, the values and the total null without View item costs.
+        return Result<ItemStockBalanceDto>.Success(ItemCosts.Sees(permissions) ? balance : ItemCosts.Strip(balance));
     }
 
     public async Task<Result<ItemDetailsDto>> CreateAsync(
-        SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
+        SaveItemRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (ValidateQuantities(request) is { } quantityError)
+        if ((ValidateQuantities(request) ?? ValidateLink(request) ?? ValidateTracking(request, isNew: true)) is { } validationError)
         {
-            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, quantityError, "VALIDATION");
+            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, validationError, "VALIDATION");
         }
 
         var item = ToEntity(request);
@@ -171,6 +183,12 @@ public sealed class ItemService : IItemService
             // The purchasing fields live in their own procedure (script 19); same call, same caller.
             await _items.SetPurchasingAsync(
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
+            // So do the note and the link (script 87).
+            await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
+            await _items.SetLeadTimeAsync(id, item.LeadTimeMonths, userId, cancellationToken);   // (98)
+            // And the tracking (script 93): always on a new item, None / no / any length when the request has none.
+            var tracking = TrackingOf(request);
+            await _items.SetTrackingAsync(id, tracking.Mode, tracking.RequiresExpiry, tracking.SerialLength, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -179,15 +197,15 @@ public sealed class ItemService : IItemService
 
         _logger.LogInformation("Item {ItemId} ({ItemCode}) created by user {UserId}", id, item.ItemCode, userId);
 
-        return await ReadBackAsync(id, cancellationToken);
+        return await ReadBackAsync(id, permissions, cancellationToken);
     }
 
     public async Task<Result<ItemDetailsDto>> UpdateAsync(
-        int id, SaveItemRequest request, int userId, CancellationToken cancellationToken = default)
+        int id, SaveItemRequest request, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (ValidateQuantities(request) is { } quantityError)
+        if ((ValidateQuantities(request) ?? ValidateLink(request) ?? ValidateTracking(request, isNew: false)) is { } validationError)
         {
-            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, quantityError, "VALIDATION");
+            return Result<ItemDetailsDto>.Failure(ErrorType.Validation, validationError, "VALIDATION");
         }
 
         if (!TryReadRowVersion(request.RowVersion, out var rowVersion))
@@ -204,6 +222,14 @@ public sealed class ItemService : IItemService
             await _items.UpdateAsync(item, rowVersion, userId, cancellationToken);
             await _items.SetPurchasingAsync(
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
+            await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
+            await _items.SetLeadTimeAsync(id, item.LeadTimeMonths, userId, cancellationToken);   // (98)
+            // (93) Only when the request carries trackingMode: a client that does not know the fields changes nothing.
+            if (request.TrackingMode is not null)
+            {
+                var tracking = TrackingOf(request);
+                await _items.SetTrackingAsync(id, tracking.Mode, tracking.RequiresExpiry, tracking.SerialLength, userId, cancellationToken);
+            }
         }
         catch (BusinessRuleException ex)
         {
@@ -212,7 +238,7 @@ public sealed class ItemService : IItemService
 
         _logger.LogInformation("Item {ItemId} ({ItemCode}) updated by user {UserId}", id, item.ItemCode, userId);
 
-        return await ReadBackAsync(id, cancellationToken);
+        return await ReadBackAsync(id, permissions, cancellationToken);
     }
 
     public async Task<Result> SetActiveAsync(
@@ -234,11 +260,11 @@ public sealed class ItemService : IItemService
         return Result.Success();
     }
 
-    public async Task<Result> DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task<Result> DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
     {
         try
         {
-            await _items.DeleteAsync(id, cancellationToken);
+            await _items.DeleteAsync(id, userId, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -246,7 +272,7 @@ public sealed class ItemService : IItemService
             return Result.Failure(failure.Type, failure.Message, failure.Code);
         }
 
-        _logger.LogInformation("Item {ItemId} deleted", id);
+        _logger.LogInformation("Item {ItemId} deleted by user {UserId}", id, userId);
         return Result.Success();
     }
 
@@ -530,11 +556,15 @@ public sealed class ItemService : IItemService
         CountryOfOrigin = request.CountryOfOrigin.Trim().ToUpperInvariant(),
         DefaultWarehouseId = request.DefaultWarehouseId,
         DefaultSupplierId = request.DefaultSupplierId,
-        LeadTimeDays = request.LeadTimeDays,
+        // (98) The months win; an older client's days become months (/ 30, to the half month), as script 98 converted them.
+        LeadTimeMonths = LeadTimeMonthsOf(request),
+        LeadTimeDays = LeadTimeMonthsOf(request) is { } months ? (int)Math.Round(months * 30, MidpointRounding.AwayFromZero) : null,
         PcPerContainer = request.PcPerContainer,
         WeightKg = request.WeightKg,
         VolumeCbm = request.VolumeCbm,
         Description = Normalize(request.Description),
+        Note = Normalize(request.Note),
+        Link = Normalize(request.Link),
         WarrantyMonths = request.WarrantyMonths,
         MinQuantity = request.MinQuantity,
         MaxQuantity = request.MaxQuantity,
@@ -567,6 +597,52 @@ public sealed class ItemService : IItemService
             ? "Minimum Quantity cannot exceed Maximum Quantity."
             : null;
 
+    /* THE PAGE OPENS THE LINK IN A NEW TAB, so only an absolute http(s) address with a host is accepted: no
+       javascript:, no file path, no spaces. usp_Item_SetNotes refuses the same, as the last guard. */
+    private static string? ValidateLink(SaveItemRequest request)
+    {
+        var link = Normalize(request.Link);
+        if (link is null)
+        {
+            return null;
+        }
+
+        var valid = !link.Any(char.IsWhiteSpace)
+            && Uri.TryCreate(link, UriKind.Absolute, out var uri)
+            && (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+            && !string.IsNullOrEmpty(uri.Host);
+
+        return valid ? null : "Link must be a web address starting with http:// or https://, for example https://www.tvsmotor.com.";
+    }
+
+    /* (93) TRACKING ON TRANSFERS. Checked here so the sentence sits next to the field (the page's red Alert, like the link);
+       usp_Item_SetTracking refuses the same, in its words, as the last guard. An update without trackingMode leaves the
+       three fields alone, whatever else it carries. */
+    private static string? ValidateTracking(SaveItemRequest request, bool isNew)
+    {
+        if (request.TrackingMode is null && !isNew)
+        {
+            return null;
+        }
+
+        var mode = TrackingMode.None;
+        if (request.TrackingMode is not null && !Tracking.TryParseMode(request.TrackingMode, out mode))
+        {
+            return "Tracking must be None, Batch or Serial.";
+        }
+
+        return request.SerialLength is not null && mode != TrackingMode.Serial
+            ? "Serial no. length applies to serial-numbered items only."
+            : null;
+    }
+
+    /// <summary>The request's tracking, after <see cref="ValidateTracking"/>: absent = None, no expiry, any length.</summary>
+    private static (TrackingMode Mode, bool RequiresExpiry, int? SerialLength) TrackingOf(SaveItemRequest request)
+    {
+        var mode = Tracking.TryParseMode(request.TrackingMode, out var parsed) ? parsed : TrackingMode.None;
+        return (mode, request.RequiresExpiry ?? false, mode == TrackingMode.Serial ? request.SerialLength : null);
+    }
+
     private static bool TryReadRowVersion(string? value, out byte[]? rowVersion)
     {
         rowVersion = null;
@@ -593,13 +669,18 @@ public sealed class ItemService : IItemService
         return loaded?.Units.FirstOrDefault(u => u.Id == unitId);
     }
 
-    private async Task<Result<ItemDetailsDto>> ReadBackAsync(int id, CancellationToken cancellationToken)
+    /// <summary>The item card as this reader receives it: (94) its costs and value null without View item costs.</summary>
+    private async Task<Result<ItemDetailsDto>> ReadBackAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
     {
         var loaded = await _items.GetAsync(id, cancellationToken);
+        if (loaded is null)
+        {
+            return Result<ItemDetailsDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND");
+        }
 
-        return loaded is null
-            ? Result<ItemDetailsDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<ItemDetailsDto>.Success(loaded.Value.Item.ToDetailsDto(loaded.Value.Units, loaded.Value.Files));
+        var item = loaded.Value.Item.ToDetailsDto(loaded.Value.Units, loaded.Value.Files);
+        return Result<ItemDetailsDto>.Success(ItemCosts.Sees(permissions) ? item : ItemCosts.Strip(item));
     }
 
     private async Task<Result<IReadOnlyList<ItemUnitDto>>> ReadUnitsAsync(int id, CancellationToken cancellationToken)
@@ -646,4 +727,28 @@ public sealed class ItemService : IItemService
 
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION")
     };
+
+    /// <summary>(98) The request's lead time in months: typed, else its days as months (/ 30, to the half month), else none.</summary>
+    private static decimal? LeadTimeMonthsOf(SaveItemRequest request)
+        => request.LeadTimeMonths is { } months
+            ? Math.Round(months, 1, MidpointRounding.AwayFromZero)
+            : request.LeadTimeDays is { } days
+                ? DaysToMonths(days)
+                : null;
+
+    /// <summary>
+    /// (98, 99) Days as months: to the half month, but a short lead time (under 8 days) to one decimal, at least 0.1 -
+    /// never 0 months for days above 0, which Shortages would read as no lead time of its own.
+    /// </summary>
+    private static decimal DaysToMonths(int days)
+    {
+        if (days <= 0)
+        {
+            return 0m;
+        }
+
+        var halves = Math.Round(days / 30m * 2, MidpointRounding.AwayFromZero) / 2;
+        var months = halves > 0 ? halves : Math.Max(0.1m, Math.Round(days / 30m, 1, MidpointRounding.AwayFromZero));
+        return Math.Min(60m, months);
+    }
 }

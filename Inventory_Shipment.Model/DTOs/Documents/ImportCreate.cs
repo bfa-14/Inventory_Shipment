@@ -71,6 +71,16 @@ public sealed class ImportCreateDocument
 
     public string? ItemCode { get; init; }
     public string? ItemName { get; init; }
+
+    /// <summary>
+    /// Posted, but its goods receipt was not made: a supplier invoice whose type receives its goods at posting (script
+    /// 79) and whose receipt the database refused - "Invoice posted; the goods receipt was not: {reason}. Use Receive
+    /// goods…". Null otherwise. Not a failure: the invoice is posted, only its goods wait.
+    /// </summary>
+    public string? Warning { get; init; }
+
+    /// <summary>The goods receipt made and posted with the invoice (script 79), when its type receives its goods.</summary>
+    public string? GoodsReceiptNumber { get; init; }
 }
 
 /// <summary>A document could not be created, or was created but refused posting.</summary>

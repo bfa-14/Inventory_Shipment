@@ -1,5 +1,6 @@
-/* ================================================================== 13. Unlink an invoice from a container */
-
+-- receipt made from it, or a posted receipt matched to it: order-line matching reaches lines in containers not received
+-- yet) is not unlinked (65028); and a freed line a cancelled receipt still refers to keeps its id (it is not merged
+-- away: the receipt line's foreign key points to it).
 -- The container must still be Draft or Confirmed (nothing received). The invoice lines on it lose their container and
 -- go back into the unlinked line of the same order line, item, unit, price, discount, warehouse and expiry when there
 -- is one (otherwise they stay as separate unlinked lines). The invoice stays "shipped in containers".
@@ -43,6 +44,32 @@ BEGIN
             THROW 65027, @Msg, 1;
         END
 
+        -- (65) RULE 28: AN INVOICE LINE A GOODS RECEIPT REFERS TO STAYS IN ITS CONTAINER: the line a draft or posted
+        -- receipt was made from, or a line a posted receipt's pieces are matched to (an order line's receipts outside
+        -- containers are matched to its invoice lines, linked or not).
+        SET @Msg = NULL;
+        SELECT TOP (1) @Msg = N'Line ' + CAST(pil.LineNumber AS NVARCHAR(10)) + N' (' + i.ItemCode + N'): '
+                              + CASE WHEN g.Status = 2 THEN N'goods receipt ' + g.DocumentNumber ELSE N'a draft goods receipt' END
+                              + N' refers to this invoice line: delete or cancel it first.'
+        FROM purchase.PurchaseDocumentLines pil
+        INNER JOIN logistics.ContainerLines cl ON cl.Id = pil.ContainerLineId
+        INNER JOIN inventory.Items i           ON i.Id = pil.ItemId
+        CROSS APPLY (SELECT TOP (1) r.Status, r.DocumentNumber
+                     FROM (SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a receipt made from the line, draft or posted
+                           FROM purchase.GoodsReceiptLines gl
+                           INNER JOIN purchase.GoodsReceipts gr ON gr.Id = gl.GoodsReceiptId
+                           WHERE gl.InvoiceLineId = pil.Id AND gr.Status < 3
+                           UNION ALL
+                           SELECT gr.Id, gr.Status, gr.DocumentNumber          -- a posted receipt whose pieces are matched to it
+                           FROM purchase.GoodsReceiptInvoiceMatches m
+                           INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = m.GoodsReceiptLineId
+                           INNER JOIN purchase.GoodsReceipts gr     ON gr.Id = gl.GoodsReceiptId
+                           WHERE m.InvoiceLineId = pil.Id AND gr.Status = 2) r
+                     ORDER BY r.Status DESC, r.Id) g
+        WHERE pil.DocumentId = @InvoiceId AND cl.ContainerId = @ContainerId
+        ORDER BY pil.LineNumber;
+        IF @Msg IS NOT NULL THROW 65028, @Msg, 1;
+
         DECLARE @OldTotal DECIMAL(18,2) = (SELECT ISNULL(SUM(LineTotal), 0) FROM purchase.PurchaseDocumentLines WHERE DocumentId = @InvoiceId);
         DECLARE @Pieces INT;
 
@@ -66,7 +93,8 @@ BEGIN
               FROM purchase.PurchaseDocumentLines l
               LEFT JOIN @Freed f ON f.Id = l.Id
               WHERE l.DocumentId = @InvoiceId AND l.ContainerLineId IS NULL) g
-        WHERE g.IsFreed = 1 AND g.Id <> g.KeeperId;
+        WHERE g.IsFreed = 1 AND g.Id <> g.KeeperId
+          AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl WHERE gl.InvoiceLineId = g.Id);   -- (65) kept: a receipt line refers to it
 
         UPDATE k SET Quantity = k.Quantity + x.Qty
         FROM purchase.PurchaseDocumentLines k

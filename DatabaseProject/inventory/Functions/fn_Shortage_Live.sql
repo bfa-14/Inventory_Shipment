@@ -1,3 +1,6 @@
+-- transfer orders to the plan's warehouse or a warehouse under it and neither received nor written off yet: they sit in
+-- an On the way warehouse, which no tree holds, so CurrentInventoryBase does not count them. Transfers OUT of the tree
+-- are not demand (decision D8). Every other column unchanged.
 CREATE   FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
 RETURNS TABLE
 AS
@@ -19,9 +22,11 @@ RETURN
            CurrentInventoryBase     = ISNULL((SELECT SUM(m.QuantityBase) FROM inventory.StockMovements m
                                               WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)), 0),
            TransitBase              = ISNULL(tr.Transit, 0),
+           TransfersInBase          = ISNULL(ti.TransfersIn, 0),            -- (90) goods on the way to the tree by transfers
            OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
                                            THEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) ELSE 0 END,
-           ExpectedMonthlySalesBase = CONVERT(DECIMAL(18,2), CAST(ISNULL(s.Sold, 0) AS DECIMAL(18,4)) / NULLIF(@MonthsOfHistory, 0)),
+           -- (85) the HIGHEST month of the history, not the average: plan for the busiest month seen.
+           ExpectedMonthlySalesBase = CONVERT(DECIMAL(18,2), ISNULL(mx.MaxMonthSold, 0)),
            SoldInPeriodBase         = ISNULL(s.Sold, 0),
            PurchaseItemUnitId       = pu.ItemUnitId,
            PurchaseUnitName         = pu.UnitTypeName,
@@ -29,17 +34,17 @@ RETURN
     FROM inventory.Items i
     OUTER APPLY
     (
-        -- open purchase orders + invoices whose goods are still travelling
-        SELECT PoOpen     = SUM(CASE WHEN dt.Code = N'PO'   THEN l.QuantityBase - l.ReceivedQuantityBase ELSE 0 END),
+        -- (65) rule 25: open and closed orders still to receive + invoices without an order not received yet
+        SELECT PoOpen     = SUM(CASE WHEN dt.Code = N'PO'   THEN ISNULL(pp.OutstandingBase, 0) ELSE 0 END),
                InvPending = SUM(CASE WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReceivedQuantityBase ELSE 0 END)
         FROM purchase.PurchaseDocumentLines l
         INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
         INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
-        WHERE l.ItemId = i.Id AND l.WarehouseId IN (SELECT t.Id FROM tree t) AND l.QuantityBase > l.ReceivedQuantityBase
-          AND ((dt.Code = N'PO'   AND d.Status = 2)
-            OR (dt.Code = N'PINV' AND d.Status = 2 AND d.ReceiptMode = 2
-                AND NOT EXISTS (SELECT 1 FROM logistics.ContainerLines xcl INNER JOIN logistics.Containers xc ON xc.Id = xcl.ContainerId
-                                WHERE xcl.Id = l.ContainerLineId AND xc.Status IN (6, 7))))
+        OUTER APPLY (SELECT p.OutstandingBase FROM purchase.fn_PoLine_Progress(d.Id) p WHERE p.PoLineId = l.Id) pp
+        WHERE l.ItemId = i.Id AND l.WarehouseId IN (SELECT t.Id FROM tree t)
+          AND ((dt.Code = N'PO'   AND d.Status IN (2, 4))
+            OR (dt.Code = N'PINV' AND d.Status IN (2, 4) AND d.UsesGoodsReceipts = 1 AND l.SourceLineId IS NULL
+                AND l.QuantityBase > l.ReceivedQuantityBase))
     ) po
     OUTER APPLY
     (
@@ -54,11 +59,40 @@ RETURN
     ) tr
     OUTER APPLY
     (
+        -- (90) GOODS ON THE WAY TO THE PLAN'S WAREHOUSE (its tree): dispatched by released transfer orders to it, not
+        --      received or written off yet. They sit in an On the way warehouse, which no tree holds. Transfers OUT
+        --      are not demand: the owner has not said the main warehouse buys for the branches (it would buy twice).
+        SELECT TransfersIn = SUM(l.DispatchedBase - l.ReceivedBase - l.LostBase)
+        FROM inventory.TransferOrderLines l
+        INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
+        WHERE l.ItemId = i.Id AND o.Status = 2 AND o.ToWarehouseId IN (SELECT t.Id FROM tree t)
+          AND l.DispatchedBase > l.ReceivedBase + l.LostBase
+    ) ti
+    OUTER APPLY
+    (
         SELECT Sold = SUM(-m.QuantityBase)
         FROM inventory.StockMovements m
         WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t) AND m.DocumentFamily = N'Sales'
           AND m.MovementDate >= DATEADD(MONTH, -@MonthsOfHistory, CAST(SYSUTCDATETIME() AS DATE))
     ) s
+    OUTER APPLY
+    (
+        /* (85) THE BUSIEST MONTH. The same history, cut into @MonthsOfHistory blocks of one month counted
+           back from tonight (block 0 = the last month up to today included, block 1 = the month before it...),
+           each up to the same day of the next one, so no day counts twice; the
+           net sales of each (sales less returns), and the highest of them. A month without sales counts 0. */
+        SELECT MaxMonthSold = MAX(b.Sold)
+        FROM (SELECT k.n, Sold = ISNULL((SELECT SUM(-m.QuantityBase)
+                                         FROM inventory.StockMovements m
+                                         WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)
+                                           AND m.DocumentFamily = N'Sales'
+                                           AND m.MovementDate >= DATEADD(MONTH, -(k.n + 1), DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE)))
+                                           AND m.MovementDate <  DATEADD(MONTH, -k.n, DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE)))), 0)
+              FROM (SELECT TOP (CASE WHEN @MonthsOfHistory > 0 THEN @MonthsOfHistory ELSE 1 END)
+                           n = ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1
+                    FROM (VALUES (0),(0),(0),(0),(0),(0)) a (x) CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0)) b (x)) k
+        ) b
+    ) mx
     OUTER APPLY
     (
         SELECT TOP (1) u.Id AS ItemUnitId, u.PackingFormula, t.UnitTypeName

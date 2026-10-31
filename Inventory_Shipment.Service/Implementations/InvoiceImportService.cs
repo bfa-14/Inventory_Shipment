@@ -1,4 +1,6 @@
 using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Inventory;
+using Inventory_Shipment.Model.DTOs.Purchase;
 using Inventory_Shipment.Model.DTOs.Sales;
 using Inventory_Shipment.Model.Options;
 using Inventory_Shipment.Model.Security;
@@ -20,10 +22,21 @@ public sealed class InvoiceImportService : IInvoiceImportService
     /// <summary>Header trouble: the branch, warehouse or price list, not anything in the file.</summary>
     private const string MasterInactiveCode = "MASTER_INACTIVE";
 
+    /// <summary>
+    /// (92) The pages whose rows move stock in their warehouse: a row in a warehouse the user may not use is an Error. Purchase
+    /// orders and supplier invoices move no stock and are not limited; a transfer is judged on its From (its own import).
+    /// </summary>
+    private static readonly HashSet<string> WarehouseLimitedTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        StockDocumentTypes.In, StockDocumentTypes.Out, StockDocumentTypes.BivacOut,
+        SalesDocumentTypes.Invoice, SalesDocumentTypes.Return, PurchaseDocumentTypes.Return,
+    };
+
     private readonly IInvoiceImportRepository _imports;
     private readonly IStockDocumentRepository _documentTypes;
     private readonly InvoiceImportParser _parser;
     private readonly InvoiceImportWorkbooks _workbooks;
+    private readonly IWarehouseAccessService _access;
     private readonly SalesOptions _options;
     private readonly ILogger<InvoiceImportService> _logger;
 
@@ -32,6 +45,7 @@ public sealed class InvoiceImportService : IInvoiceImportService
         IStockDocumentRepository documentTypes,
         InvoiceImportParser parser,
         InvoiceImportWorkbooks workbooks,
+        IWarehouseAccessService access,
         IOptions<SalesOptions> options,
         ILogger<InvoiceImportService> logger)
     {
@@ -39,6 +53,7 @@ public sealed class InvoiceImportService : IInvoiceImportService
         _documentTypes = documentTypes;
         _parser = parser;
         _workbooks = workbooks;
+        _access = access;
         _options = options.Value;
         _logger = logger;
     }
@@ -68,6 +83,7 @@ public sealed class InvoiceImportService : IInvoiceImportService
         int? priceListId,
         bool checkStock,
         string documentTypeCode,
+        int userId,
         IReadOnlySet<string> userPermissions,
         CancellationToken cancellationToken = default)
     {
@@ -121,6 +137,12 @@ public sealed class InvoiceImportService : IInvoiceImportService
         }
 
         var consolidated = Consolidate(validated);
+
+        // (92) After the merge, so a merged row is judged once; the counts below are taken after it.
+        if (WarehouseLimitedTypes.Contains(documentTypeCode?.Trim() ?? string.Empty))
+        {
+            await RefuseOtherWarehousesAsync(consolidated, userId, cancellationToken);
+        }
 
         _logger.LogInformation(
             "Invoice import validated {FileName}: {Total} rows, {Valid} valid, {Warning} warning, {Error} error.",
@@ -235,6 +257,38 @@ public sealed class InvoiceImportService : IInvoiceImportService
 
         // The file's own order, so the preview reads down the spreadsheet.
         return rows.OrderBy(r => r.RowNumber).ToList();
+    }
+
+    /// <summary>
+    /// (92) W6: a Valid or Warning row whose warehouse the user may not use becomes an Error with the database's sentence (a
+    /// Warning's own text kept after it). Saving such a row is refused all the same; this only says it on the preview.
+    /// For a user with All warehouses: one primary-key seek, nothing changes.
+    /// </summary>
+    private async Task RefuseOtherWarehousesAsync(
+        IReadOnlyList<InvoiceImportValidatedRow> rows, int userId, CancellationToken cancellationToken)
+    {
+        var usable = rows.Where(r => r.Status is InvoiceImportStatus.Valid or InvoiceImportStatus.Warning && r.WarehouseId is > 0).ToList();
+        if (usable.Count == 0)
+        {
+            return;
+        }
+
+        var refusals = await _access.RefusalsByWarehouseAsync(userId, usable.Select(r => r.WarehouseId!.Value), cancellationToken);
+        if (refusals.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var row in usable)
+        {
+            if (!refusals.TryGetValue(row.WarehouseId!.Value, out var refusal))
+            {
+                continue;
+            }
+
+            row.Status = InvoiceImportStatus.Error;
+            row.Message = string.IsNullOrWhiteSpace(row.Message) ? refusal : $"{refusal} {row.Message.Trim()}";
+        }
     }
 
     private static Result<ImportValidationResult> Invalid(string message)

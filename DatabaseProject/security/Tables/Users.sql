@@ -10,6 +10,7 @@ CREATE TABLE [security].[Users] (
     [LastLoginAtUtc]      DATETIME2 (3)  NULL,
     [CreatedAtUtc]        DATETIME2 (3)  CONSTRAINT [DF_Users_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
     [UpdatedAtUtc]        DATETIME2 (3)  NULL,
+    [AllWarehouses]       BIT            CONSTRAINT [DF_Users_AllWarehouses] DEFAULT ((1)) NOT NULL,
     CONSTRAINT [PK_Users] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [UQ_Users_Email] UNIQUE NONCLUSTERED ([Email] ASC),
     CONSTRAINT [UQ_Users_Username] UNIQUE NONCLUSTERED ([Username] ASC)

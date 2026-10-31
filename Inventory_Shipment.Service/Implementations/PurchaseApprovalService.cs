@@ -175,7 +175,7 @@ public sealed partial class PurchaseApprovalService : IPurchaseApprovalService
         }
 
         var document = await _documents.GetAsync(id, cancellationToken);
-        if (document is null || document.Status is not (PurchaseDocumentStatus.Posted or PurchaseDocumentStatus.Closed))
+        if (document is null || document.Status != PurchaseDocumentStatus.Posted)   // approved: Saved, Partially posted or Posted (77)
         {
             return Result<SendToSupplierResultDto>.Failure(ErrorType.Conflict,
                 "Only an approved purchase order can be sent to the supplier.", "INVALID_STATUS");

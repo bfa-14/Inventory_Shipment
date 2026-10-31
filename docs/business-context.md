@@ -10,6 +10,139 @@ receipt, and a supplier invoice no longer moves stock (glossary, 3.3–3.10, 4.1
 *Updated on 12 October 2026 for the merge with Ali's GitLab work (scripts 68–72): the new Dashboard, lines in a
 warehouse at the bottom of the tree of any branch, goods receipts included (1.4, 3.1, 4.9, 4.12, 5.4).*
 
+*Updated on 17 October 2026 for **purchase order statuses** (script 77): an approved order shows Saved, Partially
+posted or Posted from its posted invoices, and Closed is gone (glossary, 3.4, 3.9, 3.10, 4.2, 4.12).*
+
+*Updated on 17 October 2026 for **any number of containers** (script 78): Auto-plan, the invoices and the lists take
+any number of containers (no 200 ceiling), and Auto-plan / Add Container fill in the supplier and the forwarder by
+themselves (glossary, 4.1, 4.5, 4.6).*
+
+*Updated on 17 October 2026 for **what a document type does** (script 79): in Configuration › Document Types a
+purchase invoice may change item costs or not, may receive its goods when it is posted, and goods receipts may be
+drafted on a Delivery or made by hand (glossary, 3.7, 4.7, 4.12, 5.4).*
+
+*Updated on 17 October 2026 for **shipping from the container** (script 80, shipment phase 1): every container shows
+its next step in one button - "Start shipment…", "Start Inland transport…", "Arrived at Dar es Salaam…", "Next leg…" -
+on its page and in its row's "…" menu; a leg leaves from where the container is (From locked); the Movements list
+starts and completes movements on the row; a start or arrival date in the future is refused (glossary, 3.5, 4.6, 5.4).*
+
+*Updated on 18 October 2026 for **Next step everywhere** (script 81, shipment phase 2): the container's button opens
+one dialog for every step, already filled in with the usual next leg from where it is ("Inland transport to
+Kasumbalesa…", "Cleared customs at Kasumbalesa…", "Then start Customs clearance on the same day"); "Next step…" in the
+selection bar moves 300 containers at once, grouped by step; the Containers list has a Next step column and filter (the
+logistics to-do list); only the last leg of a container can be cancelled (glossary, 3.5, 4.6, 5.4).*
+
+*Updated on 18 October 2026 for **the Shipments board and a movement that arrives in parts** (script 82, shipment
+phase 3): Logistics › Shipments puts every container on its way in one column by stage (At supplier, At sea, At port, On
+the road, At border / customs, Delivered, to receive; the received ones of 30 days on a switch), grouped by ship, leg or
+place, each card with its next step, a whole ship or column ticked at once into the Containers list's selection bar, a
+List view for hundreds, one column at a time on a phone; a movement in progress can be completed for only some of its
+containers ("Which containers?", "Only the 20 ticked", "Only some containers arrived"), which get their own movement with
+the same start - cancelling that movement undoes the split, its containers back on the movement they came from; the
+order's and the invoice's Containers cards got a row "…" menu with the next step; the container page's estimated cost
+follows the cost rule and the matching of the goods receipt (glossary, 3.1, 3.5, 3.8, 4.6, 4.7, 5.4).*
+
+*Updated on 19 October 2026: the prompt statuses were checked against the code - prompts 35, 38, 39, 42, 44, 45
+and 46 are built (4.2, 4.3, 4.5, 4.6, 4.10, 5.1, 5.2, 6.1, 6.4); an environment is deployed only when someone
+presses the **Deploy to server** button, on GitHub, in VS Code or in Visual Studio - a push deploys nothing (8.2;
+`deploy/README.md`, "Deploying with a button"); and a movement that cannot be cancelled says why before the click
+(script 83: "Cancel…" disabled with the reason, 4.6, 5.4).*
+
+*Updated on 19 October 2026 for **Create Purchase Invoice line by line** (script 86, the owner: "the same way must be
+when creating the purchase invoice from purchase order"): on an approved order the dialog works like Create Invoice from
+Containers - the date, the exporter's ref. and the commercial invoice no., and the order's lines still to invoice with
+Ordered, Invoiced, In drafts and Available, each ticked with its available quantity, which the user may lower or untick
+(3.4, 4.2, 5.4).*
+
+*Updated on 21 October 2026 for **a charge on a container of one item** (script 88, reported on testing: a Customs
+charge allocated By Item Value on KTG-2026-0151 was refused at Post, "the allocation basis (Value) is zero for every line
+of the container", its price being 0): a container line that is the only one with pieces takes the whole charge,
+whatever the allocation method - no price, weight or volume is needed for it; on a container of several lines all at
+price 0 a charge by value is still refused, and the refusal names each line, where its price comes from and the way
+out; every refusal of the allocation names the container (glossary, 4.7, 5.4).*
+
+*Updated on 21 October 2026 for **one SQL Server for both environments**: testing's database can live in production's
+SQL Server, `Inventory_Shipment_Test` next to production's `Inventory_Shipment`, reached by testing's own login
+`inventory_test` (which owns it and has no access to production's), so one SSMS connection shows both. Moved once
+with `share-sql-server.sh` on the server; `copy-testing-to-production.sh` takes testing's data into production when it
+goes live (8.2; `deploy/README.md`, "One SQL Server for both environments").*
+
+*Updated on 24 October 2026 for **script 89 (fixes)**: a late container charge, and a landed cost adjustment of an
+invoice posted before goods receipts, split on the company's stock in every warehouse, as the goods receipt true-up
+does, and a cancel never takes more out of stock than its posting put in; cancelling a stock document reverses only its
+own rows, and every cancelled stock or sales document replays its items' average cost (those cancelled before were
+replayed once); a shortage plan for a parent warehouse creates its purchase order again; Configuration › Document
+Types keeps what is saved (five seeds reset it at every start); an item whose every receipt was cancelled keeps a zero
+average and no last cost (script 19's per-start backfill counted the cancelled postings); stale lines about closed
+orders and Expected Monthly Sales corrected (glossary, 3.3, 3.7, 4.5, 4.7, 4.12, 5.4).*
+
+*Updated on 25 October 2026 for **transfer orders** (script 90, prompt 47): Inventory › Transfer Orders moves stock
+between two warehouses of any branch without changing its cost - a dispatch (TRD) puts it on the destination branch's
+hidden On the way warehouse, a transfer receipt (TRR) into the destination - with partial postings, losses ("Nothing
+more will arrive"), "Nothing more will be sent", Cancel order, Reverse (receipt first), Dispatch and receive, returns,
+Late, and an approval switch on the TRO type with its emails; Shortages count "Transfers in" (glossary, 1.4, 1.6,
+3.1, 3.3, 3.7, 3.8, 3.10, 4.1, 4.11, 4.13, 5.1, 5.2, 5.4, 6.1, 8.2; `docs/notes/costing-rules.md`, "Transfers").*
+
+*Updated on 25 October 2026 for **stock levels per warehouse and Fill to Max** (script 91, prompt 48): each warehouse
+keeps its own Min / Max per item - on Item Definition's "Stock levels per warehouse" card, on Inventory › Stock Levels
+and by an Excel import and export - and stands at a **Projected** stock (on hand + what released transfer orders bring −
+what they take); a draft transfer order is topped up to its destination's Max with "Fill to Max…" and "Add items below
+Min…", or made from ticked rows of Stock Levels, and its lines show Min, Max and Projected at {To}, red while the
+destination stays below Min after the order; Item Definition's Minimum / Maximum Quantity stay the company's (the view
+"Company (Item Definition)", which the Dashboard's "Items below their minimum" now opens, beside a new line "Warehouse
+levels below Min"); a warehouse with levels cannot become a parent, and deleting an item or a warehouse takes its levels
+(glossary, 1.4, 3.1, 3.3, 3.8, 4.9, 4.14, 5.1, 5.2, 5.4, 6.1, 8.2).*
+
+*Updated on 25 October 2026 for **warehouse access per user** (script 92, prompt 49): an administrator may limit a
+user to some warehouses (Users & Permissions › Users, the row's Warehouses action: All warehouses, or only the ticked
+ones, a ticked parent giving every warehouse under it), and the user then moves stock only there - posting,
+cancelling, reversing, receiving, dispatching and receiving transfers, setting stock levels, naming a warehouse on a
+draft - while every list, page, report and export stays the same for everyone; system administrators use every
+warehouse; one sentence, "You have no access to warehouse LKS-01: ask an administrator." (50010, HTTP 403), said on the
+disabled buttons and repeated by the database, whose stock ledger refuses any row a restricted user writes in another
+warehouse; nothing changes for anybody until an administrator restricts someone (glossary, 1.6, 3.8, 4.11, 4.15, 5.2,
+5.4, 7.3).*
+
+*Updated on 25 October 2026 for **batch, serial and expiry on transfers** (script 93, prompt 50): Item Definition says
+how an item is tracked (Tracking None / Batch numbers / Serial numbers, Requires expiry date, a Serial no. length such
+as 17 for a TVS chassis no.), and a transfer dispatch then asks, line by line in its own dialog ("Serial nos.…",
+"Batches…", "Expiry dates…"), which pieces leave - one serial no. per piece, scanned or pasted, or batch / expiry rows
+adding up to the pieces - and is refused until every tracked line is complete; a serial no. is never on the way twice;
+the receipt says, serial by serial or row by row, what arrived, is still coming or is lost; the rows stay on the posting
+for good (shown on the order, printed on the dispatch note, exported, found from the list by "Batch or serial no."); the
+stock ledger carries the expiry date; no cost and no stock figure moves; nothing changes for an item until someone ticks
+its Tracking (glossary, 3.3, 3.8, 3.10, 4.16, 5.2, 5.4, 6.1, 6.3, 8.5; `docs/notes/costing-rules.md`, "Transfers").*
+
+*Updated on 28 October 2026 for **who may see item costs** (script 94, prompt 51): one permission, **View item costs**
+(`inventory.costs.view`), decides who sees what an item costs - average, last and FOB cost and stock value - on Item
+Definition, Stock Balance and Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfer orders
+and the Dashboard; granted once to every role that saw such a cost, so nobody loses a figure at the release; the server
+sends the figures empty to anybody else and the pages draw no column; it hides, it never blocks: an Inventory In line
+saved without a cost takes the item's last cost, else its average (it took 0, also for a type whose cost cannot be typed
+and for an import row without one), and a goods receipt line without an order the same; a line's cost follows a change of
+its unit (glossary, 1.6, 3.3, 3.8, 4.9, 4.11, 4.12, 4.13, 4.17, 5.2, 5.4, 6.1, 8.5; `docs/notes/costing-rules.md`).*
+
+*Updated on 30 October 2026 for **the container's journey, BIVAC charges and lead times** (scripts 95-99, prompt 52):
+the Containers list shows each container's leg (From → To, from its movements) and a Journey status (Not dispatched,
+On the way, Arrived, Received) with its filter; Receive goods… on a container that has movements waits until its
+Delivery is completed, and an order's or an invoice's Receive goods… is hidden when everything still to receive
+travels in containers; a provider's invoice reference is entered once per provider on container charges (one group may
+share it); a BIVAC item keeps a cost per port, and a BIVAC / Inspection charge names its BIVAC item, takes that cost at
+each container's port and posts a BIVAC Out of 1 pc (cancelled with the charge); Item Definition's lead time is in
+months, and Shortages give each line its own lead time - its purchase history (order approval to goods receipt, last
+12 months), else the item's, else the plan's, or typed on the line (glossary, 4.18, 5.2, 5.4, 6.1).*
+
+*Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
+purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
+load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
+pending - November 2026", "In transit India → Dar es Salaam", "Dar es Salaam → Mokambo", "Offloaded in Lubumbashi"), the
+lead time from the order date to the offload, an Excel export laid out like the sheet; its own permission, View Container
+Report; and a Container unit's packing formula of 1 now means "not specified": no capacity is judged for it (3.1, 3.8,
+4.5, 4.19, 5.2, 5.4).*
+
+*Updated on 15 October 2026: the team moved from GitLab to **GitHub**. Both repositories live on GitHub under
+`bfa-14`, everyone pushes and merges there, and GitLab is no longer used (6.3, 8.2; `deploy/README.md`).*
+
 *How sure I am:*
 - *Where I am not sure, I say so with **(unsure)** or **(check the code)**.*
 - *Prompts 1–31 and Ali's scripts 29–41 were written before this session or by someone else. I only know them
@@ -18,7 +151,8 @@ warehouse at the bottom of the tree of any branch, goods receipts included (1.4,
 
 *Status marks used in section 4:*
 - ***[Implemented]***: built and verified.
-- ***[Decided – prompt NN]***: a prompt is written but not run yet, as far as I know.
+- ***[Decided – prompt NN]***: a prompt is written but not run yet, as far as I know (none left on 19 October 2026:
+  every written prompt is built).
 - ***[Ali – details unknown]***: built by Ali; I only know the commit title.
 
 **Contents:** 1. The business · 2. Glossary · 3. Modules and workflows · 4. Business rules · 5. The prompts so far ·
@@ -91,6 +225,13 @@ after them it charges **demurrage**.
   named by a document or a goods receipt, a draft too) cannot become a parent.
 - The warehouse a container's goods are received into **must belong to the container's branch** (and be at the bottom
   of the tree).
+- **Each branch also has one hidden "On the way" warehouse** (script 90, `OTW-BR-002` "On the way to BR-002
+  (transfers)"): the goods a transfer order dispatched to one of the branch's warehouses sit there until they are
+  received or written off. It is made and kept by the system, never a line's warehouse, and offered only by Stock
+  Valuation's filter (4.13).
+- **Each warehouse at the bottom of the tree may keep its own Min / Max per item** (script 91, "stock levels per
+  warehouse"; never an On the way warehouse): what a transfer order's Fill to Max tops it up to. A warehouse with stock
+  levels counts as used, so it cannot become a parent either (4.14).
 
 ### 1.5 Currencies
 - **Base currency: USD.** A USD document shows "Exchange Rate 1 (base currency)".
@@ -105,8 +246,8 @@ after them it charges **demurrage**.
 | Role | What it does (as designed) |
 |---|---|
 | **System administrator** (system role, `IsSystem = 1`; user "Admin", shown "System Administrator") | Holds every permission. Sets up master data, users, roles, settings (email, purchase approval), document types. |
-| **Owner** | Approver candidate. Receives a copy of approved purchase orders (setting). **No user has this role in Bilal's local database yet.** |
-| **Manager** | By default: view, create and confirm containers; view, create and post goods receipts (it offloaded containers before them); manage movements and documents; view and create container charges. Approver candidate. Test user `manager1` ("Manager One"). |
+| **Owner** | Approver candidate. Receives a copy of approved purchase orders (setting). Views and approves transfer orders by default (script 90). **No user has this role in Bilal's local database yet.** |
+| **Manager** | By default: view, create and confirm containers; view, create and post goods receipts (it offloaded containers before them); manage movements and documents; view and create container charges; view and approve transfer orders (script 90). Approver candidate. Test user `manager1` ("Manager One"). |
 | Purchasing / buyer | Creates purchase orders and sends them for approval. Test user `buyer1`. The real role name is **(unsure)**. |
 | Logistics | Plans containers (Auto-plan), types container and seal numbers from the forwarder's list, starts shipments, records movements (completing the Delivery drafts the goods receipts), enters charges, attaches documents (B/L, packing list...). |
 | Accounting | Posts supplier invoices (payable; they adjust the cost of goods already received) and charges, landed cost adjustments; follows costs, stock valuation, sales profit. |
@@ -116,6 +257,14 @@ after them it charges **demurrage**.
 Real job titles and the other roles in `security.Roles` are **(unsure, check the code)**. Permissions are given to
 roles (Users & Permissions › Roles / Role Permissions). **Approvers are no longer taken from a role**: they are ticked
 per user in Settings › Purchase approval (see 4.3).
+
+Since script 92 a user may also be limited to some warehouses (Users & Permissions › Users, the row's Warehouses
+action): the roles say what a user may do, the warehouses where they may move stock. Every user keeps every warehouse
+until an administrator restricts them; system administrators always use every warehouse (see 4.15).
+
+Since script 94 a role sees what an item costs only with **View item costs** (4.17): the roles that saw costs on the
+day of the release got it once; the owner unticks it for the storekeepers and sales staff who must count and sell
+without seeing costs, and View Stock Valuation for those who must see no value at all.
 
 ### 1.7 The people and tools on the project
 - **Bilal**: the developer I work with, and the one who talks to the business. He is on Ubuntu and uses VS Code with
@@ -136,11 +285,13 @@ per user in Settings › Purchase approval (see 4.3).
 | Term | Meaning here |
 |---|---|
 | **PO** | Purchase order. Document type code `PO`, number like `PO-BR-002-000042` (prefix, branch, sequence). |
+| **Saved / Partially posted / Posted (order)** | What an approved order shows (script 77, the owner's words), from its **posted** supplier invoices: **Saved** no posted invoice yet, **Partially posted** invoiced less than ordered, **Posted** everything ordered invoiced. Draft invoices do not count; purchase returns do not lower it; goods receipts never change it. Stored as status 2 (approved) with the invoicing status 0 / 1 / 2 beside it. There is no **Closed** any more. |
 | **PINV** | Purchase (supplier) invoice, `PINV-BR-003-000011`. The number is given **at posting**; a draft has none. Since the switch to goods receipts, posting it makes the amount payable and moves **no stock**. |
 | **PRET** | Purchase return, created from a posted PINV, `PRET-…`. |
 | **GRN / goods receipt** | Purchase › Goods Receipts (scripts 64–65, document type `GRN`, `GRN-BR-002-000001` given at posting): the goods that arrived, counted and put in a warehouse. **The only way supplier goods enter the stock.** Draft → Posted → Cancelled. One source each: a container, an order, an invoice, or "Without an order". |
-| **Receive goods…** | The button that creates a draft goods receipt: on a container (status Confirmed to Cleared), an approved order (open or closed) or a posted invoice; "+ New" on the Goods Receipts list does the same. "Create draft" or "Create and post". |
-| **Automatic draft** | The draft goods receipt made for each container when a movement of the **Delivery** stage is completed (badge "Auto"). Cancelling that movement deletes it. |
+| **Receive goods…** | The button that creates a draft goods receipt: on a container (status Confirmed to Cleared), an approved order (Saved, Partially posted or Posted) or a posted invoice; "+ New" on the Goods Receipts list does the same. "Create draft" or "Create and post". |
+| **Automatic draft** | The draft goods receipt made for each container when a movement of the **Delivery** stage is completed (badge "Auto"). Cancelling that movement deletes it. Made only while the GRN type's "Create goods receipts when a Delivery is completed" is on (script 79, default on); off, goods receipts are made by hand with Receive goods…. |
+| **Affects item cost / Affects on-hand** | The two switches of the purchase invoice type (PINV) in Configuration › Document Types (script 79). *Affects item cost* (default on): the invoice's price and its own charges become the cost of the goods received against it; off, those goods keep the order price (plus their container's charges). *Affects on-hand* (default off): posting an invoice also receives its goods with a goods receipt made and posted at once. Each invoice keeps the values it was posted with (`PurchaseDocuments.AffectsCost` / `ReceiveOnPost`). |
 | **Delivered, not received** | A container whose Delivery is completed (or with a draft goods receipt) and whose goods receipt is not posted: a filter of the Containers list. |
 | **Settled short** | Pieces that will never come: on a container receipt, loaded − received (a reason is required); on a local receipt line, the rest of the order line when "Nothing more will come" is ticked. The order counts them as done. |
 | **Received / Invoiced / Short** | The three counters of an order line: received by goods receipts (`GoodsReceivedBase`), invoiced by posted invoices (`ReceivedQuantityBase`, an old name that has always meant invoiced), settled short (`GoodsShortBase`). |
@@ -155,25 +306,30 @@ per user in Settings › Purchase approval (see 4.3).
 | **Charge** | A cost of the import or purchase (freight, insurance, clearing, port fees, transport, storage, demurrage). Imports: on **containers**. Local: on the invoice. |
 | **Charge type** | Master data (Purchase › Charge Types). Gives the default **allocation method** and whether the charge enters the cost ("include in landed cost"). |
 | **Split rule** | How one charge typed for several containers is divided between them: **Same** (each container gets the full amount), **Equal**, **Pieces** (default), **Value**. |
-| **Allocation method** | How a container's charge is divided over its items: **Value, Quantity, Weight, Volume, Manual**. Rounded to the cent; leftover cents go to the largest remainders. |
+| **Allocation method** | How a container's charge is divided over its items: **Value, Quantity, Weight, Volume, Manual**. Rounded to the cent; leftover cents go to the largest remainders. A container with one line (with pieces) puts the whole charge on it, whatever the method (script 88). |
 | **Charge group** | Charges created together, or copied with "Apply to other containers", share a `GroupId`. The provider's invoice is attached once for the group. |
-| **Late charge / cost adjustment** | A charge posted (or cancelled) after the container's goods are received (badge "after receipt"), or on a posted local invoice (LCA). Recorded in `inventory.CostAdjustments`, SourceKind `CNTCHARGE` for containers. The cost of received goods following their invoices is a cost adjustment too (`GRNCOST`). |
+| **Late charge / cost adjustment** | A charge posted (or cancelled) after the container's goods are received (badge "after receipt"), or on a posted local invoice (LCA). Recorded in `inventory.CostAdjustments`, SourceKind `CNTCHARGE` for containers. The cost of received goods following their invoices is a cost adjustment too (`GRNCOST`). The part the company still holds (every warehouse, script 89) changes the average cost; the rest goes to COGS. |
 | **COGS** | Cost of goods sold. Sales take stock out at average cost. |
 | **Average cost** | Weighted average cost per item, updated at every receipt and cost adjustment. Items also keep **last cost** and **FOB cost**. |
 | **Container** | A shipping container, created **from a purchase order**. App reference `KTG-2026-0031` (document type CNT: prefix KTG, year, 4-digit number). |
 | **Container No.** | The real box number: 4 letters + 7 digits, for example `MSKU1234565`. Typed when the forwarder sends the list. Unique among open containers (69013). |
 | **Seal No.** | The number of the seal closing the doors. |
-| **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is being removed (prompt 46). |
+| **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is no longer used (script 54, prompt 46): capacity comes from the item's Container unit. |
 | **Container unit** | In Item Definition › units: the unit whose unit type is a container unit (`masterdata.UnitTypes.IsContainer = 1`). Its packing formula is the pieces of this item per container (for example 84). **The only source of container capacity** (prompt 46). |
 | **Base unit / pieces** | The smallest unit of an item (`PC`). Container quantities are always in base units. Other units have a packing formula. |
-| **Auto-plan** | On an approved PO: choose the container type and the app proposes all containers, filled from the order lines; edit, then create them all at once (all or nothing, at most 200). |
+| **Auto-plan** | On an approved PO: choose the container type and the app proposes all containers, filled from the order lines; edit, then create them all at once (all or nothing, **any number of containers** since script 78; 200 at most before). The supplier is shown from the order and the forwarder filled in (4.5). |
 | **Mix the rest** | Auto-plan option: what is left of each line after full containers is packed into shared containers. Off = each rest gets its own container. |
 | **Fill % / equivalent capacity** | How full a container is: the sum of quantity ÷ pieces per container of each item (prompt 46). |
 | **Over capacity** | Fill above 100%: a warning that only users with "Load Above Capacity" can confirm (69007). |
 | **Confirm (container)** | The loading plan is agreed: Draft → Confirmed. |
 | **Movement** | One leg of the journey, `MOV-2026-000046`. Types: LOAD, SEA, TRANSHIP, PORT, INLAND, BORDER, CUSTOMS, DELIVERY. Planned → In progress → Completed, or Cancelled. |
 | **Stage** | What a movement type does to its containers: Origin, Sea, Transit, Port, Border, Customs, Delivery. |
-| **Start shipment** | From a selection of containers: one movement (default SEA) created and started at once. Vessel, voyage, B/L and ETA are copied to the containers. |
+| **Start shipment** | The first leg of a container that never moved (default SEA, port of loading → port of destination), from its Next step: created and started at once ("Plan only" to plan it), leaving from where the container is. Vessel, voyage, B/L and ETA are copied to the container. |
+| **Next step (of a container)** | Scripts 80–81: the one button of a container's page (and the first entry of its row's "…" menu, "Next step: …") whose label says what happens next, and the one dialog it opens, already filled in: "Start shipment…" (never moved), "Start {type}…" (its next planned movement), "Arrived at {To}…" / "Cleared customs at {place}…" / "Crossed the border at {place}…" / "Left the port of {place}…" / "Loaded at the supplier…" / "Delivered to {To}…" (a movement in progress carries it, by the stage of its type), the proposed next leg "{Type} to {To}…" / "{Type} at {place}…" / "Next leg from {place}…" (its last leg is completed), "Receive goods…" / "Open goods receipt (draft)" (delivered, not received). "Next step…" in the selection bar does it for many containers, grouped by step. |
+| **Proposed next leg** | Script 81: what Next step proposes from where a container is: the usual next leg from that place (the most frequent of the last 365 days, after a leg of the same stage, seen at least twice - a voyage split in two counts once, script 82: "Suggested: the usual next leg from Dar es Salaam (5 earlier legs)"), else the container's own ports (never moved: Sea freight to its port of destination; a Delivery to its final destination), else the stage order (after Sea or Port: Inland transport, To to choose; at a border or inland place: Customs there; cleared: Warehouse delivery). Only active types are proposed; when the next stage has none the type is left to choose ("Choose the type") and the container still moves on. There are no route templates: history and stages only (the owner's choice). |
+| **Then leg** | Script 81: "Then start Customs clearance at Kasumbalesa on the same day" in the arrival dialog: the proposed next leg started right after the arrival is recorded, as a second step - refused, the arrival stays ("Arrival recorded; Customs clearance was not started: {reason}. Use Next step…"). Ticked by default for a stay at the arrival place or the leg after Customs / Border, unticked for a leg that moves; never after a Delivery, nor when the container's next leg is already planned (that planned movement is its next step; planned by someone else while the dialog was open, the warning names it: "…its next leg MOV-2026-000058 (Customs clearance) is already planned. Start it with Next step…"). |
+| **Shipments board** | Script 82: Logistics › Shipments, every container on its way in one column by stage, decided in the database (`logistics.fn_Container_BoardPhase`) from the same movements as its next step: **At supplier** (never moved, or Loading at the supplier in progress), **At sea** (a Sea leg, or a transshipment between two sea ports, in progress), **At port** (a Port stay in progress, or its last leg ends at a sea port), **On the road** (inland transport, a border crossing or a delivery in progress), **At border / customs** (customs in progress, or its last leg ends at a border post or an inland place), **Delivered, to receive** (its Delivery is done or a draft goods receipt waits) and, with "Show received (30 days)", **Received**; a container followed by typed dates (no leg yet, 3.5 item 11) stands in the column of its status ("Followed by typed dates"). Grouped by ship, by leg, by place, by warehouse. No drag-and-drop: every move is a movement, through Next step. Permission `containers.shipments.view`. |
+| **Split (of a movement)** | Script 82: only part of a movement in progress arrived. The ticked containers leave it for their own movement - a copy (type, From, To, dates, ETA, carrier, vessel, voyage, reference, notes), with its own MOV number and "Split from MOV-…" - taking their rows, charges and documents filed under the movement; it is completed (a Delivery drafts their goods receipts) while the others stay on the original, in progress. Refused when every container is ticked ("complete the movement itself"), when a ticked one has a later leg, or when the movement is not in progress; the date is checked before anything is split. A container taken off a planned later leg to be split travels on with a new leg of its own: the split-off movement comes after that planned leg in the travel order. **Cancelling the split-off movement undoes the split**: its containers go back onto the movement they were split from, whatever its status - in progress they travel on with it, completed they arrived with it (its end date and To; a completed Delivery leaves them delivered, not received, without a draft goods receipt), cancelled they are where they were before it, like its other containers (4.6). |
 | **Place of a container** | The **To** of its previous movement (prompt 43). A container that never moved is at its **port of loading** (prompt 45). |
 | **Offload** | **Retired by goods receipts** (69010: "Use Receive goods… on the container"). It received a container's goods into stock at landed cost, with a reason when received ≠ loaded (stock rows of type `CNT`, re-offload tag `KTG-…/2`). A container is now received with a goods receipt, whose posting makes it **Offloaded**: the status kept its name. Containers offloaded before keep their Cancel Offload. |
 | **Close / Reopen (container)** | Close when every charge is posted and every received piece is invoiced (read-only). Reopen to add a late charge. |
@@ -192,7 +348,22 @@ per user in Settings › Purchase approval (see 4.3).
 | **Transshipment** | Moving a container to another vessel at an intermediate port. |
 | **FERI** | Electronic cargo tracking note required for DRC imports (a container field). |
 | **BIVAC Out** | Inventory › BIVAC Out (script 66, document type `BIV_OUT`, numbers like `BIV-BR-002-000001`): units of **BIVAC items** (items with "BIVAC Item" ticked in Item Definition) taken out of stock at average cost, like an Inventory Out, with its own list and permissions. The user chooses the item (model) and a quantity; other items are refused. No link to a shipment: the BIVAC certificate or container number goes in Reference No. Not the BIVAC fee, which is the charge type `BIV` "BIVAC / Inspection". |
-| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 65): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (open: ordered − received − settled short; closed: invoiced − received − settled short), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order (still to come)" (Item Definition › Purchase orders) counts the orders' part only, before Transit is taken off: the invoices without an order are not on its list. The Dashboard's "On the way" adds the three parts (script 72). |
+| **Shortage** | Inventory › Shortages (script 25, `fn_Shortage_Live`, last changed by script 85: Expected Monthly Sales is the busiest month): what is missing per item and warehouse (and the warehouses under it) compared with what is on the way. **Transit** = pieces loaded in containers that left the supplier (In Transit, At Port, Cleared) and are not received. **Outstanding order** = what approved orders still bring (ordered − received − settled short, never below 0; no order closes since script 77), plus posted invoices without an order not received yet, minus Transit, never below 0. The item's "On order (still to come)" (Item Definition › Purchase orders) counts the orders' part only, before Transit is taken off: the invoices without an order are not on its list. The Dashboard's "On the way" adds the three parts (script 72). **Transfers in** (script 90) = goods on the way to the warehouse by transfer orders: added to the stock, as Transit is. |
+| **Transfer order / TRO** | Inventory › Transfer Orders (script 90, `TRO-BR-003-000012`): stock moved from one warehouse (From) to another (To), both at the bottom of the tree, of any branch. The warehouses are the order's, not its lines'. Lines: item, unit, Ordered. Stored Draft, Waiting for approval, Released or Cancelled; a released order is shown Released, Partly dispatched, Dispatched, Partly received, Closed or Received from its counters. The order moves no stock: its dispatches and receipts do, without changing any cost (4.13). |
+| **Dispatch / TRD** | "Dispatch…" on a released transfer order (`TRD-BR-003-000004`, numbered at posting by the source branch): pieces leave From for the On the way warehouse of the destination branch, with a required ETA. Several partial dispatches per order. Printed as a dispatch note (no costs). |
+| **Transfer receipt / TRR** | "Receive…" (`TRR-BR-002-000007`, numbered at posting by the destination branch): pieces of one or more dispatches arrive from On the way into To. Each receipt line receives one dispatch line, at most what is on the way on it. |
+| **On the way (warehouse)** | One hidden warehouse per branch (`masterdata.Warehouses.IsTransit = 1`, `OTW-BR-002` "On the way to BR-002 (transfers)") where dispatched goods sit, in the ledger, until they are received or written off. Made and kept by the system: never a parent, a main warehouse, a line's warehouse or an item's default, never deactivated, never negative; only its name and address change; offered only by Stock Valuation's filter. On a transfer, "On the way" is also the pieces dispatched and not yet received or lost. Not the Dashboard's "On the way" (supplier goods still to come, script 72). |
+| **Transfers in** | Shortages' column (script 90): pieces on the way to the plan's warehouse (and the warehouses under it) by released transfer orders, not received or written off yet. Transfers out are not demand. |
+| **Nothing more will be sent** | "Nothing more will be sent…" on a released transfer order that has dispatched something (a reason): what is left to dispatch becomes **Not sent**, Ordered stays as it is, goods on the way can still be received; the order is shown Closed once they have. A stamp, not a status; no reopen. The transfer's "Nothing more will come". |
+| **Nothing more will arrive / Lost** | On a transfer receipt line that receives less than is on the way: "Still coming" (the rest stays on the way) or "Nothing more will arrive" with a reason (Damaged, Missing / stolen, Wrongly counted at dispatch, Other + a note). The rest is **Lost**: written off from the On the way warehouse at the item's average cost (stock reason `TRF_LOSS`), the only part of a transfer that changes the company's stock. An orange "{n} lost" badge on the order. |
+| **Reverse (a transfer posting)** | "Reverse…" on a dispatch or a transfer receipt: undoes the whole posting in place, with a reason and a "Reversal date" - opposite rows (`IsReversal = 1`) under its own number, status Reversed, "Reversed on {date} by {name}: {reason}". The receipt first: a dispatch whose goods were received or written off waits for that receipt's reversal (62013). No partial reversal. |
+| **Return (of a transfer order)** | "Create return…": a new draft transfer order the other way (From = the original's To), "Return of TRO-…", linked both ways, proposing what was received less what its returns not cancelled (drafts included) already order. The original never changes. |
+| **Needs approval before release** | The TRO type's switch in Configuration › Document Types (script 90, default off). On: a transfer order is sent for approval and released when a user holding Approve Transfer Orders approves it (an approver may Approve & release a draft at once). Off: Release releases it. |
+| **Minimum / Maximum Quantity (company)** | Item Definition's Minimum Quantity and Maximum Quantity (Inventory Parameters, `inventory.Items.MinQuantity` / `MaxQuantity`): how much the **whole company** should hold of the item, never where. The Dashboard's "Items below their minimum" counts the active items whose stock in every warehouse of the branch (or of the company), inactive and On the way warehouses included, is below their Minimum Quantity; Inventory › Stock Levels shows the same figure in its view "Company (Item Definition)" (script 91). Not a warehouse's Min: see Stock level. |
+| **Stock level (per warehouse)** | Script 91 (`inventory.ItemWarehouseLevels`): an item's **Min** (required, a whole number of pcs, 0 or more) and **Max** (optional, not below Min; empty: Fill to Max fills up to Min) in ONE warehouse at the bottom of the tree, never an On the way warehouse; each at most 1,000,000,000 pcs. Set on Item Definition's "Stock levels per warehouse" card, on Inventory › Stock Levels or from an Excel file; every change is recorded (Added / Changed / Removed, old → new, who, when, from where, the file). Its status, the first that applies: **Below Min** (red: Projected below Min), **Below Min, covered** (orange: on hand below Min, Projected at Min or more), **Above Max** (blue: Projected above Max), **OK** (green); "No level" without one (4.14). |
+| **Projected (stock levels)** | Where a warehouse stands for an item once the released transfer orders have moved: **On hand + On the way in + To come in − To go out**. On the way in = dispatched to it and not yet received or written off; To come in = still to dispatch to it; To go out = still to dispatch from it (promised, still on the shelf). Drafts, orders waiting for approval and purchases still to come are not counted; it may be below 0. **To reach Max** = (Max, else Min) − Projected, when Projected is below Min. On a transfer order's lines, "Projected at {To}" is the destination's AFTER the order (4.14). |
+| **Fill to Max** | "Fill to Max…" on a saved draft transfer order (script 91, Create Transfer Orders): for each item of the order the server SETS the item's first line so that the destination reaches its Max (its Min when it has no Max): Need = (Max, else Min) − Projected at To without this order − what the item's other lines order, rounded UP to whole units of the line's unit, capped at the whole units From has available for the line. Items without a Min at To, inactive items, items already at or above Min, items their other lines cover and items with nothing available at From are left as they are. A preview first (nothing written); a second run changes nothing (4.14). |
+| **Add items below Min** | "Add items below Min…" on a saved draft transfer order: a drawer of the items with a level at the destination (by default only those below Min), with the server's proposal per unit ("2 BOX = 24 pcs"), the ones below Min that are not on the order and can be filled ticked at first; the ticked items become new lines at the end, worked out as Fill to Max does. An item already on the order is left to Fill to Max (4.14). |
 | **Out-of-stock sale** | A sale of more than the stock, allowed only when the setting "Allow selling out-of-stock items" is on; listed in Sales › Out-of-Stock Sales [Ali – details unknown]. |
 | **Date tolerance** | A sales-invoice rule by Ali ("client address, date tolerance"): how far a document date may be from today **(unsure)**. |
 | **Payment type** | On sales invoices (Ali: "Payment Type and auto…"), probably cash / credit **(unsure)**. |
@@ -202,6 +373,12 @@ per user in Settings › Purchase approval (see 4.3).
 | **Send again / Withdraw** | Resend the request with new links / take the order back to draft. |
 | **Approval link (token)** | Personal, single use, valid N hours (default 72). Opening it never decides; the decision is one click on the page `/purchase-approval/:token`. |
 | **Email outbox / Email log** | `messaging.EmailOutbox`, a queue sent by a background worker; read it in Settings › Email log (Pending / Sent / Failed). |
+| **Warehouse access (All warehouses / Only these warehouses)** | Script 92: where a user may MOVE stock - post, cancel, reverse, receive, dispatch, set stock levels, name a warehouse on a draft, delete a draft - never what they may see. Each user has **All warehouses** (every user before script 92, and every new user) or **Only these warehouses**, ticked in Users & Permissions › Users › Warehouses (`security.Users.AllWarehouses`, `security.UserWarehouses`); a ticked parent gives every warehouse under it, also those added later. A user with Only these warehouses who is not a system administrator is **restricted**; system administrators use every warehouse whatever is set; On the way warehouses are nobody's (a transfer is checked on its From and To). Refused with "You have no access to warehouse LKS-01: ask an administrator." (50010, HTTP 403). See 4.15. |
+| **Not one of your warehouses** | Script 92: the mark of a warehouse a document already holds that the reader may not use (a draft an administrator prepared): "{warehouse} - not one of your warehouses" in its picker, "Not one of your warehouses" under it. Such a line may stay as it is or move to one of the reader's warehouses; while one is left there the reader may not post, cancel or delete the document (4.15). |
+| **Tracking (item)** | Script 93, Item Definition › Inventory Parameters (`inventory.Items.TrackingMode` 0 None / 1 Batch numbers / 2 Serial numbers, `RequiresExpiry`, `SerialLength`): how the pieces of an item are told apart when they leave on a **transfer dispatch** - and only there: goods receipts, sales and Inventory In / Out do not ask. Three **kinds**, worked out from the two fields and never stored on the item: **Serial** (Serial numbers: one serial no. per piece), **Batch** (Batch numbers: rows of batch no., expiry and pcs), **Expiry** (None + Requires expiry date: rows of expiry and pcs); None without an expiry = untracked, as every item before script 93. "+ expiry" on a serial or batch item means each serial or batch also gives its date. A change applies to the next dispatches; goods on the way keep the kind they left with (4.16). Shown as a badge on the item's header and under a transfer line's Item Name ("Serial nos.", "Batches", "Expiry dates", "… + expiry"). |
+| **Serial no.** | A number that names ONE piece (a TVS chassis no., 17 characters): letters, digits, `.` `/` `-`, no spaces, at most 50 characters, kept in capitals, exactly the item's Serial no. length when it has one. Typed on a dispatch of a serial item, one per piece (scanned into the dialog's box, pasted as a list, or ticked from "Known at {From}": the serials transfers received into the source and did not send since). Once in a dispatch and **never on the way twice** (62017); received, still coming or lost one by one. What transfers know of a number's earlier place gives warnings ("last received into LUB-01 … not into LKS-01", "written off as lost"), never refusals: no other module records serials yet (4.16). |
+| **Batch no.** | A lot number shared by many pieces: letters, digits, spaces, `.` `/` `_` `#` `-`, at most 50 characters, capitals. A dispatch of a batch item gives rows of batch no., expiry date (required when the item requires it) and pcs adding up to the line, one row per batch; a receipt says what arrived of each row. **Expiry rows** (an item of kind Expiry) are the same without the batch no., one row per date. The stock ledger then carries the expiry date on each leg (`StockMovements.ExpiryDate`, one row per leg and date) - information: no stock per batch or expiry is kept, no FEFO, no alert (4.16). |
+| **View item costs** | Script 94, `inventory.costs.view` (Inventory, 406, right after View Stock Valuation): who sees **what an item costs** - its average, last and FOB cost and its stock value - on Item Definition (card, list, item search), the item's Stock Balance and Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfer orders and the Dashboard. Without it the server sends those figures empty (never 0), the exports leave their columns out, no list sorts by them and the pages draw no column, tile or pill; nothing is refused for want of it. Given once, when the script first ran, to the system roles and to every role that saw such a cost then; unticked on Role Permissions it never comes back by itself. Not Stock Valuation (View Stock Valuation), not purchase prices, landed cost adjustments, container charges, nor sales margins (View Sales Profit) (4.17). |
 | **Schema.sql** | `Inventory_Shipment.Repository/Database/Schema.sql`: every SQL script appended in order, re-applied at **every API start**. |
 | **Batch** | A group of prompt steps. Batch 8 = prompt 32, 9 = 33, 10 = 34/36, 11 = 37. |
 | **A / B steps** | A1, A2… run in the API project; B1, B2… in the Web project. |
@@ -214,10 +391,14 @@ per user in Settings › Purchase approval (see 4.3).
 ### 3.1 Menu map (as seen on Bilal's screen)
 - **Home** (the first landing page, renamed when Ali's new Dashboard came) and **Dashboard** (Ali, script 68: key
   figures, "needs attention" lists and charts per branch and period; each part shown only to who may open its screen)
-- **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, BIVAC Out, Stock Valuation, Shortages
+- **Inventory:** Item Definition, Price Lists, Inventory In, Inventory Out, BIVAC Out, **Transfer Orders** (script 90:
+  with a red count of the orders waiting for approval, shown to approvers), **Stock Levels** (script 91: each
+  warehouse's Min / Max and where it stands, and the company view; View Stock Levels), Stock Valuation, Shortages
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
-- **Logistics:** Containers, Movements, Container Charges, Tracking
+- **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 100: every container and order still
+  to load, by stage; View Container Report), Customer Statement, Out-of-Stock Sales
+- **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
 - **Sales:** Sales Invoices, Sales Profit, Receipts, Customer Statement, Out-of-Stock Sales
 - **Backoffice › Master Data:** Branches / Sites, Warehouses, Currencies, Exchange Rates, Item Families, Brands,
   Parties, Unit Types, Ports, Attachment Types, Movement Types, Payment Methods, Cash / Bank Accounts
@@ -227,7 +408,9 @@ per user in Settings › Purchase approval (see 4.3).
 
 Web routes seen: `/purchase/invoices/:id`, `/purchase/goods-receipts`, `/purchase/goods-receipts/:id` (and `/new`,
 `/:id/print`), `/logistics/movements/new`, `/logistics/movements/:id`, `/setup/master-data/container-types`,
-`/configuration/email`, `/purchase-approval/:token` (public).
+`/configuration/email`, `/purchase-approval/:token` (public), `/inventory/transfers`, `/inventory/transfers/:id` (and
+`/new`, `/:id/dispatches/:postingId/print`, the dispatch note), `/inventory/stock-levels` (a link may preset
+`view=company`, `status`, `branchId`, `warehouseId`, `itemId`, read once when the page opens).
 
 ### 3.2 Master Data
 Reference lists used everywhere:
@@ -246,28 +429,56 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 - **Item Definition:** code, name, family, brand, units with packing formulas (base unit PC; packaging units; the
   **Container unit**), weight (kg) and volume (CBM), which charge allocation by weight or volume needs. The item also
   shows average cost, last cost and FOB cost (last and FOB from the latest goods receipt, after its cost adjustments).
+  Its Inventory Parameters hold the company's Minimum / Maximum Quantity (glossary); since script 91 the card "Stock
+  levels per warehouse" below them holds each warehouse's own Min / Max (4.14). Since script 93 the row after the Min /
+  Max hint holds the item's **Tracking** (None / Batch numbers / Serial numbers), **Serial no. length** (serial items,
+  optional, 1-50) and **Requires expiry date**, asked on transfer dispatches only (4.16); the header shows a badge
+  ("Serial nos.", "Batches", "Expiry dates", "+ expiry").
 - **Price Lists:** selling prices **(details unsure)**. Document types carry `DefaultPricing` and `PriceEditable`,
   which suggests each document type says where its default price comes from and whether it can be changed
   **(check the code)**.
 - **Inventory In / Inventory Out:** manual stock documents; a document type can require a reason (`RequiresReason`).
+  Cancelling a posted one writes the opposite of its own rows and replays its items' average cost (script 89).
+  Since script 94 an In line saved without a cost takes the item's last cost, else its average, per unit of the line
+  (it took 0): a line of a user who may not see item costs, of a type whose "Price / cost editable" is off, or of an
+  import row without a cost; a typed cost, 0 included, is stored as typed. An Out always takes the average (4.17).
 - **BIVAC Out:** an Inventory Out of BIVAC items only, with its own list, numbers and permissions (see 4.9).
-- **Stock Valuation:** stock × average cost per item and warehouse; the export calls it "Total Cost".
+- **Transfer Orders** (script 90): stock moved from one warehouse to another, of any branch, without changing its
+  cost. A dispatch (TRD) takes it out of From onto the destination branch's On the way warehouse, a transfer receipt
+  (TRR) puts it into To; partial postings, losses, Nothing more will be sent, Cancel order, Reverse, Dispatch and
+  receive, returns, Late and an optional approval (see 4.13). It replaces an Inventory Out in one warehouse and an
+  Inventory In in the other, which moved the average cost twice and showed nothing while the truck was on its way.
+  Since script 93 a dispatch of a **tracked** item asks which pieces leave - serial numbers, batches or expiry dates in
+  a dialog of the line - and the receipt says what arrived of each; the list finds an order by a batch or serial no.
+  (4.16).
+- **Stock Levels** (script 91): each warehouse's own Min / Max per item and where the warehouse stands for it (on hand,
+  what released transfer orders bring and take, Projected, the status), kept by hand - on the page or on Item
+  Definition's card - or from an Excel file, which an export of the page round-trips. A second view, "Company (Item
+  Definition)", is the Dashboard's "Items below their minimum". Ticked rows of one warehouse become a draft transfer
+  order, and on a draft "Fill to Max…" and "Add items below Min…" top its destination up (see 4.14). Levels reserve
+  nothing and move no stock.
+- **Stock Valuation:** stock × average cost per item and warehouse; the export calls it "Total Cost". Its warehouse
+  filter also offers the On the way warehouses (script 90).
 - **Shortages:** see the glossary.
 - **Stock ledger:** `inventory.StockMovements` (DocumentFamily, DocumentTypeCode, DocumentNumber). Goods receipts
   write family Purchase, type `GRN`, the receipt's number; the item's stock statement shows them with their source,
   "GRN-BR-002-000001 · KTG-2026-0031". Before goods receipts, local invoices wrote `PINV` rows and container offloads
-  `CNT` rows with the container ref (a re-offload `/N`). `inventory.usp_Item_RebuildCosts` recomputes costs.
+  `CNT` rows with the container ref (a re-offload `/N`). Transfers (script 90) write family `Transfer`, types `TRD` /
+  `TRR`, the posting's number, reasons `TRF_OUT`, `TRF_IN` and `TRF_LOSS`; the statement shows them with "LKS-01 →
+  LUB-01" and their transfer order. `inventory.usp_Item_RebuildCosts` recomputes costs.
 
 ### 3.4 Purchase
 **Documents:**
-- **PO** → approval → posted (= approved). It then auto-closes (status 4) when fully invoiced **and** every piece is
-  received or settled short ("Fully invoiced and received").
+- **PO** → approval → approved, shown **Saved**; then **Partially posted** while its posted invoices cover less than
+  ordered, and **Posted** once they cover everything (script 77). An order is never closed: goods may still be
+  received on a Posted order, and pieces that will never come are settled with "Nothing more will come".
 - **GRN** (goods receipt, Purchase › Goods Receipts, scripts 64–65): **the only way goods enter the stock.** Made from
   a container (automatically when its Delivery is completed, or Receive goods…), from an order, from a posted invoice,
   or without an order. See 4.12.
 - **PINV:**
   - created from a PO with "Create Invoice", or from containers with "Create Invoice from Containers…" (received
-    containers too: goods may arrive before their invoice);
+    containers too: goods may arrive before their invoice); both dialogs list what is still to invoice line by line,
+    each ticked with its available quantity, which may be lowered or unticked (the order's since script 86);
   - **one item per invoice**: several items give several drafts at once (optional since script 63, see 4.2);
   - each line may take at most what remains on its source line;
   - posting makes it payable and moves no stock; it sets the cost of the goods received against it.
@@ -301,10 +512,23 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
      containers…**.
    - Type the Exporter's Ref. and the Commercial invoice no., then post. No stock goes in at posting.
 5. **Shipment:**
-   - "Start shipment…" on the selected containers (for example the 5 of 30 still waiting).
-   - Then each leg is a **movement**: Logistics › Movements, where the containers are ticked in a list at the
-     movement's From (prompt 45).
-   - Start / Complete move the containers' status, dates and current location forward, never back.
+   - **Next step** on the container's own page (the button next to Save, scripts 80–81) or in its row's "…" menu:
+     "Start shipment…", "Arrived at Dar es Salaam…", "Inland transport to Kasumbalesa…", "Cleared customs at
+     Kasumbalesa…", "Delivered to Lubumbashi…" - one dialog, already filled in with the usual next leg from where the
+     container is, the From locked. The arrival dialog can start the next leg on the same day ("Then start …").
+   - **"Next step…" on the selected containers** (for example the 5 of 30 still waiting, or 300 at once): the containers
+     are grouped by what they do next (same step, movement, type, From and To), each group applied on its own; a truck
+     leg goes one movement per container by default.
+   - Each leg is still a **movement** (Logistics › Movements, where the containers are ticked in a list at the
+     movement's From, prompt 45). Start / Complete move the containers' status, dates and current location forward,
+     never back. They are on the movement page, on each row of the Movements list ("Start…", "Complete…") and in the
+     container's Next step; after a Complete the movement page offers "Continue: Next step…" for its containers.
+   - **The Containers list's Next step column** and its filter ("Start shipment", "Start planned leg", "Arrival due",
+     "Next leg to plan", "Receive goods") are the logistics to-do list.
+   - **Logistics › Shipments** (script 82): every container on its way by stage, grouped by ship, leg or place, each
+     card with its next step (4.6).
+   - **Only part of a movement arrived** (script 82): the containers that arrived are completed on their own movement,
+     the others stay on it, in progress (glossary "Split").
 6. **Charges:**
    - Entered from the container, a movement ("Add charge for these containers"), the selection bar or Logistics ›
      Container Charges.
@@ -358,6 +582,27 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 - **Document Types** (`inventory.DocumentTypes`): Code, Name, Family, StockDirection, NumberPrefix, NumberOnPost,
   RequiresReason, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength, BivacItemsOnly
   (script 66, read-only on the page). This drives numbering (4.1).
+  - **What a type does** (script 79, permission `inventory.documenttypes.manage`; the defaults are what the system did
+    before, so nothing changes until someone turns one):
+
+    | Type | Switch | Default | On | Off |
+    |---|---|---|---|---|
+    | PINV | Affects item cost | on | the invoice's price + its own charges become the cost of the goods received against it (4.12 rule 14) | the goods keep the order price (+ their container's charges); landed cost adjustments refused (67013) |
+    | PINV | Affects on-hand | off | posting the invoice also receives its goods: a goods receipt made and posted at once, for its lines not travelling in containers, into each line's warehouse | the goods come with goods receipts made apart (Receive goods…) |
+    | GRN | Create goods receipts when a Delivery is completed | on | a completed Delivery drafts one per container (4.6) | none is drafted: Receive goods… on each container ("Delivered, not received" lists them) |
+    | TRO | Needs approval before release (script 90) | off | Release by a user without Approve Transfer Orders is refused (62014) and "Send for approval…" takes its place; the order waits, locked, until an approver approves it (4.13) | Release releases it |
+
+  - The Stock column tells the truth for PINV: "None (goods receipts)", or "In, through a goods receipt at posting" with
+    Affects on-hand. Its stored StockDirection stays +1: the invoices posted before goods receipts still read it.
+  - The transfer types (script 90, family Inventory, no pricing) are stored with StockDirection 0, because a dispatch
+    and a receipt each write two legs: the Stock column reads TRO "None (an order)", TRD "Out of the source, onto On the
+    way", TRR "From On the way into the destination". TRD and TRR are numbered when they are posted: "A transfer
+    dispatch or receipt is numbered when it is posted: Number on post stays on." (62000). The TRO switch is refused on
+    any other type ("Needs approval before release applies to the transfer order type (TRO) only."), and turning it
+    never changes an order already waiting or released.
+  - An invoice **captures** its two switches when it is posted: changing them never re-prices or re-receives an
+    invoice already posted; a draft follows the type as it is when it is posted.
+  - A saved setting is kept (script 89): the seed values apply only to a type nobody has saved.
 - **Settings › General** (Ali's global settings, for example "Allow selling out-of-stock items").
 - **Settings › Email:**
   - sender, mail server and app password (encrypted), the "Address of the application" used in links, and a test
@@ -369,12 +614,27 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
 ### 3.8 Security
 - JWT sign-in: `POST api/auth/login`; the user "Admin" is the system administrator.
 - Users, Roles, Role Permissions, Permissions (code, name, module, description, SortOrder), Login audit.
+- **Warehouses per user** (script 92, 4.15): besides the permissions of their roles, each user has All warehouses
+  (`security.Users.AllWarehouses`, default 1: every user before script 92 and every new user) or only the warehouses
+  ticked for them (`security.UserWarehouses`; a ticked parent gives its whole tree, worked out at each check), with
+  the history of every change (`security.UserWarehouseAudit`). The rule is the database's
+  (`security.fn_User_CanUseWarehouse`, its sentence `security.fn_User_WarehouseRefusal`), asked at each check and
+  never cached: nothing about warehouses is in the token, and sign-in, refresh and `me` are unchanged, so a change
+  takes effect at the user's next action without signing out. The Users page has a "Warehouses" column and, on each
+  row, a Warehouses action that opens "Warehouses of {username}" (`GET` / `PUT api/users/{id}/warehouses`): reading
+  needs View users (`security.users.view`), saving Edit users (`security.users.edit`, the right that already assigns
+  roles; the action is hidden without it). No permission was added.
 - The administrator role holds every permission.
 - Permission codes I know:
   - Containers: `containers.movements.manage` (1410), `containers.charges.view/create/post/cancel` (1420–1450),
     `containers.attachments.manage` (1460), `masterdata.movementtypes.manage` (1470), plus the container permissions
     named in the guide (View, Create, Confirm, Load Above Capacity / `containers.overcapacity`, Offload, Cancel, Close,
     Delete Containers).
+  - Shipments board: `containers.shipments.view` (1406, "View Shipments", script 82), granted once, when it was first
+    created, to the roles holding View Movements, View Tracking or Manage Shipment Movements.
+  - Container Report: `containers.report.view` (1408, "View Container Report", script 100), granted once, when it was
+    first created, to the system roles and the roles holding View Containers. Its charge columns also need View
+    Container Charges, its payment columns View Supplier Payments: the server sends them empty to others.
   - Purchase: `purchase.orders.approve` (now "(not used)"), `purchase.orders.post`, `purchase.approval.manage`;
     `purchase.invoices.post` is now "payable; adjusts the cost of goods already received".
   - Goods receipts: `purchase.goodsreceipts.view / create / post / cancel / delete` (1102–1110, script 64). Granted
@@ -386,6 +646,49 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   - Settings and email: `settings.email.manage`, `messaging.emails.view` (920).
   - BIVAC Out: `inventory.bivacout.view / create / post / cancel / delete` (810–850, script 66), administrator only
     by default; other roles through Role Permissions.
+  - Transfer orders (script 90, module Inventory):
+
+    | Code | Sort | What it allows | Granted once, when first created, to the roles holding |
+    |---|---|---|---|
+    | `inventory.transfers.view` | 855 | see transfer orders, their dispatches and receipts | `inventory.stockin.view` or `inventory.stockout.view`; and the roles named Manager and Owner |
+    | `inventory.transfers.create` | 860 | drafts (lines, scan, import), Save details once released, the orders' documents, returns | `inventory.stockout.create` |
+    | `inventory.transfers.delete` | 862 | delete drafts | `inventory.stockout.delete` |
+    | `inventory.transfers.release` | 870 | Release, Send for approval, Withdraw, Back to draft | `inventory.stockout.post` |
+    | `inventory.transfers.approve` | 872 | Approve, Reject, Approve & release (when the TRO type asks for approval) | the roles named Manager and Owner |
+    | `inventory.transfers.dispatch` | 875 | Dispatch, Change ETA | `inventory.stockout.post` |
+    | `inventory.transfers.receive` | 880 | Receive, and write off what will not arrive | `inventory.stockin.post` |
+    | `inventory.transfers.close` | 885 | Nothing more will be sent | `inventory.stockout.cancel` |
+    | `inventory.transfers.cancel` | 888 | Cancel order (nothing dispatched) | `inventory.stockout.cancel` |
+    | `inventory.transfers.reverse` | 890 | Reverse a dispatch or a transfer receipt | `inventory.stockout.cancel` and `inventory.stockin.cancel` |
+
+    The system role gets all ten. A role unticked afterwards is never re-granted. Dispatch and receive needs dispatch
+    and receive. The values on a transfer (on the way, a posting's value, a loss's value, the frozen costs) need
+    View item costs (`inventory.costs.view`, script 94; `inventory.valuation.view` before it): the server sends them
+    empty to others. Adding lines also needs View Items
+    (`inventory.items.view`) for the item search and the item's units, as on Inventory In / Out.
+  - Stock levels per warehouse (script 91, module Inventory): `inventory.stocklevels.view` (432, "View Stock Levels":
+    Inventory › Stock Levels and Item Definition's "Stock levels per warehouse" card) and `inventory.stocklevels.edit`
+    (434, "Edit Stock Levels": set, change and remove levels, by hand or from an Excel file). Granted once, when first
+    created, to the system role and to the roles holding View Items (`inventory.items.view`) / Edit Items
+    (`inventory.items.edit`) - on a new database: Admin both, Manager View; a role unticked afterwards is never
+    re-granted. The levels are kept by the people whose roles the owner gives Edit Stock Levels (Role Permissions). Fill
+    to Max and Add items below Min come with Create Transfer Orders (`inventory.transfers.create`), without View Stock
+    Levels: their dialog and drawer show that user the destination's levels. "Create transfer order…" on Stock Levels
+    needs Create Transfer Orders and View Stock Levels. The Dashboard's "Warehouse levels below Min" needs View Items
+    and View Stock Levels: the server sends it empty to others and does not work it out for them.
+  - Batch, serial and expiry on transfers (script 93): **no new permission**. Typing the serial numbers, batches and
+    expiry dates is part of dispatching (`inventory.transfers.dispatch`: the dialog's Check and the "Known at {From}"
+    suggestions too) and of receiving (`inventory.transfers.receive`); the rows of a posting are read with View Transfer
+    Orders (`inventory.transfers.view`; a posting of another order answers 404); the item's Tracking fields come with
+    Edit Items (`inventory.items.edit`). Script 92's warehouse access applies unchanged: the access refusal comes before
+    any tracking rule, and the split ledger rows pass the ledger trigger like any row.
+
+  - Item costs (script 94, module Inventory): `inventory.costs.view` (406, "View item costs"), the one permission of
+    4.17. Granted once per database - the step `94.CostsViewGrant` in `inventory.OneTimeSteps` - to the system roles
+    and to every role then holding one of the 14 permissions whose screens showed an item cost: View / Create / Edit
+    Items, View Stock Valuation, View or Create Inventory In, Inventory Out, BIVAC Out, Shortage Plans or Goods
+    Receipts (on a new database: Admin, Manager and Owner). A role unticked afterwards is never re-granted; the start-up sync
+    of the catalog gives it to the system roles only. No other permission changes; nothing new is refused.
 
 ### 3.9 End-to-end flows
 
@@ -434,7 +737,7 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
    amount is payable, no stock moves, and the received pieces are brought to the invoice cost (FOB + charges).
    - Invoice first instead: post it, then "Receive goods…" on the invoice, or tick "Receive the goods now" in its post
      confirmation (off by default): the goods then take the invoice cost at once.
-4. The order closes by itself when fully invoiced and received (or settled short).
+4. The order shows Partially posted, then Posted once its posted invoices cover everything ordered (script 77).
 5. Late charges: LCA (later "+ Add charge" on the posted invoice, prompt 38); it adjusts the goods already received.
 6. Return: **PRET** from the posted invoice, at most what was received and not returned.
 
@@ -448,7 +751,7 @@ allowed), then receipt, customer statement and sales profit [Ali – details unk
 
 | Object | Statuses |
 |---|---|
-| **Purchase documents** (PO, PINV, PRET; `purchase.PurchaseDocuments.Status`) | 1 Draft · 2 Posted (for a PO = approved) · 3 Cancelled · 4 Closed (a PO auto-closes "Fully invoiced and received" when every line is invoiced and received or settled short, or is closed by hand; orders closed "Fully received" before goods receipts stay closed) · 5 Waiting for approval (PO only, locked) |
+| **Purchase documents** (PO, PINV, PRET; `purchase.PurchaseDocuments.Status`) | 1 Draft · 2 Posted (for a PO = approved, shown **Saved** / **Partially posted** / **Posted** from its posted invoices, script 77) · 3 Cancelled · 4 Closed (**no longer used**: script 77 brought every closed order back to 2, settling short what a close by hand gave up) · 5 Waiting for approval (PO only, locked) |
 | **Goods receipts** (GRN; `purchase.GoodsReceipts.Status`) | 1 Draft (no stock yet; editable, deletable) · 2 Posted (stock in, number given) · 3 Cancelled (posted only, with a reason; the stock goes back out) |
 | **Containers** (`logistics.Containers.Status`) | 1 Draft · 2 Confirmed · 3 In Transit · 4 At Port · 5 Cleared · 6 Offloaded (received: by a posted goods receipt, or by an offload before goods receipts) · 7 Closed · 8 Cancelled (3 inferred, the others confirmed) |
 | **Movements** | 1 Planned · 2 In progress · 3 Completed · 4 Cancelled (4 inferred) |
@@ -456,9 +759,13 @@ allowed), then receipt, customer statement and sales profit [Ali – details unk
 | **Emails** (outbox) | Pending · Sent · Failed (at most 5 attempts) |
 | **Approval history events** | Sent for approval · Sent again · Reminder sent · Approved (in the app / by email, by whom) · Approved directly · Rejected (with reason) · Withdrawn · Posted without approval · Sent to the supplier · Not sent to the supplier |
 | **Invoice line ↔ container** | linked (`ContainerLineId`) / not linked; "Not linked" is only a warning on shipped-in-containers invoices |
+| **Transfer orders** (TRO; `inventory.TransferOrders.Status`, script 90) | 1 Draft · 4 Waiting for approval (locked) · 2 Released, **shown** from its counters, the first that applies: Released · Partly dispatched · Dispatched · Partly received · Closed · Received · 3 Cancelled. "Nothing more will be sent" is a stamp, not a status. The API's names: `Draft`, `PendingApproval`, `Released`, `PartlyDispatched`, `Dispatched`, `PartlyReceived`, `Received`, `Closed`, `Cancelled` |
+| **Transfer dispatches and receipts** (TRD, TRR; `inventory.TransferPostings.Status`) | 2 Posted · 3 Reversed. No draft: the dialogs post directly |
+| **Tracking rows of a transfer** (`inventory.TransferPostingTracking`, script 93; one per serial no., batch or expiry date of a posting line) | Worked out, never stored, from the row and its posting (`usp_TransferPosting_Tracking`): a dispatch row **On the way** · **Partly received** ("{r} received, {l} written off, {w} on the way") · **Received** ("Received by TRR-…") · **Lost** ("Written off by TRR-… (reason)") · **Settled** (received and written off); a receipt row **Received** · **Lost** · **Partly lost**; any row of a reversed posting **Reversed**. The API's names: `OnTheWay`, `PartlyReceived`, `Received`, `Lost`, `Settled`, `PartlyLost`, `Reversed` |
 
 Numbers: `PO-BR-002-000042`, `PINV-BR-003-000011`, `PRET-…`, `GRN-BR-002-000001`, `KTG-2026-0031` (CNT),
-`MOV-2026-000046`. LCA numbers and sales numbers **(check DocumentTypes)**.
+`MOV-2026-000046`, `TRO-BR-003-000012`, `TRD-BR-003-000004`, `TRR-BR-002-000007`. LCA numbers and sales numbers
+**(check DocumentTypes)**.
 
 ---
 ## 4. Business rules
@@ -476,23 +783,65 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   draft shows "Assigned on posting". Posting is refused while the GRN type is inactive (63010). An automatic draft
   needs no number, so it is still created. **[Implemented – scripts 64, 65]**
 - **Containers:** `KTG-2026-0031` (type CNT: prefix KTG, year, 4 digits). **[Implemented]**
+  - **A number never gets cut** (script 78): once a sequence has more digits than the type's length it keeps them all
+    (container 10,000 of a year is `KTG-2026-10000`, not a duplicate `KTG-2026-0000` that refused every container
+    after it). This holds for every document type (`inventory.usp_DocumentType_NextNumber`); CNT keeps its length 4,
+    so the refs given so far read the same. **[Implemented – script 78]**
   - The container **number** (box no.) must be unique among open containers (69013). **[Implemented]**
   - Before goods receipts, a second offload of the same container got its own stock-ledger number,
     `KTG-2026-0031/2`. Now a container received again (after its goods receipt was cancelled) gets a new goods
     receipt and its own GRN number. **[Implemented]**
 - **Movements:** `MOV-2026-000046` (prefix MOV-, year, 6 digits, not per branch). The number is assigned **at the
   first save**. **[Implemented]**
+- **Transfers** (script 90), per branch, the prefix TRO- / TRD- / TRR-, the length and the year segment Inventory Out's
+  when the types were made: **[Implemented – script 90]**
+  - the order `TRO-BR-003-000012` **at its first save**, by From's branch then (it keeps that number when From changes
+    on the draft); when the TRO type's Number on post is turned on, at Release (or Approve) instead ("Assigned on
+    release");
+  - a dispatch `TRD-BR-003-000004` **at posting**, by the source branch;
+  - a transfer receipt `TRR-BR-002-000007` **at posting**, by the destination branch, as a goods receipt is numbered by
+    the branch that receives;
+  - a deleted draft leaves a gap; a refused Dispatch and receive takes no number (both postings or neither).
 - **SQL scripts:** `Database/NN_Module_Description.sql`, next free number. **Prompts:** `docs/prompts/NN-title.md`,
   a separate numbering ("prompt 42" is not "script 42"). Before numbering a new script, pull first: Ali writes scripts
   too. **[Convention]**
 
 ### 4.2 Purchase orders and supplier invoices
-- **PO statuses and closing:** a PO is a draft until posted; posting a PO = approving it (when approval applies). Each
-  PO line tracks what is invoiced, received and settled short, and the PO **auto-closes (4) when fully invoiced and
-  every piece is received or settled short** ("Fully invoiced and received"; before goods receipts: when fully
-  invoiced). **[Implemented – script 65]**
+- **PO statuses:** Draft → (Waiting for approval) → approved → Cancelled. Posting a PO = approving it (when approval
+  applies). An approved order **shows how far its posted invoices cover it** (the owner's words): **Saved** (none),
+  **Partially posted** (the invoiced pieces are fewer than the ordered ones), **Posted** (equal; each line is capped at
+  what it ordered). **[Implemented – script 77]**
+  - Draft invoices do not count; cancelling a posted invoice brings the order back to Partially posted or Saved.
+  - Purchase returns do not lower it (they never touched the order's counters): an order whose goods went back
+    partly still shows Posted.
+  - Goods receipts never change it: a Posted order may still have goods to receive.
+  - **There is no Closed any more.** Close Order is gone (the procedure refuses with 65010 "Purchase orders are no
+    longer closed: …"), and neither an invoice nor a goods receipt closes an order. Pieces that will never come are
+    settled with "Nothing more will come" when receiving. The orders closed before (by themselves or by hand) went
+    back to approved at script 77, with "Closed status removed (was: …)" in their history; on an order closed by hand
+    the pieces the close gave up were settled short, so what it still expects (Shortages, On order, To receive) did
+    not change. Those pieces are also kept apart (`ClosedShortBase` on the order line): unlike other pieces settled
+    short they cannot be received if they turn up, nor loaded into containers again, while they are not invoiced.
+    They can still be invoiced, like any piece settled short (the supplier claim covers what never arrives); once
+    invoiced they are received like any invoiced piece.
+  - The order's history says "Fully invoiced by PINV-…" when an invoice completes it.
+  - Before script 77 the PO auto-closed (4) when fully invoiced and received ("Fully invoiced and received"; before
+    goods receipts: when fully invoiced), or was closed by hand.
 - **An invoice made from a PO** takes the PO's supplier and branch; each line may take at most what remains on its
   source line. **[Implemented]**
+  - **Line by line** (script 86, the owner: "this is when creating purchase invoice from container, the same way must
+    be when creating the purchase invoice from purchase order"): "Create Purchase Invoice" (the order page and the order
+    list's row action) shows the Document Date, the Exporter's ref. and the Commercial invoice no. ("copied to every
+    invoice"), then the order's lines still to invoice - #, Item, Warehouse, Ordered, Invoiced (posted invoices), In
+    drafts (draft invoices made from the line, from the order or its containers), Available = ordered − invoiced − in
+    drafts - each ticked with its available quantity in pcs, which may be lowered ("Max 60" above it, Create disabled)
+    or unticked; then "One invoice per item" and its line ("One invoice per item: 2 invoices will be created (TEST86-A,
+    TEST86-B)" / "One invoice with 2 items"). Lines with nothing available are left out; none left: "Everything ordered
+    is already invoiced." or "The rest of this order is already in draft invoices: post or delete them first."
+    (`purchase.usp_PurchaseOrder_InvoiceCandidates`, `GET api/purchase/documents/{id}/invoice-candidates`; Create sends
+    the ticked lines as `lines`, which `usp_PurchaseDocument_CreateFromSource` already took as its selection - more than
+    a line has is refused 65011 "Line 2: 61 base units selected but only 60 are still available (the rest is in posted
+    or draft documents)."). **[Implemented – script 86]**
 - **One item per supplier invoice:** **[Implemented – prompt 37, script 45]**
   - A PINV holds one item. It may have several lines of that item (several containers, warehouses or expiry dates),
     never two different items. Purchase orders and returns are not concerned; posted invoices are unchanged.
@@ -524,16 +873,18 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - A PI not created from a PO cannot have containers. A container line can never be invoiced twice.
 - **Add container / Auto-plan from the PI:** creates containers on the PI's order, linked at once, holding the PI's
   item only. Mixed containers are planned on the order. **[Implemented – script 43]**
-- **The PI's Containers card always explains itself:** **[Decided – prompt 44]**
+- **The PI's Containers card always explains itself:** **[Implemented – script 51, prompt 44]**
   - Shown on every PI.
   - Disabled buttons give the reason, for example "Every piece of this invoice is already in a container." or "This
     invoice was posted without 'Shipped in containers': its goods are already in stock." (since goods receipts: "…its
     goods are received with Receive goods…, not with containers.").
-  - A draft with the switch off gets "Turn it on".
-  - Quantity ≤ min(pieces not in a container, what the order lines still allow); the order may be approved or closed.
+  - A draft with the switch off gets "Turn on 'Shipped in containers'".
+  - Quantity ≤ min(pieces not in a container, what the order lines still allow); the order must be approved (no
+    order is closed since script 77).
   - No orange "Not linked" on invoices not shipped in containers.
-- **"+ Add charge" on an invoice in every status:** **[Decided – prompt 38]**
-  - **Local draft:** the invoice's own charges, as today.
+- **"+ Add charge" on an invoice in every status:** **[Implemented – prompt 38]** (`PostedInvoiceChargesCard`,
+  `InvoiceContainerChargesCard`)
+  - **Local draft:** the invoice's own charges, as before.
   - **Local posted:** a late charge in a draft adjustment. "Post late charges" adjusts the cost (stock on hand →
     average cost; already sold → COGS); it is stored as the invoice's LCA.
   - **Imported (draft or posted):** the container charge dialog, with the invoice's containers preselected.
@@ -546,14 +897,17 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     Inventory Out.
   - Older local invoices keep the limit invoiced − returned.
 - **Discounts:** "Disc %" per purchase line. **[Implemented]** Sales discounts **[Ali – details unknown]**.
-- **"The request field is required." on PINV / PRET save:** prompt 35. **(status unknown)**
-- **One purchase-order page wherever it is opened from:** **[Decided – prompt 39]**
+- **"The request field is required." on PINV / PRET save** (prompt 35): gone. The API no longer adds an implicit
+  [Required] to non-nullable properties (`Program.cs`, `SuppressImplicitRequiredAttributeForNonNullableReferenceTypes`),
+  so a body that cannot be read gets only its real error. **[Implemented – prompt 35]**
+- **One purchase-order page wherever it is opened from:** **[Implemented – prompt 39]**
+  (`src/components/purchase/orderAbilities.ts`)
   - The page decides from the order itself, never from the route.
   - The Containers card is on every PO.
   - Buttons are visible but disabled with a tooltip:
     - Draft: "Approve the order first: containers are created from an approved order."
     - Waiting: "This order is waiting for approval."
-    - "This order is closed." / "This order is cancelled."
+    - "This order is cancelled."
   - Buttons are hidden only without the permission.
 
 ### 4.3 Purchase order approval **[Implemented – script 42 + prompt 36, unless marked]**
@@ -608,13 +962,14 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     - 65024 approval settings
     - 65025 email settings
 
-**Follow-ups** **[Decided – prompt 42]**
+**Follow-ups** **[Implemented – script 44, prompt 42]**
 - 65016 only while "Email the approved order to the supplier" is on.
 - The withdraw reason is stored and shown in the history.
 - Create-and-approve returns the same warnings as approve-now.
 - Every `*Utc` timestamp leaves the API with "Z"; dates without time are unchanged. The web formats a "Z" time in
   local time once, without double corrections.
-- The ~40 Pending test emails are marked failed ("Test email - not sent").
+- The ~40 Pending test emails of the first tests were to be marked failed ("Test email - not sent"): a one-off
+  clean-up of a local Email log, in no script (nothing to do on the servers).
 - Approve on the order page asks "Approve this order? It will be posted and sent to the supplier."
 
 ### 4.4 Email **[Implemented – prompt 36]**
@@ -644,7 +999,9 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Test.
 
 ### 4.5 Containers **[Implemented unless marked]**
-- **Creation:** only from an **approved and open** PO (status 2): "The purchase order must be approved and still open."
+- **Creation:** only from an **approved** PO (status 2): "The purchase order must be approved and still open."
+  ("still open" is older than script 77: no order closes now; the same words in
+  `usp_PurchaseDocument_CreateFromContainers` S:53667 and `usp_PurchaseDocument_ValidateInput` S:61855)
   Lines of other approved POs, from other suppliers too, can be added.
 - **Quantities** are in pieces. Loadable per PO line = ordered − the larger of invoiced and received outside
   containers − loaded in other containers (69008). **[Implemented – script 65]**
@@ -679,22 +1036,47 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - Every order line first fills whole containers of its own item.
   - The rest is packed without cutting a line (first fit, largest first), unless cutting lines needs fewer containers
     (then fill to the brim).
-  - "Mix the rest" on/off. At most 200 containers. All or nothing ("Container 3 of 30: …"). Optionally "Confirm the
-    containers after creating them".
+  - "Mix the rest" on/off. **Any number of containers** (script 78; at most 200 before, refused in the proposal
+    itself). All or nothing ("Container 3 of 30: …"). Optionally "Confirm the containers after creating them".
+  - Measured in the sandbox: proposing 2,000 containers under 1 s, 5,000 in 3.7 s; creating 3,000 / 5,000 / 10,000
+    (confirmed) 5.5 / 9.5 / 18 s on a database of up to 50,000 containers (each container of a plan is no longer
+    re-checked against the order lines, and the container numbers are taken at the end of the plan, so another
+    user's Add Container no longer waits on the numbering); through the API 1,201 containers in 4.3 s, and 2,205 from
+    an invoice (created, confirmed and linked) in about 30 s. A plan is one transaction: while it runs, pages that
+    read containers (the Containers list, another order's containers) wait for it, about 2 s per 1,000 containers. The pages draw long lists 200 rows at a time ("Show more"): a draft invoice of 2,205 lines opens in
+    under 7 s. The API gives the batch calls (plan, create, invoices from containers and their posting, Link, Confirm,
+    numbers, Delete, Start shipment, movements, the goods receipts of a Delivery) a timeout of 10 minutes of their own
+    (`Database:BatchCommandTimeoutSeconds`), above the ordinary 90 s. **[Implemented – script 78]**
+- **The supplier is automatic in Auto-plan and Add Container** (script 78, the owner's words: "in the auto-plan for
+  containers the supplier must be automatic"): **[Implemented – script 78]**
+  - The dialogs show "Supplier: SUP-0001 - TVS Motor Company (from the order)", read-only: a container's goods come
+    from its order lines, so its supplier was never typed (containers have no supplier column).
+  - **Forwarder** (the company that ships the containers, a Supplier party) starts as the forwarder of the order's most
+    recent container that has an active one, else **the order's supplier**; it stays editable and clearable, and is
+    searched on the server as it is typed (it listed the first 50 suppliers only).
+  - **Country of origin** starts as the supplier's country (`masterdata.Parties.Country`, e.g. IN for TVS).
+  - Add Container… got the same Forwarder and Country fields (it always sent no forwarder).
+- **Lists of any number of containers** (script 78): the order's Containers card, a movement's containers and its
+  candidates hold every container (one page of 200 before), so their bulk actions reach all of them; "Apply to other
+  containers…" lists every candidate (500 before); the container pickers (New charge, Container Charges, the Containers
+  page's order and invoice filters) search the server; a movement's document goes to any number of containers (the
+  form limit of 1,024 values is raised); the container charges import takes 5,000 rows (500); an invoice's container
+  list in Supplier Payments reads "KTG-2026-0001, KTG-2026-0002, KTG-2026-0003 +1996 more" (it failed with SQL error
+  9829 from about 267 containers, as Link containers did from about 190). **[Implemented – script 78]**
 - **Bulk actions:** Confirm, Container numbers (paste list), Start shipment, Add charge, Delete drafts.
   **[Implemented – script 28]**
-- **Capacity today:**
-  - Pieces per container = typed in the Auto-plan dialog, else the item's Container unit, else the container type's
-    Max Units.
-  - A container's Max Units = typed, else the type's.
+- **Capacity:** **[Implemented – script 54, prompt 46]**
+  - **One source: the item's Container unit.** (Before script 54: typed in the Auto-plan dialog, else the item's
+    Container unit, else the container type's Max Units.)
   - Over capacity = warning 69007, confirmable with "Load Above Capacity".
-- **Capacity decided:** **[Decided – prompt 46]**
-  - **One source: the item's Container unit.**
-  - Fill % = Σ quantity ÷ pieces per container. A 40HC with 84 motorcycles of an 84-piece item = 100% (today it
-    shows 70%).
+  - Fill % = Σ quantity ÷ pieces per container. A 40HC with 84 motorcycles of an 84-piece item = 100% (it showed
+    70% before).
   - An item without a Container unit: fill unknown ("—", with a link to set it), no warning, Auto-plan refuses it.
-  - Max Units goes from Container Types and every container form (the database column stays, unread). Max Weight and
-    Max Volume stay.
+  - **A packing formula of 1 means "not specified"** (script 95, the owner): the item is treated as having no Container
+    unit for capacity (`logistics.fn_ItemPcsPerContainer`, the one place): fill unknown, no warning, Auto-plan asks
+    for it. The unit itself stays and can still be bought in.
+  - Max Units is gone from Container Types and every container form (the database column and the procedures'
+    parameters stay, unread). Max Weight and Max Volume stay.
   - The over-capacity message names the item: "This container would be 112 % full: 94 pcs of TEST38-A (84 per
     container)."
 
@@ -718,6 +1100,215 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     when they differ.
   - Drafts are confirmed first. It starts today unless "Plan only".
   - Vessel, voyage, shipping line, B/L and ETA are copied to the containers; ports only when empty.
+- **Ship from the container** **[Implemented – script 80, shipment phase 1]** (the owner: "I cannot start the shipment
+  of a specific container in the containers page or any other place"):
+  - **One button per container**, next to Save on its page and first in its row's "…" menu on the Containers list,
+    labelled by its next step: "Start shipment…" (never moved: the Start shipment dialog for it alone), "Start Inland
+    transport…" (its next planned movement waits: that movement's Start dialog), "Arrived at Dar es Salaam…" /
+    "Complete Customs clearance…" (a movement in progress carries it: its Complete dialog), "Next leg…" (its last
+    movement is completed: the movement form). Hidden without `containers.movements.manage`; disabled with the reason
+    on a received, closed or cancelled container ("This container is received: its journey is over."), on a draft
+    with a planned movement, or when the planned movement cannot start yet (the refusal Start would give).
+  - **A leg leaves from where the container is**: the To of its latest movement, else its port of loading. The Start
+    shipment dialog and the movement form opened from a container fill the From with it and lock it ("A container
+    leaves from where it is."); Loading at the supplier is the exception (its To is the port of loading). A stay
+    (Port, Customs, Border) takes To = From by default. Places are grouped Sea ports / Border posts / Inland places.
+  - **A movement carrying other containers says so**: the Complete dialog opened from one container reads "All 12
+    containers of MOV-2026-000046 arrive too: …". Completing it moves every container on it.
+  - **Planned movements are visible**: the Movement column of the Containers list shows "Planned: MOV-…" under the
+    current one; the route card (now at the top of the right column, the top of the page on a phone) says where the
+    container is ("At Dar es Salaam since 12/10/2026.") and its planned next movement.
+  - **"Start shipment…" in the selection bar** is disabled when none of the ticked containers can ship ("None of the
+    ticked containers can ship: KTG-… is travelling with MOV-…: complete it first."), and its dialog lists those it
+    leaves out (received, travelling, a next movement already planned, a draft the reader may not confirm, at another
+    place) instead of failing after the click. With an empty From, the server takes the place the containers are all
+    at; the "empty = the containers' ports" default is kept for containers that never moved.
+  - **"Add to a movement…"** lists only the planned movements the container can really join: created after its
+    latest movement and at its place (`usp_Movement_JoinCandidates`).
+  - **Dates are facts** (the owner's decision): a start or end date in the future is refused, in the dialogs and on
+    the server (70000, "The start date cannot be in the future: start the movement on the day it really leaves.");
+    a start before the previous leg of one of its containers ended is refused (70018): "Container KTG-2026-0031
+    cannot start MOV-2026-000051 before MOV-2026-000046 reached Dar es Salaam on 12/10/2026." Both rules hold too for
+    the start date of a movement in progress changed on the movement page and saved.
+  - **Legs follow the travel order**: a container that already travelled with a later movement (in progress or
+    completed) cannot be added to, saved on or started with an older planned movement (70015, "Already travelled
+    further with MOV-2026-000005 (Dar es Salaam → Kasumbalesa), a later movement: take it off this one."), and such an
+    older movement is never its next step. A later movement that is only planned stays allowed (planning ahead).
+  - **Every completion still goes through the API's Complete**, so a Delivery still drafts the goods receipts (or not,
+    when Document Types makes them by hand).
+  - Not yet: route master data (the owner's choice: suggestions stay history and stages). The Shipments board and the
+    split came with script 82 (below).
+- **Next step everywhere** **[Implemented – script 81, shipment phase 2]** (the owner: "make shipment more user friendly
+  and flexible"):
+  - **One button, one dialog**: the container's next step opens the same dialog from its page, its row's "…" menu
+    ("Next step: Inland transport to Kasumbalesa…") and the selection bar for one container. Its label follows the step:
+    "Start shipment…" (never moved), "Start {type}…" (a planned leg), by the stage of a leg in progress "Arrived at
+    {To}…" (Sea, Transit), "Cleared customs at {place}…", "Crossed the border at {place}…", "Left the port of
+    {place}…", "Loaded at the supplier…", "Delivered to {To}…", and once a leg is completed the proposed one "{Type} to
+    {To}…" / "{Type} at {place}…" / "Next leg from {place}…"; delivered: "Receive goods…" / "Open goods receipt
+    (draft)" (unchanged rules); received, closed or cancelled: disabled with the reason ("Received into {warehouse}: the
+    journey is over.", "This container is cancelled."). Hidden without `containers.movements.manage`.
+  - **The proposal** (`logistics.fn_Container_NextLegProposal`, `fn_Movement_NextLegHistory`, worked out once per place
+    and last stage): the usual next leg from the place (last 365 days, seen at least twice; a voyage split in two counts
+    once, script 82), else the container's own ports, else the stage order; never a leg Save or Start would refuse. The
+    dialog says where it came from: "Suggested: the usual next leg from Dar es Salaam (5 earlier legs)", "Suggested from
+    the container's ports", "Suggested from the stages", "Choose the To".
+  - **The new-leg dialog**: "Now at Dar es Salaam since 12/10/2026 (end of MOV-2026-000046)." / "Not moved yet: leaves
+    from its port of loading Chennai."; type grouped by stage (changing it proposes the To again); From locked; no To
+    for a stay ("at Kasumbalesa"); "Start now" / "Plan only"; the date not before the previous leg ended, not in the
+    future; the sea details prefilled from the container and copied back ("Copy vessel, voyage, B/L and ETA to the
+    container"); alerts for a draft (confirmed first, only planned by a reader who may not confirm), no container number
+    and typed dates ("The dispatch and arrival dates typed on this container will be replaced by the movements' dates.").
+  - **The arrival dialog**: "MOV-2026-000046 Sea freight: Chennai → Dar es Salaam, started 20/09/2026, ETA
+    12/10/2026."; the date named by the stage ("Arrival date", "Clearance date", "Crossing date", "Departure date",
+    "Delivery date"); "All 12 containers of MOV-… arrive too: …" (no split in phase 2); the **Then leg** (glossary);
+    "Record arrival" / "Record clearance" / "Record crossing" / "Record departure" / "Record delivery" / "Record
+    loading"; a Delivery shows its draft goods receipts and "Then open the draft goods receipt". The notification is the
+    server's: "KTG-2026-0031: arrived at Dar es Salaam on 17/10/2026 (MOV-2026-000046). Now At Port."
+  - **Many containers** ("Next step…" in the selection bar, `logistics.usp_Container_NextStepPreview`): "Next step - 300
+    containers", one row per group (same step, movement, type, From and To) with its count, orders and suppliers, for a
+    new leg "One movement for the group" / "One per container" (default one per container for road legs: Transit,
+    Border, Customs, Delivery - "each truck arrives on its own day", "each container is cleared on its own day") and "Edit…" (type, To, carrier, vehicle / vessel,
+    voyage, B/L, ETA, notes, a truck no. and ETA per container); a Complete of only part of a movement says the others
+    arrive too; one date for every group; "Cannot move on" by reason ("Received, closed or cancelled (12)", "Draft - you
+    may not confirm containers (3)", "A draft goods receipt waits: Open goods receipt (draft) (2)"; a missing proposal
+    is never a reason: the group's type is chosen with Edit…); a group says how many have no container number ("the
+    shipment can start without it"); "Apply to 285 containers (4 steps)". Each group runs alone and is all or nothing
+    inside; a group of one movement per container goes in parts of 50 ("Moving on: 150 of 300"). The results name the
+    MOV numbers made, refused groups stay ticked.
+  - **The to-do list**: the Containers list's Next step column and filter, worked out on the server: "Start shipment",
+    "Start planned leg", "Arrival due", "Next leg to plan", "Receive goods".
+  - **On a phone** the step is repeated in the Route card at the top of the container's page (the action bar is at its
+    bottom).
+  - **The movement page** offers "Continue: Next step…" after a Complete (not a Delivery) for its containers.
+  - **Only the last leg is cancelled** (`usp_Movement_SetStatus`, 70010): "MOV-… is not the last leg of KTG-…: cancel
+    MOV-… first." Cancelling an older leg silently broke the chain of places. A planned leg that a later leg already
+    passed (started or completed after it, data of before script 80) never happened and may be cancelled. (Script 82:
+    cancelling a movement split off another undoes the split, below. Script 83: the movement page disables "Cancel…"
+    with this reason before the click, below.)
+  - **No port of loading**: a container that never moved and has none leaves from any From (prompt 45): its dialog asks
+    for the From ("Not moved yet, and no port of loading: choose where it leaves from."); the bulk dialog lists it under
+    "No port of loading: open the container to choose where it leaves from".
+  - **Applying never goes around a movement** (`POST api/logistics/containers/next-step`): a Complete or a Start is the
+    movement's own (a Delivery still drafts its goods receipts after the commit, script 79's switch included), a new
+    leg is saved and started with the movement procedures (`logistics.usp_Movement_AddLeg`), so 70012, 70015, 70016,
+    70018 and the future-date rule hold. The step is checked again first: a dialog left open while someone else moved
+    the containers gets "…: open Next step… again." (a new leg too when they are at another place now: "KTG-… is now at
+    Kasumbalesa: open Next step… again."), and a vessel or truck leg from a place to itself is refused (70000, "The
+    departure and destination are the same place: choose the To."). The Tracking board has no row menu, so no entry
+    there: its rows open the container. (The order's and the invoice's Containers cards got their row menu with script
+    82, below.)
+- **Shipments board and partial arrival** **[Implemented – script 82, shipment phase 3]** (the owner: "make shipment
+  more user friendly and flexible"):
+  - **The board** (`logistics.usp_Shipment_Board`, `GET api/logistics/shipments/board`, `containers.shipments.view`):
+    every container from Draft to Cleared, and with "Show received (30 days)" the ones received since; never a
+    cancelled one. Its column is decided in one place (`logistics.fn_Container_BoardPhase`) from the ship state of its
+    next step: a leg in progress first (Origin → At supplier; Sea, or a transshipment between two sea ports → At sea;
+    Port → At port; Customs → At border / customs; any other → On the road), then a draft goods receipt (Delivered),
+    then its last completed leg (none → At supplier; a Delivery → Delivered; ending at a sea port → At port; else At
+    border / customs). A container **followed by typed dates** (no leg started or completed, 3.5 item 11) stands where
+    its status puts it: In Transit → At sea, in a group of its own "Followed by typed dates"; At Port → At port, at its
+    port of destination; Cleared → At border / customs ("Cleared"), at its port of destination, else its final
+    destination (where its Current location says it is); its card reads "Followed by typed dates" instead of "Not moved
+    yet", and its next step stays phase 2's "Start shipment…" (Sea freight from its port of loading, with the alert that
+    the movements' dates will replace the typed ones; Receive goods… stays on its page, 4.12 rule 6). Groups: At sea by
+    movement ("MOV-2026-000046 · MSC Aurora V.123 · Chennai → Dar es Salaam · ETA 20/10/2026", the movement number a
+    link), On the road by leg ("Dar es Salaam → Kasumbalesa"; "Border crossing at Kasumbalesa"), the others by place
+    ("No port of loading" last), Received by warehouse. Each card has its next step and proposed leg in the words
+    of phase 2, "Late" (the leg's ETA has passed), "Free time over" (the container page's rule), the planned next leg.
+    Filters on the server: search (ref, container no., B/L, vessel or truck, order number), supplier, order, branch,
+    place (where it stands, or its leg's From or To), late only, with a planned leg. No paging. Measured: 5,000 open
+    containers in a database of 50,000 in about 1.6 s (1.0–1.2 s when the received journeys spread over five years);
+    two thirds of it is the usual next leg of phase 2 (`fn_Movement_NextLegHistory`, once per place and last stage,
+    which counts a voyage split in two once: `logistics.fn_Movement_Voyage`).
+    The answer carries only what the page reads, without its empty fields: 3.6 MB of JSON for 5,000 cards (11.9 MB
+    before, 45% of it nulls; 0.06 MB compressed instead of 0.16 MB).
+  - **The page**: each column says its containers and pieces and has "Select all (n)"; each group folds and has its own
+    "Select all" (one tick takes a whole ship); a card shows its ref and container no., type, items ("84 pcs
+    TVS-APACHE-160"), supplier and order, where it is (the leg and its ETA, the stay, since when), the badges (Late,
+    Free time over, Draft, No container no., Cleared, GRN draft) and "Next step: …" - phase 2's dialog, offered to a
+    reader who may also view containers (the dialogs read the container and the movement types: without View Containers
+    the card, the List and the drawer leave the step out, and the selection bar's "Next step…" says "Next step… needs
+    the View Containers permission."). Clicking a card opens a drawer with its route, its next step and "Open
+    container"; every movement link from the board keeps the way back (`?from=shipments`). The ticked cards go into the
+    Containers list's own selection bar ("Next step…", "Container numbers…", "Add charge…"), kept across the reloads. 50
+    cards a column, then "Show 50 more"; "Board" / "List" shows the same rows as one table for hundreds; a phone shows
+    one column at a time from a row of tabs with the counts. The board reads itself again after every action, with
+    Refresh, and a minute after its last answer while the tab is visible and no dialog is open. No drag-and-drop: every
+    move is a movement with its dates, through Next step.
+  - **Where to split**: a container's Next step dialog asks "Which containers?" when its movement carries others ("All
+    12 containers of MOV-2026-000046" by default, or "Only KTG-2026-0031: it leaves MOV-2026-000046 and gets its own
+    movement"); the bulk dialog offers "Complete MOV-… for all its 30 containers" / "Only the 20 ticked (they get their
+    own movement)"; the movement page's Complete has "Only some containers arrived" with a checklist of its containers,
+    each that cannot leave said why. The new movement shows "Split from MOV-…" and both movements' history the split.
+  - **Row menus**: each container row of the order's and the invoice's Containers cards has a "…" menu with "Next step:
+    {label}" (phase 2's dialog) and "Open container".
+  - **Only part of a movement arrived** (`logistics.usp_Movement_SplitContainers`; `splitOff` on a Complete group of
+    `POST api/logistics/containers/next-step`; `POST api/logistics/movements/{id}/complete-some` for the movement
+    page): see the glossary "Split". The completion is the movement's own Complete (`MovementService.SetStatusAsync`):
+    a Delivery drafts goods receipts for the split-off containers only (none with the GRN switch off), and the Then leg
+    works as after any arrival. The date is checked first, with Complete's own rule and words (one day of tolerance
+    for the reader's time zone, never before the start), so a refused date splits nothing. Refusals, nothing changed:
+    70010 "Only a movement in progress can be split: MOV-2026-000046 is completed.", "Every container of
+    MOV-2026-000046 is ticked: complete the movement itself.", "KTG-2026-0031 already has the next leg MOV-2026-000051
+    planned: complete MOV-2026-000046 for every container, or take it off MOV-2026-000051 first (it then gets a leg of
+    its own once it has arrived)." - the place rule stays as it is: the split-off movement comes after that planned leg
+    in the travel order, so a container taken off it and split cannot rejoin it and travels on with a new leg of its own
+    (its Next step proposes it); 70000 "KTG-2026-0031 is not on MOV-2026-000046.", "Tick the containers that
+    arrived."; 70004 changed by another user (a row version sent that cannot be one is refused, 400 "The row version is
+    not valid. Reload the page and try again.", never read as "not sent"); 70006 not found. Should the completion be
+    refused after the split, the answer says exactly that: "MOV-2026-000052 was split off MOV-2026-000046 but not
+    completed: {reason}. Complete it on its page." - so does any other failure after the split (a deadlock, a timeout, a
+    lost connection: "…but not completed: the database did not answer (see the API log). Complete it on its page.", code
+    UNEXPECTED), on both entry points, with the new movement and the containers left; when the movement reads back
+    completed (the failure came after the completion), it is answered completed, a Delivery saying what is missing of
+    its draft goods receipts. The split's own answer is read before its commit, so a retried deadlock never runs a split
+    twice. Both movements' history says it ("Split off into MOV-2026-000052: KTG-2026-0031", "Split from
+    MOV-2026-000046: KTG-2026-0031 arrived on its own."), and so does each container moved.
+  - **Cancelling a split-off movement undoes the split** (the recommended option, taken under the owner's standing rule;
+    before it, the containers of a split done by mistake stayed stranded "Not moved yet" at the start of the voyage while
+    their ship sailed on): in the Cancel's own transaction (`usp_Movement_SetStatus`) its containers go back onto the movement they were
+    split from, whatever that movement's status, as if they had never been split off - **still in progress**, they travel
+    on with it; **completed**, they arrived with it (its end date, its To; put back onto a completed Delivery they have
+    no draft goods receipt: Delivered, not received, Receive goods… on each container); **cancelled**, its cancellation
+    applies to them too (they are where they were before it, like its other containers). Their rows of the movement's
+    container list, their charges filed under it and their documents filed under it go back with them (a file shared
+    with containers elsewhere keeps their records where they are); the cancelled movement stays as an empty record
+    ("Split undone: KTG-2026-0030, KTG-2026-0031 back on MOV-2026-000044" in its history, "Back from MOV-2026-000073
+    (split undone): KTG-2026-0030, KTG-2026-0031" in the other's, and a line on each container). A copy of a copy goes
+    back to its own original, the movement it was split from - and when that one was cancelled itself (its own split
+    undone, its containers back on its original), they follow them there (`logistics.fn_Movement_SplitUndoTarget`).
+    Every rule of the Cancel stays: the reason, only the last leg of each container (a split-off container that went on
+    with a Then leg is refused "MOV-2026-000074 is not the last leg of KTG-2026-0046: cancel MOV-2026-000075 first."),
+    never an offloaded container, a completed Delivery's automatic draft goods receipts deleted as for any cancelled
+    Delivery. The Cancel dialog says it first, from the movement it reads (`splitUndo…`: that movement's number,
+    status, end date, To and stage): "Cancelling MOV-2026-000073 puts KTG-2026-0030 and KTG-2026-0031 back on
+    MOV-2026-000044, which is still in progress." / "…, which arrived at Dar es Salaam on 17/10/2026: they arrive with
+    it." / "…, which reached Lubumbashi on 18/10/2026: KTG-2026-0044 is delivered with it, without a draft goods
+    receipt. Use Receive goods… on it." / "…, which is cancelled: they go back to where they were before it." The
+    notification after it is the server's (`splitUndone` on the answer, from the procedure's one row, read in its
+    transaction): "MOV-2026-000073 cancelled, the split undone: KTG-2026-0030 and KTG-2026-0031 are back on
+    MOV-2026-000044, still in progress." / "…are back on MOV-2026-000044, arrived at Dar es Salaam on 17/10/2026 with
+    it." (a Delivery adds "Delivered, not received: use Receive goods… on each container.") / "…, which is cancelled:
+    they are back where they were before it."
+- **A movement that cannot be cancelled says why before the click** **[Implemented – script 83]** (the end-to-end test
+  of shipment phase 3: the Cancel dialog opened, and even said where a split-off movement's containers would go back,
+  when the Cancel was then refused):
+  - **One place for the refusals of a movement's Cancel** (`logistics.fn_Movement_CancelBlock`), in the Cancel's own
+    order and words, all 70010: "The movement is already cancelled."; "Container KTG-2026-0041 is already offloaded: its
+    route can no longer change." (a container received or closed on a movement in progress or completed; a planned
+    movement goes through); "MOV-2026-000091 is not the last leg of KTG-2026-0133: cancel MOV-2026-000092 first." (the
+    last-leg rule of script 81, with its exception for a planned leg a later leg already passed). The Cancel
+    (`usp_Movement_SetStatus`) throws the function's answer; the movement's GET carries it (`canCancel` false,
+    `cancelBlockedReason`).
+  - **The movement page keeps "Cancel…" on every movement that is not cancelled, disabled with that reason**: a tooltip
+    on a wide screen; on a phone the entry of the "More actions" menu, the reason under its label (a completed
+    movement's bar is then Back, with Cancel… in the menu). Its dialog - the reason, the split-undo sentence, a
+    Delivery's drafts - opens only when the Cancel will go through; a refusal that still comes (someone changed the
+    movement meanwhile) is shown as it comes.
+  - The Cancel still needs a reason (70000 "A cancellation reason is required.", asked by the dialog and checked by the
+    API first); a Cancel that can never go through says so before it asks for one. The Movements list offers no Cancel
+    and is unchanged.
 - **Place rule:** **[Implemented – prompt 43; errors 70015 / 70016 as planned, check the numbers]**
   - A movement only takes containers **at its From** = the To of each container's previous movement (cancelled
     movements don't count; previous = the latest one created before this one).
@@ -725,13 +1316,13 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
     Beira. Change the From, or record the movement that brings it here first."
   - Start refuses while a container's previous movement is not completed, or no longer ends at the From (70016).
   - Planning ahead is allowed: a container still on its way to Beira can go on a planned movement from Beira.
-- **Never-moved containers:** **[Decided – prompt 45; not explicitly confirmed by Bilal]**
+- **Never-moved containers:** **[Implemented – script 53, prompt 45]**
   - Prompt 43 let them start anywhere.
   - Prompt 45: they are at their **port of loading**. They can start from there, or go on an Origin-stage ("Loading
     at the supplier") movement whose To is their port of loading.
   - No port of loading → any From, with a note.
   - An Origin-stage movement takes only containers that have never moved.
-- **The Containers card is the list:** **[Decided – prompt 45]**
+- **The Containers card is the list:** **[Implemented – script 53, prompt 45]**
   - Checkboxes, ticked = on this movement. It reloads at once when the From changes; containers not at the new From
     are unticked, with a message.
   - No "Add containers…" dialog.
@@ -741,8 +1332,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   - **[Implemented – prompt 43, basic]**: matches the container number, then the ref; capitals, spaces, dashes, dots
     and slashes are ignored; never creates containers.
   - Results: Will be added / Already on this movement / Not found / Cannot be added (reason) / Found twice /
-    Duplicate. At most 500 numbers.
-  - **[Decided – prompt 45]:**
+    Duplicate. At most 10,000 numbers a call (500 before script 78); the page sends a longer file in parts.
+  - **[Implemented – prompt 45]:**
     - Only valid numbers can be ticked, with no forcing.
     - "Download the result" gives sheets Result and Summary.
     - The template `Movement_Containers_Import_Template.xlsx` (sheet Containers with "Container no." in A1, sheet
@@ -753,8 +1344,28 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   (COGS). `inventory.usp_Item_RebuildCosts` recomputes.
 - **Import landed cost** = FOB per piece + posted charges on the line ÷ pieces received. The FOB is the posted
   invoice's for the pieces it covers, else the order price; an invoice posted after the goods corrects it (4.12).
-  - Before the goods receipt the screens show an estimate ("est."): the order price until invoiced, and the pieces
-    loaded.
+- **An invoice that does not change item costs** (the PINV type's "Affects item cost" off when it was posted,
+  script 79) **[Implemented]**: the pieces matched to it cost as if unmatched - the order price, plus the container's
+  charges on container goods. It is still matched (invoiced counters, return caps, container Close, payments). A return
+  from it takes its goods out at what they entered stock at (the matched receipt lines' order price, plus container
+  charges; never a cost blended with another invoice's price), the supplier credit staying the invoice price; a landed cost adjustment on it is refused (67013: "This invoice does not change item
+  costs (its document type was set so when it was posted): a landed cost adjustment on it would change no cost.
+  Container charges still enter the cost of goods received in containers."). Goods of an order-less invoice of that
+  kind take a typed cost, else the item's last cost, else its average (an item with no cost yet: the invoice's price
+  once), and set the item's last cost only once matched to an invoice that does change costs.
+  - Before the goods receipt the screens show an estimate ("est."), for the pieces loaded, of the cost its goods receipt
+    will give them (script 82, `logistics.fn_ContainerLine_FobEstimate`): the cost rule over the invoice pieces the
+    receipt's matching will give the line - first the invoices linked to the container line, then the order line's
+    posted invoice pieces no receipt takes by its own invoice or container line (not linked to a container, or left over
+    by a container received short), first in first out by posting over the order line's receipts in the order the
+    matching takes them (its posted goods receipts first, then its containers still on their way in the order they were
+    created, as they usually arrive). The pieces of invoices that change item costs count at their price, every other
+    piece (not invoiced yet, or invoiced by an invoice that does not change item costs) at the order price. Examples: 84
+    pcs ordered at 100, 30 invoiced at 120 by an invoice that changes costs and 20 at 130 by one that does not: est. (30
+    × 120 + 54 × 100) ÷ 84 = 107.14 per piece (the screen said 114.29 before script 82); 168 pcs at 100 in two containers
+    of 84 and an invoice of 84 at 120 not linked to either: the first container est. 120, the second 100 - what their
+    goods receipts then give them. It stays an estimate: another order of arrival, a later invoice or a receipt from the
+    order moves it; a received line shows its final cost.
 - **Container charges:**
   - Draft → Posted → Cancelled. Only posted charges that "enter the landed cost" count.
   - Any currency, at the rate of the charge date (editable): "No exchange rate for this currency on the charge date.
@@ -765,23 +1376,46 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Allocation over items:**
   - Value: order price → invoice price → final FOB.
   - Quantity: pieces, received after the goods receipt.
-  - Weight / Volume: needs the item's weight / volume, else "…: item … has no weight (kg)".
+  - Weight / Volume: needs the item's weight / volume, else "…: item … has no weight (kg)" (on a container of several
+    lines, below).
   - Manual: the amounts must add up exactly.
   - Rounded to cents; the leftover cents go to the largest remainders.
+  - **One line takes the whole charge** (script 88): a container whose only line with pieces is one item - the usual
+    container, 84 pcs of one model - gets the whole charge on that line, whatever the method: there is nothing to
+    divide, so no price, weight or volume is needed, the way a charge on one container needs no split basis. Its basis
+    is shown as computed (0.00 without a price, "—" without a weight). Before, by value with the price at 0 (an order
+    line at 0 or 100% discount, or an invoice line linked to the container line at 0 - a draft too, which then hides
+    the order price) refused at Post "Customs: the allocation basis (Value) is zero for every line of the container.
+    Use another method or a manual allocation.", and by weight or volume without the item's figure refused too; a goods
+    receipt re-spreading the posted charges refused the same way. **[Implemented – script 88]**
+  - **Several lines, every one at price 0, by value**: still refused - there is no value to divide by - with each line
+    named and where its price comes from: "Customs on KTG-2026-0151: By Item Value needs a price, and every line is at
+    0 - line 1 TVS-APACHE-160 on the order PO-BR-002-000042, line 2 TVS-XL100 on a draft invoice. Type the price on the
+    supplier invoice, or allocate the charge By Quantity or Manual." (three lines at most, then "and n more"; a received
+    line "as received (GRN-…)", a posted invoice "on PINV-…"). Typing the price on the draft invoice is enough: the
+    value reads draft invoices too. Every refusal of the allocation names the container ("Customs on KTG-2026-0151:
+    item TVS-XL100 has no weight (kg). …"): Post posts the ticked charges together, all or nothing, so the message says
+    which container stops them. **[Implemented – script 88]**
 - **Import from Excel:** Logistics › Containers › "Import charges from Excel…" (template with the charge types and
   currencies, `Import_Container_Charges_Template.xlsx`). One row = one charge on one container (found by container
   number or ref), divided over its items by the row's allocation method (Manual refused). Every row is checked first
   (Valid / Warning / Error, with an error report to download); rows of one provider invoice become one charge group;
-  "Post the charges" (with the post permission) posts them, else they stay drafts. **[Implemented]**
+  "Post the charges" (with the post permission) posts them, else they stay drafts. An item without weight or volume is
+  warned about only on a container of several lines (script 88: one line takes the whole charge). **[Implemented]**
 - **Copy to other containers:** drafts of the same group, or posted at once with the permission. A container that
   already has a charge of the group is refused. Manual allocation is copied with the charge type's method.
-- **Late charge after the goods receipt** (or cancelled after it): a cost adjustment (in stock in the receiving
-  warehouse → average cost; the rest → COGS), badge "after receipt", unchanged by goods receipts (`CNTCHARGE`). The
-  goods receipt can no longer be cancelled (63008).
+- **Late charge after the goods receipt** (or cancelled after it): a cost adjustment (`CNTCHARGE`), badge "after
+  receipt", unchanged by goods receipts. The part the **company** still holds - min(pieces received, the company's
+  stock of the item in every warehouse) ÷ pieces received - changes the average cost; the rest goes to COGS. Before
+  script 89 the receiving warehouse's stock decided, so goods moved to another warehouse sent their share to COGS (84
+  received, 80 moved: 140 of a 2,940 charge to stock instead of 2,940). The rows keep the receiving warehouse and
+  branch for the reports. A cancel takes its share again from today's stock, never more out of stock than its posting
+  put in. The goods receipt can no longer be cancelled (63008). **[Implemented – script 89]**
 - **Local purchases:** the invoice's charges while it is a draft, part of the invoice cost the received goods take;
   after posting, an LCA (67011 the invoice must be posted; 67012 refused on imported and "Shipped in containers"
   invoices). On an invoice that uses goods receipts, the LCA raises the invoice cost and the goods already received
-  follow (4.12); pieces not received yet enter at that cost.
+  follow (4.12); pieces not received yet enter at that cost. On an invoice posted before goods receipts the LCA's stock
+  part is worked out per item on the company's stock (script 89).
 - **The cost of received goods follows the invoices** (scripts 64–65): see 4.12 and `docs/notes/costing-rules.md`
   (causes PINV, PINVCANCEL, LCA, GRNPOST, GRNCANCEL, NEGSTOCK; the company stock share).
 - **Worked examples (user guide):**
@@ -833,7 +1467,8 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 - **Customer receipts** with payment methods and cash / bank accounts. **[Ali – details unknown]**
 - **Warehouses** can stand under another warehouse. **[Ali]**
   - **Lines take a warehouse at the bottom of the tree, of any branch** (Ali, scripts 69–70; goods receipts too,
-    script 72; see 1.4). A warehouse already used cannot become a parent (script 71; goods receipts count, 72).
+    script 72; see 1.4). A warehouse already used cannot become a parent (script 71; goods receipts count, 72;
+    transfer orders, 90; stock levels, 91, with their own sentence: 4.14).
     **[Implemented]**
 - **Document import:** one document whatever the warehouse; no Expiry Date in the import template. **[Ali]**
   - On Sales Invoice and Inventory In, a file naming several warehouses can instead become **one document per
@@ -844,6 +1479,12 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
   holds an item that is short, the warning adds "A goods receipt is waiting to be posted: GRN draft of KTG-2026-0031."
   (readers who may see goods receipts). **[Implemented]**
 - **Inventory Out** may require a reason (`RequiresReason`). **(unsure)**
+- **An Inventory In line without a cost takes the item's cost** (script 94): its last cost when it is not 0, else its
+  average (else 0), per unit of the line - the page proposes the same figure (it proposed 0 for an item that only ever
+  entered by Inventory In), a type whose cost cannot be typed stores it (it posted at 0 and dragged the average down),
+  an import row with an empty Unit Cost takes it (it was saved at 0), and a user who may not see item costs types no
+  cost at all. A cost typed on a line is stored as typed, 0 included; changing a line's unit scales its cost by the
+  packing (a Box of 12 costs twelve pieces: it kept the cost of one). **[Implemented – script 94]**
 - **BIVAC Out** (Inventory › BIVAC Out, document type `BIV_OUT`): **[Implemented – script 66]**
   - The units really leave stock at the average cost, like an Inventory Out: refused when the stock is short
     (62007); cancelling needs a reason and reverses the movements.
@@ -867,13 +1508,22 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 ### 4.10 Dates and times
 - Timestamps are stored in `*Utc` columns; dates without time (document date, order date, ETA) have no time zone.
   **[Implemented]**
-- The API sends `*Utc` values with "Z" and the web shows local time once. **[Decided – prompt 42]**
+- The API sends `*Utc` values with "Z" and the web shows local time once. **[Implemented – prompt 42]**
+  (`Inventory_Shipment.API/Extensions/UtcDateTimeJson.cs`)
 - Date tolerance on sales invoices. **[Ali – details unknown]**
 
 ### 4.11 Security and data
 - **Permissions per role:** the administrator has all. Manager defaults: containers view, create, confirm (offload,
-  now unused); goods receipts view, create, post; movements; documents; view and create charges. New sensitive
+  now unused); goods receipts view, create, post; movements; documents; view and create charges; transfer orders view
+  and approve (script 90, the Owner role too). New sensitive
   permissions (`settings.email.manage`, `purchase.approval.manage`) are administrator-only by default. **[Implemented]**
+- **Warehouses per user** (script 92): besides the permissions of their roles, a user may be limited to some
+  warehouses, where they may move stock (never what they may see); system administrators use every warehouse (4.15).
+  **[Implemented]**
+- **Item costs** (script 94): who sees what an item costs - on Item Definition, Inventory In / Out / BIVAC Out, goods
+  receipts, Shortages, transfers and the Dashboard - is one permission, View item costs, granted once to the roles that
+  saw costs; the server strips the figures for everybody else and the pages draw nothing in their place (4.17).
+  **[Implemented]**
 - **Secrets:** approval links never decide on GET; tokens never appear in logs or API responses; the SMTP password is
   never returned or logged. **[Implemented]**
 - **Concurrency:** RowVersion on documents: "This … was modified by another user. Reload the page and try again."
@@ -881,10 +1531,11 @@ Marks: **[Implemented]** built and verified · **[Decided – prompt NN]** writt
 
 ### 4.12 Goods receipts (GRN) **[Implemented – scripts 64, 65]**
 
-The owner chose the recommended option of every decision: containers **and** local purchases; an order closes when
-fully invoiced and received (or settled short); an invoice whose goods were received may be cancelled; the exchange-rate
-difference is part of the cost adjustment; "Without an order" needs a supplier; any confirmed container can be
-received; "Receive the goods now" when an invoice is posted, off by default; status 6 keeps the name "Offloaded".
+The owner chose the recommended option of every decision: containers **and** local purchases; an order closed when
+fully invoiced and received (or settled short) - until script 77, which removed Closed; an invoice whose goods were
+received may be cancelled; the exchange-rate difference is part of the cost adjustment; "Without an order" needs a
+supplier; any confirmed container can be received; "Receive the goods now" when an invoice is posted, off by default;
+status 6 keeps the name "Offloaded".
 
 **What changed**
 1. **Goods enter the stock only through a posted goods receipt.** A supplier invoice posted after the switch moves no
@@ -915,7 +1566,7 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
    then frozen; average, last and FOB costs updated; the container **Offloaded** at the warehouse, read-only.
 
 **Local purchases**
-9. **"Receive goods…" on a purchase order**, Posted or Closed. Disabled with a reason: "Approve the order first: goods
+9. **"Receive goods…" on an approved purchase order** (Saved, Partially posted or Posted). Disabled with a reason: "Approve the order first: goods
    are received against an approved order.", "This order is waiting for approval.", "This order is cancelled.",
    "Everything ordered is already received.", "Everything still to receive travels in containers: it is received with
    its containers."
@@ -968,6 +1619,24 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     fill the negative stock goes to COGS at posting (`NEGSTOCK`).
 16. Late **container** charges keep the late-charge mechanism (`CNTCHARGE`). Invoiced pieces that never arrive carry
     their share of the invoice's own charges out of the cost, as their FOB: the supplier claim covers both.
+16a. **The three switches of script 79** (Configuration › Document Types, 3.7), defaults = rules 5-16 as written:
+    - **PINV "Affects item cost" off**: rules 13-14 skip that invoice for the cost - its matched pieces keep the order
+      price (+ container charges), its post confirmation says "{n} pcs already received keep their cost: this invoice
+      does not change item costs (Configuration › Document Types).", its page's "Cost of received goods" says why it is
+      empty, and its late charges are refused (67013). Cancelling it still re-matches: its pieces may go to another
+      invoice that does change costs, and take that one's price.
+    - **PINV "Affects on-hand" on**: posting the invoice is followed, in its own transaction, by the receipt of rule 11
+      ("Receive the goods now") without the tick - from the invoice page, Post selected or an import that posts, and
+      **whoever posts: no goods receipt right is needed**, the rule is the document type's. Lines in containers, a
+      "Shipped in containers" invoice and goods already received are left alone and nothing is said; a receipt the
+      database refuses leaves the invoice posted: "Invoice posted; the goods receipt was not: {reason}. Use Receive
+      goods…" - on the invoice page as a warning, in the Post selected and bulk post results and in the import result
+      beside that invoice (a receipt made is named there too: "Goods received: GRN-…"). The post confirmation shows "Its goods are received at once into {warehouse}: a goods receipt is made and
+      posted with the invoice (Configuration › Document Types)." instead of the tick.
+    - **GRN "Create goods receipts when a Delivery is completed" off**: rule 5 makes no draft; the Complete dialog and
+      the notification say "Goods receipts are made by hand: use Receive goods… on each container."; rule 6 (Receive
+      goods… on the container) and the "Delivered, not received" filter work as before. Cancelling a Delivery still
+      deletes the automatic drafts it made while the switch was on.
 
 **Cancelling**
 17. **Cancel a goods receipt** (posted only, reason required). Refused: the container is Closed (63010: "Container
@@ -976,16 +1645,16 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     afterwards (63008: "The cost of these goods was adjusted after they were received (invoice price, landed cost or a
     late container charge). This goods receipt can no longer be cancelled."); a purchase return took its goods back
     (63010: "Purchase return {PRET-…} took back goods of this receipt. Cancel the return first."). Effects: the stock
-    goes back out, the matches are rebuilt and the other receipts trued up, the order's counters go down (an order
-    closed by them reopens), a container goes back to its movement status and can be received again.
+    goes back out, the matches are rebuilt and the other receipts trued up, the order's counters go down, a container
+    goes back to its movement status and can be received again.
 18. **Cancel an invoice whose goods were received:** allowed, no stock effect; the received pieces go back to the
     order price (goods without an order keep their cost at receipt). 69012 stays only for containers offloaded before
     goods receipts; the other refusals (returns or LCAs posted, payments allocated) stay.
 
 **Orders, reports**
 19. **Order line counters:** Received (goods receipts, plus the receipts made before them), Invoiced, Settled short.
-    Outstanding = ordered − received − short on an open order, invoiced − received − short on a closed one, never
-    below 0: what Shortages, the item's "On order" and the dialogs use. The order list shows a "Received" and an
+    Outstanding = ordered − received − short on an approved order, never below 0 (before script 77 a closed order
+    counted invoiced − received − short): what Shortages, the item's "On order" and the dialogs use. The order list shows a "Received" and an
     "Invoiced" progress; filters "To receive" (orders), "Not fully received" (invoices); the Goods Receipts list has
     "With differences" and "Received not invoiced", with a line "Received not invoiced: {n} pcs, {value} at the order
     price." for month-end.
@@ -995,13 +1664,25 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
       containers; a reader who may not gets them in the orders' figure). Its free-time alarms stop at the end of the
       Delivery, as on the container's page and the Tracking board: a delivered container waits Cleared for its goods
       receipt and is "Free time over" only if the free days ran out before it left. **[Implemented]**
-20. **Closing:** automatically "Fully invoiced and received"; it reopens when an invoice or goods receipt that closed
-    it is cancelled. Cancelling an order is refused while it has goods receipts (65011: "This purchase order has posted
-    goods receipts. Cancel those first." / "…draft goods receipts. Delete them first."); closing it by hand is refused
-    while received goods wait for their invoice or a draft goods receipt waits on it (65021).
+20. **No closing (script 77):** an order is never closed; it shows Saved, Partially posted or Posted from its posted
+    invoices, and goods receipts do not change that. Cancelling an order is refused while it has goods receipts (65011:
+    "This purchase order has posted goods receipts. Cancel those first." / "…draft goods receipts. Delete them
+    first."). (Before 77 it closed automatically "Fully invoiced and received", reopened when an invoice or goods
+    receipt that closed it was cancelled, and could be closed by hand.)
 21. **Last cost, FOB cost, last supplier** come from the latest posted goods receipt line, after its adjustments.
 22. **Invoice lines a goods receipt refers to** cannot be linked to or unlinked from containers (65028: "Line {n}
     ({item}): {goods receipt GRN-… | a draft goods receipt} refers to this invoice line: delete or cancel it first.").
+
+**Who sees the costs** (script 94)
+22a. The costs of a goods receipt - the lines' order price, FOB, charges, landed cost and value, the receipt's "Value
+    at cost", the Cost adjustments' before / after and amounts, the list's Value (USD) and the value in "Received not
+    invoiced", the export's cost columns, and the typed cost of a line without an order - need **View item costs**
+    (4.17). A reader without it sees the lines with a "Cost source" column (Order, Invoice, Manual, "n of m pcs
+    invoiced") and no figure; "+ New › Without an order" reads "Goods of a supplier with no purchase order, at the item's
+    last cost (its average when it has none)." and each of its lines is saved at the item's last cost when it is not 0,
+    else its average - the rule of an Inventory In line, applied by the API before `usp_GoodsReceipt_Save` (which on
+    its own took the last cost even when it was 0); a line a colleague priced keeps its cost when such a reader edits
+    the draft (same line, item and unit). The print page shows no cost for anybody, as before.
 
 **The switch ("from now") and why it is one-way**
 23. **The switch** is script 65's first run on a database (each API start applies Schema.sql). In one transaction it
@@ -1014,7 +1695,8 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
     - Draft invoices follow the new rule when they are posted.
     - Containers still travelling are received with goods receipts. Those whose Delivery was completed before the
       switch got no automatic draft: Containers › "Delivered, not received", then Receive goods….
-    - Orders closed "Fully received" with goods still to come stay closed; the goods can still be received.
+    - Orders closed "Fully received" with goods still to come stayed closed; the goods could still be received.
+      (Script 77 brought every closed order back.)
     - The invoice list tells the people who post invoices: "Since {switch date}, posting a supplier invoice no longer
       adds stock: receive the goods with Receive goods…".
 24. **One-way.** Once a goods receipt, or an invoice posted the new way, exists, the code before script 65 would
@@ -1043,11 +1725,1110 @@ received; "Receive the goods now" when an invoice is posted, off by default; sta
 
 Re-used or new outside the block: 69019 (new) a container with a goods receipt; 69016 Close with received pieces not
 invoiced; 69010 the Offload retired / Cancel Offload of a GRN container; 65011 an order with goods receipts / a return
-above what was received; 65021 an order closed by hand with received goods not invoiced; 65028 an invoice line a goods
+above what was received; 65021 (until script 77) an order closed by hand with received goods not invoiced; 65028 an invoice line a goods
 receipt refers to (65030 for Add container / Auto-plan from that invoice); 65008 a purchase document type other than
-PO, PINV, PRET; 67012 an LCA on a "Shipped in containers" invoice.
+PO, PINV, PRET; 67012 an LCA on a "Shipped in containers" invoice; 67013 (script 79) an LCA on an invoice that does
+not change item costs.
+
+### 4.13 Inventory transfers **[Implemented – script 90, prompt 47]**
+
+Stock used to move between the company's own warehouses with an Inventory Out in one and an Inventory In in the other:
+the average cost moved twice and nothing showed the goods on the road. A **transfer order** follows them from one
+warehouse to the other, through the hidden **On the way** warehouse of the destination branch, without changing any
+cost. The owner approved the feedback's recommended option of every decision, then put approval in scope. Quantities
+are pcs unless said; only posted, not reversed dispatches and receipts count.
+
+**The order**
+1. **Header:** Order date (required, today by default: "The order date cannot be in the future."), From, To, Expected
+   arrival (optional: "Expected arrival cannot be before the order date."), Reference No., Notes. **The warehouses are
+   the order's, not its lines'** (the exception to 1.4): every line leaves From and goes to To - one journey, one truck,
+   one dispatch note.
+2. **From and To** are active warehouses at the bottom of the tree, of any branch, never an On the way warehouse, and
+   different (62000, the first that fails): "Choose the warehouse the goods leave from." / "Choose the warehouse the
+   goods go to." / "The destination must differ from the source." / "{code} is an On the way warehouse: it holds goods
+   travelling between warehouses and cannot be chosen." / "Warehouse {code} is inactive." / "Warehouse {code} has
+   warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree." The
+   order's branch is From's, kept up to date while it is a draft; its number keeps the branch it was given (4.1).
+3. **A line:** item, unit, Ordered (a whole number above 0 in the unit, also kept in pcs), notes; the same item may be
+   on two lines in different units ("Line 2: item {code} is inactive.", "Line 2: the unit does not belong to item
+   {code}.", "Line 2: Ordered must be a whole number above 0."). Lines come from the item search - a scanned box
+   barcode takes its unit, else the base unit, and a second scan of the same item and unit adds 1 - or from "Import
+   lines from Excel…" (`Transfer_Order_Lines_Template.xlsx`: Item Code / Barcode, Unit, Quantity, Notes; a blank unit
+   is the base unit; a row with a Warehouse or a Unit Price is an Error: "A transfer takes its warehouses from the
+   order: leave Warehouse empty." / "A transfer has no cost: leave Unit Price empty.").
+4. **Where each item stands**, beside its line: "Available at {From}" = on hand less what the other released orders
+   still have to dispatch from it, never below 0, red when below the line's To dispatch (hover: "{n} on hand · {c}
+   promised to other orders"); "Stock at {To}" = on hand there. Information only: nothing is reserved.
+5. **A draft** moves no stock and may be deleted ("Delete draft {No}? Its number is not reused."): its number leaves a
+   gap. Documents (attachment kind TRO, whose "Used for" types were copied once from Inventory Out) in every status.
+
+**Statuses**
+6. **Stored:** Draft, Waiting for approval, Released, Cancelled. A released order is **shown**, the first that applies:
+   **Released** (nothing dispatched or closed yet), **Partly dispatched** (something still to dispatch, not closed),
+   **Dispatched** (goods on the way, nothing arrived yet), **Partly received** (goods on the way, some arrived or
+   written off), **Closed** (Nothing more will be sent, and everything sent has arrived or was written off),
+   **Received**. Dispatches, receipts, their reversals and the Not sent stamp never change the stored status. Beside
+   it a red filled "Late" badge (rule 24) and an orange "{n} lost" badge. Colours: Draft gray, Waiting for approval
+   yellow, Released blue, Partly dispatched and Partly received orange, Dispatched indigo, Received green, Closed teal,
+   Cancelled red; a reversed dispatch or receipt orange.
+7. **Moves:** Draft → Released (Release, or Approve & release); Draft → Waiting (Send for approval…); Waiting →
+   Released (Approve); Waiting → Draft (Reject… with a reason, or Withdraw); Released → Draft ("Back to draft…", a
+   reason) **only while the order has no dispatch or receipt at all, reversed or not**; Released → Cancelled ("Cancel
+   order…", a reason) while nothing is dispatched.
+8. **What can change:** a draft everything; a waiting order only its documents ("This transfer order is waiting for
+   approval: withdraw it to change it."); a released order its Expected arrival, Reference and Notes ("Save details")
+   and documents - "{No} is released: its lines, quantities and warehouses are locked. Use Back to draft… to change
+   them." / "{No} is released and has moved goods: its lines, quantities and warehouses can no longer change."; a
+   received, closed or cancelled order its Notes and documents ("Only the notes can change on a received, closed or
+   cancelled transfer order.").
+9. **Counters:** To dispatch = Ordered − Dispatched − Not sent, never below 0; On the way of a dispatch line =
+   Dispatched − Received − Lost, of an order line the sum. The lines grid shows Dispatched, Received and To dispatch;
+   **On the way is never a grid column**: the totals row (Ordered, Dispatched, Received, On the way, Not sent, Lost), the
+   list and each dispatch show it.
+10. **The list** (Inventory › Transfer Orders): Number, Date, From, To (each with its branch), Status, Items, Ordered,
+    Dispatched and Received (progress bars), On the way, Expected arrival (red and bold when late to dispatch),
+    Reference, Created by; filters Search (number, reference, warehouse, item, or a dispatch or receipt number),
+    Branch (From's or To's), From, To, Status (every shown status, and Open = released, neither Received nor Closed),
+    "On the way only", "Late only", "Waiting for approval" (approvers), dates; under it "Orders · On the way · Late
+    orders". "Export to Excel" of an order: sheets Order, Lines, Dispatches and receipts.
+
+**Dispatch** ("Dispatch…", the dispatch permission)
+11. On a released order that is not closed and has something to dispatch. The dialog proposes the lines ticked in the
+    grid, else every line with To dispatch above 0, each at the smaller of To dispatch and what From still holds after
+    the lines above it of the same item; a line with no stock is unticked, "No stock in {From}.". Dispatch date ("The
+    dispatch date cannot be before the order date ({date})."), **ETA required** (default the Expected arrival; "The ETA
+    cannot be before the dispatch date."), Waybill / truck, Notes.
+12. Refused above To dispatch (62012 "Line {n} ({item}): {q} pcs dispatched but only {t} are left to dispatch.") and
+    above From's stock, per item over its lines, checked again at posting (62007 "Insufficient stock for {item} in
+    {From}: available {a}, required {r}."); "Allow selling out-of-stock items" does not apply. One dispatch at a time
+    from a warehouse ("Another dispatch from {From} is being posted. Try again in a moment.", 62010); a dispatch and a
+    sale from the same warehouse at the same instant can still both pass the stock check, as before.
+13. Posting: number TRD by the source branch; From −q, the destination branch's On the way +q (reason TRF_OUT): "{TRD}
+    posted: {q} pcs left {From}." A dispatch with goods on the way may change its ETA ("Change ETA…", the dispatch
+    permission; "Only a dispatch with goods on the way can change its ETA."). "Print dispatch note": the TRD and its
+    order, From → To, the dates, Waybill / truck, the lines in pcs and their total, boxes "Dispatched by", "Driver",
+    "Received by"; never a cost.
+14. **Release warns** when the released orders from From, this one included, need more than From holds - "{item}: the
+    released orders from {From} need {n} pcs; {From} holds {m}." - and releases all the same: Release reserves
+    nothing, the dispatch checks the real stock.
+
+**Receive** ("Receive…", the receive permission)
+15. The dialog lists each dispatch with goods on the way ("{TRD} · dispatched {date} · ETA {date}", red "Late" when
+    late); each line starts at its On the way and may be lowered. One receipt may take lines of several dispatches (one
+    truck bringing two), dated not before the latest of them ("TRR cannot be dated before {TRD} left on {date}.").
+    Date received, Delivery note no., Notes.
+16. Received ≤ On the way of that dispatch line, checked at posting under the order's lock (62012 "{TRD} line {n}
+    ({item}): {r} pcs received but only {w} are on the way."). When fewer arrive: **"Still coming"** (the default: the
+    rest stays on the way) or **"Nothing more will arrive"** with a reason - Damaged, Missing / stolen, Wrongly counted at
+    dispatch, Other with a note ("{TRD} line {n} ({item}): choose why the rest will not arrive." / "… say what happened
+    in the note (reason Other)."). Nothing typed: 62009 "Nothing to receive: type the pieces that arrived, or tick
+    Nothing more will arrive."
+17. Posting: number TRR by the destination branch; On the way −q, To +q (TRF_IN); the pieces that will not arrive
+    leave On the way at the item's average cost (TRF_LOSS) and never reach To: "{TRR} posted: {r} pcs received into
+    {To}; {l} pcs written off." Damaged goods that did arrive are received, then taken out with an Inventory Out. To
+    made inactive since: "The destination {code} is inactive: activate it to receive these goods."
+
+**Dispatch and receive** ("Dispatch and receive…", needs dispatch **and** receive)
+18. One date, no ETA: the dispatch and a receipt of exactly what it sends, in one transaction, both or neither (no
+    number is taken by a refusal; To inactive: "The destination {code} is inactive: goods sent to it could not be
+    received. Activate it, or cancel the order."). Earlier dispatches still on the way are not touched, and the dialog
+    names them: "{w} pcs of {TRD list} are still on the way: receive them with Receive…". "{TRD} and {TRR} posted: {q}
+    pcs moved from {From} to {To}."; the receipt shows "Posted together with {TRD}".
+
+**Close, cancel, reverse, return**
+19. **"Nothing more will be sent…"** (the close permission, a reason): on a released order that has dispatched
+    something and still has something to dispatch ("Nothing has been dispatched on {No}: use Cancel order…
+    instead."). Not sent = To dispatch on every line; Ordered unchanged; goods on the way can still be received; a
+    dispatch reversed afterwards adds to Not sent (the order stays closed); no reopen - a new order covers it. It is
+    shown Dispatched or Partly received while goods are still on the way, then Closed. Dispatch is then refused:
+    "Nothing more will be sent on {No} (closed on {date} by {name})."
+20. **"Cancel order…"** (the cancel permission, a reason): only while nothing is dispatched - a reversed dispatch counts
+    as none; no stock effect; the number is kept. Otherwise disabled with "{No} has dispatched goods ({TRD list}):
+    reverse them first, or use Nothing more will be sent." A draft is deleted, not cancelled; a waiting order is
+    withdrawn first.
+21. **"Reverse…"** (the reverse permission) one whole dispatch or receipt, with a reason and a "Reversal date" (today by
+    default; "The reversal cannot be dated before {number} ({date})."): opposite rows (`IsReversal = 1`) under its own
+    number, the counters back down, status Reversed with "Reversed on {date} by {name}: {reason}". No partial reversal:
+    reverse, then post again. A reversed dispatch's pieces go back to From.
+22. **The receipt first.** A dispatch whose goods were received or written off waits (62013 "{TRD} has goods received
+    by {TRR}: reverse that receipt first."); a receipt only while To still holds what it brought (62007 "Cannot
+    reverse: {item} in {To} has only {n} left, but this receipt brought {m}."). A reversed receipt's goods go back On
+    the way, not to From, and its write-off is undone. Every Reverse… is disabled with its reason before the click.
+23. **"Create return…"** (the create permission): a new draft from the original's To to its From, dated today, "Return
+    of {TRO}", linked both ways ("Return of …" on it, "Returns: …" on the original); one line per item with what was
+    received less what its returns not cancelled (drafts included) already order, in the unit of the item's first line
+    when it is a whole number of it, else in pcs. The original never changes. Refused: "Nothing was received on {No}:
+    there is nothing to return." / "Everything received on {No} is already on its returns ({TRO list}): open them."
+    Goods turned back before they arrive: reverse their dispatch.
+
+**Dates and Late**
+24. Any past date, at most one day ahead (the reader's time zone): a dispatch not before the order date, a receipt not
+    before its dispatches, a reversal not before its posting. **Late**, worked out on the server in UTC: a dispatch with
+    pieces on the way after its ETA, or a released order, not closed, with something to dispatch after its Expected
+    arrival. A red filled "Late" badge, the list's "Late only"; never "Overdue".
+
+**Approval** (Configuration › Document Types, TRO, "Needs approval before release", off by default)
+25. **Off:** Release releases. **On:** Release by a user without Approve Transfer Orders is refused (62014 "{No} needs
+    approval before it is released: use Send for approval…") and "Send for approval…" (the release permission) takes
+    its place: the order waits, locked. An approver **Approves** it (→ Released, the approver's name kept: "{No} approved
+    and released."), **Rejects** it with a reason (→ Draft, showing "Rejected by {name} on {date}: {reason}" until it is
+    sent again), or the order is **withdrawn** (→ Draft). An approver may **Approve & release** a draft at once
+    (recorded as approved and released directly); self-approval is allowed; there is no amount threshold; Back to draft
+    means approving again.
+26. **Turning the switch** never changes an order already waiting or released: switched off, an order waiting stays
+    waiting - an approver approves it, or it is withdrawn and released (Release says "This transfer order is waiting for
+    approval: an approver approves it, or withdraw it and release it."); a draft's Approve & release then says
+    "Transfer orders need no approval (Configuration › Document Types): release it."
+27. **Approvers** are the active users holding Approve Transfer Orders, checked in SQL at the decision (62015 "You may
+    not approve transfer orders: it takes the permission Approve Transfer Orders.", for a right removed after sign-in).
+    They see the red count beside Inventory › Transfer Orders and the list's "Waiting for approval" switch.
+28. **Emails**, through the outbox of 4.4 (categories `TransferApproval`, `TransferApproved`, `TransferRejected`, each
+    linked to its order in the Email log): Send for approval emails each approver who also holds View Transfer Orders
+    (the link opens the order), through a role that is not the system role - the Admin role's holders only when nobody
+    else qualifies - the requester left out: "Approval needed: transfer order {No} ({From} → {To})", the lines and
+    "Open the transfer order". Approve tells the requester "Approved: …" ("It is released: the goods can be
+    dispatched."), Reject "Rejected: …" with the reason ("It is a draft again: change it and send it for approval
+    again."); a requester who decided themselves is not emailed. They are queued only when there is an address of the
+    application (Settings › Email "Address of the application", else `App:PublicBaseUrl`, as in 4.4; without either the
+    action is done and says "The approvers were not emailed: the address of the application is not set in Settings ›
+    Email."; a queue failure: "The approvers could not be emailed: see the API log."), and leave only while "Send
+    emails" is on.
+
+**Stock and cost**
+29. **One On the way warehouse per branch** (`OTW-{branch code}`, "On the way to {branch} (transfers)"; another free code
+    when that one is taken), made by the script for every branch, by the creation of a new branch, and again at the next
+    start for a branch that has none. The goods on the road sit there, in the ledger, in the **destination** branch. It
+    is never a parent ("An On the way warehouse cannot hold other warehouses. Choose another parent warehouse."), a main
+    warehouse, a line's warehouse of any other document (the leaf rule refuses it at save and at posting), an item's
+    default (56008 "An On the way warehouse cannot be an item's default warehouse: choose a warehouse where stock is
+    kept."), never deactivated, never negative; only its name and address change (52009 "{code} is the On the way
+    warehouse of {branch}: transfers use it. Only its name and address can be changed." / "…: it stays active
+    (transfers use it)." / "…: it is removed with its branch."). It is deleted with its branch when nothing references
+    it. A warehouse named by a transfer order counts as used: it cannot become a parent.
+30. **Cost-neutral.** The company's stock never changes during a transfer, except the pieces written off. No transfer
+    moves an item's average, last or FOB cost: the rows carry the average at the dispatch for information (the receipt's
+    rows the dispatch's), and the cost replay reads the incoming legs at the running average (`docs/notes/costing-rules.md`,
+    "Transfers"). A loss goes out at the average; reversing a receipt that wrote pieces off replays its items' costs.
+31. **The ledger:** family `Transfer`, types TRD / TRR, the posting's id and number; reasons TRF_OUT (dispatch legs),
+    TRF_IN (receipt legs), TRF_LOSS (losses; inactive, so Inventory Out never offers it). Never family Sales, which
+    Shortages read as sales. An Inventory In / Out cancel never touches a transfer row.
+32. **Elsewhere:** Stock Valuation's company total never changes during a transfer, but by a write-off, and its
+    filter offers "OTW-BR-002 - On the way to BR-002 (transfers)"; the item card's stock per warehouse lists the On the
+    way warehouse and its statement the TRD / TRR rows ("LKS-01 → LUB-01", linked to the order); sales and Inventory
+    Out cannot use goods on the way; the Dashboard of the destination branch counts them in its inventory value ("Includes goods on the way to
+    this branch's warehouses (transfer orders)."; the source branch's drops at the dispatch) and its "Stock value by
+    warehouse" shows an On the way slice; Inventory In / Out show a hint under the reasons Transfer In / Transfer Out:
+    "Moving stock between your own warehouses? Inventory › Transfer Orders moves it without changing its cost and
+    follows it on the way."
+33. **Shortages** count goods on the way to the plan's warehouse (its tree) as **Transfers in**, a column after Transit,
+    added to stock + transit in every formula ("Stock + Transit + Transfers in"). Transfers OUT are not demand, and what
+    released orders have not dispatched yet is not counted: the owner has not said the main warehouse buys for the
+    branches, and counting either would buy twice. A plan saved before script 90 keeps its figures (Transfers in 0).
+34. **Undoing a receipt after a transfer** is still refused per warehouse, and the sentence names the dispatch that
+    moved the goods: "Cannot cancel: TVS-APACHE-160 in LKS-01 has only 4 left, but this goods receipt brought 84. 80 pcs
+    were moved by TRD-BR-003-000004: transfer them back first." (63007; an Inventory In's 62007 reads "… but this
+    document added 84."); when the transfers do not cover the shortfall: "… (10 of them were moved by
+    TRD-BR-003-000004.)". Late container charges, LCAs and the goods receipt true-up already split on the company's
+    stock (script 89), so a transfer changes none of them. Sales Profit's COGS adjustments stay in the branch that
+    received the goods (its header says so on hover): no module keeps per-piece tracking.
+35. **Values** (on the way, a posting's value and loss, the frozen costs) only with View item costs
+    (`inventory.costs.view`, script 94; `inventory.valuation.view` before it): the
+    server sends them empty to others, never 0, and the export leaves them out. The dispatch note never shows a cost.
+
+**Changed from the feedback, and why**
+- **Back to draft** (feedback decision 13: while nothing is dispatched) is refused once the order has any dispatch or
+  receipt, reversed or not ("{No} has dispatches ({list}): an order that has moved goods cannot go back to draft. Use
+  Nothing more will be sent… or Cancel order… instead."): a draft's Save replaces its lines, and a posting's lines must
+  never lose their order line.
+- **Approval** (feedback decision 18 recommended Release behind a permission only, for now): the owner asked for
+  approval now; built as the TRO type's switch, off by default, so nothing changes until someone turns it on.
+- **The On the way warehouse is never deactivated** (feedback rule 32: not while it holds stock): inactive, it would
+  only break the next dispatch to its branch.
+- **The cost replay** (feedback rule 35) needs no restart at the frozen cost when the stock reaches zero: an incoming
+  leg with no cost leaves the average where it is, whatever the running balance.
+- **Purchase returns keep their stock refusal** (feedback rule 39 named them too): only the goods receipt and
+  Inventory In cancels name the transfer; the purchase posting (orders, invoices and returns in one procedure) was not
+  re-created for one sentence. Cancel Offload, the sales return cancel and the old invoice cancel keep theirs.
+- **The approvers emailed** hold Approve and View Transfer Orders and are outside the Admin role first: Admin holds
+  every permission and would get every request.
+
+**What does not change:** Inventory In / Out / BIVAC Out (their save, post, numbering, and their cancel but the end of
+the 62007 sentence), sales, purchase orders, invoices and returns, goods receipts (but the end of the 63007 sentence),
+containers, movements, charges, LCAs, payments and receipts; every warehouse picker's usual list; every existing
+document type's settings, stock reason, attachment "Used for" row and role grant. The import templates' list of
+document types gains TRO, TRD and TRR.
+
+**Errors (block 62xxx, shared with the stock documents)**
+
+| No. | Meaning | HTTP |
+|---|---|---|
+| 62000 | validation (warehouses, lines, dates, reasons; "The order is too large: its lines add up to more pieces than can be counted. Split it into several orders.") | 400 |
+| 62004 | changed by another user ("This transfer order was modified by another user. Reload the page and try again.") | 409 |
+| 62005 | locked: not a draft | 409 |
+| 62006 | not found ("Transfer order not found.", "Dispatch or receipt not found.") | 404 |
+| 62007 | not enough stock (dispatch; a receipt's reversal) | 409 |
+| 62008 | a transfer type switched off ("Transfer dispatches are switched off: the document type TRD is inactive (Configuration › Document Types).", and the same for TRO and TRR) | 400 |
+| 62009 | nothing to post, no lines, everything already dispatched or arrived | 400 |
+| 62010 | the status forbids it; another dispatch from the same warehouse is being posted | 409 |
+| 62011 | attachment type not used for transfer orders | 400 |
+| 62012 (new) | above To dispatch, above On the way | 400 |
+| 62013 (new) | a later posting must be reversed first | 409 |
+| 62014 (new) | release needs approval | 409 |
+| 62015 (new) | not an approver | 403 |
+| 52009 (new) | an On the way warehouse is managed by the system | 409 |
+
+What an action is refused for in the order's present state, and every disabled button's reason, comes from one place,
+`inventory.fn_TransferOrder_Blocks` (and `fn_TransferPosting_ReverseBlock` for a posting), as the movement's Cancel
+(script 83); what a dialog sends (dates, pieces, loss reasons, a reason) is checked by the action's own procedure
+after it. The API also refuses a row version that cannot be one ("The row version is not valid. Reload the page and
+try again.") and an empty line of a request ("Line {n} of the request is empty."), 400.
+
+### 4.14 Stock levels and Fill to Max **[Implemented – script 91, prompt 48]**
+
+Item Definition's Minimum / Maximum Quantity say how much the whole company should hold of an item, never where. Each
+warehouse now keeps its own Min / Max per item, and a draft transfer order tops its destination up to them, worked out
+by the server. Both of the feedback's decisions are built as its option (a) - the levels kept by the people given Edit
+Stock Levels; Fill to Max on the order's lines plus a drawer of the items below Min - with three refinements ("Changed
+from the feedback", below). Quantities are pcs (the item's base unit).
+
+**The levels**
+1. **A stock level** is an item's **Min** (required, a whole number, 0 or more) and **Max** (optional, not below Min) in
+   ONE warehouse, each at most 1,000,000,000 pcs. With no Max, Fill to Max fills up to Min. Rounded up to whole units of
+   a line's unit, a fill may pass Max by less than one unit (a box).
+2. **Which warehouses:** at the bottom of the tree, of any branch, never an On the way warehouse. An inactive warehouse
+   takes no new or changed level, but its levels may be removed; Stock Levels lists them only with "Inactive warehouses
+   too", the item's card always. Refused (56000), the first row that fails by warehouse code: "A warehouse was not
+   found." / "{code} is an On the way warehouse: it holds goods travelling between warehouses and cannot have stock
+   levels." / "Warehouse {code} has warehouses under it. Choose one of those: stock is kept only in the warehouses at
+   the bottom of the tree." / "Warehouse {code} is inactive: activate it to change its levels." / "{code}: Min must be a
+   whole number, 0 or more." / "{code}: Min and Max can be at most 1,000,000,000 pcs." / "{code}: Max cannot be less
+   than Min."
+3. **One dialog sets them**, for one item in one or more warehouses at once ("Set levels…" on the item's card, "Add
+   levels…" on Stock Levels with the item first, "Set level…" / "Add level…" on a row): Warehouses (active, at the
+   bottom of the tree, of every branch, never On the way; "Each gets the same Min and Max."), "Min (pcs)", "Max (pcs)"
+   ("No maximum"). It says first which level it replaces ("LUB-01 already has Min 10 / Max 40: it is replaced.") and
+   saves all of them or none: "2 stock levels saved for TVS-APACHE-160." "Remove level" asks "Remove the Min / Max of
+   {item} at {code}? Fill to Max then leaves this item alone there." and answers "Stock level removed."
+4. **Two users at once:** a level changed, removed or added by someone else since the page read it is refused (56004,
+   409): "The stock level of {item} at {code} was changed by another user. Reload and try again." / "… was removed by
+   another user. …" / "… was added by another user. …" (a level saved as new where someone has just set one with other
+   figures; the same Min and Max go through); removing one already removed: "This stock level no longer exists. Reload
+   the page." (56006, 404). The page or the dialog then reads the levels again.
+5. **Every change is recorded:** Added, Changed or Removed, old → new, who, when, and from where - Item Definition,
+   Stock Levels, or "Import ({file})". An unchanged level is neither rewritten nor recorded. "History" lists them newest
+   first (When, By, What, Min "10 → 20", Max, From); it outlives the level, its item and its warehouse.
+6. **The company figures stay the company's.** Item Definition's Minimum / Maximum Quantity keep their fields, checks
+   and meaning (glossary). Under them, in both modes: "Minimum and Maximum Quantity are for the whole company: the
+   Dashboard's Items below their minimum." (+ " Each warehouse's own Min / Max are in Stock levels per warehouse
+   below." for a reader of the levels). The levels card keeps them in view - "Company: Minimum Quantity 50 · Maximum
+   Quantity 80. The warehouses' Min add up to 95 pcs, above the company Maximum Quantity (80)." (orange when the sum is
+   above) - so the two Min / Max are never read as one. Copy Item copies no level.
+
+**Where a warehouse stands**
+7. **On hand** is the ledger's balance; **On the way in**, **To come in** and **To go out** count released transfer
+   orders only (glossary "Projected"). **Projected = On hand + On the way in + To come in − To go out**, one formula on
+   the server (`inventory.fn_StockLevelState`) for every screen. Drafts, orders waiting for approval and purchases still
+   to come are not counted.
+8. **The status**, the first that applies: no level **No level** (gray); Projected below Min **Below Min** (red); on
+   hand below Min **Below Min, covered** (orange, "On hand is below Min, but transfers on the way or released bring it
+   to Min or more.": not counted as Below Min, as nobody fills twice what is already on a truck); Max set and Projected
+   above it **Above Max** (blue); else **OK** (green). **To reach Max** = (Max, else Min) − Projected when Below Min:
+   "What Fill to Max would ask for".
+
+**Item Definition and Inventory › Stock Levels**
+9. **"Stock levels per warehouse"** on Item Definition (View Stock Levels), below Inventory Parameters: "This item's Min
+   and Max in each warehouse, in pcs. Fill to Max on a transfer order tops a warehouse up to them." Each warehouse with
+   a level of the item, inactive ones too: On hand, Coming in ("{a} on the way · {b} still to dispatch"), Going out,
+   Projected, Min, Max, Status · Updated, then the pencil (disabled on an inactive warehouse, with rule 2's sentence),
+   the trash and the history. The card saves on its own, in view mode too and without Edit Item; a new item reads "Save
+   the item first to set its stock levels per warehouse."; none yet: "No warehouse has a Min / Max for this item yet."
+10. **Inventory › Stock Levels** ("Each warehouse's Min / Max and where it stands: on hand, and what released transfer
+    orders bring or take."), two views:
+    - **Per warehouse:** every level the filters keep, with where its warehouse stands, Below Min first, then Below Min
+      covered, Above Max, OK. Filters: Search (item code or name, or a unit's barcode typed whole), Branch, Warehouse
+      ("A parent shows the warehouses under it."), Family, Brand, Status (Below Min, Below Min covered, Above Max, OK,
+      Every level, and **Without a level**: the item and warehouse pairs with no level that hold stock or are on a
+      released transfer order), "Active items only" (on), "Inactive warehouses too" (off); the tiles Levels, Below Min,
+      "Below Min, covered by transfers" and Above Max set the status. "Add levels…" and "Import from Excel…" (Edit Stock
+      Levels), "Export to Excel"; each row's "…": "Set level…" / "Add level…", "Remove level", "History", "Open item".
+    - **Company (Item Definition):** the items with a company Minimum Quantity above 0 or a Maximum Quantity, against
+      the stock of every warehouse of the branch, or of the company, goods on the way to it included - the Dashboard's
+      figure: On hand, Minimum / Maximum Quantity, Missing, Status (Below Min, Above Max, OK) and Warehouse levels ("3
+      warehouses" opens Per warehouse for that item, on the same branch); the tiles "Items with a company Min or Max"
+      and "Below their minimum".
+
+**The import and the export**
+11. **"Import from Excel…"** (`Import_Stock_Levels_Template.xlsx`, the steps of the container charges import): the
+    columns Item Code / Barcode (the item's code, or the barcode of one of its units), Warehouse (its code, or its name
+    when no other warehouse has it), Min (pcs), Max (pcs) and Remove (Yes or empty), found by their heading; other
+    columns are ignored; an .xlsx up to 5 MB and 20,000 rows, the sheet "Levels" or else the first. "Check" judges every
+    row and writes nothing - a Status (Valid, Warning, Error, Unchanged), an Action ("Set", "Remove", "No change") and a
+    message, the first that applies:
+    - **Error**: a cell that does not read ("Min must be a whole number, 0 or more (the file has '{text}').", the same
+      for Max, "Remove must be Yes or empty (the file has '{text}').") / "Item Code / Barcode is required." / "Item
+      {text} not found." / "Warehouse is required." / "Warehouse {text} not found." / "Warehouse name {text} matches {n}
+      warehouses: use the code." / an On the way warehouse or a parent (rule 2's sentences) / "Item {code} at
+      {warehouse} is on rows {list} of the file: keep one row." (on each of those rows);
+    - **Remove = Yes**: no level there, Unchanged "No level to remove."; a Min or Max typed, Warning, removed all the
+      same ("Remove is Yes: Min and Max are ignored."); else Valid ("Was Min {a} / Max {b}.");
+    - Min and Max both empty: Unchanged "Nothing to change: Min and Max are empty."; Min empty with a Max ("Min is
+      required (a whole number, 0 or more), or put Yes in Remove."), Min or Max above 1,000,000,000 pcs, or Max below
+      Min: Error;
+    - the level as it is stored: Unchanged "No change."; an inactive warehouse: Error ("Warehouse {code} is inactive:
+      activate it to change its levels."); an inactive item: Warning, set all the same ("Item {code} is inactive: Fill
+      to Max skips it."); else Valid ("Was Min {a} / Max {b}." when it changes a level).
+12. **"Import {n} changes"** saves every Valid and Warning row in ONE transaction, judged again by the same rule; Error
+    and Unchanged rows are skipped: "Stock levels imported: 40 added, 12 changed, 3 removed; 5 rows without a change and
+    2 rows with errors skipped." (a part at 0 left out; nothing to save: "Nothing was imported: every row is unchanged
+    or has an error."). "Download the error report" gives the Warning and Error rows with their Status and Message
+    (`Import_Stock_Levels_Errors.xlsx`).
+13. **"Export to Excel"** (Per warehouse, as filtered: `Stock_Levels.xlsx`) writes the five import columns first, then,
+    grey with the comment "Information: the import ignores this column", Item Name, Branch, On hand, On the way in, To
+    come in, To go out, Projected, Status, Updated. An export can be edited and imported back; imported back unchanged
+    it is "Nothing was imported: every row is unchanged or has an error."
+
+**Fill to Max** ("Fill to Max…", Create Transfer Orders)
+14. **On a saved draft only**, worked out by the server. Disabled with "Save your changes first." while the page holds
+    changes, else with the server's reason: "This transfer order is waiting for approval: withdraw it to change it."
+    (62010), "{No} is released: its quantities are locked. Fill to Max works on a draft." / "{No} is cancelled."
+    (62005), the TRO type switched off (62008), a warehouse the order cannot hold (62000), "The order has no lines: add
+    items, or use Add items below Min…." / "{To} has no stock levels: set them on Item Definition (Stock levels per
+    warehouse) or import them on Inventory › Stock Levels." (62009; only levels of active items count).
+15. **Per ITEM of the order**, the first that applies:
+    - no level at To: left as it is ("without a Min at {To}"); an inactive item: left ("inactive");
+    - **Projected before** - To's Projected without this order - at or above Min: left ("at or above Min");
+    - **Need** = (Max, else Min) − Projected before − what the item's OTHER lines order; 0 or less: left ("covered by
+      other lines of the item");
+    - **Available at {From}** = From's on hand − what the other released orders still have to dispatch from it, never
+      below 0; for the line, less what the item's other lines order, never below 0;
+    - **Units** = Need rounded UP to whole units of the line's unit, capped at the whole units available (rounded down);
+      none: "not filled (nothing available at {From})".
+16. **The item's FIRST line** gets Ordered = Units, in its unit's packing as it is now: set, never added to. Its other
+    lines never change; Fill to Max deletes and adds nothing; a second run changes nothing.
+17. **Preview, then apply.** "Fill to Max - {No} ({From} → {To})" shows the server's plan and writes nothing: each
+    item's line with Now, Fill to (bold when it changes), Projected at {To} ("18 → 60"), Min, Max, Available at {From}
+    and the result - "Filled" (with "capped: {From} has {n} pcs available"), "No change", or why it is left ("At or
+    above Min: left as it is", "No Min at {To}: left as it is", "Inactive item: left as it is", "Covered by its other
+    lines: left as it is", "Nothing available at {From}: left as it is") - and, dimmed under a row, what purchase orders
+    and containers still bring to To ("{p} pcs also on purchase orders or in containers for {To} (not counted)."); then
+    "If you apply it: {sentence}" and the warnings. **"Fill {n} lines"** (disabled "Every quantity is already at its
+    fill.") sends the order's row version: the server works the plan out again under the order's lock and records "Fill
+    to Max" with its sentence in the order's activity. Changed by someone since: "Someone else changed this transfer
+    order. Reload the page." (62004, and the page reads the order again); no row version: "The row version is missing.
+    Reload the page and try again." (400). When nothing changes no line is written and the row version stays valid.
+18. **The sentence:** "Fill to Max: {F} lines filled ({C} capped by what {From} has available), {S} skipped ({parts}),
+    {N} not filled (nothing available at {From})." - each part only when above 0, the skipped ones in this order: at or
+    above Min, without a Min at {To}, covered by other lines of the item, inactive, already on the order; " No quantity
+    changed." after an apply that filled lines and changed none.
+19. **Warnings** (orange): for each filled item that takes From below its own Min, "{From} goes below its own Min for
+    {item}: {n} pcs left after this order, Min {min}."; once, when other drafts or orders waiting for approval to the
+    same To hold some of the same items, "Other draft or waiting transfer orders to {To} hold some of these items too
+    ({up to 3, oldest first; a draft without a number "draft #{Id}"}{ and n more}): Fill to Max does not count them."
+20. **Not counted:** drafts and orders waiting for approval (the warning names them) and purchases still to come (shown,
+    dimmed). Fill to Max reserves nothing: the dispatch checks the real stock (4.13 rule 12).
+
+**Worked example** (the tests' data, codes shortened; From LKS-01, To LUB-01; a BOX is 10 pcs):
+
+| Line | Item, unit, Ordered | LUB-01 Min / Max | LUB-01 on hand / in / out | Projected before | Other lines | Available at LKS-01 (for the line) | Need | Result |
+|---|---|---|---|---|---|---|---|---|
+| 1 | A, PC, 5 | 20 / 60 | 12 / 10 on the way / 4 to go out | 18 | 0 | 100 (100) | 42 | **42** filled (LKS-01's own Min 70: 58 left, a warning) |
+| 2 | B, BOX, 1 | 20 / 55 | 12 / 0 / 0 | 12 | 0 | 38 (38) | 43 → 5 BOX | **3 BOX**, capped |
+| 3 | C, PC, 8 | 10 / 30 | 15 / 0 / 0 | 15 | 0 | 50 | - | at or above Min: stays 8 |
+| 4 | D, PC, 3 | none | 9 / 0 / 0 | - | - | 40 | - | without a Min: stays 3 |
+| 5 | E, PC, 6 | 5 / - | 2 / 0 / 0 | 2 | 0 | 0 (0) | 3 | nothing available: stays 6 |
+| 6 | F, BOX, 2 | 30 / 50 | 4 / 0 / 0 | 4 | 7 (line 7) | 45 (38) | 39 → 4 BOX | **3 BOX**, capped |
+| 7 | F, PC, 7 | | | | | | | the item's second line: never changed |
+| 8 | G, PC, 1 | 0 / 10 | 1 / 0 / 4 to go out | −3 | 0 | 20 (20) | 13 | **13** filled |
+
+"Fill to Max: 4 lines filled (2 capped by what LKS-01 has available), 2 skipped (1 at or above Min, 1 without a Min at
+LUB-01), 1 not filled (nothing available at LKS-01)." and "LKS-01 goes below its own Min for A: 58 pcs left after this
+order, Min 70." Projected at LUB-01 after: A 60, B 42, F 41, G 10, none red; before the fill only G was (−3 + 1 = −2,
+below its Min of 0). Run again: the same quantities, and "… No quantity changed."
+
+**Add items below Min** ("Add items below Min…", Create Transfer Orders; rule 14 without the lines: an order with none
+may use it)
+21. The drawer "Add items below Min - {To}" lists the items with a level at To (active items): On hand at {To}, Coming
+    in, Going out, Projected, Min, Max, Need, Available at {From}, the proposal in the unit chosen (base by default; "2
+    BOX = 24 pcs") and a note ("capped", "nothing available at {From}", "at or above Min", "on the order: use Fill to
+    Max", "{From} goes below its own Min"). Filters Family, Brand, Search and "Only items below Min" (on; off: every
+    item with a level at To); an item the order already covers is not below Min. Ticked at first: the items below Min,
+    not on the order, whose base unit fills; an item on the order, or a unit that does not fill, cannot be ticked.
+    Empty: "No item is below its Min at {To}." / "No item has a level at {To}."
+22. **"Add {n} items"** works each ticked item out as Fill to Max does, in the unit chosen, with the order's row
+    version, and adds each one that fills as a new line at the end, in item code order; the order's activity reads
+    "Items below Min added". "Add items below Min: 1 item added, 1 skipped (1 at or above Min)." An item on the order by
+    then is skipped ("already on the order").
+
+**Create transfer order from Stock Levels**
+23. On Per warehouse, with Create Transfer Orders, the rows with a level can be ticked; "Create transfer order…" is
+    disabled with "Tick rows of one warehouse: a transfer order goes to one warehouse." while they are of several
+    warehouses. "New transfer order to {To}": "{n} items, {b} below Min. Each is filled to its Max (else Min) from the
+    warehouse you choose, in pcs, capped at what it has available." (in orange: "{k} of the ticked items are not below
+    Min: Fill to Max skips them."), From warehouse (active, at the bottom of the tree, of any branch, not On the way,
+    not To), Order date (today, not in the future), Expected arrival (optional, not before the order date). **"Create
+    draft"**: the server works each item out in its base unit as Add items below Min does and saves ONE draft through
+    the transfer order's own Save, noted "Created from Inventory › Stock Levels: items below Min at {To}."; the draft
+    opens, with "TRO-BR-003-000015 created. Add items below Min: 2 items added (1 capped by what LKS-01 has available),
+    1 not added (nothing available at LKS-01)." ("Draft transfer order #{Id} created. …" while TRO is numbered at
+    release) and Fill to Max's warnings in orange: a second click for the same shortage is told about the first draft.
+    Nothing to fill: no draft, no number taken, and the dialog says why (62009): "Nothing to transfer: {From} has none
+    of these items available." / "Nothing to transfer: none of these items is below its Min at {To}."
+
+**On the transfer order**
+24. While the order still moves something to To (a draft, an order waiting for approval, a released one not yet Received
+    or Closed), its lines show To's **Min** and **Max** ("—" without a level) and **Projected at {To}** AFTER this
+    order: "What {To} will have once this order and the other released transfer orders have arrived: on hand + coming in
+    − going out." The order brings its Ordered while a draft or waiting, and its To dispatch + On the way once released
+    (what arrived is in the on hand already); on a draft being typed, a quantity counts as soon as it is typed.
+25. **Red means "after this order":** a line is red - the row tinted, Projected bold red, "Still below {To}'s Min of
+    {min} with this order." - while To stays below its Min with the order, so a line Fill to Max filled stops being red
+    and a capped one stays red. "Available at {From}" is **orange** when From goes below its own Min with the order
+    ("{From} keeps {n} pcs after this order; its own Min is {min}."). Red wins: a cell red for 4.13 rule 4's reason
+    (less available than the line still has to dispatch) stays red, and both reasons are joined. A phone reads "Min 20 ·
+    Max 60 · Projected 60 at LUB-01".
+
+**What changes elsewhere**
+26. **The Dashboard.** "Items below their minimum" keeps its count and top five (the company Minimum Quantity), gains
+    the sub-line "Company Minimum Quantity (Item Definition)", and opens Stock Levels on the view Company (Item
+    Definition), status Below Min, on the Dashboard's branch, which counts the same items (it opened Shortages, which
+    show other figures); without View Stock Levels it opens Item Definition. A new line **"Warehouse levels below Min"**
+    ("Projected stock below a warehouse's own Min", shown when above 0) counts the levels of active items at active
+    warehouses of the branch, or of the company, that are Below Min - Stock Levels' Below Min tile for the same branch,
+    with the page's default filters - and opens Per warehouse, Below Min, on that branch; it adds to the Stock alerts
+    card's count.
+27. **A warehouse with stock levels counts as used:** it cannot become a parent, with its own sentence when the levels
+    are all it holds (52000): "Warehouse {code} has stock levels for {n} item(s), so it cannot become a parent: stock
+    levels, like stock, are kept only in the warehouses at the bottom of the tree. Remove its levels (Inventory › Stock
+    Levels), or choose another parent warehouse." One also used in transactions keeps the old "… is already used in
+    transactions, so it cannot become a parent: …". The Parent picker reads " - has stock levels, cannot be a parent".
+    Once its levels are removed it may become a parent.
+28. **Levels belong to their item and their warehouse:** deleting either deletes its levels, and levels never stop the
+    delete (an item or a warehouse still referenced is refused as before). The confirmations say so: "Its units, image,
+    documents and stock levels per warehouse go with it." / "Its stock levels go with it." The history stays: an item
+    deleted adds a "Removed" row for each of its levels (from Item Definition, by the user who deleted it); a warehouse
+    deleted adds none.
+
+**Changed from the feedback, and why**
+- **Projected also subtracts what released orders take OUT of the destination** (feedback rule 48 counted its on hand
+  plus what released orders bring): pieces a released order still has to dispatch from it are promised but still on its
+  shelf - a released return LUB-01 → LKS-01 of 10 pcs is still in LUB-01's on hand - and counting them would make Fill
+  to Max fill too little. "Available at {From}" subtracts the same promises.
+- **The item's other lines are taken from what is available for the filled line** (feedback rule 48: Available at From):
+  they leave the same source, so the filled line can only take what they leave.
+- **A line is red while the destination stays below Min AFTER this order** (feedback rule 49: while Projected < Min): a
+  line Fill to Max filled stops being red, a capped one stays red; read without the order, the line of an item just
+  filled would stay red.
+
+**What does not change:** Item Definition's Minimum / Maximum Quantity (columns, checks, messages, fields: a hint line
+added); every other Dashboard figure; Shortages (Fill to Max only reads them for the purchases still to come); transfer
+orders (every column, row and sentence of script 90; Fill to Max writes a draft's lines only); the ledger, item costs,
+cost adjustments and stock valuation (nothing here writes them); the warehouses' other rules and numbers; the item's
+read, save, units, files and copy. Levels reserve nothing and move no stock.
+
+**Errors:** no new number. Levels: 56000 (400, validation), 56004 (409, changed, removed or added by another user),
+56006 (404, not found). Fill to Max, Add items below Min and Create transfer order: script 90's 62000, 62004, 62005,
+62006, 62008, 62009, 62010. Warehouses: 52000. The API also refuses, 400: "Each warehouse once.", "Each item once.",
+"Each row once.", "Level {n} of the request is empty." / "Row {n} of the request is empty.", an unknown status ("Unknown
+status: choose Below Min, Below Min covered, Above Max, OK or Without a level."; the company view's "… choose Below Min,
+Above Max or OK."), and a file it cannot import (INVALID_FILE): "The file must be an Excel workbook (.xlsx)." / "The
+file is larger than 5 MB." / "The file has more than 20,000 rows: split it." / "The file does not have the template's
+columns: Item Code / Barcode, Warehouse, Min (pcs), Max (pcs). Download the template and copy your rows into it." / "The
+file has no rows." / "The file could not be read: open it in Excel, save it and try again."
+
+### 4.15 Warehouse access per user **[Implemented – script 92, prompt 49]**
+
+Until script 92 every user could move stock in every warehouse. The transfer stories asked that "the source warehouse
+is limited to the warehouses the user can access" and that the destination's people receive; a rule for transfers
+alone would have been easy to get round with an Inventory Out. So an administrator may now limit a user to some
+warehouses, for **every** document that moves stock: where they may **move** stock, never what they may **see**.
+Nothing changes for anybody until an administrator restricts someone.
+
+**Who may use which warehouse**
+1. **All warehouses or only these.** Each user has **All warehouses** (`security.Users.AllWarehouses`, on by default:
+   every user before script 92, and every new user) or **Only these warehouses**, the ones ticked for them in
+   "Warehouses of {username}" (rule 21). A ticked **parent gives every warehouse under it**, also those added under it
+   later: the tree is read at each check ("a parent is a group, not a place", 1.4; one tick for "everything in
+   Lubumbashi").
+2. **System administrators always use every warehouse** (a user holding an active system role: Admin), whatever is
+   stored: an administrator locked out of a warehouse could not fix its data. What is set for them applies if the
+   Admin role is taken away; their dialog says so.
+3. **On the way warehouses are nobody's** (4.13 rule 29): never ticked ("{code} is an On the way warehouse: it holds
+   goods travelling between warehouses and is never given to a user."), never refused - a transfer is checked on its
+   From and its To (rules 14-17).
+4. **"Only these warehouses" with none ticked** is allowed - an accountant who must never move stock: the user sees
+   everything and moves stock nowhere (the dialog warns, rule 21; their documents say "You have no warehouse to move
+   stock in: ask an administrator."). An inactive warehouse stays ticked (it may be reactivated), shown "(inactive)".
+5. **At once.** The database is asked at each check, nothing is cached and nothing is in the sign-in token: a change
+   takes effect at the user's next action, without signing out, also with two API processes on one database or after
+   an edit in SSMS.
+
+**What it limits: moving stock**
+6. A restricted user **posts, cancels or reverses** a document only when they may use every warehouse its stock moves
+   in (its lines' and its header's); **saves a draft** only with warehouses they may use, line by line (rule 8);
+   **deletes a draft** only when they may use every warehouse on it (the Lubumbashi Inventory Out an administrator
+   prepared is not theirs to throw away).
+7. **Viewing is never limited**: every list, page, print, export, the item card, Stock Valuation, Shortages, Stock
+   Levels, the Dashboard and every document's files stay the same for everyone. No list is filtered by default, but
+   the Transfer Orders list of a restricted user (rule 17), which they can undo.
+8. **A draft is judged line by line.** In a warehouse the user may use, anything goes. In one they may not use (a
+   draft an administrator prepared): a stored line may stay exactly as it is, or **move** to one of the user's
+   warehouses (then it is theirs to change); a line added there, changed there (item, unit, quantity, expiry date; a
+   purchase return's invoice line; a goods receipt's counted pieces, its order, invoice or container line, "Nothing
+   more will come") or dropped without being moved is refused with the sentence naming that warehouse. The header may
+   keep it, never be set to it. Prices, discounts and notes are not compared: they move no stock. Posting the draft is
+   refused while a line is left there; moving the last one out enables Save & Post at once.
+9. **Which documents.** Limited: Inventory In, Inventory Out and BIVAC Out; sales invoices and returns; purchase
+   returns; goods receipts (from a container, an order, an invoice, or without an order); transfer orders, their
+   dispatches and receipts (rules 14-17); stock levels (rule 18); the Cancel Offload of a container received before
+   goods receipts; and the Cancel of a supplier invoice posted before goods receipts that put its own stock in (not
+   shipped in containers), which takes that stock back out. **Not limited** (they move no stock): purchase orders and
+   their approval; supplier invoices (save, post, Create Invoice, from containers, Split by item, Link); containers,
+   movements and the completion of a Delivery; container charges and landed cost adjustments; supplier payments and
+   customer receipts; shortage plans and their purchase order; files; master data (but moving a warehouse to another
+   parent, rule 25); item definitions.
+10. **Drafts the system makes are not checked when they are made** - the draft goods receipts of a completed Delivery
+    (the logistics clerk who completes it is rarely the one who receives the goods), a return made from its invoice,
+    invoices made from an order or from containers - **whoever posts them is**. A warehouse the user names in a dialog
+    (Receive goods…, a typed line) is checked at once, before anything is created.
+11. **An invoice that receives its goods when it is posted** (the PINV type's "Affects on-hand", 3.7) is posted all
+    the same, and its goods receipt refused in the existing warning: "Invoice posted; the goods receipt was not: You
+    have no access to warehouse LKS-01: ask an administrator. Use Receive goods…". In its post confirmation an orange
+    alert says it first: "You may not use LKS-01: the invoice will be posted, but its goods receipt will be refused.
+    Someone who may use LKS-01 receives them with Receive goods…". Without that switch, "Receive the goods now" can be
+    ticked only when every line it would receive is in one of the user's warehouses; otherwise it stays, disabled and
+    unticked, with the sentence under it.
+12. **Imports.** In the Excel imports of Inventory In / Out, BIVAC Out, sales invoices and returns and purchase
+    returns, a row whose warehouse the user may not use is an **Error** with the sentence (a Warning's own text kept
+    after it), counted with the errors; saving refuses it all the same. A purchase order or supplier invoice file is
+    not judged. Import Sales, which saves and posts at once, is refused whole and leaves no draft. A transfer order's
+    lines are imported only by someone who may use its From. Stock levels: rule 18.
+
+**One sentence, said before the click**
+13. **The sentence**, written once in the database (`security.fn_User_WarehouseRefusal`), the codes sorted: "You have
+    no access to warehouse LKS-01: ask an administrator." / "You have no access to warehouses LKS-01 and LUB-01: ask
+    an administrator." / "… warehouses KLW-01, LKS-01 and LUB-01: …" / "… warehouses KLW-01, LKS-01, LUB-01 and 2
+    more: ask an administrator." Error **50010**, HTTP **403**, code `WAREHOUSE_ACCESS`, for every family, the
+    transfers and the stock levels. The screens show it on the disabled button first; the server repeats it if the
+    click comes anyway (someone changed the user's warehouses meanwhile). The lists' row and bulk actions (Post,
+    Cancel document, Delete) are answered per document, with the sentence.
+14. **The screens** (`docs/frontend-conventions.md`, "Warehouse access per user"):
+    - **pickers offer only the user's warehouses** - Inventory In / Out / BIVAC Out, sales, purchase returns, goods
+      receipts ("Receive into" and the lines) and Receive goods…, Import Sales' warehouse, a transfer's From, the
+      stock level dialog, Create transfer order…'s From; purchase orders and supplier invoices keep every warehouse. A
+      warehouse already on the document stays, marked "{warehouse} - not one of your warehouses", with "Not one of
+      your warehouses" under the select;
+    - **a new document starts where the user may move stock**: the page's usual branch when it holds one of their
+      warehouses, else the branch of their first one, new lines in their warehouse of that branch (the main one
+      first);
+    - **Save & Post** waits while a line (or the goods receipt's "Receive into") is in a warehouse the user may not
+      use: with the server's sentence while those are the stored draft's warehouses, else "Some lines are in a
+      warehouse that is not one of yours (marked - not one of your warehouses): change them, or ask an
+      administrator."; Save Draft stays. **Cancel** and **Delete** are disabled with the server's sentence for the
+      stored document;
+    - in Receive goods… on an order or an invoice, a line whose own warehouse is not the user's starts in their only
+      warehouse when they have exactly one, else empty; choosing it again is refused in the dialog, "Line 1
+      (TVS-APACHE-160): You have no access to warehouse LUB-01: ask an administrator.";
+    - Receive goods… on a container whose branch has warehouses but none of the user's says so in the sentence ("You
+      have no access to warehouses LUB-01 and LUB-02: ask an administrator."); "Create draft" still works with no
+      warehouse named ("Create draft names no warehouse: the draft takes the container's own, and someone who may use
+      it posts the receipt."), and "Create and post" waits with the sentence. (Asked of the server with no warehouse
+      named, "Create and post" makes the draft and answers "Draft goods receipt created; it was not posted: You have
+      no access to warehouse LUB-01: ask an administrator.")
+
+**Transfers** (4.13)
+15. **The order is the source's document** (numbered by From's branch): what the source does needs the **From** -
+    create, edit, delete, release, send for approval, withdraw, back to draft, import lines, Fill to Max and Add items
+    below Min (4.14), dispatch, change a dispatch's ETA, reverse a dispatch, Nothing more will be sent, cancel the
+    order, and "Approve & release" of a draft (a release). The **To** receives: receive (and write off what will not
+    arrive), reverse a receipt, create a return. **Dispatch and receive** needs both (one sentence naming both when
+    neither is the user's). **Save details** (Expected arrival, Reference, Notes) needs either. **Approving or
+    rejecting** a request someone sent needs neither: the supervisor is often at head office.
+16. Save refuses a From the editor may not use before a number is taken; **the To of a new order may be any
+    warehouse**. "Create transfer order…" on Stock Levels is refused the same way, with nothing created and no number
+    used. Every button keeps reading the order's abilities (`inventory.fn_TransferOrder_Blocks`, 4.13): the access
+    reason comes before every status reason (a user who may not use the warehouse can do nothing about the order's
+    state). The From picker offers the user's warehouses only (the order's own From kept, marked), the To every
+    warehouse.
+17. **The Transfer Orders list** gives a restricted user a "Warehouses" filter: "From or to my warehouses" (the
+    default) / "From my warehouses" / "To my warehouses" / "All warehouses"; emptied by it alone it says "No transfer
+    order from or to your warehouses. Choose All warehouses under Warehouses to see every order." A user with every
+    warehouse sees no filter and the list as before. **The menu count** beside Inventory › Transfer Orders is the
+    orders waiting for the user's approval (4.13) plus, for a restricted user holding Receive Transfers, the released
+    orders with goods on the way to their warehouses; it is asked for a user holding Approve Transfer Orders or
+    Receive Transfers.
+
+**Stock levels** (4.14)
+18. Everyone who may view stock levels sees every warehouse's. **Setting, removing or importing a warehouse's Min /
+    Max needs that warehouse**: refused with the sentence (one sentence for every such warehouse of the request); in
+    the import such a row is an Error with the sentence and is skipped. On Stock Levels and Item Definition's "Stock
+    levels per warehouse" card the rows stay, their Set level… / Add level… / Remove level (the card's pencil and
+    trash) disabled with the sentence; the levels dialog offers the user's warehouses only. Fill to Max and Add items
+    below Min follow the order's From (rule 15).
+
+**No way round**
+19. **The stock ledger refuses it too.** A trigger on `inventory.StockMovements`
+    (`inventory.TR_StockMovements_WarehouseAccess`) refuses any stock row a restricted user writes into or out of a
+    warehouse that is not theirs, whatever wrote it: a posting, a cancel, a reversal, an import, a bulk action, the
+    receipt an invoice makes when it is posted, a family added later. The screens and the API's early checks only say
+    it sooner. For a user with every warehouse it costs one primary-key read per stock statement (measured within
+    noise); it never makes a posting wait for a change to another user. A trigger disabled by hand is enabled again at
+    the next start.
+20. **Every writer stamps the acting user** (7.3): the trigger trusts the row's `CreatedBy`; a row without a user is
+    never refused, and script 92's Check counts such rows among the newest (expected 0).
+
+**Changing a user's warehouses**
+21. **"Warehouses of {username}"** (the teal warehouse icon on the user's row, with Edit users; no new permission):
+    "Where {name} may move stock: post, cancel and delete documents, receive goods, dispatch and receive transfers,
+    set stock levels. Every document stays visible to them."; the switch "All warehouses" ("Every warehouse, including
+    those added later."); off, "Search warehouses" and every warehouse in a tree by branch, each a tick -
+    "(inactive)", a parent "(and the warehouses under it)", the warehouses under a ticked parent ticked and disabled
+    "through {code}"; "{n} ticked: {name} may use {m} warehouses." (the warehouses at the bottom of the tree the ticks
+    give, inactive ones included); none ticked: "No warehouse ticked: {name} will not be able to move stock
+    anywhere."; a system administrator: "{name} is a system administrator: system administrators use every warehouse,
+    whatever is set here. This setting applies if the Admin role is taken away."; the History; after Save, "Warehouses
+    of {username} saved." A ticked warehouse under another ticked one is dropped (the parent covers it). No row
+    version: the last save wins, and the history shows both. Refused (50011, 400): "Choose All warehouses, or tick the
+    warehouses this user may use." / "Warehouse #{id} was not found: reload the page and try again." / the On the way
+    sentence of rule 3.
+22. **The Users list** has a "Warehouses" column after Roles: "All", "All (administrator)", up to three codes then
+    "+{n}", or "None" (with an orange warning sign).
+23. **Every change is kept** (`security.UserWarehouseAudit`): who, when, before → after in words - "All warehouses" →
+    "Only: LKS-01, LUB", "Only: none"; two equal saves write one row. The dialog shows the 100 newest; none yet: "No
+    change yet: {name} has always used every warehouse."
+24. **Deleting a warehouse** (only an unused one can be: a tick is not use) takes its ticks with it, and each user who
+    had it gets a history row "Only: LKS-01 (LKS-02 deleted)" ("Only: none (LKS-02 deleted)" when it was their only
+    one). A deactivated warehouse stays ticked.
+25. **Moving a warehouse to another parent** changes who may use it (a ticked parent gives its whole tree). When it
+    changes the warehouses of a restricted user, only an editor who may use every warehouse and holds Edit users may
+    move it - else 50010 (403) "Moving LKS-01 to another parent changes the warehouses 2 users may use (Users &
+    Permissions › Users › Warehouses): ask an administrator." - so a restricted user can never give himself a
+    warehouse by moving it under one of his; each user concerned gets a history row "Only: LUB (LKS-01 moved under
+    LUB)" / "Only: LUB (LKS-01 moved out of LUB)". A user who ticked the warehouse itself keeps it wherever it stands;
+    a move that changes nobody's warehouses is free.
+
+**Errors (block 50xxx, security)**
+
+| No. | Meaning | HTTP |
+|---|---|---|
+| 50010 (new) | the user may not use that warehouse: every family, the stock ledger, transfers, stock levels, a warehouse move (code `WAREHOUSE_ACCESS`) | 403 |
+| 50011 (new) | the Warehouses dialog was refused (rule 21); script 92's guard | 400 |
+| 50003 | "User not found." (the dialog) | 404 |
+| 62000 | the transfer list's filter: "Unknown warehouse filter: choose any, from or to." | 400 |
+
+A missing permission is the usual 403 "Forbidden".
+
+**Changed from the design, and why**
+- **A draft is judged line by line** (rule 8), not by warehouse: kept by warehouse, an administrator's line could be
+  changed or dropped by someone who may not use its warehouse; a line may still move out to the user's warehouse, so
+  an administrator's draft is corrected without a dead end.
+- **Moving a warehouse** (rule 25) was not in the design: a restricted user who may edit warehouses could have given
+  himself one by moving it under his own, and others' access changed without history.
+- **The Cancel of a supplier invoice posted before goods receipts** (rule 9) is limited: it takes its own stock back
+  out, like a return.
+
+**What does not change:** sign-in, refresh, `me` and the token; every permission and grant (none added); the stock,
+sales, purchase, goods receipt, container and movement procedures (their bodies, messages and numbers: the ledger
+trigger is the only thing under them); every list, report, export, print and Dashboard figure; purchase orders,
+supplier invoices, approvals, containers, movements, charges, payments and receipts; costs. For a user with All
+warehouses every page and answer stays as it was.
+
+### 4.16 Batch, serial and expiry on transfers **[Implemented – script 93, prompt 50]**
+
+The transfer story's last bullet: "Batch, serial, and expiry details are captured in a separate dialog when the item
+requires them". The feedback had recommended a separate epic for chassis and engine numbers across every module; the
+owner put it in scope now, so it is built **on transfers only, without rebuilding the stock ledger of any module**: the
+item says how its pieces are told apart, a dispatch asks for them, a receipt says what arrived of each, and the rows stay
+on the posting. The word is **tracking** ("details" already means a transfer's header fields, "Save details"). Nothing
+changes for an item until someone ticks its Tracking. Quantities are pcs. Rules K1-K25 are the spec's; B1-B19 its
+decisions; "What it does not do" is said plainly at the end.
+
+**A. The item** (Item Definition › Inventory Parameters, the row after the Min / Max hint; `inventory.items.edit`)
+1. **Tracking**: None (the default, every item before script 93), Batch numbers, Serial numbers; **Requires expiry
+   date**: no / yes; **Serial no. length**: empty (any length) or 1-50, serial items only (17 for a TVS chassis no.; a
+   length typed on a batch item is refused "Serial no. length applies to serial-numbered items only.", 60 "Serial no.
+   length must be between 1 and 50, or empty for any length." - the field never clamps). The item's **kind** follows,
+   never stored on the item: **Serial**, **Batch**, **Expiry** (None + Requires expiry date), or none. View mode reads
+   "Tracking: Serial numbers (17 characters) · expiry date required"; the header shows the badge ("Serial nos." grape,
+   "Batches" cyan, "Expiry dates" yellow, "+ expiry" when a serial or batch item also requires the date); under the row,
+   dimmed: "Batch, serial and expiry details are asked on transfer dispatches (Inventory › Transfer Orders). Goods
+   receipts, sales and Inventory In / Out do not ask for them." Copy Item copies the three fields. (B1, B2)
+2. **Asked on transfer dispatches only.** A change is allowed at any time and applies to the next dispatches; **goods on
+   the way keep the kind they left with**: a dispatch line records its kind (`TransferPostingLines.TrackingKind`), and
+   its receipt follows that, whatever the item says now - a flag turned on while goods travel does not block their
+   receipt; turned off, the serials already sent are still received one by one. (B3, B10)
+
+**B. Dispatch** ("Dispatch…" and "Dispatch and receive…", `inventory.transfers.dispatch`)
+3. **Every line of a tracked item that leaves (pcs above 0) needs its rows** before the dispatch is allowed; an untracked
+   line takes none, and rows for one are refused. The dialog shows a column "Batch / serial" with the line's button
+   "Serial nos.…" / "Batches…" / "Expiry dates…" and its state - "{c} / {q} serial nos.", "{s} / {q} pcs in {b} batches",
+   "{s} / {q} pcs in {e} dates" (the singular for one), green with a tick when complete, red while not, "—" when nothing
+   leaves (the button disabled: "Type the pieces that leave in Dispatch now first."). **Dispatch stays disabled** while
+   a leaving tracked line is incomplete, with the first line's sentence; the server refuses the same way (62016):
+   "Line 1 (TEST93-S): type the serial numbers of the 20 pcs that leave (Serial nos.…)." / "… say which batches the 60
+   pcs come from (Batches…)." / "… give the expiry dates of the 30 pcs (Expiry dates…)." Changing "Dispatch now" keeps
+   the rows typed; the state turns red until they match again.
+4. **Serial numbers: one per piece.** The dialog "Serial numbers - line {n}: {item code}" ("{q} pcs leave {From}: one
+   serial no. per piece.") has a scan box ("Scan or type a serial no. and press Enter", the counter "{c} / {q}" red until
+   equal; a scanner's Enter adds the number and nothing else, a code with a tab or line break inside is refused "Scan one
+   number at a time, or use Paste list…"), **"Paste list…"** ("One serial no. per line, or separated by commas,
+   semicolons or spaces", "followed by its expiry date (DD/MM/YYYY)" when required; "Add to the list" answers "{a} added,
+   {d} already in the list, {o} over the {q} pcs leaving (not added)." and names each line it could not read), and
+   **"Known at {From} ({n})…"**: the serials transfers received into the source warehouse and did not send since (at
+   most 2,000, the oldest received first; "Find a number" narrows them), ticked and added ("Add the ticked"; B12 - the
+   only serials the system knows of; batch and expiry items get no suggestion).
+   Refused on the spot, before any server call: "{x} is already in the list.", "{x} is already on line {m}." (the same
+   item on another line of the dispatch), "{q} serial numbers are already typed: remove one, or raise Dispatch now.", "A
+   serial no. has no spaces.", "{x} has {len} characters; this item's have {L}.". The newest serial is listed first; a
+   serial can be edited in its row and is tidied (capitals, trimmed) when the cursor leaves it.
+5. **Batches**: the dialog "Batches - line {n}: {item code}" opens with one row of Pcs = the line's pieces; rows of Batch
+   no., Expiry ("Expiry (optional)" unless the item requires it) and Pcs (a whole number, at least 1), "Add a row" (Pcs =
+   what is missing), the total "{s} / {q} pcs" red until equal, "Put the rest here" on the last row; one row per batch
+   (the same batch twice: "Line {n} ({item}): batch {x} is on two rows: put its pieces on one row."). "Paste list…"
+   takes "One row per line: batch no., expiry date (DD/MM/YYYY) and pcs, separated by tabs (copied from Excel),
+   semicolons or commas." (a batch already listed gets the pasted pieces added).
+6. **Expiry dates**: the same dialog without the batch no. ("Expiry dates - line {n}: {item code}"; "expiry {date} is on
+   two rows: put its pieces on one row.").
+7. **A serial item that requires expiry** gives each serial its date (a column in the list; "Same expiry for every
+   serial: [date] Apply").
+8. **How a number is kept** (one place, `inventory.fn_TrackingNo_Normalize`): spaces, tabs, line breaks, no-break
+   spaces and byte-order marks are trimmed at both ends, the rest in **capitals**; one of those characters INSIDE is
+   refused ("Line {n} ({item}): serial no. {x} may not hold a tab or a line break: paste a list with Paste list…
+   instead."), so a pasted "serial TAB expiry" never glues into one serial. (B4)
+9. **The characters**: a serial no. holds letters, digits, `.` `/` `-`, no spaces, at most 50 characters ("Line {n}
+   ({item}): serial no. {x} may hold only letters, digits and . / - (no spaces)."; "… is longer than 50 characters.";
+   "… has {len} characters; the serial numbers of {item} have {L} (Item Definition)."); a batch no. letters, digits,
+   spaces, `.` `/` `_` `#` `-`, at most 50 ("… batch no. {x} may hold only letters, digits, spaces and . / _ # -.").
+10. **An expiry date** is between 01/01/2000 and 31/12/2099 ("Line {n} ({item}), row {r}: {date} is not a valid expiry
+    date."); one **in the past is a warning** ("Line {n} ({item}): expiry {date} is in the past."): expired goods are
+    moved too. (B13)
+11. **A serial no. is once in a dispatch** ("Line {n} ({item}): serial no. {x} is typed twice." / "Serial no. {x} of
+    {item} is twice in this dispatch (lines {a} and {b})."), and once in any posting by a unique index, whatever a
+    procedure does.
+12. **Rows for a line that does not leave are refused** ("Batches, serial nos. or expiry dates were given for line {n},
+    which does not leave on this dispatch."; "Line {n} ({item}): {item} takes no batch, serial or expiry details (Item
+    Definition): open Dispatch… again."; "… the rows do not match how {item} is tracked now ({kind}): open Dispatch…
+    again."); **at most 10,000 rows per dispatch and per receipt** ("A dispatch holds at most 10,000 batch, serial or
+    expiry rows.", refused by the API before the database too; a ship of motorcycles stays possible, a runaway paste does
+    not). (B14)
+13. **The rules are checked when the dialog's Done is pressed and again at posting, with the same sentences** - one
+    function, `inventory.fn_TransferDispatch_TrackingProblems`, read by the dialog's Check (every error and warning of
+    the whole dispatch as it would be posted, this line's warnings; no lock, nothing written) and by the posting (the
+    first error). Done: the errors in red at the top with the named rows outlined, the warnings in orange and the button
+    becomes **"Keep these numbers"** (a second click closes with the rows). **A decision against the spec's "errors keep
+    the dialog open", recorded:** the count errors alone - the rows do not add up to the pieces yet (rules 3 and 14) -
+    are said in red but let "Keep these numbers" close the dialog with what is typed ("Keep these numbers closes the
+    dialog with what is typed: nothing is posted until the line is complete."): 19 chassis numbers scanned of 20 must
+    survive closing the dialog, the line's state stays red and Dispatch stays disabled, so nothing half done is posted
+    and nothing scanned is lost. Cancel drops every change since the dialog opened ("Discard the serial numbers, batches
+    and expiry dates typed in this dialog?", "Discard" / "Keep editing"). The rows survive a page reload: they are kept
+    in the browser's session storage per order and row version, and reopening the dispatch offers "Restore the {n} rows
+    typed earlier?" ("Restore" / "Start again"; the line buttons wait for the answer); a post or Discard clears them
+    (B8; no draft postings).
+14. **The count must match**: "Line {n} ({item}): {q} pcs leave but {c} serial numbers are typed." / "… the batches add
+    up to {s} pcs but {q} pcs leave." / "… the expiry dates add up to {s} pcs but {q} pcs leave."; a serial row is one
+    piece ("… a serial number is one piece."), a batch or expiry row a whole number above 0; a missing number or a
+    missing required date is named with its row ("Line {n} ({item}), row {r}: the serial no. is missing." / "… the
+    batch no. is missing." / "… the expiry date is required for {item}.").
+15. **A serial already on the way is refused** (62017, HTTP 409 `SERIAL_ON_THE_WAY`): "Serial no. MD626AE1XR1T00001 of
+    TEST93-S is already on the way with TRD-BR-003-000004 (TRO-BR-003-000012: LKS-01 → LUB-01): receive it first, or
+    reverse that dispatch." Checked under an **application lock per item** (`inventory.TransferSerial.{ItemId}`, taken
+    after 90's source lock, items in id order so two dispatches never wait in a circle; 30 s, then 62010 "Another
+    dispatch of {item} serial numbers is being posted. Try again in a moment."): two dispatches of one serial from two
+    warehouses at the same instant never both pass. The format, count and duplicate errors are checked **before** the
+    source lock (B17): a slow check never blocks every dispatch from that warehouse; only this rule runs after the
+    locks. (B5)
+16. **The ledger gets one row per leg and expiry date**: a tracked line writes the source −q and the On the way warehouse
+    +q once per distinct expiry date of its rows (`StockMovements.ExpiryDate`; 40 pcs expiring 31/03/2027 and 20
+    expiring 30/06/2027 give four rows instead of two), as every other document writes its line's expiry; a serial item
+    without a date writes 90's two rows. No batch or serial column on the ledger (B7): stock stays per item and
+    warehouse, and every reader sums it as before (`docs/notes/costing-rules.md`, "Transfers"). The dispatch's history
+    line adds "… 20 serial no(s), 2 batch(es), 2 expiry date(s)."
+17. **Warnings only** (never a refusal; said by Done, never by the posting; B5, K16): "Serial no. {x} was last received
+    into LUB-01 by TRR-BR-002-000009 on 21/10/2026, not into LKS-01: check it is really here.", "Serial no. {x} was
+    written off as lost by TRR-… on {date} ({reason}): dispatch it only if it was found.", the past expiry of rule 10,
+    and "Line {n} ({item}): batch {x} left with expiry {d1} on TRD-…; here it is {d2}." ("no expiry" when none). The
+    transfer history is the only clue the system has of a number's place: refusing on it would block legitimate moves
+    (a chassis sold from LUB-01 and dispatched from LKS-01 are, for the system, the same number twice).
+
+**C. Receive** ("Receive…", `inventory.transfers.receive`)
+18. **A dispatch line that left with rows is received with them**, whatever the item says now; one that left without is
+    received without (rows for it: "{TRD} line {n} ({item}) left without batch, serial or expiry details: receive it
+    without them."). On such a line "Received now" is read-only (the sum of its rows), 90's "Still coming | Nothing more
+    will arrive" control is not shown, and the line's button opens the rows with the state "{r} arrived · {l} lost · {w}
+    still coming". Without opening the dialog, everything on the way arrived. (B3, B6)
+19. **Serials**: "Serial numbers that arrived - {TRD} line {n}: {item code}" lists the serials on the way, all ticked
+    (ticked = arrived), with a counter "{arrived} / {on the way}". **The first scan starts a scan session**: every serial
+    not scanned yet is unticked, a gray line says "Scanning: only the serial numbers you scan are ticked.", each scan
+    ticks one ("{x} is not on the way on this line." otherwise); "Tick all" / "Untick all"; each unticked serial is
+    **Still coming** (the default: it stays on the way) or **Lost**, and "Mark the {n} not ticked as lost" does it for
+    all. **Batches and expiry dates**: one row per batch or date on the way with "Received now" (starts at its on the
+    way, may be lowered, "Max {w}" refused above it) and, when lower, "Rest: Still coming | Lost". Lost pieces need the
+    line's reason ("Why?", and the note for Other), are written off from the On the way warehouse at the average cost
+    (`TRF_LOSS`) and keep their expiry date on the ledger row. With serials it matters WHICH piece is lost.
+20. **Received + lost of a row never exceed its on the way** (62012, checked under the order's lock): "{TRD} line {n}
+    ({item}): serial no. {x} is no longer on the way." / "… batch {x}: {r} pcs received and {l} written off, but only
+    {w} are on the way." (the same with "expiry {date}"); a serial "either arrived or is lost, not both."; the rows must
+    add up to the line ("… the rows add up to {d} pcs received, but the line says {r}: open Receive… again."), and a
+    tracked line received or written off without rows is refused ("… tick the serial numbers that arrived (Serial
+    nos.…)." / "… say what arrived of each batch (Batches…)." / "… say what arrived of each expiry date (Expiry
+    dates…)."); at most 10,000 rows ("A receipt holds at most 10,000 batch, serial or expiry rows: receive one dispatch
+    at a time."). A refused Receive (someone received a serial meanwhile, 409) keeps the reader's ticks: the rows on the
+    way are read again and an orange line says so ("The order was changed by someone else: the serial numbers, batches
+    and expiry dates on the way were read again.").
+21. **Dispatch and receive** receives every row of its dispatch, serial by serial: nothing is asked twice.
+
+**D. Reverse** (`inventory.transfers.reverse`)
+22. **The rows stay, shown "Reversed"**: a reversed dispatch's serials are free again (a new dispatch of them passes); a
+    reversed receipt's serials and batch pieces are **on the way again** and its losses undone. A receipt one of whose
+    serials has been **dispatched again since** (from the receiving warehouse) cannot be reversed until that dispatch is
+    (62013, before 90's stock sentence): "Cannot reverse: serial no. {x} of TRR-… has been dispatched again with TRD-…:
+    reverse that dispatch first." - checked under the same per-item serial lock, so a dispatch of one of its serials
+    cannot slip in between the check and the reversal. (B5)
+
+**E. Seen and found**
+23. **The order page**: a tracking badge under each line's Item Name (from the item's kind; **as soon as the item is
+    chosen on a line**, a decision over the spec's "once the draft is saved", so a line changed to another item never
+    keeps the old badge; tooltip "Dispatch… asks for the serial numbers of these pieces."). In "Dispatches and
+    receipts" a posting line with rows shows a dimmed summary ("20 serial nos." / "2 batches" / "1 expiry date") and a
+    link that opens its rows **when clicked** (B18: the order's page never carries 10,000 serials), with each row's
+    state (On the way blue, Partly received orange, Received green, Written off red, Reversed gray, and the sentence:
+    "Received by TRR-BR-002-000007", "Written off by TRR-… (Damaged)", "3 received, 1 written off, 16 on the way";
+    3.10), "Find a number" above 10 rows and "Copy list". The columns a kind does not use (Expiry without a date, Pcs
+    for serials) are left out.
+24. **The list** (Inventory › Transfer Orders): the filter **"Batch or serial no."** ("At least 3 characters"; 3
+    characters of the number as kept: capitals, trimmed; "contains", so a chassis no. is found by its last digits, B9)
+    keeps the orders whose dispatches or receipts hold such a number, and each row says what became of it, dimmed under
+    the number, from the order's latest posted row that holds it: "MD626AE1XR1T00005: on the way (TRD-…)" / "…:
+    dispatched (TRD-…)" (a dispatch row received or written off since) / "…: received into LUB-01 (TRR-…)" / "…:
+    written off (TRR-…)" / "…: reversed (TRR-…)" (+ " and {n} more" when other numbers of the order match). Fewer than 3 characters: "Type at least 3
+    characters of the batch or serial number." (62000; the page sends nothing below 3). There is no trace drawer: the
+    matched line and the posting's rows answer "where is it" (the cross-module trace is the epic's, below).
+25. **The dispatch note and the export**: the note lists under each line its serial nos. (four columns), batches
+    ("B2410-07 · exp. 31/03/2027 · 40 pcs") or expiry dates, never a cost; while the rows cannot be read, Print is
+    disabled with the reason and "Try again" reads them again (the paper never goes out without them). The order's
+    Excel export gains the sheet **"Batch, serial and expiry"** (Posting, Kind, Date, Status, Line, Item code, Item
+    name, Serial no., Batch no., Expiry, Pcs, Lost, Received from, On the way, State) only when the order has tracking
+    rows: the export of an untracked order is cell-identical to script 90's.
+26. **The item statement** (Item Definition › Stock Movement) shows "Expiry {date}" under the document of a transfer row
+    that carries one - **transfer rows only** (B19): the expiry other families write comes from fields no screen
+    shows, and showing it would change a finished screen.
+
+**Speed, measured** (the sandbox, 4 shared CPUs; test93 case s and the testers' timings): a dispatch of **10,000
+serials** - the dialog's Check 0.6-0.9 s, the Dispatch 1.0-1.3 s, its receipt 1.0-1.5 s, Dispatch and receive about 2.2
+s, the rows of a posting 0.1-0.3 s, the suggestions for an item with 20,000 serials 0.07-0.16 s, the order's Get 12-50
+ms whatever the rows; the list filter on 50,000 orders holding 100,000 rows 0.3-2.2 s with a reused plan. Three lookups
+were rewritten for it during the tests (the 62017 rule, a serial's last event and the reversal block of a receipt, each a
+`MAX(Id)` seek through `IX_TransferPostingTracking_ItemSerial` instead of a "latest by date" that scanned every posting
+per serial: 17-399 s once the history grew; 6.3 says what that index must never lose).
+
+**What it does not do, honestly** (5.9 of the spec; B1)
+- **No stock per serial, batch or expiry**: on hand stays per item and warehouse. A dispatch cannot prove that chassis X
+  is at the source, because goods receipts, sales, Inventory In / Out, BIVAC Out and purchase returns record no batch or
+  serial: the transfer history is the only clue, and it gives warnings, never refusals (rule 17). Serial uniqueness
+  holds among the goods on the way by transfers and inside one posting. Expiry is information: no FEFO, no alert before
+  an expiry, no refusal to sell expired goods. The item flags act on transfers only, and the item page says so.
+- **How it grows without rework.** The row shape (kind, batch, serial, expiry, pcs, lost, settled, the row it consumes)
+  is keyed by a posting line, i.e. by the ledger key (family `Transfer`, TRD / TRR, the posting, its line). The "Chassis
+  and engine numbers" epic adds the same rows under goods receipts first, then sales, Inventory In / Out and purchase
+  returns, joined to these through one view; the warnings of rule 17 then become real refusals ("Serial no. X is not at
+  LKS-01"), the trace runs across modules, and no transfer screen changes: the dialog, the viewer, the number rule and
+  the problem table name no transfer. The ledger needs nothing: it already carries the expiry.
+
+**Changed from the spec, and why** (both recorded by the review and the browser tests, kept as built)
+- **"Keep these numbers" also closes the dialog on a count error** (rule 13; the spec: errors keep it open): what is
+  scanned must survive closing; Dispatch stays disabled until the line is complete, so nothing half done is posted.
+- **The line badge appears as soon as the item is chosen** (rule 23; the spec: once the draft is saved): a saved line
+  changed to another item kept the old badge otherwise. It sits under the Item Name, compact, so a released order at
+  1440 px keeps every badge whole without a sideways scroll.
+- Smaller: the posting summary is a dimmed line of its own on a wide screen (appended " · …" on a phone); the states say
+  "1 batch" / "1 date" in the singular; the viewer leaves out a column a kind does not use; the receipt's serial dialog
+  also counts "{arrived} / {on the way}"; "Requires expiry date"'s explanation is on an info icon beside the box.
+
+**What does not change:** every transfer of an untracked item (the new steps run only for tracked lines; 90's table types
+are untouched and the tracking travels in two optional table-valued parameters, so every caller of 90 keeps working);
+90's sentences, numbers, locks and order of checks (93 adds steps, never edits one); 91 (levels count pcs; Get is 91's
+body plus columns) and 92 (Search is 92's plus a parameter; the access refusals come first; the trigger checks the split
+rows like any); the ledger's shape and every other family's rows; on hand, Stock Valuation, the Dashboard, Shortages,
+Stock Levels and the item card (they sum by item and warehouse); costs and the replay; the items' create, update,
+search, lookup, units, files, note, link and levels (only the item's read gains three columns, and an older client that
+sends no Tracking changes nothing); expiry on other documents and screens; permissions (none added).
+
+**Errors:** new **62016** (400, `TRANSFER_TRACKING`: batch, serial or expiry rows missing, incomplete or invalid, on a
+dispatch or a receipt) and **62017** (409, `SERIAL_ON_THE_WAY`); reused 62000 (the receipt's shape errors of rule 20,
+the list filter), 62006, 62010 (the serial lock not obtained in 30 s), 62012 (above the on the way of a row), 62013 (a
+receipt whose serial left again, code `REVERSE_LATER_FIRST`), 56000 / 56006 (the item's Tracking). The API also refuses,
+400: more than 10,000 rows before the database, a dispatch row twice, a receipt row of the same dispatch row twice, and
+the item's "Tracking must be None, Batch or Serial." Every sentence is the database's, shown as it comes.
 
 ---
+
+### 4.17 Item costs: who may see them **[Implemented – script 94, prompt 51]**
+
+The feedback asked for "a company-wide View costs that hides costs on the item card, the item search, Inventory In / Out
+and their export"; the owner put it in scope. Until script 94 anybody who could open an item, an Inventory In or a goods
+receipt saw what the goods cost. Now **one permission, View item costs** (`inventory.costs.view`), decides it everywhere
+an item cost is shown outside the screens that already had their own permission, and it was given once to every role that
+saw such a cost, so nothing changed for anybody on the day of the release. Built as recommended: the server strips, the
+page hides, nothing is refused.
+
+**The rules**
+1. **What it covers**: an item's average, last and FOB cost and its stock value on Item Definition (the card's "Stock &
+   Costs", the list's Avg. Cost and Inventory Value, the item search behind every scan box), the item's Stock Balance (the
+   value tile, column and total) and Stock Movement (Unit Cost), Inventory In / Out / BIVAC Out (the lines' Unit Cost and
+   Total Cost, the summary, the list's Total Cost, the import preview, the typed cost), goods receipts (4.12 rule 22a),
+   Shortages (Last cost on the live view and the plans, and a plan's purchase order amounts unless the reader may view
+   purchase orders), the Dashboard ("Inventory value" becomes "Items in stock" with the count; no "Stock value by
+   warehouse") and transfer orders (4.13 rule 35). Exports leave the cost columns out (not blank); the lists of Inventory
+   In / Out and goods receipts sorted by a hidden figure fall back to the date.
+2. **Granted once** (3.8): to the system roles and to every role that held one of the 14 permissions whose screens showed
+   a cost; recorded in `inventory.OneTimeSteps` (`94.CostsViewGrant`), so a database whose permission row the API's
+   catalog sync created first is still granted at the script's first run. Untick it on Role Permissions for the roles that
+   must not see costs; it never comes back by itself. A new role gets nothing.
+3. **The server strips, the page hides.** Every such field leaves the API **null, never 0**, on every read, save, post and
+   cancel answer; the page decides **by the permission, never by the data** whether to draw the column, row, tile or pill
+   (nothing, not a column of dashes, which would name the hidden figure). With the permission every screen is exactly
+   what it was.
+4. **It hides, it never blocks**: no new refusal, no new error number. A user without it still counts goods in: on an
+   Inventory In there is no cost column, under the lines "You may not see item costs: each line is saved at the item's
+   last cost (its average when it has none)." (+ " A user who may see item costs can change it before the document is
+   posted." when the type's cost may be typed), and each line is saved at the item's last cost when it is not 0, else its
+   average, per unit of the line; a line a colleague priced keeps its cost when such a user edits the draft (same line,
+   item and unit); the costs in an import file are not used ("Unit costs in the file are not used: you may not see item
+   costs, so each line is saved at the item's last cost (its average when it has none)."). A goods receipt without an
+   order: the same (4.12 rule 22a). An Out takes the average, whatever is sent.
+5. **A hidden figure is never saved back as a real one.** A line read without its cost is sent back without one
+   (`unitCost: null` with the line's id) until a different cost is typed; the server keeps a saved line's cost by its id
+   whenever the cost comes null, for a viewer too, and prices any other line. A document or receipt the server sent
+   without its costs draws no cost column even to a reader who may now see them, and is read again when the permission
+   changes; a list total the server stripped reads "—", never 0.00.
+6. **Not this permission's**: Stock Valuation (View Stock Valuation, a screen that is all costs), purchase orders, invoices
+   and returns (supplier prices; a purchase line of such a user starts without a price and is priced at save at the
+   item's last cost × packing × rate, as a line left empty always was), landed cost adjustments, containers (their
+   invoices, charges, estimates and landed cost per item), sales cost, margin and Sales Profit (View Sales Profit). To hide
+   every cost from a role, untick View item costs, View Stock Valuation and View Sales Profit, and View Containers, View
+   and Post Purchase Invoices, View Landed Cost Adjustments and Create Purchase Orders as well.
+7. **When a change applies**: at the user's next sign-in or token refresh (within 15 minutes), as for every permission -
+   except where a hidden cost could be saved back wrong: the reads, saves, posts and cancels of Inventory In / Out / BIVAC
+   Out and goods receipts confirm a token that lacks the code with the database once, so a grant is seen there at once
+   (every token of the first 15 minutes after the release lacks the code, and a page still showing costs must not lose
+   them). An untick waits for the next token everywhere.
+8. **Fixes on the same screens**, for everybody: the In page proposes the item's last cost, else its average (it proposed
+   0 for an item that only entered by Inventory In, 4.9); a line's cost follows a change of its unit; a type whose
+   "Price / cost editable" is off stores the item's cost (it posted at 0, and since script 89 kept the switch the defect
+   was permanent); an import row without a cost is priced by the server (it was saved at 0; the import template says so:
+   "Blank on an Inventory In: the item's last cost (its average when it has none)."); the tooltip of a cost that cannot be
+   typed reads "The item's last cost (its average when it has none) is applied automatically" on an In ("Average cost is
+   applied automatically" was written for an Out); the item's current costs no longer ride on every purchase and goods
+   receipt line of the API (fields no page drew: `[JsonIgnore]`).
+9. **A last cost of 0 never wins over a real average** (the In's rule `COALESCE(NULLIF(LastCost, 0), AverageCost, 0)`;
+   the API applies the same to an order-less goods receipt line): a free goods receipt line sets the last cost to 0, and
+   goods must never enter stock at nothing.
+
+**What does not change:** a reader who holds the permission gets the same API answers and screens as before (the fixes
+of rule 8 apart); Stock Valuation, sales, purchase documents, landed cost adjustments, container charges; how an Inventory
+In posts and costs (`usp_StockDocument_Post`, `usp_Item_ApplyReceipts`, `usp_Item_RebuildCosts`); a cost typed on a
+line; every other permission and grant. No table, column, type, view or error number; `usp_StockDocument_Save` is script
+29's body plus the one INSERT of the lines; `usp_GoodsReceipt_Save` is not re-created.
+
+**Errors:** none new. HTTP 403 "Forbidden" is never answered for want of this permission.
+
+### 4.18 The container's journey, BIVAC charges and lead times **[Implemented – scripts 95-98, prompt 52]**
+
+**Where a container is (script 95)**
+1. **The Containers list shows the leg** a container is on, from its movements (`logistics.fn_Container_Journey`): the
+   From → To of its latest movement started or completed, else its port of loading → port of destination ("Not
+   dispatched"). **Journey status**: **Not dispatched** (no leg started), **On the way** (a leg in progress), **Arrived**
+   (its last leg completed, goods not received), **Received** (Offloaded or Closed); a container followed by typed dates
+   takes the status its dates give. Columns "From → To" and "Journey" (with "since {date}"), a Journey filter, and both in
+   the CSV.
+2. **Receive goods… on a container waits for its Delivery** (`logistics.fn_Container_ReceiveBlock`): a container with
+   movements is received only once a movement of the Delivery stage is completed - "{ref} has not been delivered yet:
+   complete its Delivery movement first, then receive its goods." (63010), on the disabled button (page and row menu) and
+   from the server. A container without movements keeps the old rule (Confirmed to Cleared, typed dates). The other
+   reasons are unchanged (draft: "Confirm the container first: …", received, a draft goods receipt waits).
+3. **Receive goods… on an order or an invoice is hidden** when everything still to receive travels in containers (it was
+   disabled with "Everything still to receive travels in containers: …"): those goods come with their containers.
+
+**A provider's invoice once (script 96)**
+4. **A charge reference is unique per provider** (`logistics.fn_ContainerCharge_ReferenceClash`): a charge that is not
+   cancelled may not carry a reference (trimmed, any case) that another charge of the same provider (or both without a
+   provider) already has, outside its own group. "Reference INV-1 of {provider} is already entered: {charge type} on
+   {container} ({date}). A provider's invoice is entered once - one charge for all its containers (Apply to other
+   containers..., or one group of rows in Import charges from Excel)." (70001, 409). One charge for several containers,
+   Apply to other containers and one import group share it; a charge without a reference is never refused. The import
+   refuses such rows too (a reference already entered, or the same provider + reference split over two groups).
+
+**BIVAC charges (script 97)**
+5. **A BIVAC item has a cost per port** (`inventory.ItemBivacPortCosts`, base currency, 0 or more, each port once), kept on
+   Item Definition's card "BIVAC cost per port" (Edit Items) for items with BIVAC Item ticked: "Only a BIVAC item has a cost
+   per port: tick BIVAC Item and save the item first." (56000).
+6. **A BIVAC / Inspection charge (type BIV) names its BIVAC item**: Add charge asks "Which BIVAC?" (the active BIVAC items,
+   from `usp_ContainerCharge_BivacOptions`), and each container's charge is that item's cost at the container's port (its
+   port of destination, else its final destination, else its port of loading): no amount, currency or split is typed.
+   Refused: "A BIVAC charge names its BIVAC: choose which BIVAC item …", "Only a BIVAC / Inspection charge names a BIVAC
+   item.", "{item} has no BIVAC cost for {port}: set it on Item Definition (BIVAC cost per port)." Apply to other
+   containers takes each target's port cost.
+7. **Posting the charge posts a BIVAC Out** of 1 pc of the item from the container's warehouse, Reference No. = the
+   container, at the average cost (`usp_ContainerCharge_PostBivacOut`); without stock the post is refused with the BIVAC
+   Out's own sentence (62007, nothing posted). **Cancelling the charge cancels its BIVAC Out**; the BIVAC Out alone cannot
+   be cancelled: "This BIVAC Out was made by the BIVAC charge of container {ref}: cancel that charge instead …" (62010).
+   The charge drawer shows its BIVAC item and BIVAC Out. The charge import refuses BIV rows ("A BIVAC charge is entered
+   with Add charge…").
+
+**Lead time per item (script 98)**
+8. **Item Definition's lead time is in months** (`inventory.Items.LeadTimeMonths`, one decimal, 0 to 60). The days typed
+   before were converted once per database (`98.LeadTimeMonths` in `inventory.OneTimeSteps`: days ÷ 30, to the half
+   month); a lead time under 8 days, which that rounds to 0, gets its months to one decimal instead, at least 0.1 (7
+   days → 0.2; script 99); LeadTimeDays stays = months × 30. An older client that sends only days gets them as months,
+   by the same rule.
+9. **The lead time of the history** (`inventory.fn_Item_LeadTimeHistory`): over the goods receipts posted in the last 12
+   months whose lines come from a purchase order, the time from the order's approval (its posting) to the receipt's
+   posting, weighted by the pieces, in months of 30 days (at least 0.1). Item Definition shows it under the field.
+10. **Shortages give each line its own lead time** (`inventory.fn_Item_LeadTime`), the first that has one: the history,
+    the item's, the plan's header - or typed on a draft's line (Manual, kept by Recalculate; above 0, at most 60).
+    Expected requirement and shortage = monthly sales × the line's lead time; the line shows where it comes from ("from
+    purchase history", "from Item Definition", "the plan's", "typed"), and Load items a Lead Time column.
+
+**Errors:** no new number (63010, 70001, 56000, 56006, 62007, 62010, 66000).
+
+### 4.19 The Container Report **[Implemented – script 100, prompt 52]**
+
+The purchasing team followed its containers on a hand-kept sheet (the owner's "tracking report sample"): sections by stage,
+rows moved between them by hand, subtotals and lead times typed. Reports › Container Report works it out from the system.
+
+1. **Rows:** one per container line (a cancelled container is left out) and one per approved order line with pieces still
+   to load (ordered − loaded on containers not cancelled − received outside containers − settled short). An item that does
+   not exist simply has no row: the report reads what the system holds, it never creates anything.
+2. **The stage**, the first that applies (`logistics.usp_ContainerReport`): received → "Offloaded in {the To of its last
+   Delivery leg, else its warehouse}"; a vessel leg in progress → "In transit {From} → {To}"; a Port leg → "{port}"; a stay
+   (Customs, or From = To) → "{place}"; a road leg → "{From} → {To}"; never moved, or an order line still to load → "Order
+   pending - {month}" (the container's order month, else the order date's); last leg a Delivery, not received →
+   "Delivered to {To}, to receive"; else the To of its last leg. The places name the stages, so the two routes in use
+   (India → Dar es Salaam → Lubumbashi, and India → Dar es Salaam → Mokambo → Lubumbashi) give the sheet's sections by
+   themselves, and a new place gets its own. Ordered as the sheet: pending (newest month first), at sea, at a port, on the
+   road from a port, at a border or inland place, on the road from there, delivered, offloaded.
+3. **The journey** from the legs not cancelled: dispatch = the first start of a Sea leg; arrived in port = the last end of
+   a Sea leg; left port = the first start of a leg leaving a sea port by land; final destination = the places reached
+   after the port, in order ("Mokambo → Lubumbashi"); trucks = their vehicles; offloaded = the container's offload date.
+   **Lead time (months)** = (offloaded − order date) / 30 days (the sheet's rule: 14/03/2026 → 26/10/2026 = 7.53); before
+   the offload it is counted to today and marked "so far".
+4. **Amounts** in the base currency. FOB = pieces × the invoice price once received, else the container page's estimate
+   (an order line still to load: the order price), marked "est.". Charges = the line's share of the posted charges, one
+   column per charge type the rows carry; Freight / Shipping and Inland Transportation are the transport charges: their
+   invoices are listed per container ("05/11/2025 · 2500323 · 10,000.00") and summed in TOTAL TRANSPORT AMOUNT. Total
+   expenses = FOB + charges; cost per unit = the landed cost (an estimate until received). Invoices, PI exporter's refs,
+   commercial invoice numbers, payment dates and references are listed when there are several.
+5. **Alerts** per row: Late (the leg's ETA has passed), Free time over, Not invoiced, Not paid, Partly paid, No container
+   no., No B/L.
+6. **The page:** filters (search, supplier, item, family, branch, order dates, offloaded dates, "Orders still to load",
+   "Received containers"), one tile per stage (containers, lines, pieces, value; a click shows that stage only), the grid
+   grouped by stage with each group's totals and a grand total, the container ref pinned. **Export to Excel** writes the
+   sheet's layout: one frozen header, a title row per stage, its rows, its subtotal, the grand total; estimates in grey
+   italics.
+7. **Who:** View Container Report (3.8). Without View Container Charges the charge columns are left out; without View
+   Supplier Payments the payment columns. Nobody is refused anything else.
+8. **Not in it yet:** the oil value ("FOB with oil", "Oil", "FOB without oil" in the sheet): the invoice price includes it,
+   the owner will deal with it later.
 
 ## 5. The prompts so far
 
@@ -1065,29 +2846,40 @@ steps A1, A2… (API project) and B1, B2… (Web project), run in order, each ve
 - **Prompt 30:** the approval UI / email outbox worker for script 26. **Replaced by prompt 36** ("Do not run prompt
   30").
 
-**What I don't know**
-- The titles of prompts 1–29 and 31 **(unsure)**.
-- The files should be in the API repository under `docs/prompts/`. List them there.
+**The prompt files in `docs/prompts/`** (checked on 19 October 2026): 02 security-rbac, 03 schema-security, 04
+masterdata-branches, 05 masterdata-warehouses, 06 mantine-migration, 07 dev-startup-502, 08 roles-permissions-split,
+09 auto-apply-filters, 10 masterdata-currencies, 11 masterdata-itemfamilies, 14 masterdata-pricelists, 15
+masterdata-parties, 16 frontend-enhancements-1, 17 sales-invoice-import, 18 inventory-stock-in, 19
+inventory-item-import, 20 sales-invoice, 21 sales-import-post, 22 fixes-inventory-docs, 23 document-engine, 24
+sales-invoice-full, 25 purchase-shortages, 26 shortage-documents, 27 charge-types-landed-cost. Prompts 1, 12, 13 and
+28–31 have no file there; prompts 32–50 were given outside the repositories (5.2 and section 4 say what they asked).
 
-### 5.2 Prompts 32–46
+### 5.2 Prompts 32–51
 
 | Prompt | Title / what it does | Status |
 |---|---|---|
 | **32** | Batch 8 — Containers at the centre (script 27): containers from the PO, invoices from containers, movements, container charges and per-item cost, documents, tracking board (A1–A4, B1–B5) | Done |
 | **33** | Batch 9 — Many containers per order (script 28): Auto-plan, bulk actions, Start shipment for the chosen containers, charge copied to other containers, "Create & send" | Done, except its approval steps A4 / B3 (replaced by 36) |
 | **34** | Batch 10 — Purchase approval: who approves (in the app / by email), email settings, the whole cycle | A1 done: VS Code wrote the spec as **script 42** (not 29). A2–B3 replaced by 36 |
-| **35** | Fix "The request field is required." when saving / posting PINV and PRET | Unknown. The 37 checks saved and posted invoices and a return without it, so probably done or no longer needed. Check by saving a draft PRET |
+| **35** | Fix "The request field is required." when saving / posting PINV and PRET | Done: the API no longer adds the implicit [Required] (`Program.cs`); invoices and returns save and post in every test since |
 | **36** | Batch 10 final — Email and approval layer: email core (encrypted password, queue, worker, Email log, test), approval endpoints, approval emails, reminders, Settings › Email / Email log / Purchase approval, approval on the PO, Approvals page and badge, public approval page (A1–A3, B1–B4) | Done (leftovers → 42) |
 | **37** | Batch 11 — One item per supplier invoice (script 44, error 65029): auto split, refusal, Split by item, Post selected, import | Done (A1, A2, B1 verified 2 Oct) |
-| **38** | Charges on a purchase invoice, draft or posted: one "+ Add charge" | Not started |
-| **39** | One purchase-order page from everywhere; disabled buttons with reasons | Not started |
+| **38** | Charges on a purchase invoice, draft or posted: one "+ Add charge" | Done (`PostedInvoiceChargesCard`: the late charges of a posted local invoice, posted as its LCA; `InvoiceContainerChargesCard` on an imported one) |
+| **39** | One purchase-order page from everywhere; disabled buttons with reasons | Done (`orderAbilities.ts`: the order itself decides, a disabled button says why) |
 | **40** | Attachment types on every document (updated 4 Oct: one dialog, no direct upload, 20 MB); then documents on every page like Containers (script 67): Documents cards, item documents, a container file re-linked to a movement | Done |
 | **41** | Containers from the purchase invoice (script 43): "Shipped in containers", Link / Unlink, Add container / Auto-plan from the PI, container counts | Done. It ran **before** 37, so 37 was adapted |
-| **42** | Approval follow-ups after 36: 65016 rule, withdraw reason, create-and-approve warnings, UTC "Z", test emails, Approve confirmation | Not started. "Prompt 42" ≠ "script 42" |
+| **42** | Approval follow-ups after 36: 65016 rule, withdraw reason, create-and-approve warnings, UTC "Z", test emails, Approve confirmation | Done: script 44 (the 65016 rule, the withdraw reason), UTC "Z" (`UtcDateTimeJson.cs`), the create-and-approve warnings, the Approve confirmation. "Prompt 42" ≠ "script 42" |
 | **43** | Movement: add containers with checkboxes, Excel / paste list, the place rule (Save / Start checks) | Done, partly superseded by 45. Bilal then saw 404 / 405 (stale API: restart) and a movement started with a never-moved container |
-| **44** | Create containers from a purchase invoice: CHECK what exists, then make it work with every validation; Containers card on every PI with reasons | Not started (or unknown). The "missing button" Bilal reported was explained: invoice 1227 fully linked; invoice 1322 posted without the switch |
-| **45** | Movement: one list with checkboxes that follows the From; Save / Start guards; never-moved rule; validated Excel import, result download, template file | Not started |
-| **46** | Container capacity from one place, the item's Container unit; Max Units removed | Not started |
+| **52** | The Container Report (script 100): Reports › Container Report, every container line and every approved order line still to load with its order, PI, invoices, payments, journey, charges (one column per charge type, transport summed) and cost, grouped by stage from the movements and goods receipts ("Order pending - {month}", "In transit India → Dar es Salaam", "Dar es Salaam → Mokambo", "Offloaded in Lubumbashi"), lead time to the offload, alerts, tiles per stage, an Excel export laid out like the tracking sheet; the permission View Container Report; a Container unit of 1 means "not specified" for capacity (A1, A2, B1) | Done: 4.18 |
+| **44** | Create containers from a purchase invoice: CHECK what exists, then make it work with every validation; Containers card on every PI with reasons | Done: script 51 and the PI's Containers card with its reasons ("Turn on 'Shipped in containers'"). The "missing button" reported earlier was explained: invoice 1227 fully linked; invoice 1322 posted without the switch |
+| **45** | Movement: one list with checkboxes that follows the From; Save / Start guards; never-moved rule; validated Excel import, result download, template file | Done: script 53; the movement's container list, the never-moved rule, the validated import ("Tick the {n} valid containers", "Download the result") and the template in `public/templates/` |
+| **46** | Container capacity from one place, the item's Container unit; Max Units removed | Done: script 54; capacity from the item's Container unit only, Max Units gone from the screens |
+| **47** | Inventory transfer orders (script 90): Inventory › Transfer Orders, a dispatch (TRD) and a transfer receipt (TRR) through each branch's On the way warehouse, cost-neutral; losses, Nothing more will be sent, Cancel order, Reverse (receipt first), Dispatch and receive, returns, Late, the TRO approval switch and its emails, Transfers in on Shortages, the dispatch note (A1, A2, B1) | Done: 4.13 |
+| **48** | Stock levels per warehouse and Fill to Max (script 91): each warehouse's own Min / Max per item on Item Definition's "Stock levels per warehouse" card and on Inventory › Stock Levels (Per warehouse, and Company (Item Definition): the company Minimum / Maximum Quantity), the Excel import and export, Projected from released transfer orders, "Fill to Max…" and "Add items below Min…" on a draft transfer order, "Create transfer order…" from ticked rows, Min / Max / Projected at {To} on the order's lines, the Dashboard's "Warehouse levels below Min" and its "Items below their minimum" opening the company view (A1, A2, B1) | Done: 4.14 |
+| **49** | Warehouse access per user (script 92): All warehouses or only the ticked ones (a parent gives its tree; system administrators use every warehouse), set in Users & Permissions › Users › "Warehouses of {username}" with its history and the Users list's Warehouses column; it limits moving stock in every family (post, cancel, reverse, a draft line by line, delete, imports, goods receipts, transfers by From / To, stock levels), never viewing; one sentence, 50010 / 403, said on the disabled buttons, the pickers offering the reader's warehouses only; the ledger trigger under every posting; the Transfer Orders list's Warehouses filter and the menu's "to receive" count (A1, A2, B1) | Done: 4.15 |
+| **50** | Batch, serial and expiry on transfers (script 93): Item Definition's Tracking (None / Batch numbers / Serial numbers), Requires expiry date and Serial no. length; a transfer dispatch asks, per line of a tracked item, its serial numbers (scan box, Paste list, Known at {From}), batches or expiry dates in a dialog whose Done checks the rules on the server (errors, warnings); a serial no. is never on the way twice; the receipt ticks the serials that arrived (a scan session) or lowers each batch / expiry row, the rest Still coming or Lost; Dispatch and receive, Reverse, the order page's badges and "{n} serial nos." viewer, the dispatch note, the export's sheet "Batch, serial and expiry", the list's "Batch or serial no." filter, the item statement's expiry line; the ledger's rows per expiry date; no new permission (A1, A2, B1) | Done: 4.16 |
+| **51** | Who may see item costs (script 94): the permission View item costs (`inventory.costs.view`), granted once to the roles that saw costs; the server strips every item cost and stock value for a reader without it (Item Definition, Stock Balance, Stock Movement, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfers, the Dashboard) and the pages draw no column, tile or pill; exports without the cost columns; it hides, it never blocks - an Inventory In or order-less goods receipt line of such a user is saved at the item's last cost, else its average; the In fixes (the page's proposal, a unit change, a non-editable type, an import row without a cost, the tooltip); the token confirmed by the database on the stock document and goods receipt reads, saves, posts and cancels (A1, A2, B1) | Done: 4.17 |
+| **52** | The container's journey, BIVAC charges and lead times (scripts 95-98): the Containers list's From → To and Journey status with its filter; Receive goods… on a container waits for its Delivery, and is hidden on an order or invoice whose goods all travel in containers; a provider's invoice reference once on container charges; BIVAC cost per port, the BIVAC charge's "Which BIVAC?" and its BIVAC Out; lead time in months on Item Definition, and each shortage line its own lead time from the purchase history, the item or the plan, or typed | Done: 4.18 |
 
 ### 5.3 Skipped, merged or redone
 - **Script 29 (mine):** a standalone version of the approval / email script. Delivered, but **not used**: Bilal chose
@@ -1149,6 +2941,34 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `70_Line_Warehouse_Leaf_Any_Branch.sql` | Ali: document lines take a warehouse at the bottom of the tree, of any branch |
 | `71_Warehouse_Used_Not_Parent.sql` | Ali: a warehouse already used in transactions cannot become a parent |
 | `72_Merge_GoodsReceipts_LeafWarehouses.sql` | The merge of the two lines of work: the procedures both changed hold both changes; goods receipts take the leaf-warehouse rule; the dashboard counts what is still to receive |
+| `73_Payment_Allocation_By_Container.sql` | Supplier payments: a purchase invoice linked to two containers or more (or a container and unlinked items) is paid container by container ("Unlinked items" names its items); posting refused until the split adds up; one container alone is recorded by itself |
+| `74_Dashboard_Permission.sql` | The Dashboard gets its own permission `dashboard.view` (granted once to every role) |
+| `75_Screen_Permissions.sql` | Stock Valuation, Customer Statement, Movements and Tracking get their own view permissions (granted once to the roles holding what each screen borrowed); a container's page keeps its movements and route with View Containers |
+| `76_CashBankAccount_No_Branch.sql` | Cash / bank accounts belong to no branch: the Branch is gone from the account, and sales invoices, receipts and supplier payments no longer refuse an account of another branch |
+| `77_Purchase_OrderStatusesByInvoicing.sql` | Purchase order statuses: an approved order shows Saved, Partially posted or Posted from its posted invoices (`purchase.fn_PurchaseOrder_Invoicing`); Closed is gone (no auto-close on invoice or goods receipt posting, Close Order refused 65010); the closed orders brought back once, what a close by hand gave up settled short |
+| `78_Logistics_AnyNumberOfContainers.sql` | Any number of containers: the 200 ceilings of Auto-plan gone, no SQL error 9829 on long container lists (Supplier Payments, Link containers, the receipt cost preview), numbers never cut, bigger pages for one order's or movement's containers, every "Apply to other containers" candidate, the movement import's 10,000 numbers; new `logistics.usp_Container_OrderDefaults` (supplier, forwarder, country of origin for the dialogs) and `logistics.usp_Container_Lookup` (the container pickers) |
+| `79_Configuration_DocumentTypeEffects.sql` | What a document type does: PINV "Affects item cost" (default on) and "Affects on-hand" (default off), GRN "Create goods receipts when a Delivery is completed" (default on), edited in Configuration › Document Types; each invoice captures its two at posting (`AffectsCost`, `ReceiveOnPost`); the cost rule in `purchase.fn_GoodsReceiptLine_TargetCost`; returns from a non-cost invoice at the receipt cost; LCA refused 67013; the Delivery hook and `usp_Movement_Get` read the GRN switch |
+| `80_Logistics_ShipFromTheContainer.sql` | Shipment phase 1, ship from the container: `logistics.fn_Container_ShipState` (where a container is, its movement in progress, its next planned one, its last completed one) on `usp_Container_Search` / `_Get`; `logistics.fn_Movement_StartBlock` (why a planned movement cannot start yet, its earliest start) on `usp_Movement_Search` / `_Get`; `usp_Movement_SetStatus` refuses a date in the future (70000) and a start before the previous leg ended (70018), and `usp_Movement_Save` the same for the start date of a movement in progress; `fn_ContainerFitForMovement` refuses a container on a movement older than a leg it already made; `usp_Movement_ShipContainers` leaves from where moved containers are; new `usp_Movement_JoinCandidates` |
+| `81_Logistics_NextStep.sql` | Shipment phase 2, Next step everywhere: `logistics.fn_Container_NextStepKind`, `fn_Movement_NextLegHistory` (the usual next leg from a place), `fn_Container_NextLegProposal` (history, else the container's ports, else the stages), `fn_Container_NextStep`, `fn_Container_PreviousMovement`; `usp_Container_NextStepPreview` (the ticked containers grouped by step, the blocked ones by reason); `usp_Movement_AddLeg` (a new leg for a group, one movement or one per container, with `tvp_LegContainer`); `usp_Container_Search` (the next step of the page's rows and the `@NextStep` filter; the page found first, then its rows worked out) and `usp_Container_Get`; `usp_Movement_SetStatus` refuses cancelling a leg that is not a container's last (70010; a planned leg already passed by a later one may be cancelled); `usp_Movement_AddLeg` refuses a vessel or truck leg from a place to itself (70000); `fn_Movement_StartBlock` and the 70016 / 70018 checks read each container's previous leg for itself (a list and a Start were slow on 50,000 containers) |
+| `82_Logistics_ShipmentsBoard.sql` | Shipment phase 3: `logistics.fn_Container_BoardPhase` (a container's column on the Shipments board) and `usp_Shipment_Board` (the board, set-based for its rows, the usual next leg once per place and last stage); the permission `containers.shipments.view` (granted once); only part of a movement arriving: `logistics.Movements.SplitFromMovementId`, `logistics.MovementAudit`, `fn_Movement_SplitBlock`, `usp_Movement_SplitContainers`; `usp_Container_NextStepPreview` and `usp_Movement_Get` say whether a container can be split off and why not (`usp_Movement_Get` also gives the movement's history and the movement it was split from); the container page's estimated FOB follows the cost rule and the matching of the goods receipt (`fn_ContainerLine_FobEstimate`, read by `usp_Container_Get`); a container followed by typed dates in the column of its status; a voyage split in two counted once in the usual next leg (`fn_Movement_Voyage`; `fn_Movement_NextLegHistory` re-created from 81); cancelling a split-off movement undoes the split, its containers back on the movement they came from with their charges and documents (`usp_Movement_SetStatus` re-created from 81, `fn_Movement_SplitUndoTarget`; `usp_Movement_Get` says where they go back, for the Cancel dialog) |
+| `83_Logistics_CancelBlock.sql` | A movement that cannot be cancelled says why before the click: new `logistics.fn_Movement_CancelBlock` (whether a movement can be cancelled now and the first refusal of its Cancel, its number and words: already cancelled, a container received or closed, not the last leg of a container); `usp_Movement_SetStatus` re-created from 82, its Cancel refusals the function's answer, said before "A cancellation reason is required."; `usp_Movement_Get` re-created from 82, + `CanCancel` and `CancelBlockedReason` (the movement page disables "Cancel…" with the reason) |
+| `84_Sales_Cancel_Date.sql` | Cancelling a posted sales invoice or return asks for a date next to the reason (today by default, not in the future, not before the document date): stored as `CancelDate`, the date of its reversal stock movements |
+| `85_Shortage_Max_Monthly_Sales.sql` | Shortages: Expected Monthly Sales is the busiest month of the months of history (net sales per one-month block counted back from today), no longer the average |
+| `86_Purchase_InvoiceFromOrderLines.sql` | Create Purchase Invoice on an order, line by line like Create Invoice from Containers: new `purchase.usp_PurchaseOrder_InvoiceCandidates` (per order line ordered, invoiced, in draft invoices, available - the rule of `usp_PurchaseDocument_CreateFromSource`'s selection, which the API now sends) |
+| `87_Item_Note_Link.sql` | Item Definition: a Note (several lines, 2,000 characters) and a Link (an http/https address opened in a new tab) on the item: columns `inventory.Items.Note` / `Link`, `usp_Item_Get` re-created from 61 with both, new `inventory.usp_Item_SetNotes` (called after create / update, like `usp_Item_SetPurchasing`; refuses a link that is not http/https or has a space, 56000). The item page also gets a sticky header with Previous / Next through the Items list as filtered |
+| `88_Logistics_ChargeOneLine.sql` | A charge on a container of one line takes it whole: `logistics.usp_ContainerCharge_Allocate` re-created from 27 - the only line with pieces gets the whole charge whatever the method (no price, weight or volume needed); several lines all at price 0 by value are refused naming each line and the source of its price (order, draft or posted invoice, goods receipt); every refusal names the container (70013 as before). The charge import warns about a missing weight or volume only on a container of several lines |
+| `89_Fixes_CostsCancelsShortageDocumentTypes.sql` | Fixes: `logistics.usp_ContainerCharge_ApplyCost` (from 27) and `purchase.usp_LandedCostAdjustment_Post` (from 79) split a late charge on the company's stock, per item, as GRNCOST (a cancel never takes more out of stock than its posting put in); `inventory.usp_StockDocument_Cancel` (from 15) reverses only its own type and, like `sales.usp_SalesDocument_Cancel` (from 84), replays its items under the matching lock (the items of documents cancelled before replayed once, `inventory.OneTimeSteps`); `inventory.usp_ShortageDocument_CreatePurchaseOrder` (from 22): a plan for a parent warehouse puts each line in a leaf of its tree, in one transaction (66000 when there is none); the five per-start seeds of Document Types narrowed to types nobody saved; script 19's per-start backfill of item costs no longer counts a posting that was reversed (edited in place, like the seeds); the two cancels give way in a deadlock (`DEADLOCK_PRIORITY LOW`: the API runs them again, a posting has no retry) |
+| `90_Inventory_TransferOrders.sql` | Transfer orders, dispatch and receipt, with approval (prompt 47): new tables `inventory.TransferOrders`, `TransferOrderLines`, `TransferPostings`, `TransferPostingLines`, `TransferOrderAudit`, `TransferOrderFiles`; `masterdata.Warehouses.IsTransit` and one On the way warehouse per branch (`masterdata.usp_Warehouse_EnsureTransit`, run at each start for every branch that has none, and by a new branch); document types TRO, TRD, TRR and `inventory.DocumentTypes.NeedsApproval`; stock reason TRF_LOSS (inactive); `inventory.fn_TransferPosition`, `fn_TransferOrder_State` (the shown status, Late), `fn_TransferOrder_Blocks` (an action's refusal in the order's state, every disabled reason), `fn_TransferPosting_ReverseBlock`, `fn_Transfer_MovedOutNote`; the procedures of the order, its approval (`usp_TransferOrder_Approvers`), dispatch, receipt, Dispatch and receive, Nothing more will be sent, cancel, reverse, ETA, return and files; ten permissions `inventory.transfers.*` (855-890) granted once; re-created: the warehouse, branch and item procedures (the On the way rules), `masterdata.fn_Warehouse_IsLeaf` / `_IsUsed`, `inventory.usp_DocumentType_List` / `_Update`, `usp_Item_RebuildCosts` (incoming transfer legs at the running average), `usp_Item_StockStatement`, `fn_Shortage_Live` and the three shortage procedures (Transfers in; `ShortageDocumentLines.TransfersInBase`, its four formula columns re-added), `purchase.fn_GoodsReceipt_CancelCheck` and `inventory.usp_StockDocument_Cancel` (the refusal names the transfer). Script 19's per-start backfill of item costs no longer counts transfer rows (edited in place, as 89 did) |
+| `91_Inventory_StockLevels_FillToMax.sql` | Stock levels per warehouse and Fill to Max (prompt 48): new tables `inventory.ItemWarehouseLevels` (an item's Min / Max in a warehouse at the bottom of the tree, at most 1,000,000,000 pcs, owned by the item and the warehouse: two cascading keys) and `inventory.ItemWarehouseLevelAudit`; four frozen table types (`tvp_ItemWarehouseLevel`, `tvp_ItemWarehouseLevelImport`, `tvp_TransferFillItem`, `tvp_TransferFillCandidate`); `inventory.fn_StockLevelState` (Projected, the status, To reach Max: the one formula), `fn_TransferPositions` (what released transfer orders bring to and take from every warehouse, every pair at once), `fn_StockPosition` (one pair, on 90's `fn_TransferPosition`), `fn_TransferFill_Plan` (the Fill to Max rule), `fn_TransferFill_Message`, `fn_TransferFill_FromWarning`, `fn_TransferFill_OtherOrdersWarning`, `fn_ItemWarehouseLevel_ImportJudge` (the import's judgement, read by the check and the import), `masterdata.fn_Warehouse_IsUsedInTransactions` (90's `fn_Warehouse_IsUsed` body, moved); the procedures `inventory.usp_StockLevel_Search` / `_CompanySearch`, `usp_ItemWarehouseLevel_Set` / `_Remove` / `_History` / `_ImportCheck` / `_Import`, `usp_TransferOrder_FillToMax` (preview and apply, Fill and Add) / `_BelowMinCandidates` / `_CreateFromLevels` (through 90's `usp_TransferOrder_Save`), `reporting.usp_Dashboard_StockLevels`; the permissions `inventory.stocklevels.view` / `.edit` (432, 434) granted once; re-created: `masterdata.fn_Warehouse_IsUsed` (+ stock levels), `inventory.fn_TransferOrder_Blocks` (+ FillToMax, AddBelowMin), `masterdata.usp_Warehouse_Create` / `_Update` (the levels sentence of 52000) and `_Lookup` (+ `IsUsedInTransactions`, `HasStockLevels`), `inventory.usp_Item_Delete` (from 11: the cascading keys are not references; + `@UserId` and a "Removed" history row per level), `inventory.usp_TransferOrder_Get` and `_Availability` (from 90: + To's and From's levels and Projected; Get also the two abilities). `reporting.usp_Dashboard_Summary` and `masterdata.usp_Warehouse_Delete` are not changed |
+| `92_Security_WarehouseAccess.sql` | Warehouse access per user (prompt 49): new column `security.Users.AllWarehouses` (default 1: every existing and new user keeps every warehouse, no data step); new tables `security.UserWarehouses` (the ticks, both keys cascading: a tick never stops a warehouse's delete) and `security.UserWarehouseAudit`; the rule in five functions, `security.fn_User_IsUnrestricted` (All warehouses or an active system role), `fn_User_CanUseWarehouse` (a ticked ancestor gives the warehouse; On the way warehouses never refused), `fn_User_Warehouses`, `fn_User_WarehouseRefusal` (THE sentence, 50010), `fn_User_WarehouseAccessText` (the history's words); the ledger trigger `inventory.TR_StockMovements_WarehouseAccess` (AFTER INSERT; it reads only the users who wrote the rows; disabled by hand, it is enabled again at the next start); new `security.usp_User_WarehouseRefusal` (the API's early check), `usp_User_Warehouses_Get` / `_SetWarehouses` (the dialog, 50011), `usp_User_WarehouseSummaries` (the Users list), `inventory.usp_TransferOrder_ToReceiveCount` (the menu); re-created: `masterdata.usp_Warehouse_Lookup` (from 91: + `@UserId`, `CanUse`), `usp_Warehouse_Delete` (from 90: the history of the users who ticked it), `usp_Warehouse_Update` (from 91: a move to another parent that changes users' warehouses needs an unrestricted editor with `security.users.edit`, and writes their history), `inventory.fn_TransferOrder_Blocks` (from 91: the access rows, From / To), `usp_TransferOrder_Save` (from 90: the From), `usp_TransferOrder_Search` (from 90: + `@UserId`, `@Mine`), `usp_ItemWarehouseLevel_Set` / `_Remove` / `_ImportCheck` / `_Import` (from 91: the level's warehouse). No stock, sales, purchase, goods receipt, container or movement procedure is re-created, and `security.usp_User_GetAccess` (sign-in) is not changed; no permission added |
+| `93_Inventory_TransferTracking.sql` | Batch, serial and expiry on transfers (prompt 50): new columns `inventory.Items.TrackingMode` / `RequiresExpiry` / `SerialLength` (`CK_Items_Tracking`) and `inventory.TransferPostingLines.TrackingKind` (the kind a dispatch line left with, copied by its receipt line); new table `inventory.TransferPostingTracking` (one row per serial no., batch or expiry date of a posting line; a receipt row points at the dispatch row it receives, `DispatchTrackingId`; a dispatch row's `SettledBase` = received + written off by posted receipts; a serial once per posting by a unique index; the filtered index `IX_TransferPostingTracking_ItemSerial` the forced seeks of the serial rules read) and two new, optional table types `inventory.tvp_TransferDispatchTracking` / `tvp_TransferReceiptTracking` (90's types stay frozen); `inventory.fn_TrackingNo_Normalize` (trim, capitals: the one place of the number rule), `fn_TransferSerial_LastEvent` (a serial's latest posted event, by row id), `fn_TransferDispatch_TrackingProblems` (the one source of the dispatch rules: errors Seq 5-24 by number, 62017 at Seq 90, warnings 100-103; read by the dialog's Check and by the posting); new `inventory.usp_Item_SetTracking`, `usp_TransferPosting_Tracking` (the rows and their state), `usp_TransferOrder_CheckDispatchTracking` (no lock, nothing written), `usp_TransferOrder_TrackingSuggestions` (the serials received into the source and not sent since); re-created: `inventory.usp_Item_Get` (from 87: + the three columns), `fn_TransferPosting_ReverseBlock` (from 90: + Seq 3, a receipt whose serial left again, 62013), `usp_TransferOrder_DispatchCore` (from 90: + `@Tracking`, the format rules BEFORE the source lock, one application lock per serial item `inventory.TransferSerial.{ItemId}` after it (62010 after 30 s), 62017 after the stock check, the rows, the ledger per expiry date, the audit's counts), `usp_TransferOrder_Dispatch`, `usp_TransferOrder_ReceiveCore` (from 90: + the receipt rules, the rows, the ledger per expiry date, the dispatch rows' Settled), `usp_TransferOrder_Receive`, `usp_TransferOrder_DispatchAndReceive` (every row of the new dispatch received), `usp_TransferPosting_Reverse` (from 90: the serial locks of a receipt, its rows back on the way), `usp_TransferOrder_Get` (from 91, its `@SP` fix kept: + the item's tracking per line, the kind and count per posting line - never the rows), `usp_TransferOrder_Search` (from 92: + `@TrackingNo`, `MatchedTracking`, the matching orders found once with `OPTION (RECOMPILE)`). Errors 62016 (400 `TRANSFER_TRACKING`) and 62017 (409 `SERIAL_ON_THE_WAY`) new; 62000, 62006, 62010, 62012, 62013, 56000, 56006 reused. The ledger is not altered (its `ExpiryDate` is written); the cost replay, on hand, the valuation, the Dashboard, Shortages and Stock Levels are not touched; no permission added |
+| `94_Inventory_ItemCostsPermission.sql` | Who may see item costs (prompt 51): the permission `inventory.costs.view` "View item costs" (Inventory, 406) upserted and granted once per database (`inventory.OneTimeSteps` step `94.CostsViewGrant`) to the system roles and to every role holding one of the 14 permissions whose screens showed an item cost; `inventory.usp_StockDocument_Save` re-created from the body of script 29 with one changed statement: an In line without a cost takes `COALESCE(NULLIF(LastCost, 0), AverageCost, 0)` × the unit's packing (it took 0). No table, column, type, view or error number; the stripping is the API's (`Inventory_Shipment.Service/Security/ItemCosts.cs`), the order-less goods receipt rule the API's too (`usp_GoodsReceipt_Save` not re-created). Requires scripts 29, 75 and 89 |
+| `95_Logistics_ContainerJourneyAndReceipt.sql` | The container's journey and Receive goods only once delivered (prompt 52): new `logistics.fn_Container_Journey` (From, To, status, since) and `fn_Container_ReceiveBlock` (why a container cannot be received now); re-created `usp_Container_Search` (from 81: + `@Journey`, the journey columns, CanReceive and ReceiveBlockedReason from the block) and `usp_Container_Get` (from 82), `purchase.usp_GoodsReceipt_CreateForContainer` (from 72: refuses with the block's sentence, 63010) |
+| `96_Logistics_ChargeReferenceUnique.sql` | A provider's invoice once (prompt 52): index `IX_ContainerCharges_Reference`, new `logistics.fn_ContainerCharge_ReferenceClash`; `usp_ContainerCharge_Create` / `_Update` re-created from 27 with the check under an application lock (70001); Check 96a lists the duplicates already there |
+| `97_Logistics_BivacChargeAndPortCosts.sql` | BIVAC cost per port and the BIVAC charge (prompt 52): new table `inventory.ItemBivacPortCosts`, type `inventory.tvp_ItemPortCost`, columns `ContainerCharges.BivacItemId` / `BivacOutDocumentId`; functions `fn_Container_BivacPort`, `fn_Container_BivacCost`, `fn_ContainerCharge_BivacBlock`; procedures `inventory.usp_Item_BivacPortCosts_Get`, `usp_Item_SetBivacPortCosts`, `logistics.usp_ContainerCharge_BivacOptions`, `_PostBivacOut`; re-created `usp_ContainerCharge_Create` / `_Update` (from 96), `_Post` / `_Cancel` (from 65), `_Get` (from 67), `_CopyToContainers` (from 28), `inventory.usp_StockDocument_Cancel` (from 90) |
+| `98_Inventory_LeadTimePerItem.sql` | Lead time per item (prompt 52): `inventory.Items.LeadTimeMonths` (days converted once, step `98.LeadTimeMonths`), `ShortageDocumentLines.LeadTimeManual` / `LeadTimeSource`, type `inventory.tvp_ShortageLeadTime`; new `inventory.fn_Item_LeadTimeHistory`, `fn_Item_LeadTime`, `usp_Item_SetLeadTime`; re-created `usp_Item_Get` (from 93), `usp_Shortage_Calculate`, `usp_ShortageDocument_WriteLines` and `_Get` (from 90), `_Save` and `_Recalculate` (from 25) |
+| `99_Inventory_LeadTimeShortDays.sql` | A short lead time is never converted to 0 months (prompt 52): the items script 98 converted to 0 months while their days are above 0 get the days in months to one decimal, at least 0.1; run at every start, it finds nothing a second time |
+| `100_Logistics_ContainerReport.sql` | The Container Report (prompt 52): the permission `containers.report.view` "View Container Report" (Containers, 1408) upserted and granted once per database (`inventory.OneTimeSteps` step `95.ContainerReportGrant`) to the system roles and the roles holding View Containers; new `logistics.usp_ContainerReport` (three result sets: the rows, their charges per type, the charge types; set-based over the rows, their legs read once); re-created `logistics.fn_ItemPcsPerContainer` (from 54): a packing formula of 1 is "not specified" (NULL), so capacity is not judged for it. Requires scripts 54, 82 and 89 |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
@@ -1166,22 +2986,32 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 ---
 ## 6. What's next
 
-### 6.1 Planned prompts, in the order I recommend (Bilal decides)
-1. **45 — the movement's container list, Save / Start guards, the validated import.** Bilal's latest complaints:
-   - he could start MOV-2026-000046 (LOAD, Dar es Salaam → Chennai) with a container that had never moved;
-   - he wants the list itself with checkboxes, reloading when the From changes;
-   - he wants a template and a validated import.
-   - Before running it, save `Movement_Containers_Import_Template.xlsx` in the Web project's `public/templates/`.
-2. **46 — capacity from the item's Container unit only.** It removes wrong percentages and messages like "321
-   containers needed" (item TEST38-A has Container unit 1).
-3. **44 — the PI Containers card with reasons and all validations.** Bilal was confused on invoices 1227 and 1322.
-   When VS Code asks which invoice, give it 1227 (fully linked) and 1322 (posted without the switch).
-4. **42 — approval follow-ups:** UTC "Z" times, the 65016 rule, the withdraw reason, the Approve confirmation.
-   Sending is already switched on, so its test-email cleaning may find nothing left.
-5. **38 — "+ Add charge" on posted invoices.**
-6. **39 — one purchase-order page.** Optionally add the "Create Invoice" count fix (6.4).
-- **40 — attachment types everywhere** is done (script 67, see 4.8).
-- **35**, only if it was never run: save a draft purchase return; no "request field" error means skip it.
+### 6.1 What's next (19 October 2026; the developer decides)
+Every written prompt (32–50) is built, and so is every script up to the last one in 5.4. What is left:
+1. **Release the scripts after 72 to production** (production runs up to 72): on testing first (the Deploy to
+   server button, or `sudo ./update.sh`; `copy-production-to-testing.sh` to rehearse on production's data), then a
+   pull request `main` → `production` in both repositories, and the button with production. Script 77 changes data
+   once (closed orders back to approved); script 90 adds an On the way warehouse to every branch, the TRO / TRD / TRR
+   document types and the ten transfer permissions with their one-time grants (3.8); script 91 adds the two stock
+   level permissions with theirs - after it the owner ticks Edit Stock Levels (Role Permissions) for the roles of the
+   people who keep the levels; script 92 adds warehouse access per user, every user keeping all warehouses until an
+   administrator ticks some (Users & Permissions › Users › Warehouses); script 93 changes nothing for any item until
+   its Tracking is ticked - **tell the owner: tick Tracking on the items that need it (motorcycles: Serial numbers, 17
+   characters; dated goods such as oil, if stocked: Batch numbers + Requires expiry date)**, in Item Definition, Edit
+   Items; script 94 grants View item costs once to every role that saw item costs, so nobody loses a figure -
+   **tell the owner: in Users & Permissions › Role Permissions untick "View item costs" for the roles that must not see
+   what the goods cost (storekeepers, sales), and "View Stock Valuation" for those that must see no value at all** (and
+   View Sales Profit, View Containers, View / Post Purchase Invoices, View Landed Cost Adjustments and Create Purchase
+   Orders to hide every cost, 4.17 rule 6); scripts 95-98 (prompt 52) change no data but the lead times, converted once
+   from days to months - **tell the owner: enter the BIVAC cost per port on each BIVAC item (Item Definition) before the
+   first BIVAC charge, and keep BIVAC stock in the containers' warehouses (each BIVAC charge posts a BIVAC Out of 1 pc);
+   container charges that already repeat a provider's reference stay as they are (script 96's Check 96a lists them); only new ones are refused**; `update.sh`
+   backs the database up first.
+2. **The Containers User Guide** (6.2): rewrite it for goods receipts and the three shipment phases.
+3. **The Deploy to server button's one-time setup** (`deploy/README.md`, "Deploying with a button"):
+   `enable-github-deploy.sh` on the server and its secrets in both repositories.
+4. **Optional:** let the movement-types lookup accept Manage Shipment Movements, so a reader without View Containers
+   could use Next step… from the Shipments board (today the board leaves the step out for such a reader, 4.6).
 
 ### 6.2 Open requirements not yet in a prompt
 - Update the **Containers User Guide** (Word, 31 pages, v1.0, September 2026, delivered to Bilal outside the repos).
@@ -1198,6 +3028,23 @@ before trusting the statuses of 5.2. The next script takes the next free number 
   (Microsoft 365 / Google Workspace) instead of the Gmail account. Not discussed yet.
 
 ### 6.3 Known problems and things to remember
+### 6.3 Known problems and things to remember
+- **Script 93's serial rules depend on one index.** The lookups of a serial's place
+  (`fn_TransferDispatch_TrackingProblems` Seq 90 and warnings 100 / 101, `fn_TransferSerial_LastEvent`,
+  `fn_TransferPosting_ReverseBlock` Seq 3) force a seek on
+  `IX_TransferPostingTracking_ItemSerial` (`WITH (FORCESEEK)`: without it the optimiser scanned every posting per serial,
+  37-399 s on a long history). Schema.sql creates the eight indexes of `inventory.TransferPostingTracking` together with
+  the table only, so an index dropped by hand on a server is not put back by a restart: every dispatch of a serial item
+  and the dialog's Check would then fail with SQL error 8622 ("could not produce a query plan because of the hints")
+  until the index is re-created. Never drop it; the next script that opens the file should create each index in its own
+  guarded batch (`IF NOT EXISTS (SELECT 1 FROM sys.indexes WHERE name = … AND object_id = OBJECT_ID(…)) CREATE …`) so a
+  start heals it. Two more notes for that script, found by the final review and harmless today: `DispatchCore` reads the
+  item's kind twice (its step 2 and the rules function; an item's Tracking changed in the same millisecond as a dispatch
+  of it could end in a constraint error instead of the sentence - read it once, or re-derive the kind in step 9 from the
+  same read), and warning 103 (a batch's earlier expiry, Check only) still finds "the latest dispatch" with a `TOP (1)
+  … ORDER BY PostedAtUtc` per row instead of the `MAX(Id)` seek the other lookups use. A list filter made only of
+  characters the normaliser strips (a lone BOM) is taken as no filter instead of "Type at least 3 characters …": keep the
+  raw value and refuse it when the normalised one is empty.
 - **A stale API after new code** shows 404 / 405 on new endpoints, or "Not found" on new pages. `npm run dev` reuses
   an API already running on 7089. Fix:
   `fuser -k 7089/tcp 5174/tcp && cd …/Inventory_Shipment.Web && npm run dev`.
@@ -1206,11 +3053,9 @@ before trusting the statuses of 5.2. The next script takes the next free number 
   - Fix given: add, as line 2 of `~/.bashrc`, `export ConnectionStrings__<Key>="Server=localhost;Database=Inventory_Shipment;User Id=sa;Password=$SQLCMDPASSWORD;TrustServerCertificate=True"`.
   - The key name comes from appsettings; DefaultConnection was assumed. Whether Bilal applied it is unknown.
 - **Ali's PC:** IIS Express locks the DLLs; port 5174 can stay busy; he starts with `npm run dev`.
-- **GitHub vs GitLab:**
-  - **GitLab `origin` is the team repository**: `gitlab.com/InventoryShipment/inventory_shipment_web` for the Web;
-    the API project's exact name is **(unsure)**.
-  - The **GitHub copies** (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`, remote `github`) change
-    only when Bilal pushes to `github`. **They may be behind GitLab: check before trusting them.**
+- **GitHub is the team repository**: `origin` = `github.com/bfa-14/Inventory_Shipment` for the API and
+  `github.com/bfa-14/Inventory_Shipment_Frontend` for the Web. A clone pointing anywhere else is out of date: switch it
+  with `git remote set-url origin <the GitHub address>` (`deploy/README.md`, "The repositories: GitHub").
 - **Commit status:** at the last check the work of prompts 36 (rest), 41 and 37 was uncommitted. I gave a commit
   plan: by feature; never commit `appsettings.Development.json`, `App_Data/` or screenshots; `git pull --no-rebase
   origin main`; push. Whether it was done is unknown, and 43 came after.
@@ -1228,12 +3073,8 @@ before trusting the statuses of 5.2. The next script takes the next free number 
   supplier invoices stop moving stock. He should save his work before that pull (`git pull --no-rebase`).
 
 ### 6.4 Decisions still pending (with the options considered)
-- **Never-moved containers on a movement:**
-  - (a) any From (prompt 43);
-  - (b) **default in prompt 45**: from their port of loading, or on an Origin movement ending at their port of
-    loading;
-  - (c) port of loading only.
-  - I stated (b) twice; Bilal didn't object but didn't confirm.
+- **Never-moved containers on a movement:** settled - (b), built by script 53 (prompt 45): from their port of
+  loading, or on an Origin movement ending at it; a container without a port of loading leaves from any From.
 - **Container units per container type,** if 20GP comes back into use:
   - (a) one Container unit per item (decided for now);
   - (b) container unit types linked to a container type.
@@ -1241,7 +3082,8 @@ before trusting the statuses of 5.2. The next script takes the next free number 
 - **"Create Invoice" preview count** when the order already has draft invoices (it can announce one invoice too
   many; the result is right):
   - (a) leave it;
-  - (b) an API preview that excludes quantities in drafts (fold into 39).
+  - (b) an API preview that excludes quantities in drafts **(check the code: prompt 39 is built; whether this came
+    with it is not checked)**.
 - **Script numbering with Ali:**
   - (a) pull before numbering, and tell each other (advised);
   - (b) separate number ranges.
@@ -1322,6 +3164,12 @@ before trusting the statuses of 5.2. The next script takes the next free number 
   - **Stored procedures only** (Dapper); names `schema.usp_Entity_Action`, table types `tvp_*`, functions `fn_*`.
   - RowVersion checks.
   - `THROW` with the module's error numbers and plain-English messages that say what to do.
+  - A data step that must run once per database records itself in `inventory.OneTimeSteps` (script 89); never use a
+    procedure body as a marker: Schema.sql re-creates the older bodies first at every start.
+  - **The ledger writer rule** (script 92): every INSERT into `inventory.StockMovements` stamps `CreatedBy` with the
+    acting `@UserId`, never a value copied from another row, and never uses OUTPUT without INTO. The warehouse access
+    trigger trusts `CreatedBy` (a row without a user is never refused), and on a table with a trigger an OUTPUT without
+    INTO fails with error 334 when the procedure is created, which would stop Schema.sql at start-up.
 - **`Schema.sql`** is re-applied at every API start and stops at the first error. So:
   - never edit an older script;
   - keep older batches compilable;
@@ -1335,6 +3183,8 @@ before trusting the statuses of 5.2. The next script takes the next free number 
     invoiced, 69018 cost adjusted);
   - 70xxx logistics (70000 validation, 70001 duplicate, 70004 concurrency, 70005 not editable, 70006 not found, 70010
     invalid status, 70012 container busy, 70013 allocation data missing, 70014 in use, 70015 / 70016 place rules);
+  - 50xxx security (50003 user not found; script 92: 50010 no access to a warehouse, answered 403 with the code
+    `WAREHOUSE_ACCESS` whatever the family, and 50011 the Warehouses dialog, 400);
   - Ali's ranges for sales **(unknown)**.
   - HTTP: validation → 400, not found → 404, the rest → 409.
 - **Permissions:** code `module.entity.action` with Name, Module, Description and SortOrder. Seeded to the system
@@ -1557,25 +3407,46 @@ every step that did not behave as described.
   - `DatabaseProject` (SSDT .sqlproj) mirrors the database. It is refreshed only by `tools/refresh-dbproject.sh`,
     which stops when the branch is behind the remote.
   - `tools/compare-dbproject.sh` compares read-only.
-  - Bilal refreshes, commits and pushes; Ali runs `git checkout -- DatabaseProject` before pulling.
+  - **Refreshed from a clean database built by the API** (since 25 October 2026): the Claude Code session that pushes
+    a new script to `main` starts that commit's API on an empty database (the server's way: `DatabaseInitializer`
+    applies Schema.sql), runs `refresh-dbproject.sh` on it and pushes "DatabaseProject refreshed (up to script NN)".
+    The project then holds exactly what testing and production get. Before, it was refreshed from a developer's local
+    database, which also held 4 objects of `Database/16_Inventory_ItemImport.sql` never in Schema.sql nor used by the
+    code (`usp_ItemImport_Commit` / `_Validate`, `ItemImportLogs`, `tvp_ItemImportRow`). **The PCs only pull**: a
+    refresh from a PC puts those back (`git checkout -- DatabaseProject` before pulling if it was changed; on any PC
+    `tools/compare-dbproject.sh` shows how the local database differs).
+  - **Indexes in a fixed order**: sqlpackage writes a table's indexes in the order of their internal ids, which differ
+    from one database to another, so each refresh from another database rewrote some 30 table files with no real
+    change. `tools/sort-dbproject-tables.py` (run by both tools) puts the statements after each CREATE TABLE in
+    alphabetical order.
 - **Other files in the API repo:** `docs/notes/container-costing-rules.md`, `docs/notes/database-project-workflow.md`,
   `.githooks` (pre-commit check).
 - **`CLAUDE.md`** sits in `InventoryShipment-Project/`, the parent folder **outside both repositories**. It holds the
   SQL / password routine. Ask Bilal for it if needed.
 
 ### 8.2 Repositories and collaboration
-- **GitLab** (`origin`, branch `main`) is shared with Ali. Rules:
+- **GitHub** (`origin`, `bfa-14/Inventory_Shipment` for the API and `bfa-14/Inventory_Shipment_Frontend` for the
+  Web) is shared by the whole team. The repositories stay **Private**; a new member is added in each repository's
+  **Settings > Collaborators**. Rules:
   - pull with `git pull --no-rebase`;
-  - **never force-push `main`** without warning (Ali's commits);
-  - Ali must save his work before any `git reset --hard`.
-- **GitHub** copies (`bfa-14/Inventory_Shipment` for the API, `bfa-14/Inventory_Shipment_Frontend` for the Web,
-  remote `github`) must stay **Private** and are updated only by `git push github main`.
+  - **never force-push `main`** without warning (the others' commits);
+  - save your work before any `git reset --hard`;
+  - `main` is what **testing** runs, `production` what **production** runs; a release is a pull request `main` →
+    `production` in both repositories. An environment changes only when someone presses the **Deploy to server**
+    button (GitHub, VS Code or Visual Studio; production asks to type "production") or runs `update.sh` on the
+    server: a push deploys nothing (`deploy/README.md`, "Deploying with a button").
+  - testing's database can live in **production's SQL Server** (`Inventory_Shipment_Test`, login `inventory_test`,
+    which owns it and nothing else): `share-sql-server.sh` moves it there once, `--undo` moves it back, and
+    `copy-testing-to-production.sh` copies testing's data into production for the go-live (`deploy/README.md`, "One
+    SQL Server for both environments"). The scripts of `Database/` say `USE [Inventory_Shipment];`: the API points
+    that line at its own database.
 - **After a push**, Ali pulls and restarts his API (new scripts apply by themselves). He keeps his own
   `appsettings.Development.json`.
 - **Files delivered outside the repos:**
   - `Containers_User_Guide.docx`;
-  - `Movement_Containers_Import_Template.xlsx` (to put in the Web project's `public/templates/`);
-  - prompt files 32–46: they should be in `docs/prompts/`, but whether all are committed is **unknown**.
+  - `Movement_Containers_Import_Template.xlsx` (now in the Web project's `public/templates/`);
+  - prompt files 32–50: not in `docs/prompts/` (it holds prompts 02–27, 5.1); what they asked is in 5.2 and
+    section 4.
 
 ### 8.3 Security rules to keep
 - Never print or commit passwords: the sa password, the SMTP or app password, the test logins.
@@ -1606,7 +3477,8 @@ every step that did not behave as described.
 - **Purchase invoice:**
   - Buttons: "Create Invoice from Containers…", "Create Invoice", "Split by item", "Post selected".
   - Containers card: "Shipped in containers", "Link containers…", "Add container…", "Auto-plan…".
-- **Containers:** "Start shipment…", "Container numbers…", "Apply to other containers…", "Receive goods…", "Open goods
+- **Containers:** "Start shipment…", "Start {type}…", "Arrived at {place}…", "Complete {type}…", "Next leg…" (the
+  container's next step, script 80), "Add to a movement…", "Container numbers…", "Apply to other containers…", "Receive goods…", "Open goods
   receipt (draft)", "Cancel goods receipt…", "Cancel Offload" (containers offloaded before goods receipts), "Close",
   "Reopen"; the filter "Delivered, not received".
 - **Goods receipts:** Purchase › Goods Receipts; "+ New" with "From a purchase order…", "From a container…", "Without
@@ -1618,5 +3490,16 @@ every step that did not behave as described.
   "Download the result".
 - **Purchase order:** "Create & send", "Create & approve", "Approve & post", "Send again", "Withdraw", "Send to
   supplier…".
+- **Transfer tracking (script 93):** Item Definition's "Tracking", "Serial no. length", "Requires expiry date"; the
+  line buttons "Serial nos.…", "Batches…", "Expiry dates…"; in the dialog "Scan or type a serial no. and press Enter",
+  "Paste list…", "Add to the list", "Known at {From} ({n})…", "Add the ticked", "Same expiry for every serial", "Add a
+  row", "Put the rest here", "Done", "Keep these numbers", "Restore" / "Start again"; on a receipt "Tick all", "Untick
+  all", "Still coming | Lost", "Mark the {n} not ticked as lost"; the order's "{n} serial nos." / "{n} batches" / "{n}
+  expiry dates" viewer with "Find a number" and "Copy list"; the list's "Batch or serial no."; the export's sheet "Batch,
+  serial and expiry". The word is **tracking**, never "details" ("Save details" is the header).
+- **Item costs (script 94):** "View item costs" (Role Permissions, Inventory, after View Stock Valuation); the
+  sentences "You may not see item costs: each line is saved at the item's last cost (its average when it has none)." and
+  "Unit costs in the file are not used: …"; the goods receipt's "Cost source" column; the Dashboard's "Items in stock";
+  the tooltip "The item's last cost (its average when it has none) is applied automatically".
 
 *End of the handoff.*

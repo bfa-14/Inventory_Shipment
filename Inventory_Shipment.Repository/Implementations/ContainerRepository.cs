@@ -64,6 +64,10 @@ public sealed class ContainerRepository : IContainerRepository
             PageNumber = query.Page,
             query.PageSize,
             query.DeliveredNotReceived,
+            // (81) the canonical value the procedure compares (Ship, StartPlanned, Complete, NextLeg, Receive), else null;
+            // the service refuses anything else before this
+            NextStep = ContainerNextStepKinds.Normalize(query.NextStep, ContainerNextStepKinds.ListFilters),
+            Journey = ContainerJourney.Normalize(query.Journey),   // (95) refused by the service when unknown
         };
 
         await using var connection = _connectionFactory.Create();
@@ -165,6 +169,35 @@ public sealed class ContainerRepository : IContainerRepository
         var containers = (await multi.ReadAsync<TrackingContainerDto>()).AsList();
         var legs = (await multi.ReadAsync<TrackingLegDto>()).AsList();
         return new TrackingDto { Containers = containers, Legs = legs };
+    }
+
+    /// <summary>
+    /// (82) The Shipments board in one round trip: the cards, then the columns. Every container on its way, no paging - the
+    /// batch timeout, as the other calls that read thousands of containers.
+    /// </summary>
+    public async Task<ShipmentBoardDto> GetShipmentBoardAsync(ShipmentBoardQuery query, CancellationToken cancellationToken = default)
+    {
+        var parameters = new
+        {
+            Search = Trimmed(query.Search),
+            query.SupplierId,
+            query.PurchaseOrderId,
+            query.BranchId,
+            query.PlaceId,
+            query.LateOnly,
+            query.WithPlannedLeg,
+            query.ShowReceived,
+        };
+
+        await using var connection = _connectionFactory.Create();
+        using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
+            "logistics.usp_Shipment_Board", parameters,
+            commandTimeout: _connectionFactory.BatchCommandTimeout,
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+        var cards = (await multi.ReadAsync<ShipmentCardDto>()).AsList();
+        var columns = (await multi.ReadAsync<ShipmentColumnDto>()).AsList();
+        return new ShipmentBoardDto { Columns = columns, Containers = cards };
     }
 
     public async Task<ContainerAttachmentFile?> GetAttachmentFileAsync(int id, CancellationToken cancellationToken = default)
@@ -377,6 +410,29 @@ public sealed class ContainerRepository : IContainerRepository
 
     /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
 
+    public async Task<IReadOnlyList<ContainerLookupDto>> LookupAsync(ContainerLookupRequest request, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Ids", MovementRepository.ToIdTable(request.Ids ?? []).AsTableValuedParameter(IdListTypeName));
+        parameters.Add("@Search", string.IsNullOrWhiteSpace(request.Search) ? null : request.Search.Trim(), DbType.String, size: 100);
+        parameters.Add("@MaxStatus", request.MaxStatus, DbType.Byte);
+        parameters.Add("@Top", request.Top, DbType.Int32);
+
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<ContainerLookupDto>(new CommandDefinition(
+            "logistics.usp_Container_Lookup", parameters,
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        return rows.AsList();
+    }
+
+    public async Task<ContainerOrderDefaultsDto?> GetOrderDefaultsAsync(int purchaseOrderId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<ContainerOrderDefaultsDto>(new CommandDefinition(
+            "logistics.usp_Container_OrderDefaults", new { PurchaseOrderId = purchaseOrderId },
+            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+    }
+
     public async Task<AutoPlanDto> PlanFromOrderAsync(AutoPlanRequest request, CancellationToken cancellationToken = default)
     {
         var parameters = new DynamicParameters();
@@ -391,6 +447,7 @@ public sealed class ContainerRepository : IContainerRepository
         {
             using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
                 "logistics.usp_Container_PlanFromOrder", parameters,
+                commandTimeout: _connectionFactory.BatchCommandTimeout,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
 
             var containers = (await multi.ReadAsync<PlannedContainerDto>()).AsList();
@@ -470,7 +527,11 @@ public sealed class ContainerRepository : IContainerRepository
         return rows.Count > 0 ? rows[0].Deleted : 0;
     }
 
-    /// <summary>A write that answers with rows: all or nothing in the procedure, so a deadlock victim is simply run again.</summary>
+    /// <summary>
+    /// A write that answers with rows: all or nothing in the procedure, so a deadlock victim is simply run again. Every
+    /// caller works on many containers at once (the plan, numbers, Confirm, Delete), hence the batch timeout (script 78:
+    /// any number of containers).
+    /// </summary>
     private async Task<IReadOnlyList<T>> QueryAsync<T>(string procedure, DynamicParameters parameters, CancellationToken cancellationToken)
     {
         try
@@ -479,7 +540,8 @@ public sealed class ContainerRepository : IContainerRepository
             {
                 await using var connection = _connectionFactory.Create();
                 var rows = await connection.QueryAsync<T>(new CommandDefinition(
-                    procedure, parameters, commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+                    procedure, parameters, commandTimeout: _connectionFactory.BatchCommandTimeout,
+                    commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
                 return (IReadOnlyList<T>)rows.AsList();
             }, cancellationToken);
         }

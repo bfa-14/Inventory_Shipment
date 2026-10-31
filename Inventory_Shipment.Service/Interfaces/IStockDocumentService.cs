@@ -44,8 +44,9 @@ public interface IStockDocumentService
     Task<Result<PagedResult<StockDocumentListDto>>> SearchAsync(
         StockDocumentQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>(92) <paramref name="userId"/>: the reader, for the document's WarehouseAccessRefusal.</summary>
     Task<Result<StockDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>Creates a draft (<paramref name="id"/> null) or replaces one.</summary>
     Task<Result<StockDocumentDto>> SaveDraftAsync(

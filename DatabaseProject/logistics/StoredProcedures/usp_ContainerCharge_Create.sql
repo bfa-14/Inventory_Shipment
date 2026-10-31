@@ -1,8 +1,7 @@
-/* ================================================================== 14. Container charges: create, update, post, cancel, delete */
+/* ================================================================== 6. Add charge */
 
--- One charge typed for one or several containers: one DRAFT record per container (same GroupId when several).
--- @SplitRule: Same = every container gets @TotalAmount; Equal = equal parts; Pieces = by quantity; Value = by FOB value.
--- Returns the created charges.
+-- Re-created (97) from the body of script 96: + @BivacItemId (fn_ContainerCharge_BivacBlock; a BIVAC charge's amount
+-- is the item's cost at each container's port, in the base currency). Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Create
     @ContainerIds     logistics.tvp_IdList READONLY,
     @MovementId       INT            = NULL,
@@ -18,7 +17,8 @@ CREATE   PROCEDURE logistics.usp_ContainerCharge_Create
     @SplitRule        NVARCHAR(10)   = N'Pieces',
     @AllocationMethod NVARCHAR(10)   = NULL,      -- NULL = the charge type's method
     @Notes            NVARCHAR(300)  = NULL,
-    @UserId           INT            = NULL
+    @UserId           INT            = NULL,
+    @BivacItemId      INT            = NULL       -- (97) the BIVAC item of a BIVAC charge (charge type BIV)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -51,6 +51,12 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM @Ids) THROW 70000, 'Select at least one container.', 1;
 
     DECLARE @Msg NVARCHAR(400);
+
+    -- (97) A BIVAC CHARGE NAMES ITS BIVAC ITEM, whose cost at each container's port is the charge of that container (in
+    -- the base currency): the amount, the currency and the split typed are not used. Its posting takes 1 piece of the
+    -- item out of the container's warehouse with a BIVAC Out (usp_ContainerCharge_Post).
+    SET @Msg = (SELECT b.Reason FROM logistics.fn_ContainerCharge_BivacBlock(@ChargeTypeId, @BivacItemId, @ContainerIds) b);
+    IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
     SELECT TOP (1) @Msg = CASE WHEN c.Id IS NULL THEN N'A selected container no longer exists.'
                                ELSE N'Container ' + c.ContainerRef + N' is closed or cancelled.' END
     FROM @Ids x LEFT JOIN logistics.Containers c ON c.Id = x.Id
@@ -117,17 +123,42 @@ BEGIN
         END
     END
 
+    -- (97) a BIVAC charge: each container's amount is the item's cost at its port, in the base currency
+    IF @BivacItemId IS NOT NULL
+    BEGIN
+        SET @CurrencyId = @BaseCurrency;
+        SET @Rate = 1;
+        SET @CurrencyCode = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @BaseCurrency);
+        UPDATE s SET Amount = bc.CostBase
+        FROM @Split s CROSS APPLY logistics.fn_Container_BivacCost(s.ContainerId, @BivacItemId) bc;
+        SET @TotalAmount = (SELECT SUM(Amount) FROM @Split);
+        SET @SplitRule = N'Same';
+    END
+
     DECLARE @Group UNIQUEIDENTIFIER = CASE WHEN @Count > 1 THEN NEWID() END;
     DECLARE @New TABLE (Id INT PRIMARY KEY, ContainerId INT);
 
     BEGIN TRY
         BEGIN TRANSACTION;
 
+        -- (96) A PROVIDER'S INVOICE IS ENTERED ONCE: the reference of a provider (or of no provider) is refused when a charge
+        -- not cancelled already carries it - one charge for all its containers (this call, Apply to other containers..., or
+        -- the import, which keep one group). Under one lock, so two users typing the same invoice cannot both pass.
+        IF @Reference IS NOT NULL
+        BEGIN
+            EXEC sp_getapplock @Resource = N'logistics.ContainerChargeReference', @LockMode = N'Exclusive',
+                 @LockOwner = N'Transaction', @LockTimeout = 30000;
+            SET @Msg = (SELECT r.Message FROM logistics.fn_ContainerCharge_ReferenceClash(@ProviderPartyId, @Reference, NULL, NULL) r);
+            IF @Msg IS NOT NULL THROW 70001, @Msg, 1;
+        END
+
         INSERT INTO logistics.ContainerCharges (ContainerId, MovementId, GroupId, ChargeTypeId, Description, ProviderPartyId, Reference, ChargeDate,
-                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy)
+                                                CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy,
+                                                BivacItemId)
         OUTPUT inserted.Id, inserted.ContainerId INTO @New (Id, ContainerId)
         SELECT s.ContainerId, @MovementId, @Group, @ChargeTypeId, @Description, @ProviderPartyId, @Reference, @ChargeDate,
-               @CurrencyId, @RateType, @Rate, s.Amount, ROUND(s.Amount / @Rate, 2), @Method, @InLanded, @Notes, @UserId
+               @CurrencyId, @RateType, @Rate, s.Amount, ROUND(s.Amount / @Rate, 2), @Method, @InLanded, @Notes, @UserId,
+               @BivacItemId
         FROM @Split s;
 
         DECLARE @ChargeId INT;

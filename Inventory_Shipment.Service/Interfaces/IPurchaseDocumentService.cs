@@ -17,8 +17,9 @@ public interface IPurchaseDocumentService
     Task<Result<PagedResult<PurchaseDocumentListDto>>> SearchAsync(
         PurchaseDocumentQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>(92) <paramref name="userId"/>: the reader, for a purchase return's WarehouseAccessRefusal.</summary>
     Task<Result<PurchaseDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     Task<Result<PurchaseDocumentDto>> SaveDraftAsync(
         int? id, SavePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
@@ -48,11 +49,6 @@ public interface IPurchaseDocumentService
         int id, CancelPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
-    /// <summary>Orders only: ends an open order that will not be received any further.</summary>
-    Task<Result<PurchaseDocumentDto>> CloseAsync(
-        int id, ClosePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default);
-
     /// <summary>Records what the supplier has shipped on an open order. Needs purchase.orders.create.</summary>
     Task<Result<PurchaseDocumentDto>> MarkShippedAsync(
         int id, MarkShippedRequest request, int userId, IReadOnlySet<string> permissions,
@@ -75,9 +71,17 @@ public interface IPurchaseDocumentService
         IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
     /// <summary>
+    /// The order's lines still to invoice (script 86; <paramref name="includeAll"/> = every line): ordered, invoiced by
+    /// posted invoices, in draft invoices and available, for "Create Purchase Invoice". Needs seeing the order.
+    /// </summary>
+    Task<Result<IReadOnlyList<OrderInvoiceCandidateDto>>> GetOrderInvoiceCandidatesAsync(
+        int orderId, bool includeAll, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
+    /// <summary>
     /// "Create invoice" on an order: one draft per item of what remains (a supplier invoice holds one item), or one
     /// draft of every item (request.OnePerItem false; null = the setting Purchase.OneItemPerInvoice), the references
-    /// copied to each. Needs purchase.invoices.create, and seeing the order.
+    /// copied to each; only the chosen lines and quantities when request.Lines holds any (script 86). Needs
+    /// purchase.invoices.create, and seeing the order.
     /// </summary>
     Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,

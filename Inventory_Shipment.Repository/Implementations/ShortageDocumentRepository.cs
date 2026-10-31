@@ -202,12 +202,15 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         public int CurrentInventoryBase { get; init; }
         public int TransitBase { get; init; }
         public int OutstandingOrderBase { get; init; }
+        public int TransfersInBase { get; init; }
         public int StockPlusTransitBase { get; init; }
         public int TotalExpectedStockBase { get; init; }
         public decimal ExpectedMonthlySalesBase { get; init; }
         public decimal? ExpectedMonthlySalesManual { get; init; }
         public decimal EffectiveMonthlySales { get; init; }
         public decimal LeadTimeMonths { get; init; }
+        public decimal? LeadTimeManual { get; init; }
+        public string? LeadTimeSource { get; init; }
         public decimal ExpectedRequirementBase { get; init; }
         public int ShortageBase { get; init; }
         public decimal? CoverageMonths { get; init; }
@@ -236,12 +239,15 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
             CurrentInventoryBase = CurrentInventoryBase,
             TransitBase = TransitBase,
             OutstandingOrderBase = OutstandingOrderBase,
+            TransfersInBase = TransfersInBase,
             StockPlusTransitBase = StockPlusTransitBase,
             TotalExpectedStockBase = TotalExpectedStockBase,
             ExpectedMonthlySalesBase = ExpectedMonthlySalesBase,
             ExpectedMonthlySalesManual = ExpectedMonthlySalesManual,
             EffectiveMonthlySales = EffectiveMonthlySales,
             LeadTimeMonths = LeadTimeMonths,
+            LeadTimeManual = LeadTimeManual,
+            LeadTimeSource = LeadTimeSource,
             ExpectedRequirementBase = ExpectedRequirementBase,
             ShortageBase = ShortageBase,
             CoverageMonths = CoverageMonths,
@@ -265,6 +271,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         public string? DocumentNumber { get; init; }
         public DateTime DocumentDate { get; init; }
         public byte Status { get; init; }
+        public int? InvoicingStatus { get; init; }
         public decimal TotalAmount { get; init; }
         public string CurrencyCode { get; init; } = string.Empty;
         public DateTime CreatedAtUtc { get; init; }
@@ -275,6 +282,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
             DocumentNumber = DocumentNumber,
             DocumentDate = DocumentDate,
             Status = PurchaseDocumentStatus.From(Status),
+            InvoicingStatus = InvoicingStatus,
             TotalAmount = TotalAmount,
             CurrencyCode = CurrencyCode,
             CreatedAtUtc = CreatedAtUtc,
@@ -358,6 +366,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         parameters.Add("@MonthsOfHistory", request.MonthsOfHistory, DbType.Int32);
         parameters.Add("@Notes", request.Notes, DbType.String, size: 1000);
         parameters.Add("@Lines", ToLineTable(request.Lines).AsTableValuedParameter(LineTypeName));
+        parameters.Add("@LeadTimes", ToLeadTimeTable(request.Lines).AsTableValuedParameter("inventory.tvp_ShortageLeadTime"));   // (98)
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@NewId", dbType: DbType.Int32, direction: ParameterDirection.Output);
@@ -468,6 +477,20 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
                 (object?)line.ExpectedMonthlySalesManual ?? DBNull.Value,
                 (object?)line.PcPerContainer ?? DBNull.Value,
                 (object?)line.Notes ?? DBNull.Value);
+        }
+
+        return table;
+    }
+
+    /// <summary>(98) The lead times typed on lines, shaped like inventory.tvp_ShortageLeadTime (one per item).</summary>
+    private static DataTable ToLeadTimeTable(IReadOnlyList<SaveShortageDocumentLineRequest> lines)
+    {
+        var table = new DataTable();
+        table.Columns.Add("ItemId", typeof(int));
+        table.Columns.Add("LeadTimeMonths", typeof(decimal));
+        foreach (var line in lines.Where(l => l.LeadTimeMonths is not null).DistinctBy(l => l.ItemId))
+        {
+            table.Rows.Add(line.ItemId, line.LeadTimeMonths!.Value);
         }
 
         return table;

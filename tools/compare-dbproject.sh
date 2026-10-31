@@ -64,6 +64,8 @@ if ! sqlpackage /Action:Extract /SourceConnectionString:"$DB" /TargetFile:"$tmp/
   exit 2
 fi
 [ -d "$tmp/db/Security" ] && mv "$tmp/db/Security" "$tmp/db/DatabaseSecurity"
+# The same fixed order of indexes as refresh-dbproject.sh, so an order alone is never a difference.
+python3 "$(git rev-parse --show-toplevel)/tools/sort-dbproject-tables.py" "$tmp/db" >/dev/null
 
 python3 - "$tmp/db" "$PROJ" "$SHOWDIFF" <<'PY'
 import difflib, pathlib, re, sys

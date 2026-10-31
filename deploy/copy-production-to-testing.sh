@@ -8,6 +8,9 @@
 # backup into testing (restore.sh), and points testing's email links at testing. Testing's API then brings
 # the copy up to the main branch's schema as it starts: a rehearsal of the next production update.
 #
+# Testing on production's SQL Server (README.md, "One SQL Server for both environments") gets the copy the same way,
+# into its own database there.
+#
 # Production is only read. Its users and passwords come along, so testers sign in to testing with their
 # production accounts (their sign-ins are not: everyone signs in again). Emails are still never sent to real
 # people from testing (App__Environment=testing); the SMTP password does not come along either (it is
@@ -39,13 +42,9 @@ fi
 
 # Testing's lock: no deployment of testing starts while its database is being replaced (restore.sh below runs under
 # the same lock). PRODUCTION'S LOCK TOO, held to the end: production is not copied in the middle of an update, a
-# restore or a reset. Always testing first, then production: no other script takes both.
+# restore or a reset. Always testing first, then production, as every script that takes both.
 take_env_lock
-exec 8>"/run/lock/inventory-update-production.lock"
-if ! flock -n 8; then
-    say "Production is being updated, restored or reset: waiting for it to finish..."
-    flock -w 1800 8 || die "Production is still busy after 30 minutes. Testing was not changed."
-fi
+take_production_lock
 
 # A RESET OF PRODUCTION THAT STOPPED HALFWAY (its side database is still there): refused only when production's data
 # is really gone - its database deleted, or replaced by the new one not yet finished (newer than the side database and

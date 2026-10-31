@@ -8,6 +8,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -29,13 +30,18 @@ public sealed class StockDocumentService : IStockDocumentService
 
     private readonly IStockDocumentRepository _documents;
     private readonly IWarehouseRepository _warehouses;
+    private readonly IWarehouseAccessService _access;
+    private readonly IUserRepository _users;
     private readonly ILogger<StockDocumentService> _logger;
 
     public StockDocumentService(
-        IStockDocumentRepository documents, IWarehouseRepository warehouses, ILogger<StockDocumentService> logger)
+        IStockDocumentRepository documents, IWarehouseRepository warehouses, IWarehouseAccessService access,
+        IUserRepository users, ILogger<StockDocumentService> logger)
     {
         _documents = documents;
         _warehouses = warehouses;
+        _access = access;
+        _users = users;
         _logger = logger;
     }
 
@@ -67,20 +73,33 @@ public sealed class StockDocumentService : IStockDocumentService
             return Result<PagedResult<StockDocumentListDto>>.Failure(ErrorType.Forbidden, ForbiddenMessage, "FORBIDDEN");
         }
 
+        // (94) A list is never sorted by a figure the reader may not see: the order would reveal it.
+        var seesCosts = ItemCosts.Sees(permissions);
+        if (!seesCosts && string.Equals(query.SortBy, "TotalCost", StringComparison.OrdinalIgnoreCase))
+        {
+            query.SortBy = "DocumentDate";
+        }
+
         var (items, totalCount) = await _documents.SearchAsync(query, cancellationToken);
 
         return Result<PagedResult<StockDocumentListDto>>.Success(new PagedResult<StockDocumentListDto>
         {
-            Items = items,
+            Items = seesCosts ? items : items.Select(r => ItemCosts.Strip(r)).ToList(),
             Page = query.Page,
             PageSize = query.PageSize,
             TotalCount = totalCount,
         });
     }
 
+    /// <summary>
+    /// One document, as the page reads it to edit it: (94) its costs follow the token CONFIRMED by the database
+    /// (ItemCosts.ConfirmedAsync), so a page never holds a draft stripped by a token older than the reader's permission.
+    /// </summary>
     public async Task<Result<StockDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
-        => await ReadAsync(id, permissions, DocumentAction.View, cancellationToken);
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => await WithAccessAsync(
+            await ReadAsync(id, await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken), DocumentAction.View, cancellationToken),
+            userId, cancellationToken);
 
     /* ── writing ──────────────────────────────────────────────────────────────────────────────── */
 
@@ -102,9 +121,10 @@ public sealed class StockDocumentService : IStockDocumentService
            only stockin.create could aim a PUT carrying documentTypeCode INV_IN at an INV_OUT document
            and pass the check above. The procedure would refuse to change the type, but the request
            should never get that far. */
+        StockDocumentDto? existing = null;
         if (id is { } existingId)
         {
-            var existing = await _documents.GetAsync(existingId, cancellationToken);
+            existing = await _documents.GetAsync(existingId, cancellationToken);
             if (existing is null)
             {
                 return Failure(NotFoundMessage, ErrorType.NotFound, "NOT_FOUND");
@@ -114,6 +134,26 @@ public sealed class StockDocumentService : IStockDocumentService
             {
                 return Failure(ForbiddenMessage, ErrorType.Forbidden, "FORBIDDEN");
             }
+        }
+
+        /* (92) A WAREHOUSE THE EDITOR NAMES MUST BE THEIRS. A line already on the stored draft in one that is not may
+           stay as it is, or move to one of theirs (A8: an administrator's draft can still be corrected line by line);
+           nothing may be added, changed or dropped there, and posting it is refused until it is changed. */
+        var refusal = await _access.DraftRefusalAsync(
+            userId, DraftOf(request),
+            existing is null ? null : () => Task.FromResult<WarehouseDraft?>(DraftOf(existing)), cancellationToken);
+        if (refusal is not null)
+        {
+            return WarehouseAccess.Failure<StockDocumentDto>(refusal);
+        }
+
+        /* (94) Who prices an Inventory In's lines: after the access check, before the save, on the stored draft read above.
+           Whether the reader may see item costs is asked of the database when the token says not (a token older than the
+           permission would drop a viewer's costs), and the answer below follows the same reading. */
+        permissions = await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken);
+        if (string.Equals(request.DocumentTypeCode, StockDocumentTypes.In, StringComparison.OrdinalIgnoreCase))
+        {
+            ApplyLineCosts(request, existing, ItemCosts.Sees(permissions), await PriceEditableAsync(request.DocumentTypeCode, cancellationToken));
         }
 
         int savedId;
@@ -129,7 +169,7 @@ public sealed class StockDocumentService : IStockDocumentService
         _logger.LogInformation("Stock document {DocumentId} ({TypeCode}) saved by user {UserId}",
             savedId, request.DocumentTypeCode, userId);
 
-        return await ReadAsync(savedId, permissions, DocumentAction.View, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(savedId, permissions, DocumentAction.View, cancellationToken), userId, cancellationToken);
     }
 
     public async Task<Result<StockDocumentDto>> PostAsync(
@@ -254,8 +294,10 @@ public sealed class StockDocumentService : IStockDocumentService
                     WarehouseId = line.WarehouseId,
                     ExpiryDate = line.ExpiryDate,
                     Quantity = line.Quantity,
-                    // The file's price column is the unit cost on an In; an Out takes the average and ignores it.
-                    UnitCost = isIn ? line.UnitPrice ?? 0 : null,
+                    // The file's price column is the unit cost on an In (null when the row has none: the database then
+                    // takes the item's last cost, script 94; a typed 0 stays 0); an Out takes the average and ignores it.
+                    // For a reader without View item costs SaveDraftAsync drops it.
+                    UnitCost = isIn ? line.UnitPrice : null,
                     Notes = line.Notes,
                 }).ToList(),
             };
@@ -344,6 +386,12 @@ public sealed class StockDocumentService : IStockDocumentService
         if (found.IsFailure)
         {
             return found;
+        }
+
+        // (92) Deleting a draft needs every warehouse on it: the Inventory Out an administrator prepared is not a restricted user's to throw away.
+        if (await _access.RefusalAsync(userId, WarehousesOf(found.Value!), cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure(refusal);
         }
 
         try
@@ -494,7 +542,7 @@ public sealed class StockDocumentService : IStockDocumentService
             ? $"{document.DocumentTypeCode}-draft-{document.Id}"
             : document.DocumentNumber;
 
-        return Result<(byte[], string)>.Success((BuildWorkbook(document), $"{name}.xlsx"));
+        return Result<(byte[], string)>.Success((BuildWorkbook(document, ItemCosts.Sees(permissions)), $"{name}.xlsx"));
     }
 
     /// <summary>
@@ -504,8 +552,11 @@ public sealed class StockDocumentService : IStockDocumentService
     /// IT IS THE DOCUMENT, NOT A DATA DUMP. The header block is the reason a printed copy is worth
     /// anything — a list of item codes with no branch, date or reference on it cannot be checked
     /// against anything.
+    ///
+    /// (94) WITHOUT VIEW ITEM COSTS THE COST COLUMNS ARE LEFT OUT, not blank: a blank column would still name the figure.
+    /// With it the workbook is the one it always was, cell by cell.
     /// </summary>
-    private static byte[] BuildWorkbook(StockDocumentDto document)
+    private static byte[] BuildWorkbook(StockDocumentDto document, bool includeCosts)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet(document.DocumentTypeName);
@@ -539,7 +590,9 @@ public sealed class StockDocumentService : IStockDocumentService
         row++;
         // "Total Cost" rather than "Amount", so the download and the Document Details grid it came
         // from call the same figure the same thing.
-        string[] columns = ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Unit Cost", "Total Cost", "Notes"];
+        string[] columns = includeCosts
+            ? ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Unit Cost", "Total Cost", "Notes"]
+            : ["#", "Item Code", "Item Name", "Unit", "Warehouse", "Qty", "Notes"];
         for (var i = 0; i < columns.Length; i++)
         {
             sheet.Cell(row, i + 1).Value = columns[i];
@@ -562,12 +615,16 @@ public sealed class StockDocumentService : IStockDocumentService
                 : line.UnitTypeName;
             sheet.Cell(row, 5).Value = line.WarehouseCode;
             sheet.Cell(row, 6).Value = line.Quantity;
-            sheet.Cell(row, 7).Value = line.UnitCost;
-            sheet.Cell(row, 8).Value = line.LineTotal;
-            sheet.Cell(row, 9).Value = line.Notes ?? string.Empty;
+            if (includeCosts)
+            {
+                sheet.Cell(row, 7).Value = Num(line.UnitCost);
+                sheet.Cell(row, 8).Value = Num(line.LineTotal);
+            }
+
+            sheet.Cell(row, includeCosts ? 9 : 7).Value = line.Notes ?? string.Empty;
         }
 
-        if (document.Lines.Count > 0)
+        if (includeCosts && document.Lines.Count > 0)
         {
             sheet.Range(firstLineRow, 7, row, 8).Style.NumberFormat.Format = "#,##0.00";
         }
@@ -578,14 +635,18 @@ public sealed class StockDocumentService : IStockDocumentService
         sheet.Cell(row, 6).Value = document.TotalItems;
         sheet.Cell(row + 1, 5).Value = "Total Quantity";
         sheet.Cell(row + 1, 6).Value = document.TotalQuantity;
-        sheet.Cell(row + 2, 5).Value = $"Total Cost ({document.CurrencyCode})";
-        sheet.Cell(row + 2, 6).Value = document.TotalCost;
-        sheet.Cell(row + 2, 6).Style.NumberFormat.Format = "#,##0.00";
-        sheet.Range(row, 5, row + 2, 5).Style.Font.Bold = true;
+        if (includeCosts)
+        {
+            sheet.Cell(row + 2, 5).Value = $"Total Cost ({document.CurrencyCode})";
+            sheet.Cell(row + 2, 6).Value = Num(document.TotalCost);
+            sheet.Cell(row + 2, 6).Style.NumberFormat.Format = "#,##0.00";
+        }
+
+        sheet.Range(row, 5, row + (includeCosts ? 2 : 1), 5).Style.Font.Bold = true;
 
         sheet.Columns().AdjustToContents();
         sheet.Column(3).Width = 40;
-        sheet.Column(10).Width = 30;
+        sheet.Column(includeCosts ? 10 : 7).Width = 30;
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
@@ -607,20 +668,76 @@ public sealed class StockDocumentService : IStockDocumentService
             return Failure(NotFoundMessage, ErrorType.NotFound, "NOT_FOUND");
         }
 
+        // (94) Every answer goes through here: the total and the lines' costs null without View item costs.
         return Allows(permissions, document.DocumentTypeCode, action)
-            ? Result<StockDocumentDto>.Success(document)
+            ? Result<StockDocumentDto>.Success(ItemCosts.Sees(permissions) ? document : ItemCosts.Strip(document))
             : Failure(ForbiddenMessage, ErrorType.Forbidden, "FORBIDDEN");
     }
+
+    /// <summary>
+    /// (94) WHO PRICES AN INVENTORY IN'S LINE. A type whose cost cannot be typed: the server, always (every line goes
+    /// without a cost). A reader who may see item costs: a cost sent is stored as sent, 0 included. Otherwise - a reader
+    /// who may not see item costs, whatever cost the request carries being dropped, or a viewer whose page sends none (it
+    /// drew the line without its cost) - a line keeps the cost it was saved with when its id names a saved line of the
+    /// same item and unit (a colleague priced it); any other line goes without one and usp_StockDocument_Save takes the
+    /// item's last cost, else its average. An Out is priced at the average by the database whatever is sent.
+    /// </summary>
+    private static void ApplyLineCosts(SaveStockDocumentRequest request, StockDocumentDto? stored, bool seesCosts, bool priceEditable)
+    {
+        if (!string.Equals(request.DocumentTypeCode, StockDocumentTypes.In, StringComparison.OrdinalIgnoreCase))
+        {
+            return;
+        }
+
+        foreach (var line in request.Lines)
+        {
+            if (!priceEditable)
+            {
+                line.UnitCost = null;
+                continue;
+            }
+
+            if (seesCosts && line.UnitCost is not null)
+            {
+                continue;
+            }
+
+            line.UnitCost = line.Id is { } id
+                && stored?.Lines.FirstOrDefault(s => s.Id == id && s.ItemId == line.ItemId && s.ItemUnitId == line.ItemUnitId) is { } saved
+                ? saved.UnitCost
+                : null;
+        }
+    }
+
+    /// <summary>(94) The type's "Price / cost editable" (Configuration › Document Types); a type not found keeps today's rule (editable).</summary>
+    private async Task<bool> PriceEditableAsync(string documentTypeCode, CancellationToken cancellationToken)
+    {
+        var types = await _documents.GetDocumentTypesAsync(cancellationToken);
+        return types.FirstOrDefault(t => string.Equals(t.Code, documentTypeCode, StringComparison.OrdinalIgnoreCase))?.PriceEditable ?? true;
+    }
+
+    /// <summary>A blank cell for a figure the document has none of (never for a reader who sees costs: the cells stay as they were).</summary>
+    private static XLCellValue Num(decimal? value) => value is { } v ? v : Blank.Value;
 
     /// <summary>Post and Cancel differ only in which procedure runs and what the log line says.</summary>
     private async Task<Result<StockDocumentDto>> ChangeAsync(
         int id, IReadOnlySet<string> permissions, DocumentAction action, CancellationToken cancellationToken,
         Func<int, byte[]?, Task> change, string? rowVersion, int userId, string verb)
     {
+        // (94) Read and answered with the permission the database confirms, as Get and Save: a token older than a grant
+        // would strip the posted document the page had just shown with its costs.
+        permissions = await ItemCosts.ConfirmedAsync(permissions, userId, _users, cancellationToken);
         var found = await ReadAsync(id, permissions, action, cancellationToken);
         if (found.IsFailure)
         {
             return found;
+        }
+
+        // (92) Posting and cancelling move stock in every warehouse of the stored document: each must be the user's
+        // (the ledger trigger refuses the same rows; this says it before the procedure runs).
+        if (await _access.RefusalAsync(userId, WarehousesOf(found.Value!), cancellationToken: cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure<StockDocumentDto>(refusal);
         }
 
         try
@@ -636,8 +753,41 @@ public sealed class StockDocumentService : IStockDocumentService
 
         // Re-read: posting assigns the number, writes the ledger and moves the status, and the client
         // needs all three. The document is the server's answer, not a patch of what was sent.
-        return await ReadAsync(id, permissions, DocumentAction.View, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(id, permissions, DocumentAction.View, cancellationToken), userId, cancellationToken);
     }
+
+    /// <summary>
+    /// (92) The document as this reader receives it: with the sentence that says why they may not post, cancel or delete
+    /// it (every warehouse of its lines and header, no keep rule), null when they may - one primary-key seek for a reader
+    /// with All warehouses.
+    /// </summary>
+    private async Task<Result<StockDocumentDto>> WithAccessAsync(
+        Result<StockDocumentDto> read, int userId, CancellationToken cancellationToken)
+    {
+        if (read.Value is { } document)
+        {
+            document.WarehouseAccessRefusal = await _access.RefusalAsync(userId, WarehousesOf(document), cancellationToken: cancellationToken);
+        }
+
+        return read;
+    }
+
+    /// <summary>(92) Every warehouse a stored document moves stock in: its lines' and its header's.</summary>
+    private static IEnumerable<int?> WarehousesOf(StockDocumentDto document)
+        => document.Lines.Select(line => (int?)line.WarehouseId).Append(document.WarehouseId);
+
+    /// <summary>(92) A request as the keep rule (A8) compares it: its header warehouse and each line's stock fields.</summary>
+    private static WarehouseDraft DraftOf(SaveStockDocumentRequest request)
+        => new(request.WarehouseId, (request.Lines ?? [])
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId, (line.ItemUnitId, line.Quantity, line.ExpiryDate)))
+            .ToList());
+
+    /// <summary>(92) The stored draft, the same way.</summary>
+    private static WarehouseDraft DraftOf(StockDocumentDto document)
+        => new(document.WarehouseId, document.Lines
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate is { } expiry ? DateOnly.FromDateTime(expiry) : (DateOnly?)null)))
+            .ToList());
 
     /// <summary>
     /// Which permission code answers "may this caller do this to this kind of document".
@@ -699,6 +849,8 @@ public sealed class StockDocumentService : IStockDocumentService
     /// </summary>
     private static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) The ledger trigger's refusal (or any other 50010): the user may not move stock in that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, WarehouseAccess.Code),
         SqlErrors.StockDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.StockDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.StockDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

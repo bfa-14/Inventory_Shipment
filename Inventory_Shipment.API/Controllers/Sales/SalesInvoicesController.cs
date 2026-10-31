@@ -84,7 +84,7 @@ public sealed class SalesInvoicesController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<SalesInvoiceDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _invoices.GetAsync(id, User.GetPermissions(), cancellationToken);
+        var result = await _invoices.GetAsync(id, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 

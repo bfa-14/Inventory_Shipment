@@ -1,4 +1,5 @@
 using System.ComponentModel.DataAnnotations;
+using System.Text.Json.Serialization;
 using Inventory_Shipment.Model.DTOs.Documents;
 using Inventory_Shipment.Model.DTOs.Sales;
 
@@ -31,15 +32,19 @@ public static class PurchaseDocumentTypes
 }
 
 /// <summary>
-/// Purchase documents have one status more than the others: a posted purchase order is OPEN, and it
-/// becomes CLOSED when every line is invoiced and received (or settled short, script 65) or when somebody
-/// closes it by hand.
+/// The status of a purchase document, as stored: Draft, Waiting for approval (orders), Posted, Cancelled. A POSTED
+/// purchase order is an approved one, and what it SHOWS follows its posted invoices (script 77, the owner's words):
+/// Saved (none yet), Partially posted (less than ordered), Posted (everything ordered) - see <see cref="OrderStage"/>.
+/// The API keeps "Posted" as the status of every approved order, because every rule that asks "is it approved?" reads
+/// that string; the stage travels next to it as InvoicingStatus. Closed (4) is no longer written: script 77 brought the
+/// closed orders back, and the constants stay only to read a row from before it.
 /// </summary>
 public static class PurchaseDocumentStatus
 {
     public const byte DraftCode = 1;
     public const byte PostedCode = 2;
     public const byte CancelledCode = 3;
+    /// <summary>No longer written (script 77): purchase orders are not closed any more.</summary>
     public const byte ClosedCode = 4;
 
     /// <summary>A purchase order sent for approval (script 26): not editable, not posted yet.</summary>
@@ -50,6 +55,40 @@ public static class PurchaseDocumentStatus
     public const string Cancelled = "Cancelled";
     public const string Closed = "Closed";
     public const string PendingApproval = "PendingApproval";
+
+    /* (77) What an approved purchase order shows, from InvoicingStatus 0 / 1 / 2 (its posted invoices). */
+    public const string Saved = "Saved";
+    public const string PartiallyPosted = "PartiallyPosted";
+
+    /// <summary>
+    /// The stage of an approved order: <see cref="Saved"/> (0, no posted invoice), <see cref="PartiallyPosted"/> (1) or
+    /// <see cref="Posted"/> (2, everything ordered is invoiced). Draft invoices and purchase returns do not change it.
+    /// </summary>
+    public static string OrderStage(int? invoicingStatus) => invoicingStatus switch
+    {
+        2 => Posted,
+        1 => PartiallyPosted,
+        _ => Saved,
+    };
+
+    /// <summary>
+    /// The words a reader sees for a document's status, for exports: "Waiting for approval", and for an approved order
+    /// "Saved", "Partially posted" or "Posted". Invoices and returns keep "Posted".
+    /// </summary>
+    public static string Label(string status, string documentTypeCode, int? invoicingStatus)
+    {
+        if (status == Posted && documentTypeCode == PurchaseDocumentTypes.Order)
+        {
+            status = OrderStage(invoicingStatus);
+        }
+
+        return status switch
+        {
+            PendingApproval => "Waiting for approval",
+            PartiallyPosted => "Partially posted",
+            _ => status,
+        };
+    }
 
     public static string From(byte code) => code switch
     {
@@ -103,6 +142,13 @@ public sealed class PurchaseDocumentListDto
     public byte ReceiptMode { get; init; } = PurchaseReceiptModes.OnPosting;
 
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
+
+    /// <summary>
+    /// (77) Orders: 0 Saved, 1 Partially posted, 2 Posted - how far posted invoices cover it (the stage of an order whose
+    /// <see cref="Status"/> is Posted, see <see cref="PurchaseDocumentStatus.OrderStage"/>). Null on invoices and returns.
+    /// </summary>
+    public int? InvoicingStatus { get; init; }
+
     public int TotalItems { get; init; }
     public decimal TotalQuantity { get; init; }
     public decimal Subtotal { get; init; }
@@ -304,10 +350,17 @@ public sealed class PurchaseDocumentLineDto
     public string? Notes { get; init; }
     public int? SourceLineId { get; init; }
     public decimal OnHandBase { get; init; }
+
+    /// <summary>(94) Server only: the item's current costs are not a purchase document's figure, and no page drew them.</summary>
+    [JsonIgnore]
     public decimal? ItemLastCost { get; init; }
+
+    /// <summary>(94) Server only, as <see cref="ItemLastCost"/>.</summary>
+    [JsonIgnore]
     public decimal? ItemAverageCost { get; init; }
 
-    /// <summary>The item's FOB cost as it stands now — what the next invoice would start from.</summary>
+    /// <summary>The item's FOB cost as it stands now — what the next invoice would start from. (94) Server only.</summary>
+    [JsonIgnore]
     public decimal? ItemFobCost { get; init; }
 }
 
@@ -339,6 +392,10 @@ public sealed class LinkedPurchaseDocumentDto
     public string? DocumentNumber { get; init; }
     public DateTime DocumentDate { get; init; }
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
+
+    /// <summary>(77) A linked order: 0 Saved, 1 Partially posted, 2 Posted; null for an invoice or a return.</summary>
+    public int? InvoicingStatus { get; init; }
+
     public decimal TotalAmount { get; init; }
     public string CurrencyCode { get; init; } = string.Empty;
 }
@@ -480,6 +537,21 @@ public sealed class PurchaseDocumentDto
     /// <summary>When goods receipts started (the switch): "Posted before goods receipts ({date})". Null before the switch.</summary>
     public DateTime? GoodsReceiptsSinceUtc { get; init; }
 
+    /* (79) WHAT THE DOCUMENT TYPE MAKES OF A SUPPLIER INVOICE: captured when it is posted, the type's switch while it is a
+       draft (Configuration › Document Types). True / false on orders and returns, which they do not concern. */
+
+    /// <summary>
+    /// The invoice's price and its own charges become the cost of the goods received against it. False: those goods keep
+    /// the order price (and their container's charges), and a landed cost adjustment on it is refused (67013).
+    /// </summary>
+    public bool AffectsCost { get; init; } = true;
+
+    /// <summary>
+    /// Posting it receives its goods at once with a goods receipt (its lines not travelling in containers), whoever posts:
+    /// the post confirmation says so instead of offering "Receive the goods now".
+    /// </summary>
+    public bool ReceiveOnPost { get; init; }
+
     /// <summary>
     /// Supplier invoices: true = it holds ONE item (saving or posting a second one is refused, 65029; the page limits
     /// its item picker and offers Split by item), false = it may hold several items. Its own mode, chosen when it was
@@ -514,7 +586,10 @@ public sealed class PurchaseDocumentDto
     public decimal? InvoicedBase { get; init; }
     public decimal InDraftInvoicesBase { get; init; }
 
-    /// <summary>Orders: 0 not, 1 partially, 2 fully invoiced (posted invoices); null on invoices and returns.</summary>
+    /// <summary>
+    /// Orders: 0 not, 1 partially, 2 fully invoiced (posted invoices); null on invoices and returns. Since script 77 it is
+    /// what an approved order shows: Saved, Partially posted, Posted.
+    /// </summary>
     public int? InvoicingStatus { get; init; }
     public int TotalItems { get; init; }
     public decimal TotalQuantity { get; init; }
@@ -571,11 +646,8 @@ public sealed class PurchaseDocumentDto
     public bool CanPost => Status == PurchaseDocumentStatus.Draft;
     public bool CanDelete => Status == PurchaseDocumentStatus.Draft;
 
-    /// <summary>Posted documents, and closed orders too: cancelling a closed order reverses nothing, it only ends it.</summary>
-    public bool CanCancel => Status is PurchaseDocumentStatus.Posted or PurchaseDocumentStatus.Closed;
-
-    /// <summary>Only an open (posted) order can be closed by hand.</summary>
-    public bool CanClose => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
+    /// <summary>Posted documents (an approved order, whatever its invoices): the procedure has the other refusals.</summary>
+    public bool CanCancel => Status == PurchaseDocumentStatus.Posted;
 
     /// <summary>
     /// Charges are typed on a DRAFT invoice; after posting they arrive as a landed cost adjustment
@@ -592,11 +664,11 @@ public sealed class PurchaseDocumentDto
         => DocumentTypeCode == PurchaseDocumentTypes.Invoice && Status == PurchaseDocumentStatus.Posted && !IsContainerBound
            && !ShippedInContainers;
 
-    /// <summary>Shipped quantities are recorded on an open order only — the procedure refuses anything else.</summary>
+    /// <summary>Shipped quantities are recorded on an approved order only — the procedure refuses anything else.</summary>
     public bool CanMarkShipped => DocumentTypeCode == PurchaseDocumentTypes.Order && Status == PurchaseDocumentStatus.Posted;
 
     /// <summary>
-    /// An open order with something left to receive becomes a purchase invoice. Since script 43 an order with
+    /// An approved order with something left to invoice becomes a purchase invoice. Since script 43 an order with
     /// containers too: the invoice is "shipped in containers" and is linked to them afterwards.
     /// </summary>
     public bool CanCreateInvoice
@@ -639,6 +711,15 @@ public sealed class PurchaseDocumentDto
     /// received goods adjusted, and the goods receipt of "Receive the goods now". Set after the document is read back.
     /// </summary>
     public PurchasePostResultDto? PostResult { get; set; }
+
+    /// <summary>
+    /// (92) Why the reader may not post, cancel or delete this document: the server's sentence ("You have no access to
+    /// warehouse LKS-01: ask an administrator."), worked out for the reader at each read - on a purchase return from its
+    /// line and header warehouses; on a supplier invoice posted before goods receipts (its Cancel takes its own stock back
+    /// out) from its lines' warehouses, for its Cancel. Null on orders and every other invoice (not limited), and when
+    /// the reader may - always for a reader with All warehouses.
+    /// </summary>
+    public string? WarehouseAccessRefusal { get; set; }
 }
 
 /// <summary>A goods receipt of a purchase order or invoice (result set 9 of usp_PurchaseDocument_Get, script 65).</summary>
@@ -739,8 +820,15 @@ public sealed class PurchasePostResultDto
 
     public string? BaseCurrencyCode { get; init; }
 
-    /// <summary>"Receive the goods now" was asked (a supplier invoice only).</summary>
+    /// <summary>"Receive the goods now" was asked (a supplier invoice only), or the document type receives them (below).</summary>
     public bool ReceiveRequested { get; init; }
+
+    /// <summary>
+    /// (79) The PINV type's "Affects on-hand" tried to receive the goods by itself, whoever posted: true only when a
+    /// receipt was made (GoodsReceiptId) or refused (ReceiveWarning). Nothing is tried when the invoice's goods travel in
+    /// containers or are all received already: then it is false and nothing is said.
+    /// </summary>
+    public bool ReceivedByDocumentType { get; init; }
 
     /// <summary>The goods receipt created and posted with the invoice; null when not asked, or when it failed.</summary>
     public int? GoodsReceiptId { get; init; }
@@ -791,6 +879,9 @@ public sealed class ReceiptCostPreviewLineDto
     public string? Receipts { get; init; }
 
     public bool IsEstimate { get; init; } = true;
+
+    /// <summary>(79) The PINV type changes item costs now: false, the received pieces keep their cost (no difference).</summary>
+    public bool AffectsCost { get; init; } = true;
 }
 
 /// <summary>
@@ -804,7 +895,7 @@ public sealed class ReceiptCostPreviewDto
     public int InvoiceId { get; init; }
     public string? DocumentNumber { get; init; }
 
-    /// <summary>Draft, Posted, Cancelled or Closed: only a draft is previewed.</summary>
+    /// <summary>Draft, Posted or Cancelled: only a draft is previewed.</summary>
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
 
     public string? BaseCurrencyCode { get; init; }
@@ -820,6 +911,13 @@ public sealed class ReceiptCostPreviewDto
     public bool HasReceivedGoods => ReceivedNotInvoicedBase > 0;
 
     public bool IsEstimate => true;
+
+    /// <summary>
+    /// (79) Posting it will change the cost of the goods received against it (the PINV type's "Affects item cost" as it
+    /// is now). False: the message says they keep their cost.
+    /// </summary>
+    public bool AffectsCost { get; init; } = true;
+
     public string? Message { get; init; }
     public IReadOnlyList<ReceiptCostPreviewLineDto> Lines { get; init; } = [];
 }
@@ -961,6 +1059,8 @@ public sealed class PostPurchaseDocumentRequest
     /// is posted, its lines not in a container are received with one goods receipt, created and posted in a second
     /// transaction. Needs purchase.goodsreceipts.create and .post besides the invoice's post (403 otherwise, nothing
     /// posted). A receipt that fails leaves the invoice posted: the answer's postResult.receiveWarning says why.
+    /// (79) When the PINV type's "Affects on-hand" is on, the database receives the goods whatever this says, and no
+    /// goods receipt right is needed: the rule is the document type's.
     /// </summary>
     public bool ReceiveNow { get; init; }
 }
@@ -970,14 +1070,6 @@ public sealed class CancelPurchaseDocumentRequest
     [Required]
     [StringLength(300, MinimumLength = 1)]
     public string Reason { get; init; } = string.Empty;
-
-    public string? RowVersion { get; init; }
-}
-
-public sealed class ClosePurchaseDocumentRequest
-{
-    [StringLength(300)]
-    public string? Reason { get; init; }
 
     public string? RowVersion { get; init; }
 }
@@ -1007,6 +1099,37 @@ public sealed class ContainerLineQuantityRequest
 
     [Range(1, int.MaxValue)]
     public int QuantityBase { get; init; }
+}
+
+/// <summary>One line of purchase.tvp_SourceLineSelection: a line of the source document and the base units to take from it.</summary>
+public sealed class SourceLineQuantityRequest
+{
+    [Range(1, int.MaxValue)]
+    public int SourceLineId { get; init; }
+
+    [Range(1, int.MaxValue)]
+    public int QuantityBase { get; init; }
+}
+
+/// <summary>
+/// A line of a purchase order that can still be invoiced (purchase.usp_PurchaseOrder_InvoiceCandidates, script 86): what
+/// "Create Purchase Invoice" offers, line by line. Available = ordered - invoiced by posted invoices - in draft invoices,
+/// the most Create takes from the line. Base units.
+/// </summary>
+public sealed class OrderInvoiceCandidateDto
+{
+    public int LineId { get; init; }
+    public int LineNumber { get; init; }
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public int WarehouseId { get; init; }
+    public string WarehouseCode { get; init; } = string.Empty;
+    public string WarehouseName { get; init; } = string.Empty;
+    public int OrderedBase { get; init; }
+    public int InvoicedBase { get; init; }
+    public int InDraftsBase { get; init; }
+    public int AvailableBase { get; init; }
 }
 
 /// <summary>
@@ -1040,6 +1163,12 @@ public sealed class CreateFromSourceRequest
 {
     /// <summary>Null = today.</summary>
     public DateOnly? DocumentDate { get; init; }
+
+    /// <summary>
+    /// The lines of the source to take and the base units of each (script 86: the order's "Create Purchase Invoice"
+    /// ticks its lines); EMPTY = everything still available. The database refuses more than a line still has (65011).
+    /// </summary>
+    public IReadOnlyList<SourceLineQuantityRequest> Lines { get; init; } = [];
 
     /// <summary>Order → invoices: copied to every invoice created. Ignored for a return.</summary>
     [StringLength(50)]
@@ -1134,16 +1263,22 @@ public sealed class PurchaseDocumentQuery
     public int? WarehouseId { get; init; }
     public int? SupplierId { get; init; }
 
-    /// <summary>Draft, Posted, Cancelled, Closed or the code 1–4.</summary>
+    /// <summary>Draft, PendingApproval, Posted, Cancelled or the code 1–5.</summary>
     public string? Status { get; init; }
+
+    /// <summary>
+    /// (77) Orders: 0 Saved, 1 Partially posted, 2 Posted - with <see cref="Status"/> Posted, the stage the order list
+    /// filters on. Ignored on invoices and returns.
+    /// </summary>
+    public int? InvoicingStatus { get; init; }
 
     public DateOnly? DateFrom { get; init; }
     public DateOnly? DateTo { get; init; }
 
-    /// <summary>(65) Orders: posted or closed with goods still to come ("To receive").</summary>
+    /// <summary>(65) Orders: approved with goods still to come ("To receive").</summary>
     public bool? ToReceive { get; init; }
 
-    /// <summary>(65) Supplier invoices: posted or closed and not every piece received ("Not fully received").</summary>
+    /// <summary>(65) Supplier invoices: posted and not every piece received ("Not fully received").</summary>
     public bool? NotFullyReceived { get; init; }
 
     public string SortBy { get; init; } = "DocumentDate";

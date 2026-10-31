@@ -1,0 +1,769 @@
+using System.Globalization;
+using Inventory_Shipment.Model.Common;
+using Inventory_Shipment.Model.DTOs.Logistics;
+using Inventory_Shipment.Model.Security;
+using Inventory_Shipment.Repository.Exceptions;
+using Microsoft.Extensions.Logging;
+using static Inventory_Shipment.Service.Implementations.LogisticsRuleFailures;
+
+namespace Inventory_Shipment.Service.Implementations;
+
+/// <summary>
+/// (81) THE NEXT STEP OF A CONTAINER, for one container or 300 (shipment phase 2). The database says what each
+/// container's step is and groups them (usp_Container_NextStepPreview); applying a group never goes around a movement:
+/// <list type="bullet">
+///   <item>Complete and Start go through <see cref="SetStatusAsync"/>, the movement's own Complete / Start, the only
+///   place that drafts the goods receipts of a completed Delivery after the commit (script 79's switch included);</item>
+///   <item>a new leg goes through usp_Movement_AddLeg, which saves and starts it with the movement procedures, so every
+///   phase 1 rule holds (one movement at a time, the place rules, no date in the future or before the previous leg).</item>
+/// </list>
+/// EACH GROUP ON ITS OWN: one refusal never stops the others, and each is all or nothing inside. The "Then" leg after a
+/// Complete is a SECOND step once the completion is committed: refused, it is a warning and the arrival stays.
+/// </summary>
+public sealed partial class MovementService
+{
+    /// <summary>The containers one preview or one apply takes: a selection of every container of a big order.</summary>
+    internal const int MaxNextStepContainers = 5000;
+
+    /// <summary>The groups one apply takes (the preview of 1,201 containers gave 51).</summary>
+    internal const int MaxNextStepGroups = 200;
+
+    /// <summary>The date of the messages, as the database writes it in its own ("reached Dar es Salaam on 12/10/2026").</summary>
+    private const string DayFormat = "dd/MM/yyyy";
+
+    /// <summary>The BlockGroup of a draft for a reader without containers.confirm (usp_Container_NextStepPreview).</summary>
+    private const string DraftNotConfirmableGroup = "Draft - you may not confirm containers";
+
+    /// <summary>
+    /// The BlockGroup of a container that never moved and has no port of loading: it leaves from any From (the rule of
+    /// prompt 45), so the dialog for one container asks for it (fromPlaceId) and the step can then be taken.
+    /// </summary>
+    private const string NoPortOfLoadingGroup = "No port of loading: open the container to choose where it leaves from";
+
+    private const string ContainerNotFoundMessage = "Container not found.";
+
+    /* ── reading ──────────────────────────────────────────────────────────────────────────────── */
+
+    public async Task<Result<ContainerNextStepDto>> GetNextStepAsync(
+        int containerId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        // Read-only, as the container page itself: what the button says. Applying it needs containers.movements.manage.
+        if (!permissions.Contains(Permissions.Containers.View))
+        {
+            return Forbidden<ContainerNextStepDto>(Permissions.Containers.View);
+        }
+
+        if (containerId <= 0)
+        {
+            return Result<ContainerNextStepDto>.Failure(ErrorType.Validation, "A container id must be greater than zero.", "VALIDATION");
+        }
+
+        NextStepPreviewDto preview;
+        try
+        {
+            preview = await _movements.NextStepPreviewAsync(
+                [containerId], permissions.Contains(Permissions.Containers.Confirm), cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<ContainerNextStepDto>(ex);
+        }
+
+        return preview.Containers.FirstOrDefault() is { Found: true } row
+            ? Result<ContainerNextStepDto>.Success(row)
+            : Result<ContainerNextStepDto>.Failure(ErrorType.NotFound, ContainerNotFoundMessage, "NOT_FOUND");
+    }
+
+    public async Task<Result<NextStepPreviewDto>> PreviewNextStepAsync(
+        NextStepPreviewRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<NextStepPreviewDto>(Permissions.Containers.MovementsManage);
+        }
+
+        var ids = request.ContainerIds ?? [];
+        if (InvalidContainerIds(ids) is { } invalid)
+        {
+            return Result<NextStepPreviewDto>.Failure(ErrorType.Validation, invalid, "VALIDATION");
+        }
+
+        try
+        {
+            // Without containers.confirm a draft that never moved goes under "Cannot move on": the new leg would refuse it.
+            return Result<NextStepPreviewDto>.Success(await _movements.NextStepPreviewAsync(
+                ids, permissions.Contains(Permissions.Containers.Confirm), cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<NextStepPreviewDto>(ex);
+        }
+    }
+
+    /* ── applying ─────────────────────────────────────────────────────────────────────────────── */
+
+    public async Task<Result<IReadOnlyList<NextStepGroupResultDto>>> ApplyNextStepAsync(
+        ApplyNextStepRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.MovementsManage))
+        {
+            return Forbidden<IReadOnlyList<NextStepGroupResultDto>>(Permissions.Containers.MovementsManage);
+        }
+
+        var groups = request.Groups ?? [];
+        var (kinds, invalid) = ValidateGroups(groups);
+        if (invalid is not null)
+        {
+            return Result<IReadOnlyList<NextStepGroupResultDto>>.Failure(ErrorType.Validation, invalid, "VALIDATION");
+        }
+
+        var canConfirm = permissions.Contains(Permissions.Containers.Confirm);
+
+        // WHAT EACH CONTAINER'S STEP IS NOW, in one set-based call: the dialog may have stood open while someone else
+        // completed the movement or started the leg, and a step taken on a stale preview would surprise its reader.
+        NextStepPreviewDto now;
+        try
+        {
+            now = await _movements.NextStepPreviewAsync(groups.SelectMany(g => g.ContainerIds), canConfirm, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<NextStepGroupResultDto>>(ex);
+        }
+
+        var rows = now.Containers.ToDictionary(r => r.ContainerId);
+        var results = new List<NextStepGroupResultDto>(groups.Count);
+        for (var i = 0; i < groups.Count; i++)
+        {
+            // EACH GROUP ON ITS OWN, whatever fails: a deadlock or a timeout that is no business rule would otherwise turn
+            // the whole answer into an error, losing the results of the groups already committed and never running the
+            // others. The group is said refused, with the API log for the details.
+            try
+            {
+                results.Add(await ApplyGroupAsync(groups[i], kinds[i], rows, canConfirm, userId, permissions, cancellationToken));
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                _logger.LogError(ex, "Next step: group {Group} ({Kind}) failed for user {UserId}", i + 1, kinds[i], userId);
+                results.Add(Refused(groups[i], kinds[i], groups[i].ContainerIds.Distinct().ToList(),
+                    "This step was not applied: the database did not answer (see the API log). Open Next step… again.", "UNEXPECTED"));
+            }
+        }
+
+        _logger.LogInformation("Next step by user {UserId}: {Applied} of {Groups} group(s) applied, {Containers} container(s)",
+            userId, results.Count(r => r.Ok), results.Count, rows.Count);
+        return Result<IReadOnlyList<NextStepGroupResultDto>>.Success(results);
+    }
+
+    private async Task<NextStepGroupResultDto> ApplyGroupAsync(
+        NextStepGroupRequest group, string kind, IReadOnlyDictionary<int, ContainerNextStepDto> now, bool canConfirm,
+        int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
+    {
+        var ids = group.ContainerIds.Distinct().ToList();
+        var rows = ids.Select(id => now.GetValueOrDefault(id)).ToList();
+
+        if (StepRefusal(group, kind, ids, rows, canConfirm) is { } refusal)
+        {
+            return Refused(group, kind, ids, refusal.Message, refusal.Code);
+        }
+
+        var found = rows.Select(r => r!).ToList();
+        return kind switch
+        {
+            // (82) only the ticked containers arrived: they get their own movement, which is completed
+            ContainerNextStepKinds.Complete when group.SplitOff
+                => await SplitOffGroupAsync(group, ids, canConfirm, userId, permissions, cancellationToken),
+            ContainerNextStepKinds.Complete => await CompleteGroupAsync(group, ids, found, canConfirm, userId, permissions, cancellationToken),
+            ContainerNextStepKinds.StartPlanned => await StartGroupAsync(group, ids, found, userId, permissions, cancellationToken),
+            _ => await NewLegGroupAsync(group, kind, ids, found, canConfirm, userId, cancellationToken),
+        };
+    }
+
+    /// <summary>
+    /// A movement in progress: its own Complete (a Delivery drafts its goods receipts after the commit), then the "Then"
+    /// leg as a second step. The completion moves every container of the movement, ticked or not; (82) splitOff completes
+    /// only the ticked ones instead (<see cref="SplitOffGroupAsync"/>).
+    /// </summary>
+    private async Task<NextStepGroupResultDto> CompleteGroupAsync(
+        NextStepGroupRequest group, IReadOnlyList<int> ids, IReadOnlyList<ContainerNextStepDto> rows, bool canConfirm,
+        int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
+    {
+        var completed = await SetStatusAsync(
+            group.MovementId!.Value, "Complete", new MovementStatusRequest { Date = group.Date, RowVersion = group.RowVersion },
+            userId, permissions, cancellationToken);
+        if (completed.IsFailure || completed.Value is not { } movement)
+        {
+            return Refused(group, ContainerNextStepKinds.Complete, ids, completed.Error ?? "The movement was not completed.", completed.Code);
+        }
+
+        var (message, thenMovements, warnings) = await AfterCompletionAsync(
+            group, ids, movement, CompletionMessage(movement, rows), canConfirm, userId, cancellationToken);
+
+        return new NextStepGroupResultDto
+        {
+            Key = group.Key,
+            Kind = ContainerNextStepKinds.Complete,
+            Ok = true,
+            Message = message,
+            ContainerIds = ids,
+            Movements = [new NextStepMovementDto { Id = movement.Id, MovementNo = movement.MovementNo, Status = movement.Status }],
+            ThenMovements = thenMovements,
+            GoodsReceipts = movement.GoodsReceipts,
+            GoodsReceiptsMessage = movement.GoodsReceiptsMessage,
+            Warnings = warnings,
+        };
+    }
+
+    /// <summary>
+    /// What follows a committed completion, for the whole movement or (82) the containers split off it: THE "THEN" LEG for
+    /// these containers, never after a Delivery (its goods are received next). The message gets "Then …" and the warnings
+    /// the Then leg's refusals beside the completion's own.
+    /// </summary>
+    private async Task<(string Message, IReadOnlyList<NextStepMovementDto> ThenMovements, IReadOnlyList<string> Warnings)> AfterCompletionAsync(
+        NextStepGroupRequest group, IReadOnlyList<int> ids, MovementDto movement, string message, bool canConfirm, int userId,
+        CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>(movement.Warnings);
+        var thenMovements = new List<NextStepMovementDto>();
+        if (group.Then is { } then && MovementStages.Normalize(movement.Stage) != MovementStages.Delivery)
+        {
+            var (made, said, thenWarnings) = await ThenLegAsync(group, then, ids, movement, canConfirm, userId, cancellationToken);
+            thenMovements.AddRange(made);
+            warnings.AddRange(thenWarnings);
+            message = string.Join(' ', said.Prepend(message));
+        }
+
+        return (message, thenMovements, warnings);
+    }
+
+    /// <summary>A planned movement: its own Start, with every rule of phase 1 (70012, 70015, 70016, 70018, no future date).</summary>
+    private async Task<NextStepGroupResultDto> StartGroupAsync(
+        NextStepGroupRequest group, IReadOnlyList<int> ids, IReadOnlyList<ContainerNextStepDto> rows, int userId,
+        IReadOnlySet<string> permissions, CancellationToken cancellationToken)
+    {
+        var started = await SetStatusAsync(
+            group.MovementId!.Value, "Start", new MovementStatusRequest { Date = group.Date, RowVersion = group.RowVersion },
+            userId, permissions, cancellationToken);
+        if (started.IsFailure || started.Value is not { } movement)
+        {
+            return Refused(group, ContainerNextStepKinds.StartPlanned, ids, started.Error ?? "The movement was not started.", started.Code);
+        }
+
+        var who = Who(movement.Containers.Count, movement.Containers.FirstOrDefault()?.ContainerRef ?? rows[0].ContainerRef);
+        return new NextStepGroupResultDto
+        {
+            Key = group.Key,
+            Kind = ContainerNextStepKinds.StartPlanned,
+            Ok = true,
+            Message = $"{who}: {movement.TypeName} {Route(movement)} started on {MessageDay(movement.StartDate)} ({movement.MovementNo}).{NowStatus(movement)}",
+            ContainerIds = ids,
+            Movements = [new NextStepMovementDto { Id = movement.Id, MovementNo = movement.MovementNo, Status = movement.Status }],
+            Warnings = movement.Warnings,
+        };
+    }
+
+    /// <summary>
+    /// A new leg from where the containers are (Ship, NextLeg): the type and To of the preview unless the request changes
+    /// them, one movement for the group or one per container, started or planned - all or nothing.
+    /// </summary>
+    private async Task<NextStepGroupResultDto> NewLegGroupAsync(
+        NextStepGroupRequest group, string kind, IReadOnlyList<int> ids, IReadOnlyList<ContainerNextStepDto> rows,
+        bool canConfirm, int userId, CancellationToken cancellationToken)
+    {
+        // The proposal of the preview, when every container of the group has the same one (the preview groups them so).
+        var proposed = SameProposal(rows);
+        var typeId = group.MovementTypeId ?? proposed?.TypeId;
+        var toPlaceId = group.ToPlaceId
+                        ?? (proposed is not null && (group.MovementTypeId is null || group.MovementTypeId == proposed.Value.TypeId)
+                            ? proposed.Value.ToPlaceId
+                            : null);
+
+        // NO TYPE TO PROPOSE (the usual type of the next stage is inactive): the reader chooses it. An empty type would
+        // become Sea freight in usp_Movement_AddLeg - right for a first leg, never for a next one.
+        if (typeId is null && kind == ContainerNextStepKinds.NextLeg)
+        {
+            return Refused(group, kind, ids, "Choose the movement type.", "VALIDATION");
+        }
+
+        var command = new AddLegCommand
+        {
+            ContainerIds = ids,
+            MovementTypeId = typeId,
+            FromPlaceId = group.FromPlaceId,
+            ToPlaceId = toPlaceId,
+            StartDate = group.Date,
+            Eta = group.Eta,
+            CarrierPartyId = group.CarrierPartyId,
+            VehicleOrVessel = group.VehicleOrVessel,
+            VoyageNo = group.VoyageNo,
+            Reference = group.Reference,
+            BlNo = group.BlNo,
+            BlDate = group.BlDate,
+            Notes = group.Notes,
+            StartNow = group.StartNow,
+            UpdateContainers = group.CopyToContainers,
+            OnePerContainer = group.OnePerContainer,
+            PerContainer = group.PerContainer ?? [],
+        };
+
+        IReadOnlyList<AddedLegDto> made;
+        try
+        {
+            made = await _movements.AddLegAsync(command, canConfirm, userId, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            var failure = Describe(ex);
+            return Refused(group, kind, ids, failure.Message, failure.Code);
+        }
+
+        _logger.LogInformation("Next step: {Count} movement(s) {Action} for {Containers} container(s) by user {UserId}",
+            made.Count, group.StartNow ? "started" : "planned", ids.Count, userId);
+
+        return new NextStepGroupResultDto
+        {
+            Key = group.Key,
+            Kind = kind,
+            Ok = true,
+            Message = await NewLegMessageAsync(made, ids.Count, rows[0].ContainerRef, group.StartNow, cancellationToken),
+            ContainerIds = ids,
+            Movements = made.Select(ToMovementRef).ToList(),
+        };
+    }
+
+    /// <summary>
+    /// "Then start Customs clearance at Kasumbalesa on the same day": the leg the containers get once arrived, worked out
+    /// again now (they are at the movement's To), one AddLeg per group of the new preview. Never a rollback: the
+    /// completion is committed, and a refusal is said as "Arrival recorded; Customs clearance was not started: {reason}.
+    /// Use Next step…".
+    /// </summary>
+    private async Task<(IReadOnlyList<NextStepMovementDto> Made, IReadOnlyList<string> Said, IReadOnlyList<string> Warnings)> ThenLegAsync(
+        NextStepGroupRequest group, NextStepThenRequest then, IReadOnlyList<int> ids, MovementDto completed, bool canConfirm,
+        int userId, CancellationToken cancellationToken)
+    {
+        var noun = RecordedNoun(completed.Stage);
+        var verb = then.StartNow ? "started" : "planned";
+        var made = new List<NextStepMovementDto>();
+        var said = new List<string>();
+        var warnings = new List<string>();
+
+        NextStepPreviewDto after;
+        try
+        {
+            after = await _movements.NextStepPreviewAsync(ids, canConfirm, cancellationToken);
+        }
+        catch (BusinessRuleException ex)
+        {
+            warnings.Add($"{noun} recorded; the next leg was not {verb}: {WithoutFinalPeriod(ex.Message)}. Use Next step…");
+            return (made, said, warnings);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            // The completion is committed: a database that did not answer (a deadlock, a timeout) is a warning too.
+            _logger.LogError(ex, "Movement {MovementNo} completed; its Then leg could not be worked out", completed.MovementNo);
+            warnings.Add($"{noun} recorded; the next leg was not {verb}: {DatabaseDidNotAnswer}. Use Next step…");
+            return (made, said, warnings);
+        }
+
+        var ready = after.Containers.Where(r => r is { Kind: ContainerNextStepKinds.NextLeg, CanMove: true }).ToList();
+        if (ready.Count == 0)
+        {
+            // A NEXT LEG ALREADY WAITS: another user planned (or started) it while the dialog was open. Its row carries no
+            // block reason, so say which movement is there rather than "nothing to propose from here".
+            var waiting = after.Containers.FirstOrDefault(r =>
+                r is { Kind: ContainerNextStepKinds.StartPlanned or ContainerNextStepKinds.Complete, MovementNo: not null });
+            if (waiting is not null)
+            {
+                var state = waiting.Kind == ContainerNextStepKinds.StartPlanned
+                    ? "is already planned. Start it with Next step…"
+                    : "has already started. Use Next step…";
+                warnings.Add($"{noun} recorded; the next leg was not {verb}: its next leg {waiting.MovementNo} "
+                             + $"({waiting.MovementTypeName}) {state}");
+                return (made, said, warnings);
+            }
+
+            var why = after.Containers.Select(r => r.BlockedReason ?? r.BlockGroup).FirstOrDefault(r => r is not null)
+                      ?? "nothing to propose from here";
+            warnings.Add($"{noun} recorded; the next leg was not {verb}: {WithoutFinalPeriod(why)}. Use Next step…");
+            return (made, said, warnings);
+        }
+
+        foreach (var legGroup in ready.GroupBy(r => r.GroupKey ?? string.Empty, StringComparer.Ordinal))
+        {
+            var first = legGroup.First();
+            var typeId = then.MovementTypeId ?? first.ProposedTypeId;
+            var sameType = then.MovementTypeId is null || then.MovementTypeId == first.ProposedTypeId;
+            var legName = sameType ? first.ProposedTypeName ?? "the next leg" : "the next leg";
+            var toPlaceId = then.ToPlaceId ?? (sameType ? first.ProposedToPlaceId : null);
+
+            // Nothing proposed (the usual type of the next stage is inactive) and none asked for: the reader chooses it.
+            if (typeId is null)
+            {
+                warnings.Add($"{noun} recorded; the next leg was not {verb}: choose its movement type. Use Next step…");
+                continue;
+            }
+
+            // The proposed leg that moves needs its To; a stay takes the place (the procedure does it). Another type asked
+            // for is the procedure's to judge by its own stage: a stay is made at the place, a leg that moves without a
+            // To is refused there ("Choose the departure and destination places.") and said as a warning below.
+            if (toPlaceId is null && sameType && first.ProposedIsStay != true)
+            {
+                warnings.Add($"{noun} recorded; {legName} was not {verb}: choose the To. Use Next step…");
+                continue;
+            }
+
+            try
+            {
+                var legs = await _movements.AddLegAsync(
+                    new AddLegCommand
+                    {
+                        ContainerIds = legGroup.Select(r => r.ContainerId).ToList(),
+                        MovementTypeId = typeId,
+                        FromPlaceId = first.ProposedFromPlaceId,
+                        ToPlaceId = toPlaceId,
+                        StartDate = then.Date ?? DateOnly.FromDateTime(completed.EndDate ?? DateTime.UtcNow),
+                        StartNow = then.StartNow,
+                        UpdateContainers = true,
+                        OnePerContainer = then.OnePerContainer ?? first.ProposedOnePerContainer ?? false,
+                    },
+                    confirmDrafts: false,   // they travelled: no draft left among them
+                    userId, cancellationToken);
+                made.AddRange(legs.Select(ToMovementRef));
+                if (legs.Count > 0)
+                {
+                    var (phrase, _) = await LegPhraseAsync(legs, then.StartNow, cancellationToken);
+                    said.Add($"Then {phrase}.");
+                }
+            }
+            catch (BusinessRuleException ex)
+            {
+                _logger.LogInformation("Movement {MovementNo} completed; its Then leg was refused: {Reason}", completed.MovementNo, ex.Message);
+                warnings.Add($"{noun} recorded; {legName} was not {verb}: {WithoutFinalPeriod(ex.Message)}. Use Next step…");
+            }
+            catch (Exception ex) when (ex is not OperationCanceledException)
+            {
+                // Never a rollback, never an error: the arrival is committed (the goods receipts of a Delivery do the same).
+                _logger.LogError(ex, "Movement {MovementNo} completed; its Then leg failed", completed.MovementNo);
+                warnings.Add($"{noun} recorded; {legName} was not {verb}: {DatabaseDidNotAnswer}. Use Next step…");
+            }
+        }
+
+        return (made, said, warnings);
+    }
+
+    /* ── the checks ───────────────────────────────────────────────────────────────────────────── */
+
+    private static string? InvalidContainerIds(IReadOnlyCollection<int> ids)
+    {
+        if (ids.Count == 0)
+        {
+            return "Tick at least one container.";
+        }
+
+        if (ids.Any(id => id <= 0))
+        {
+            return "A container id must be greater than zero.";
+        }
+
+        return ids.Distinct().Count() > MaxNextStepContainers
+            ? $"At most {MaxNextStepContainers.ToString("N0", CultureInfo.InvariantCulture)} containers at a time: tick fewer, or filter the list."
+            : null;
+    }
+
+    /// <summary>The kind of each group (normalized), or the first problem of the request, said by step number.</summary>
+    private static (IReadOnlyList<string> Kinds, string? Invalid) ValidateGroups(IReadOnlyList<NextStepGroupRequest> groups)
+    {
+        if (groups.Count == 0)
+        {
+            return ([], "Choose at least one step.");
+        }
+
+        if (groups.Count > MaxNextStepGroups)
+        {
+            return ([], $"At most {MaxNextStepGroups} steps at a time.");
+        }
+
+        var kinds = new List<string>(groups.Count);
+        var seen = new HashSet<int>();
+        for (var i = 0; i < groups.Count; i++)
+        {
+            var group = groups[i];
+            var step = $"Step {i + 1}";
+            if (group is null)
+            {
+                return ([], $"{step} is empty.");
+            }
+
+            var kind = ContainerNextStepKinds.Normalize(group.Kind, ContainerNextStepKinds.Applicable);
+            if (kind is null)
+            {
+                return ([], ContainerNextStepKinds.Normalize(group.Kind, [ContainerNextStepKinds.Receive, ContainerNextStepKinds.OpenReceipt]) is not null
+                    ? $"{step}: goods are received with Receive goods…, not with a movement."
+                    : $"{step}: kind must be Complete, StartPlanned, Ship or NextLeg.");
+            }
+
+            var ids = group.ContainerIds ?? [];
+            if (ids.Count == 0)
+            {
+                return ([], $"{step}: tick at least one container.");
+            }
+
+            if (ids.Any(id => id <= 0))
+            {
+                return ([], $"{step}: a container id must be greater than zero.");
+            }
+
+            if (kind is ContainerNextStepKinds.Complete or ContainerNextStepKinds.StartPlanned && group.MovementId is null or <= 0)
+            {
+                return ([], $"{step}: say which movement to {(kind == ContainerNextStepKinds.Complete ? "complete" : "start")} (movementId).");
+            }
+
+            // (82) only a movement in progress can arrive in parts
+            if (group.SplitOff && kind != ContainerNextStepKinds.Complete)
+            {
+                return ([], $"{step}: splitOff is for a Complete step only (only part of a movement in progress arrived).");
+            }
+
+            // (82) a split checks the movement's row version: one sent that cannot be one is refused, never skipped
+            if (group.SplitOff && IsInvalidRowVersion(group.RowVersion))
+            {
+                return ([], $"{step}: the row version is not valid. Reload the page and try again.");
+            }
+
+            // A container takes one step at a time: in two groups, the second would run on what the first just changed.
+            foreach (var id in ids.Distinct())
+            {
+                if (!seen.Add(id))
+                {
+                    return ([], $"Container {id} is in two steps: a container takes one step at a time.");
+                }
+            }
+
+            if (group.PerContainer?.FirstOrDefault(p => !ids.Contains(p.ContainerId)) is { } stray)
+            {
+                return ([], $"{step}: container {stray.ContainerId} has a truck no. or ETA but is not in this step.");
+            }
+
+            kinds.Add(kind);
+        }
+
+        return seen.Count > MaxNextStepContainers
+            ? ([], $"At most {MaxNextStepContainers.ToString("N0", CultureInfo.InvariantCulture)} containers at a time: apply the steps in parts.")
+            : (kinds, null);
+    }
+
+    /// <summary>
+    /// The step asked for is still each container's step now, and it can be taken: else the refusal, naming the container.
+    /// A draft without containers.confirm is left to the new leg's procedure: it may wait on a PLANNED leg, only a start
+    /// needs it confirmed.
+    /// </summary>
+    private static (string Message, string Code)? StepRefusal(
+        NextStepGroupRequest group, string kind, IReadOnlyList<int> ids, IReadOnlyList<ContainerNextStepDto?> rows,
+        bool canConfirm)
+    {
+        for (var i = 0; i < rows.Count; i++)
+        {
+            if (rows[i] is not { Found: true } row)
+            {
+                return ($"Container {ids[i]} not found.", "NOT_FOUND");
+            }
+
+            var name = row.ContainerRef ?? ids[i].ToString(CultureInfo.InvariantCulture);
+            var sameStep = kind switch
+            {
+                ContainerNextStepKinds.Complete or ContainerNextStepKinds.StartPlanned
+                    => row.Kind == kind && row.MovementId == group.MovementId,
+                _ => ContainerNextStepKinds.IsNewLeg(row.Kind),
+            };
+            if (!sameStep)
+            {
+                return (StepChangedMessage(name, row), "NEXT_STEP_CHANGED");
+            }
+
+            // A NEW LEG LEAVES FROM WHERE THE PREVIEW SAW IT: moved since (another user recorded the leg while the dialog
+            // stood open), the To chosen for the old place would make a leg from the new one - from a place to itself.
+            if (ContainerNextStepKinds.IsNewLeg(kind) && group.ExpectedPlaceId is { } expected && row.PlaceId != expected)
+            {
+                return ($"{name} is now at {row.PlaceName ?? "another place"}: open Next step… again.", "NEXT_STEP_CHANGED");
+            }
+
+            if (row.CanMove)
+            {
+                continue;
+            }
+
+            // Never moved and no port of loading: any From fits it (prompt 45), so the dialog for one container asks for it.
+            if (ContainerNextStepKinds.IsNewLeg(kind) && row.PlaceId is null && group.FromPlaceId is not null
+                && row.BlockGroup == NoPortOfLoadingGroup)
+            {
+                continue;
+            }
+
+            // A draft the reader may not confirm: the new leg's procedure decides - it plans one ("Plan only") and refuses
+            // a start by name ("Container KTG-... is a draft: someone who may confirm containers must confirm it first.").
+            var draftForTheProcedure = ContainerNextStepKinds.IsNewLeg(kind) && row.IsDraft && !canConfirm
+                                       && row.BlockGroup == DraftNotConfirmableGroup;
+            if (!draftForTheProcedure)
+            {
+                var reason = row.BlockedReason ?? row.BlockGroup ?? "it cannot move on now";
+                return (WithName(name, reason), "CANNOT_MOVE_ON");
+            }
+        }
+
+        return null;
+    }
+
+    private const string DatabaseDidNotAnswer = "the database did not answer (see the API log)";
+
+    private static string StepChangedMessage(string name, ContainerNextStepDto row) => row.Kind switch
+    {
+        ContainerNextStepKinds.Done => WithName(name, row.BlockedReason ?? "its journey is over"),
+        ContainerNextStepKinds.Complete => $"{name} is now travelling with {row.MovementNo}: open Next step… again.",
+        ContainerNextStepKinds.StartPlanned => $"{name} now waits for {row.MovementNo} ({row.MovementTypeName}): open Next step… again.",
+        ContainerNextStepKinds.Receive or ContainerNextStepKinds.OpenReceipt
+            => $"{name} is delivered: its goods are received next (Receive goods…).",
+        _ => $"{name} has no movement of this step any more: its next step is a new leg from {row.PlaceName ?? "where it is"}. Open Next step… again.",
+    };
+
+    /* ── the words ────────────────────────────────────────────────────────────────────────────── */
+
+    /// <summary>"KTG-2026-0031: arrived at Dar es Salaam on 17/10/2026 (MOV-2026-000046). Now At Port."</summary>
+    private static string CompletionMessage(MovementDto movement, IReadOnlyList<ContainerNextStepDto> rows)
+    {
+        var who = Who(movement.Containers.Count, movement.Containers.FirstOrDefault()?.ContainerRef ?? rows[0].ContainerRef);
+        return $"{who}: {CompletedWhat(movement)} on {MessageDay(movement.EndDate)} ({movement.MovementNo}).{NowStatus(movement)}";
+    }
+
+    /// <summary>"arrived at Dar es Salaam", "cleared customs at Kasumbalesa"... - what a completed movement did, by its stage.</summary>
+    private static string CompletedWhat(MovementDto movement) => CompletedWhat(movement.Stage, movement.ToName);
+
+    /// <summary>The same from a movement's stage and To (82: the movement a cancelled split-off movement's containers went back to).</summary>
+    private static string CompletedWhat(string? stage, string toName) => MovementStages.Normalize(stage) switch
+    {
+        MovementStages.Customs => $"cleared customs at {toName}",
+        MovementStages.Border => $"crossed the border at {toName}",
+        MovementStages.Port => $"left the port of {toName}",
+        MovementStages.Origin => "loaded at the supplier",
+        MovementStages.Delivery => $"delivered to {toName}",
+        _ => $"arrived at {toName}",
+    };
+
+    /// <summary>"Arrival recorded; ..." - the noun of the date the dialog asked for, by the completed movement's stage.</summary>
+    private static string RecordedNoun(string? stage) => MovementStages.Normalize(stage) switch
+    {
+        MovementStages.Customs => "Clearance",
+        MovementStages.Border => "Crossing",
+        MovementStages.Port => "Departure",
+        MovementStages.Delivery => "Delivery",
+        MovementStages.Origin => "Loading",
+        _ => "Arrival",
+    };
+
+    /// <summary>
+    /// "KTG-2026-0031: Inland transport Dar es Salaam → Kasumbalesa started on 17/10/2026 (MOV-2026-000051). Now In Transit."
+    /// / "12 containers: ... one movement per container (MOV-2026-000051 to MOV-2026-000062)."
+    /// </summary>
+    private async Task<string> NewLegMessageAsync(
+        IReadOnlyList<AddedLegDto> made, int containers, string? firstRef, bool started, CancellationToken cancellationToken)
+    {
+        if (made.Count == 0)
+        {
+            return "Nothing was created.";
+        }
+
+        var (leg, first) = await LegPhraseAsync(made, started, cancellationToken);
+        var who = Who(containers, made.Count == 1 && containers == 1 ? made[0].ContainerRef ?? firstRef : firstRef);
+        var now = made.Count == 1 && started && first is not null ? NowStatus(first) : string.Empty;
+        return $"{who}: {leg}.{now}";
+    }
+
+    /// <summary>
+    /// "Inland transport Dar es Salaam → Kasumbalesa started on 17/10/2026 (MOV-2026-000051)", ", one movement per container
+    /// (MOV-2026-000051 to MOV-2026-000062)" for several. The first movement is read once, for the names.
+    /// </summary>
+    private async Task<(string Phrase, MovementDto? First)> LegPhraseAsync(
+        IReadOnlyList<AddedLegDto> made, bool started, CancellationToken cancellationToken)
+    {
+        // The movements are committed: a failed read must not turn the answer into an error.
+        MovementDto? first = null;
+        try
+        {
+            first = await _movements.GetAsync(made[0].Id, cancellationToken);
+        }
+        catch (Exception ex) when (ex is not OperationCanceledException)
+        {
+            _logger.LogWarning(ex, "Next step: movement {MovementNo} created but not read back", made[0].MovementNo);
+        }
+
+        var leg = first is null ? "the new leg" : $"{first.TypeName} {Route(first)}";
+        var when = started ? $"started on {MessageDay(made[0].StartDate)}" : $"planned for {MessageDay(made[0].PlannedDate)}";
+        return made.Count == 1
+            ? ($"{leg} {when} ({made[0].MovementNo})", first)
+            : ($"{leg} {when}, one movement per container ({made[0].MovementNo} to {made[^1].MovementNo})", first);
+    }
+
+    /// <summary>"KTG-2026-0031" alone, else "12 containers".</summary>
+    private static string Who(int count, string? onlyRef)
+        => count == 1 && !string.IsNullOrEmpty(onlyRef)
+            ? onlyRef
+            : $"{count.ToString("N0", CultureInfo.InvariantCulture)} containers";
+
+    /// <summary>"Dar es Salaam → Kasumbalesa", or "at Kasumbalesa" for a stay.</summary>
+    private static string Route(MovementDto movement)
+        => movement.FromPlaceId == movement.ToPlaceId ? $"at {movement.ToName}" : $"{movement.FromName} → {movement.ToName}";
+
+    /// <summary>" Now At Port." - the status of its containers, or each status with its count when they differ.</summary>
+    private static string NowStatus(MovementDto movement)
+    {
+        var statuses = movement.Containers
+            .GroupBy(c => c.ContainerStatus)
+            .OrderByDescending(g => g.Count())
+            .Select(g => (Name: ContainerStatus.Name(g.Key), Count: g.Count()))
+            .ToList();
+        return statuses.Count switch
+        {
+            0 => string.Empty,
+            1 => $" Now {statuses[0].Name}.",
+            _ => $" Now {string.Join(", ", statuses.Select(s => $"{s.Name} ({s.Count})"))}.",
+        };
+    }
+
+    private static string MessageDay(DateTime? value) => value?.ToString(DayFormat, CultureInfo.InvariantCulture) ?? "today";
+
+    /// <summary>The reason as it comes, prefixed with the container when it does not name it already, with its full stop.</summary>
+    private static string WithName(string name, string reason)
+    {
+        var text = reason.Trim();
+        text = text.EndsWith('.') || text.EndsWith(')') ? text : text + ".";
+        return text.Contains(name, StringComparison.Ordinal) ? text : $"{name}: {text}";
+    }
+
+    private static (int? TypeId, int? ToPlaceId)? SameProposal(IReadOnlyList<ContainerNextStepDto> rows)
+    {
+        var proposals = rows.Select(r => (r.ProposedTypeId, r.ProposedToPlaceId)).Distinct().ToList();
+        return proposals.Count == 1 && proposals[0].ProposedTypeId is not null
+            ? (proposals[0].ProposedTypeId, proposals[0].ProposedToPlaceId)
+            : null;
+    }
+
+    private static NextStepMovementDto ToMovementRef(AddedLegDto leg) => new()
+    {
+        Id = leg.Id,
+        MovementNo = leg.MovementNo,
+        Status = leg.Status,
+        ContainerId = leg.ContainerId,
+        ContainerRef = leg.ContainerRef,
+    };
+
+    private static NextStepGroupResultDto Refused(
+        NextStepGroupRequest group, string kind, IReadOnlyList<int> ids, string message, string? code) => new()
+    {
+        Key = group.Key,
+        Kind = kind,
+        Ok = false,
+        Code = code,
+        Message = message,
+        ContainerIds = ids,
+    };
+}

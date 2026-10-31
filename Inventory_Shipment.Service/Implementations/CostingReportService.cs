@@ -32,9 +32,9 @@ public sealed class CostingReportService : ICostingReportService
     public async Task<Result<InventoryValuationResult>> ValuationAsync(
         int? warehouseId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Inventory.ItemsView))
+        if (!permissions.Contains(Permissions.Inventory.ValuationView))
         {
-            return Forbidden<InventoryValuationResult>(Permissions.Inventory.ItemsView);
+            return Forbidden<InventoryValuationResult>(Permissions.Inventory.ValuationView);
         }
 
         var rows = await _reports.ValuationAsync(warehouseId, cancellationToken);
@@ -45,7 +45,7 @@ public sealed class CostingReportService : ICostingReportService
             // The name from the rows when there are any, else from the lookup: an empty warehouse
             // still has a name, and a page that says "Stock in —" reads as a bug.
             warehouseName = rows.FirstOrDefault()?.WarehouseName
-                            ?? (await _warehouses.LookupAsync(false, null, id, cancellationToken)).FirstOrDefault(w => w.Id == id)?.WarehouseName;
+                            ?? (await _warehouses.LookupAsync(false, null, id, cancellationToken: cancellationToken)).FirstOrDefault(w => w.Id == id)?.WarehouseName;
         }
 
         return Result<InventoryValuationResult>.Success(new InventoryValuationResult

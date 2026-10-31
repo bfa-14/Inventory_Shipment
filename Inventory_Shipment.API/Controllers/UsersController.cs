@@ -91,6 +91,36 @@ public sealed class UsersController : ControllerBase
         return result.ToNoContentResult(this);
     }
 
+    /// <summary>
+    /// (92) "Warehouses of {user}": All warehouses or the ticked ones, how many warehouses they give, and the history of
+    /// every change. Reading it is seeing the user.
+    /// </summary>
+    [HttpGet("{id:int}/warehouses")]
+    [HasPermission(Permissions.Security.UsersView)]
+    [ProducesResponseType<UserWarehousesDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UserWarehousesDto>> GetWarehouses(int id, CancellationToken cancellationToken)
+    {
+        var result = await _userService.GetWarehousesAsync(id, cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
+    /// (92) Where the user may move stock: { allWarehouses, warehouseIds }. The right that assigns roles
+    /// (security.users.edit), no new permission. Takes effect at once; answers the dialog re-read.
+    /// </summary>
+    [HttpPut("{id:int}/warehouses")]
+    [HasPermission(Permissions.Security.UsersEdit)]
+    [ProducesResponseType<UserWarehousesDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
+    public async Task<ActionResult<UserWarehousesDto>> SetWarehouses(
+        int id, [FromBody] SetUserWarehousesRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _userService.SetWarehousesAsync(id, request, User.GetUserId(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     /// <summary>Replaces the complete set of roles the user holds.</summary>
     [HttpPut("{id:int}/roles")]
     [HasPermission(Permissions.Security.UsersEdit)]

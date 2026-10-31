@@ -42,4 +42,18 @@ public sealed class DatabaseOptions
     /// the lock's wait: lowering it below sixty brings the 500 back. 0 or less leaves SqlClient's own thirty seconds.
     /// </summary>
     public int CommandTimeoutSeconds { get; set; } = 90;
+
+    /// <summary>
+    /// How long a call that works on MANY CONTAINERS AT ONCE may take, in seconds: Auto-plan's proposal and creation (from
+    /// an order or an invoice), invoices created from containers and their posting, Link containers, the bulk Confirm /
+    /// Container numbers / Delete, Start shipment, a movement saved, started or completed, and the draft goods receipts of
+    /// a Delivery. Used only when it is longer than the ordinary timeout; a connection string that waits forever
+    /// ("Command Timeout=0") still does.
+    ///
+    /// TEN MINUTES, BECAUSE THEIR TIME GROWS WITH THE NUMBER OF CONTAINERS and the owner wants any number (script 78).
+    /// Measured in the sandbox, 2,000 confirmed containers are created in about 13 s and their goods receipts drafted in
+    /// about 9 s - far below the ordinary ninety seconds - but a busy server or a much bigger order should be slow, not
+    /// fail half way with "Execution Timeout Expired" (a 500, everything rolled back). 0 or less: the ordinary timeout.
+    /// </summary>
+    public int BatchCommandTimeoutSeconds { get; set; } = 600;
 }

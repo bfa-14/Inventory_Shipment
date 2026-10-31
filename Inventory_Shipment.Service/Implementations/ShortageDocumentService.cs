@@ -7,6 +7,7 @@ using Inventory_Shipment.Repository.Database;
 using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 
 namespace Inventory_Shipment.Service.Implementations;
@@ -47,7 +48,9 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         try
         {
             var rows = await _shortages.CalculateAsync(query, cancellationToken);
-            return Result<IReadOnlyList<ShortageLiveRowDto>>.Success(rows);
+            // (94) The last and average cost null without View item costs.
+            return Result<IReadOnlyList<ShortageLiveRowDto>>.Success(
+                ItemCosts.Sees(permissions) ? rows : rows.Select(r => ItemCosts.Strip(r)).ToList());
         }
         catch (BusinessRuleException ex)
         {
@@ -82,7 +85,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             return Forbidden<ShortageDocumentDto>(Permissions.Inventory.ShortagesView);
         }
 
-        return await ReadAsync(id, cancellationToken);
+        return await ReadAsync(id, permissions, cancellationToken);
     }
 
     /* ── writing ──────────────────────────────────────────────────────────────────────────────── */
@@ -120,7 +123,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         }
 
         _logger.LogInformation("Shortage plan {DocumentId} saved by user {UserId}", savedId, userId);
-        return await ReadAsync(savedId, cancellationToken);
+        return await ReadAsync(savedId, permissions, cancellationToken);
     }
 
     public Task<Result<ShortageDocumentDto>> RecalculateAsync(
@@ -205,7 +208,8 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
         }
 
-        return Result<(byte[], string)>.Success((BuildWorkbook(read.Value), $"Shortage_{read.Value.DocumentNumber}.xlsx"));
+        return Result<(byte[], string)>.Success(
+            (BuildWorkbook(read.Value, ItemCosts.Sees(permissions)), $"Shortage_{read.Value.DocumentNumber}.xlsx"));
     }
 
     public async Task<Result<(byte[] Content, string FileName)>> ExportLiveAsync(
@@ -218,23 +222,32 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         }
 
         var stamp = _clock.GetUtcNow().ToString("yyyyMMdd");
-        return Result<(byte[], string)>.Success((BuildLiveWorkbook(rows.Value, query), $"Shortage_Live_{stamp}.xlsx"));
+        return Result<(byte[], string)>.Success(
+            (BuildLiveWorkbook(rows.Value, query, ItemCosts.Sees(permissions)), $"Shortage_Live_{stamp}.xlsx"));
     }
 
-    /// <summary>The columns the saved lines and the live rows share, in the order of the customer's study.</summary>
+    /// <summary>
+    /// The columns the saved lines and the live rows share, in the order of the customer's study. (90) "Transfers in"
+    /// after "Transit Qty": goods on the way to the warehouse from other warehouses (transfer orders), which the stock
+    /// figure after it counts too - hence its heading "Stock + Transit + Transfers in".
+    /// </summary>
     private static readonly string[] FigureColumns =
     [
-        "Item Code", "Item Name", "Brand", "Family", "Current Inventory", "Transit Qty", "Outstanding Order Qty",
-        "Stock + Transit", "Total Expected Stock", "Expected Monthly Sales", "Lead Time (Month)", "Expected Requirement",
-        "Shortage Qty", "Coverage (Months)",
+        "Item Code", "Item Name", "Brand", "Family", "Current Inventory", "Transit Qty", "Transfers in", "Outstanding Order Qty",
+        "Stock + Transit + Transfers in", "Total Expected Stock", "Expected Monthly Sales", "Lead Time (Month)",
+        "Expected Requirement", "Shortage Qty", "Coverage (Months)",
     ];
+
+    /// <summary>How many columns <see cref="WriteFigures"/> fills: the columns after them start there.</summary>
+    private static readonly int FigureCount = FigureColumns.Length;
 
     /// <summary>
     /// The plan as it would be filed: the header block says which warehouse, supplier and lead time
     /// the figures belong to, every snapshot column follows, and the totals close it. A posted plan
     /// exports what was posted — the workbook reads the stored snapshot like the page does.
+    /// (94) Without View item costs the Last Cost column is left out, not blank.
     /// </summary>
-    private static byte[] BuildWorkbook(ShortageDocumentDto document)
+    private static byte[] BuildWorkbook(ShortageDocumentDto document, bool includeCosts)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet("Shortage Plan");
@@ -278,7 +291,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         [
             "#", .. FigureColumns,
             "Manual Monthly Sales", "Purchase Unit", "Required Qty", "Required (base)", "PC per Container",
-            "Container Requirement", "Min", "Max", "Last Cost", "Notes",
+            "Container Requirement", "Min", "Max", .. (includeCosts ? (string[])["Last Cost"] : []), "Notes",
         ];
         WriteColumnHeader(sheet, row, columns);
 
@@ -288,24 +301,33 @@ public sealed class ShortageDocumentService : IShortageDocumentService
             row++;
             sheet.Cell(row, 1).Value = line.LineNo;
             WriteFigures(sheet, row, 2, line, line.EffectiveMonthlySales);
-            sheet.Cell(row, 16).Value = Num(line.ExpectedMonthlySalesManual);
-            sheet.Cell(row, 17).Value = UnitLabel(line);
-            sheet.Cell(row, 18).Value = line.RequiredQty;
-            sheet.Cell(row, 19).Value = line.RequiredBase;
-            sheet.Cell(row, 20).Value = Num(line.PcPerContainer);
-            sheet.Cell(row, 21).Value = Num(line.ContainerRequirement);
-            sheet.Cell(row, 22).Value = Num(line.MinQuantity);
-            sheet.Cell(row, 23).Value = Num(line.MaxQuantity);
-            sheet.Cell(row, 24).Value = Num(line.LastCost);
-            sheet.Cell(row, 25).Value = line.Notes ?? string.Empty;
+            var next = 2 + FigureCount;
+            sheet.Cell(row, next).Value = Num(line.ExpectedMonthlySalesManual);
+            sheet.Cell(row, next + 1).Value = UnitLabel(line);
+            sheet.Cell(row, next + 2).Value = line.RequiredQty;
+            sheet.Cell(row, next + 3).Value = line.RequiredBase;
+            sheet.Cell(row, next + 4).Value = Num(line.PcPerContainer);
+            sheet.Cell(row, next + 5).Value = Num(line.ContainerRequirement);
+            sheet.Cell(row, next + 6).Value = Num(line.MinQuantity);
+            sheet.Cell(row, next + 7).Value = Num(line.MaxQuantity);
+            if (includeCosts)
+            {
+                sheet.Cell(row, next + 8).Value = Num(line.LastCost);
+            }
+
+            sheet.Cell(row, next + (includeCosts ? 9 : 8)).Value = line.Notes ?? string.Empty;
         }
 
+        var after = 2 + FigureCount;
         if (document.Lines.Count > 0)
         {
             FormatFigures(sheet, firstLineRow, row, 2);
-            sheet.Range(firstLineRow, 16, row, 16).Style.NumberFormat.Format = "#,##0.00";
-            sheet.Range(firstLineRow, 21, row, 21).Style.NumberFormat.Format = "#,##0.00";
-            sheet.Range(firstLineRow, 24, row, 24).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(firstLineRow, after, row, after).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(firstLineRow, after + 5, row, after + 5).Style.NumberFormat.Format = "#,##0.00";
+            if (includeCosts)
+            {
+                sheet.Range(firstLineRow, after + 8, row, after + 8).Style.NumberFormat.Format = "#,##0.00";
+            }
         }
 
         row += 2;
@@ -332,14 +354,15 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         sheet.Columns().AdjustToContents();
         sheet.Column(2).Width = 22;
         sheet.Column(3).Width = 40;
-        sheet.Column(25).Width = 30;
+        sheet.Column(after + (includeCosts ? 9 : 8)).Width = 30;
 
         using var stream = new MemoryStream();
         workbook.SaveAs(stream);
         return stream.ToArray();
     }
 
-    private static byte[] BuildLiveWorkbook(IReadOnlyList<ShortageLiveRowDto> rows, ShortageCalculateQuery query)
+    /// <summary>The live calculation as a workbook. (94) Without View item costs the Last Cost column is left out.</summary>
+    private static byte[] BuildLiveWorkbook(IReadOnlyList<ShortageLiveRowDto> rows, ShortageCalculateQuery query, bool includeCosts)
     {
         using var workbook = new XLWorkbook();
         var sheet = workbook.AddWorksheet("Shortages (live)");
@@ -356,7 +379,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         [
             .. FigureColumns,
             "Sold in Period", "Purchase Unit", "Suggested Qty", "PC per Container", "Container Requirement",
-            "Min", "Max", "Last Cost", "Supplier",
+            "Min", "Max", .. (includeCosts ? (string[])["Last Cost"] : []), "Supplier",
         ];
         WriteColumnHeader(sheet, row, columns);
 
@@ -365,22 +388,31 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         {
             row++;
             WriteFigures(sheet, row, 1, r, r.ExpectedMonthlySalesBase);
-            sheet.Cell(row, 15).Value = r.SoldInPeriodBase;
-            sheet.Cell(row, 16).Value = UnitLabel(r);
-            sheet.Cell(row, 17).Value = r.SuggestedRequiredQty;
-            sheet.Cell(row, 18).Value = Num(r.PcPerContainer);
-            sheet.Cell(row, 19).Value = Num(r.ContainerRequirement);
-            sheet.Cell(row, 20).Value = Num(r.MinQuantity);
-            sheet.Cell(row, 21).Value = Num(r.MaxQuantity);
-            sheet.Cell(row, 22).Value = Num(r.LastCost);
-            sheet.Cell(row, 23).Value = r.SupplierName ?? string.Empty;
+            var next = 1 + FigureCount;
+            sheet.Cell(row, next).Value = r.SoldInPeriodBase;
+            sheet.Cell(row, next + 1).Value = UnitLabel(r);
+            sheet.Cell(row, next + 2).Value = r.SuggestedRequiredQty;
+            sheet.Cell(row, next + 3).Value = Num(r.PcPerContainer);
+            sheet.Cell(row, next + 4).Value = Num(r.ContainerRequirement);
+            sheet.Cell(row, next + 5).Value = Num(r.MinQuantity);
+            sheet.Cell(row, next + 6).Value = Num(r.MaxQuantity);
+            if (includeCosts)
+            {
+                sheet.Cell(row, next + 7).Value = Num(r.LastCost);
+            }
+
+            sheet.Cell(row, next + (includeCosts ? 8 : 7)).Value = r.SupplierName ?? string.Empty;
         }
 
         if (rows.Count > 0)
         {
+            var after = 1 + FigureCount;
             FormatFigures(sheet, firstLineRow, row, 1);
-            sheet.Range(firstLineRow, 19, row, 19).Style.NumberFormat.Format = "#,##0.00";
-            sheet.Range(firstLineRow, 22, row, 22).Style.NumberFormat.Format = "#,##0.00";
+            sheet.Range(firstLineRow, after + 4, row, after + 4).Style.NumberFormat.Format = "#,##0.00";
+            if (includeCosts)
+            {
+                sheet.Range(firstLineRow, after + 7, row, after + 7).Style.NumberFormat.Format = "#,##0.00";
+            }
         }
 
         sheet.Columns().AdjustToContents();
@@ -404,7 +436,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         range.Style.Border.BottomBorder = XLBorderStyleValues.Thin;
     }
 
-    /// <summary>The fourteen <see cref="FigureColumns"/>, starting at <paramref name="column"/>.</summary>
+    /// <summary>The fifteen <see cref="FigureColumns"/>, starting at <paramref name="column"/>.</summary>
     private static void WriteFigures(IXLWorksheet sheet, int row, int column, ShortageFiguresDto f, decimal monthlySales)
     {
         sheet.Cell(row, column).Value = f.ItemCode;
@@ -413,22 +445,23 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         sheet.Cell(row, column + 3).Value = f.FamilyName;
         sheet.Cell(row, column + 4).Value = f.CurrentInventoryBase;
         sheet.Cell(row, column + 5).Value = f.TransitBase;
-        sheet.Cell(row, column + 6).Value = f.OutstandingOrderBase;
-        sheet.Cell(row, column + 7).Value = f.StockPlusTransitBase;
-        sheet.Cell(row, column + 8).Value = f.TotalExpectedStockBase;
-        sheet.Cell(row, column + 9).Value = monthlySales;
-        sheet.Cell(row, column + 10).Value = f.LeadTimeMonths;
-        sheet.Cell(row, column + 11).Value = f.ExpectedRequirementBase;
-        sheet.Cell(row, column + 12).Value = f.ShortageBase;
-        sheet.Cell(row, column + 13).Value = Num(f.CoverageMonths);
+        sheet.Cell(row, column + 6).Value = f.TransfersInBase;
+        sheet.Cell(row, column + 7).Value = f.OutstandingOrderBase;
+        sheet.Cell(row, column + 8).Value = f.StockPlusTransitBase;
+        sheet.Cell(row, column + 9).Value = f.TotalExpectedStockBase;
+        sheet.Cell(row, column + 10).Value = monthlySales;
+        sheet.Cell(row, column + 11).Value = f.LeadTimeMonths;
+        sheet.Cell(row, column + 12).Value = f.ExpectedRequirementBase;
+        sheet.Cell(row, column + 13).Value = f.ShortageBase;
+        sheet.Cell(row, column + 14).Value = Num(f.CoverageMonths);
     }
 
     private static void FormatFigures(IXLWorksheet sheet, int firstRow, int lastRow, int column)
     {
-        sheet.Range(firstRow, column + 4, lastRow, column + 8).Style.NumberFormat.Format = "#,##0";
-        sheet.Range(firstRow, column + 9, lastRow, column + 11).Style.NumberFormat.Format = "#,##0.00";
-        sheet.Range(firstRow, column + 12, lastRow, column + 12).Style.NumberFormat.Format = "#,##0";
-        sheet.Range(firstRow, column + 13, lastRow, column + 13).Style.NumberFormat.Format = "#,##0.00";
+        sheet.Range(firstRow, column + 4, lastRow, column + 9).Style.NumberFormat.Format = "#,##0";
+        sheet.Range(firstRow, column + 10, lastRow, column + 12).Style.NumberFormat.Format = "#,##0.00";
+        sheet.Range(firstRow, column + 13, lastRow, column + 13).Style.NumberFormat.Format = "#,##0";
+        sheet.Range(firstRow, column + 14, lastRow, column + 14).Style.NumberFormat.Format = "#,##0.00";
     }
 
     private static string UnitLabel(ShortageFiguresDto f)
@@ -441,12 +474,18 @@ public sealed class ShortageDocumentService : IShortageDocumentService
 
     /* ── the shared shapes ────────────────────────────────────────────────────────────────────── */
 
-    private async Task<Result<ShortageDocumentDto>> ReadAsync(int id, CancellationToken cancellationToken)
+    /// <summary>The plan as this reader receives it: (94) its lines' last cost null without View item costs.</summary>
+    private async Task<Result<ShortageDocumentDto>> ReadAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
     {
         var document = await _shortages.GetAsync(id, cancellationToken);
+        // (94) The lines' last cost null without View item costs; the totals of the plan's purchase orders too, unless the
+        // reader may see purchase orders (where those amounts are anyway).
         return document is null
             ? Result<ShortageDocumentDto>.Failure(ErrorType.NotFound, NotFoundMessage, "NOT_FOUND")
-            : Result<ShortageDocumentDto>.Success(document);
+            : Result<ShortageDocumentDto>.Success(ItemCosts.Sees(permissions)
+                ? document
+                : ItemCosts.Strip(document, permissions.Contains(Permissions.Purchase.OrdersView)));
     }
 
     private async Task<Result<ShortageDocumentDto>> ChangeAsync(
@@ -470,7 +509,7 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         _logger.LogInformation("Shortage plan {DocumentId} {Verb} by user {UserId}", id, verb, userId);
 
         // Re-read: a recalculation replaces every figure and the totals, posting stamps who and when.
-        return await ReadAsync(id, cancellationToken);
+        return await ReadAsync(id, permissions, cancellationToken);
     }
 
     private static Result<T> Failure<T>(BusinessRuleException exception)

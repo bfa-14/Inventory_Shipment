@@ -160,6 +160,7 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
         var verdicts = rows.Select(r => Judge(r, lookups, date)).ToList();
 
         WarnDuplicates(verdicts);
+        await RefuseReferenceClashesAsync(verdicts, cancellationToken);
 
         foreach (var verdict in verdicts)
         {
@@ -518,6 +519,15 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             return null;
         }
 
+        // (97) A BIVAC charge names its BIVAC item and takes that item's cost at each container's port: typed with
+        // Add charge…, never imported.
+        if (string.Equals(type.ChargeCode.Trim(), "BIV", StringComparison.OrdinalIgnoreCase))
+        {
+            verdict.Errors.Add("A BIVAC charge is entered with Add charge…: it names the BIVAC item and takes its cost at each "
+                               + "container's port (Item Definition › BIVAC cost per port).");
+            return null;
+        }
+
         var v = verdict.Row;
         v.ChargeTypeId = type.Id;
         v.ChargeCode = type.ChargeCode;
@@ -738,6 +748,8 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
     /// <summary>
     /// What the procedures accept but the person should know: a charge that cannot be posted yet (no items, an
     /// item without weight or volume — _Post refuses it, _Create does not), a late charge, the same charge twice.
+    /// A container with one line takes the whole charge whatever the method (script 88): no weight or volume is
+    /// needed for it, so only a container of several lines is warned about.
     /// </summary>
     private static void WarnAboutContainer(
         ContainerChargeImportContainer container, ChargeTypeLookupDto type, Lookups lookups, Verdict verdict)
@@ -752,12 +764,12 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
                 warnings.Add($"Container {container.ContainerRef} has no items yet: the charge can be created as a draft, "
                              + "but not posted until it has some.");
             }
-            else if (v.AllocationMethod == ChargeAllocationMethods.Weight && container.ItemWithoutWeight is not null)
+            else if (container.LineCount > 1 && v.AllocationMethod == ChargeAllocationMethods.Weight && container.ItemWithoutWeight is not null)
             {
                 warnings.Add($"Item {container.ItemWithoutWeight} on {container.ContainerRef} has no weight (kg): the charge can be created as a draft, "
                              + "but not posted until the weight is set in Item Definition (or the allocation changed).");
             }
-            else if (v.AllocationMethod == ChargeAllocationMethods.Volume && container.ItemWithoutVolume is not null)
+            else if (container.LineCount > 1 && v.AllocationMethod == ChargeAllocationMethods.Volume && container.ItemWithoutVolume is not null)
             {
                 warnings.Add($"Item {container.ItemWithoutVolume} on {container.ContainerRef} has no volume (CBM): the charge can be created as a draft, "
                              + "but not posted until the volume is set in Item Definition (or the allocation changed).");
@@ -802,6 +814,42 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             else
             {
                 first.Add(key, v.RowNumber);
+            }
+        }
+    }
+
+    /// <summary>
+    /// (96) A PROVIDER'S INVOICE IS ENTERED ONCE: a row whose Provider Invoice No. a charge already carries for the same
+    /// provider (logistics.fn_ContainerCharge_ReferenceClash, the rule Create applies) is an Error with its sentence; so
+    /// are rows of the file that share a provider and an invoice no. but cannot be one charge group (another charge type,
+    /// date, currency, rate or notes, or the same container twice) - the second group would be refused at Create.
+    /// </summary>
+    private async Task RefuseReferenceClashesAsync(IReadOnlyList<Verdict> verdicts, CancellationToken cancellationToken)
+    {
+        var candidates = verdicts.Where(x => x.Errors.Count == 0 && !string.IsNullOrWhiteSpace(x.Row.Reference)).ToList();
+        foreach (var invoice in candidates.GroupBy(x => (x.Row.ProviderPartyId, Normalized(x.Row.Reference))))
+        {
+            var reference = invoice.First().Row.Reference!.Trim();
+            if (await _charges.ReferenceClashAsync(invoice.Key.ProviderPartyId, reference, cancellationToken) is { } clash)
+            {
+                foreach (var verdict in invoice)
+                {
+                    verdict.Errors.Add(clash);
+                }
+
+                continue;
+            }
+
+            var groups = Batches(invoice.Select(x => x.Row));
+            if (groups.Count > 1)
+            {
+                var rows = string.Join(", ", invoice.Select(x => x.Row.RowNumber).OrderBy(n => n));
+                foreach (var verdict in invoice)
+                {
+                    verdict.Errors.Add($"Rows {rows} have the Provider Invoice No. {reference} but are not one charge: the charge type, "
+                                       + "date, currency, rate or notes differ, or a container is on two of them. A provider's invoice is "
+                                       + "entered once - give its rows the same values, one row per container.");
+                }
             }
         }
     }

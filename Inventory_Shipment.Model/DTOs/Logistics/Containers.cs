@@ -45,6 +45,21 @@ public static class ContainerStatus
     }
 }
 
+/// <summary>(95) Where a container is on its journey (logistics.fn_Container_Journey), and the list's Journey filter.</summary>
+public static class ContainerJourney
+{
+    public const string NotDispatched = "NotDispatched";
+    public const string OnTheWay = "OnTheWay";
+    public const string Arrived = "Arrived";
+    public const string Received = "Received";
+
+    public static readonly IReadOnlyList<string> All = [NotDispatched, OnTheWay, Arrived, Received];
+
+    /// <summary>The canonical spelling of a filter value, null when it is none of them.</summary>
+    public static string? Normalize(string? value)
+        => All.FirstOrDefault(v => string.Equals(v, value?.Trim(), StringComparison.OrdinalIgnoreCase));
+}
+
 public static class ShippingMethods
 {
     public static readonly string[] All = ["Sea", "Air", "Road"];
@@ -115,10 +130,30 @@ public abstract record ContainerStatusFlags
     public DateTime? DeliveredDate { get; init; }
 
     /// <summary>
-    /// "Receive goods...": Confirmed to Cleared with no open goods receipt (decision 6: no Delivery needed). From the
-    /// procedure, which tests the receipt the same way the creation does.
+    /// "Receive goods...": Confirmed to Cleared with no open goods receipt and (95) delivered - a container that travels
+    /// with movements is received only once a Delivery leg is completed; one followed by typed dates only keeps the rule
+    /// of before. From logistics.fn_Container_ReceiveBlock, which the creation reads too.
     /// </summary>
     public bool CanReceive { get; init; }
+
+    /// <summary>(95) Why "Receive goods..." cannot be used now ("KTG-2026-0031 has not been delivered yet: …"), null when it can.</summary>
+    public string? ReceiveBlockedReason { get; init; }
+
+    /* (95) THE JOURNEY (logistics.fn_Container_Journey): the latest leg that started, for the list's "From -> To" and
+       "Journey" columns. See ContainerJourney. */
+
+    /// <summary>NotDispatched, OnTheWay, Arrived or Received; null for a cancelled container.</summary>
+    public string? JourneyStatus { get; init; }
+
+    public string? JourneyFromName { get; init; }
+
+    public string? JourneyToName { get; init; }
+
+    /// <summary>Since when: the leg's start (on the way, a stay), its end (arrived), the receipt (received).</summary>
+    public DateTime? JourneySince { get; init; }
+
+    /// <summary>The movement of that leg, null when no leg started (typed dates, not dispatched).</summary>
+    public string? JourneyMovementNo { get; init; }
 
     /// <summary>Everything before the goods arrive: the header can still change (with a goods receipt too, rule 21).</summary>
     public bool CanEdit => Status is >= ContainerStatus.Draft and <= ContainerStatus.Cleared;
@@ -155,11 +190,142 @@ public abstract record ContainerStatusFlags
 
     public bool CanDelete => Status == ContainerStatus.Draft && GoodsReceiptId is null;
 
+    /* (80) THE SHIPMENT: where the container is and what its next step is (logistics.fn_Container_ShipState), the same
+       columns on the list row and the details, so the container page's button and the list's row menu say the same. */
+
+    /// <summary>Its movements, cancelled ones left out: 0 = never moved ("Start shipment...").</summary>
+    public int MovementCount { get; init; }
+
+    /// <summary>
+    /// Where it is for its next leg: the To of its latest movement (planned, in progress or completed), else the port of
+    /// loading of a container that never moved; null when it has none (any From fits it). A leg leaves from here.
+    /// </summary>
+    public int? PlaceId { get; init; }
+
+    public string? PlaceName { get; init; }
+
+    /// <summary>The end date of that latest movement once it is completed: "at Dar es Salaam since 12/10/2026".</summary>
+    public DateTime? PlaceSince { get; init; }
+
+    /// <summary>The movement in progress that carries it ("Arrived at {To}..."), with how many containers it carries.</summary>
+    public int? ActiveMovementId { get; init; }
+
+    public string? ActiveMovementNo { get; init; }
+    public string? ActiveMovementTypeName { get; init; }
+    public string? ActiveMovementStage { get; init; }
+    public string? ActiveMovementFromName { get; init; }
+    public string? ActiveMovementToName { get; init; }
+    public DateTime? ActiveMovementStartDate { get; init; }
+    public DateTime? ActiveMovementEta { get; init; }
+    public int? ActiveMovementContainerCount { get; init; }
+
+    /// <summary>Its next planned movement ("Start {type}..."; "Planned: MOV-..." on the list).</summary>
+    public int? PlannedMovementId { get; init; }
+
+    public string? PlannedMovementNo { get; init; }
+    public string? PlannedMovementTypeName { get; init; }
+    public string? PlannedMovementStage { get; init; }
+    public string? PlannedMovementFromName { get; init; }
+    public string? PlannedMovementToName { get; init; }
+    public DateTime? PlannedMovementDate { get; init; }
+    public int? PlannedMovementContainerCount { get; init; }
+
+    /// <summary>Why that planned movement cannot start yet (the refusal Start would give), null when it can.</summary>
+    public string? PlannedMovementBlockedReason { get; init; }
+
+    /// <summary>Its earliest start date: the end of the previous leg (70018 before it).</summary>
+    public DateTime? PlannedMovementNotBefore { get; init; }
+
+    /// <summary>Its last completed movement.</summary>
+    public int? LastMovementId { get; init; }
+
+    public string? LastMovementNo { get; init; }
+    public DateTime? LastMovementEndDate { get; init; }
+
+    /// <summary>
+    /// The next step of its journey (<see cref="ContainerShipSteps"/>), the first that applies: Complete (a movement in
+    /// progress carries it), Start (its next planned movement waits), Ship (it never moved), NextLeg (its last movement is
+    /// completed). Null once received, closed or cancelled: the journey is over (<see cref="ShipStepBlockedReason"/>).
+    /// </summary>
+    public string? ShipStep => Status >= ContainerStatus.Offloaded
+        ? null
+        : ActiveMovementId is not null ? ContainerShipSteps.Complete
+        : PlannedMovementId is not null ? ContainerShipSteps.Start
+        : MovementCount == 0 ? ContainerShipSteps.Ship
+        : ContainerShipSteps.NextLeg;
+
+    /// <summary>
+    /// Why the next step cannot be taken now, null when it can: the journey is over, a draft cannot start a planned
+    /// movement, or the planned movement's own refusal. The permission (containers.movements.manage, and
+    /// containers.confirm to ship a draft) is the page's to check.
+    /// </summary>
+    public string? ShipStepBlockedReason => Status switch
+    {
+        ContainerStatus.Offloaded => "This container is received: its journey is over.",
+        ContainerStatus.Closed => "This container is closed: its journey is over.",
+        ContainerStatus.Cancelled => "This container is cancelled.",
+        _ when ShipStep == ContainerShipSteps.Start && Status == ContainerStatus.Draft
+            => "Confirm the container first: a draft cannot start a movement.",
+        _ when ShipStep == ContainerShipSteps.Start => PlannedMovementBlockedReason,
+        _ => null,
+    };
+
+    /* (81) THE NEXT STEP (logistics.fn_Container_NextStepKind, fn_Container_NextLegProposal): the label of the container
+       page's button, the list's "Next step" column and its row menu, from the same columns. ShipStep above stays for the
+       clients of phase 1. */
+
+    /// <summary>
+    /// See <see cref="ContainerNextStepKinds"/>: Done, Complete, OpenReceipt, StartPlanned, Ship, Receive or NextLeg. The
+    /// rights (containers.movements.manage, containers.confirm for a draft, the goods receipt rights) are the page's.
+    /// </summary>
+    public string? NextStepKind { get; init; }
+
+    /// <summary>Why the step cannot be taken ("Received into Lubumbashi Warehouse: the journey is over."), null when it can.</summary>
+    public string? NextStepBlockedReason { get; init; }
+
+    /// <summary>The proposed new leg (Ship, NextLeg): "Inland transport to Kasumbalesa...", "Customs clearance at Kasumbalesa...".</summary>
+    public int? ProposedTypeId { get; init; }
+
+    public string? ProposedTypeCode { get; init; }
+    public string? ProposedTypeName { get; init; }
+    public string? ProposedStage { get; init; }
+    public int? ProposedFromPlaceId { get; init; }
+    public string? ProposedFromName { get; init; }
+
+    /// <summary>Null on a leg that moves: "Next leg from {place}..." (no To to suggest).</summary>
+    public int? ProposedToPlaceId { get; init; }
+
+    public string? ProposedToName { get; init; }
+
+    /// <summary>History, Ports, Stages or None (<see cref="NextLegProposalSources"/>).</summary>
+    public string? ProposalSource { get; init; }
+
+    public int? ProposalLegs { get; init; }
+
+    /// <summary>A stay (Port, Customs, Border): "{Type} at {place}...".</summary>
+    public bool? ProposedIsStay { get; init; }
+
     /// <summary>
     /// Protected, so it stays out of the JSON: each shape says it with its own column. No flag reads it since the
     /// offload is retired (script 65); the columns stay, the page shows them.
     /// </summary>
     protected abstract bool FullyInvoiced { get; }
+}
+
+/// <summary>(80) The next step of a container's journey (<see cref="ContainerStatusFlags.ShipStep"/>).</summary>
+public static class ContainerShipSteps
+{
+    /// <summary>Never moved: "Start shipment..." (one movement for it, started or planned).</summary>
+    public const string Ship = "Ship";
+
+    /// <summary>Its next planned movement waits: "Start {type}...".</summary>
+    public const string Start = "Start";
+
+    /// <summary>A movement in progress carries it: "Arrived at {To}..." / "Complete {type}...".</summary>
+    public const string Complete = "Complete";
+
+    /// <summary>Its last movement is completed and it is not received: "Next leg..." from where it is.</summary>
+    public const string NextLeg = "NextLeg";
 }
 
 /// <summary>Invoicing of a container by posted invoices, as the list shows it.</summary>
@@ -786,6 +952,44 @@ public sealed record ContainerDto : ContainerStatusFlags
     /// <summary>Newest first.</summary>
     public IReadOnlyList<ContainerAuditDto> Audit { get; init; } = [];
 
+    /* (81) The next step of the container page (fn_Container_NextStep), beside the columns every shape has. */
+
+    /// <summary>Never moved, with dispatch / arrival dates typed by hand: its first leg replaces them (the orange alert).</summary>
+    public bool? HasTypedDates { get; init; }
+
+    /// <summary>Sea, Border or Inland: the kind of the place it is at.</summary>
+    public string? PlaceKind { get; init; }
+
+    /// <summary>The stage of its last leg; null when it never moved.</summary>
+    public string? LastStage { get; init; }
+
+    /// <summary>Complete: the movement in progress; StartPlanned: the planned one.</summary>
+    public int? NextStepMovementId { get; init; }
+
+    public string? NextStepMovementNo { get; init; }
+
+    /// <summary>"Arrived at {To}..." (Sea, Transit), "Cleared customs at {place}..." (Customs), "Delivered to {To}..." ...</summary>
+    public string? NextStepMovementStage { get; init; }
+
+    public string? NextStepMovementTypeName { get; init; }
+    public string? NextStepMovementToName { get; init; }
+    public int? NextStepMovementContainerCount { get; init; }
+
+    /// <summary>The earliest date of the step: Complete the movement's start, StartPlanned the end of the previous leg.</summary>
+    public DateTime? NextStepNotBefore { get; init; }
+
+    /// <summary>The leg proposed after the movement in progress (the "Then" box of the arrival dialog).</summary>
+    public int? ThenTypeId { get; init; }
+
+    public string? ThenTypeName { get; init; }
+    public string? ThenStage { get; init; }
+    public int? ThenToPlaceId { get; init; }
+    public string? ThenToName { get; init; }
+    public bool? ThenIsStay { get; init; }
+
+    /// <summary>Ticked by default: a stay at the arrival place, or the leg after Customs / Border.</summary>
+    public bool? ThenDefault { get; init; }
+
     protected override bool FullyInvoiced => IsFullyInvoiced;
 }
 
@@ -1126,6 +1330,16 @@ public sealed class ContainerQuery
     /// movement or a draft goods receipt - the goods are at the warehouse and not in stock yet.
     /// </summary>
     public bool DeliveredNotReceived { get; init; }
+
+    /// <summary>
+    /// (81) The logistics to-do list, by next step: Ship ("Start shipment"), StartPlanned ("Start planned leg"), Complete
+    /// ("Arrival due": a leg in progress), NextLeg ("Next leg to plan"), Receive ("Receive goods": delivered, not received,
+    /// open drafts included). Worked out on the server, so it holds across the pages.
+    /// </summary>
+    public string? NextStep { get; init; }
+
+    /// <summary>(95) NotDispatched, OnTheWay, Arrived or Received (<see cref="ContainerJourney"/>).</summary>
+    public string? Journey { get; init; }
 
     public string SortBy { get; init; } = "OrderDate";
     public string SortDir { get; init; } = "desc";

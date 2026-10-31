@@ -1,3 +1,7 @@
+/* ================================================================== 4. Purchase documents: save */
+
+-- Re-created (72) from the body of script 70 (Ali: a line's warehouse at the bottom of the tree) + script 65's refusal
+-- of any type other than PO, PINV and PRET (65008): a goods receipt (GRN) lives in its own tables.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_ValidateInput
     @DocumentTypeCode   NVARCHAR(20),
     @DocumentDate       DATE,
@@ -18,6 +22,13 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_ValidateInput
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (65) ONLY ORDERS, INVOICES AND RETURNS ARE PURCHASE DOCUMENTS. A goods receipt (GRN) is of the Purchase family
+    --      too, but it lives in its own tables: a purchase.PurchaseDocuments row of type GRN would share the stock-ledger
+    --      key (family Purchase + type + id) with a real goods receipt, and every query that reads a line with a source
+    --      or container line as an invoice line would count it.
+    IF @DocumentTypeCode IS NULL OR @DocumentTypeCode NOT IN (N'PO', N'PINV', N'PRET')
+        THROW 65008, 'Only purchase orders, purchase invoices and purchase returns are saved as purchase documents. Goods receipts are made in Purchase > Goods Receipts.', 1;
 
     SELECT @DocumentTypeId = Id, @StockDirection = StockDirection
     FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode AND Family = N'Purchase' AND IsActive = 1;
@@ -100,7 +111,7 @@ BEGIN
        OR l.Quantity IS NULL OR l.Quantity <= 0 OR (l.UnitPrice IS NOT NULL AND l.UnitPrice < 0)
        OR (l.DiscountPercent IS NOT NULL AND (l.DiscountPercent < 0 OR l.DiscountPercent > @MaxDiscountPercent))
     ORDER BY l.LineNumber;
-    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+    -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 70).
     IF @Msg IS NULL
         SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
         FROM @Lines l

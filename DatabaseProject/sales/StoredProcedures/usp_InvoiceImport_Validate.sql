@@ -1,3 +1,7 @@
+/* ================================================================== 6. Excel import of documents: the rows */
+
+-- Re-created (72) from the body of script 70 (Ali: the default warehouse of any branch but a leaf; a row naming a parent
+-- is an Error) + script 66's ErrB, the BIVAC row check of a BivacItemsOnly type. The rows returned keep their columns.
 CREATE   PROCEDURE sales.usp_InvoiceImport_Validate
     @BranchId            INT,
     @DefaultWarehouseId  INT,
@@ -23,10 +27,10 @@ BEGIN
     SET @CheckStock = ISNULL(@CheckStock, 0);
     SET @DocumentTypeCode = NULLIF(LTRIM(RTRIM(@DocumentTypeCode)), N'');
 
-    DECLARE @PageTypeName NVARCHAR(100), @Family NVARCHAR(20);
+    DECLARE @PageTypeName NVARCHAR(100), @Family NVARCHAR(20), @PageBivacOnly BIT = 0;
     IF @DocumentTypeCode IS NOT NULL
     BEGIN
-        SELECT @PageTypeName = Name, @Family = Family FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode;
+        SELECT @PageTypeName = Name, @Family = Family, @PageBivacOnly = BivacItemsOnly FROM inventory.DocumentTypes WHERE Code = @DocumentTypeCode;
         IF @PageTypeName IS NULL THROW 61008, 'Document type not found.', 1;
     END
     -- Unit preference: 1 = sales unit first, 2 = purchase unit first, 0 = base unit first.
@@ -44,15 +48,15 @@ BEGIN
                r.Quantity, r.RawQuantity, ManualPrice = r.UnitPrice, r.DiscountPercent, r.ExpiryDate, r.RawExpiryDate,
                Notes        = NULLIF(LTRIM(RTRIM(r.Notes)), N''),
                RowTypeRef   = NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N''),
-               rt.RowTypeCode, rt.RowTypeName,
-               it.ItemId, it.ItemCode, it.ItemName, it.ItemActive, it.BarcodeUnitId,
+               rt.RowTypeCode, rt.RowTypeName, rt.RowTypeBivacOnly,
+               it.ItemId, it.ItemCode, it.ItemName, it.ItemActive, it.BarcodeUnitId, it.ItemIsBivac,
                u.ItemUnitId, u.UnitTypeName, u.PackingFormula,
                w.WarehouseId, w.WarehouseCode, w.WarehouseName, w.WarehouseActive, w.WarehouseBranchId,
                pr.BranchPrice, pr.AllBranchesPrice
         FROM @Rows r
         OUTER APPLY
         (
-            SELECT TOP (1) dt.Code AS RowTypeCode, dt.Name AS RowTypeName
+            SELECT TOP (1) dt.Code AS RowTypeCode, dt.Name AS RowTypeName, dt.BivacItemsOnly AS RowTypeBivacOnly
             FROM inventory.DocumentTypes dt
             WHERE NULLIF(LTRIM(RTRIM(r.DocumentTypeCode)), N'') IS NOT NULL
               AND (dt.Code = LTRIM(RTRIM(r.DocumentTypeCode)) OR dt.Name = LTRIM(RTRIM(r.DocumentTypeCode)))
@@ -60,7 +64,7 @@ BEGIN
         ) rt
         OUTER APPLY
         (
-            SELECT TOP (1) i.Id AS ItemId, i.ItemCode, i.ItemName, i.IsActive AS ItemActive, bu.Id AS BarcodeUnitId
+            SELECT TOP (1) i.Id AS ItemId, i.ItemCode, i.ItemName, i.IsActive AS ItemActive, bu.Id AS BarcodeUnitId, i.IsBivac AS ItemIsBivac
             FROM inventory.Items i
             LEFT JOIN inventory.ItemUnits bu ON bu.ItemId = i.Id AND bu.Barcode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'')
             WHERE i.ItemCode = NULLIF(LTRIM(RTRIM(r.ItemRef)), N'') OR bu.Id IS NOT NULL
@@ -128,6 +132,10 @@ BEGIN
                Err1 = CASE WHEN x.ItemRef IS NULL THEN N'Item Code / Barcode is required.'
                            WHEN x.ItemId IS NULL THEN N'Item Code ' + x.ItemRef + N' does not exist.'
                            WHEN x.ItemActive = 0 THEN N'Item ' + x.ItemCode + N' is inactive.' END,
+               -- (66) a BIVAC-only type (the row's own, else the page's) takes BIVAC items only
+               ErrB = CASE WHEN x.ItemId IS NOT NULL AND x.ItemIsBivac = 0
+                            AND CASE WHEN x.RowTypeCode IS NOT NULL THEN x.RowTypeBivacOnly ELSE @PageBivacOnly END = 1
+                                THEN x.ItemCode + N' is not a BIVAC item.' END,
                Err2 = CASE WHEN x.Quantity IS NULL AND x.RawQuantity IS NOT NULL THEN N'Quantity ''' + x.RawQuantity + N''' is not a number.'
                            WHEN x.Quantity IS NULL OR x.Quantity <= 0 THEN N'Quantity must be greater than zero.'
                            WHEN x.Quantity <> FLOOR(x.Quantity) THEN N'Quantity must be a whole number of pieces.' END,
@@ -165,10 +173,10 @@ BEGIN
         FROM running x
     )
     SELECT j.RowNumber,
-           Status  = CASE WHEN COALESCE(j.Err0, j.Err1, j.Err2, j.Err3, j.Err4, j.Err5, j.Err6, j.Err7, j.Err8) IS NOT NULL THEN N'Error'
+           Status  = CASE WHEN COALESCE(j.Err0, j.Err1, j.ErrB, j.Err2, j.Err3, j.Err4, j.Err5, j.Err6, j.Err7, j.Err8) IS NOT NULL THEN N'Error'
                           WHEN COALESCE(j.Warn1, j.Warn2, j.Warn3, j.Warn4) IS NOT NULL THEN N'Warning'
                           ELSE N'Valid' END,
-           Message = NULLIF(LTRIM(CONCAT(ISNULL(j.Err0 + N' ', N''), ISNULL(j.Err1 + N' ', N''), ISNULL(j.Err2 + N' ', N''), ISNULL(j.Err3 + N' ', N''), ISNULL(j.Err4 + N' ', N''),
+           Message = NULLIF(LTRIM(CONCAT(ISNULL(j.Err0 + N' ', N''), ISNULL(j.Err1 + N' ', N''), ISNULL(j.ErrB + N' ', N''), ISNULL(j.Err2 + N' ', N''), ISNULL(j.Err3 + N' ', N''), ISNULL(j.Err4 + N' ', N''),
                                          ISNULL(j.Err5 + N' ', N''), ISNULL(j.Err6 + N' ', N''), ISNULL(j.Err7 + N' ', N''), ISNULL(j.Err8 + N' ', N''),
                                          ISNULL(j.Warn1 + N' ', N''), ISNULL(j.Warn2 + N' ', N''), ISNULL(j.Warn3 + N' ', N''), ISNULL(j.Warn4, N''))), N''),
            RowDocumentTypeCode = ISNULL(j.RowTypeCode, @DocumentTypeCode),

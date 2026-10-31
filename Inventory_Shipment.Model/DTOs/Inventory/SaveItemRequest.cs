@@ -55,6 +55,13 @@ public sealed class SaveItemRequest
     [Range(0, 3650)]
     public int? LeadTimeDays { get; init; }
 
+    /// <summary>
+    /// (98) Months between ordering and receiving, one decimal, 0 to 60: what Item Definition types now. Sent: it wins and
+    /// the days follow (x 30); left out by an older client: the days typed are kept, as months (/ 30, to the half month).
+    /// </summary>
+    [Range(0, 60)]
+    public decimal? LeadTimeMonths { get; init; }
+
     /// <summary>Pieces (base units) that fit in one container; the shortage plan turns a required quantity into containers with it.</summary>
     [Range(1, int.MaxValue)]
     public int? PcPerContainer { get; init; }
@@ -66,6 +73,29 @@ public sealed class SaveItemRequest
     /// <summary>Per BASE unit, in cubic metres. The same, for charges allocated by volume.</summary>
     [Range(0, 9999999)]
     public decimal? VolumeCbm { get; init; }
+
+    /// <summary>Free text, several lines. Blank clears it.</summary>
+    [StringLength(2000)]
+    public string? Note { get; init; }
+
+    /// <summary>An absolute http:// or https:// address without spaces (checked by the service). Blank clears it.</summary>
+    [StringLength(500)]
+    public string? Link { get; init; }
+
+    /// <summary>
+    /// (93) "None" | "Batch" | "Serial" (checked by the service: "Tracking must be None, Batch or Serial."). Null: None on
+    /// a new item, and on an update the tracking is left as it is - with <see cref="RequiresExpiry"/> and
+    /// <see cref="SerialLength"/> - so a client that does not know these fields changes nothing.
+    /// </summary>
+    [StringLength(20)]
+    public string? TrackingMode { get; init; }
+
+    /// <summary>(93) Null = false when <see cref="TrackingMode"/> is given.</summary>
+    public bool? RequiresExpiry { get; init; }
+
+    /// <summary>(93) Serial items only: every serial no. has exactly this many characters. Null = any length.</summary>
+    [Range(1, 50)]
+    public int? SerialLength { get; init; }
 
     /// <summary>Base64 ROWVERSION read with the item (update only). Null skips the concurrency check.</summary>
     public string? RowVersion { get; init; }

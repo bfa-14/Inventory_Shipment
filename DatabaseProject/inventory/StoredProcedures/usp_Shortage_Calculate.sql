@@ -1,3 +1,7 @@
+/* ================================================================== 5. Shortages: each line with its own lead time */
+
+-- Re-created (98) from the body of script 90: each row with its item's lead time (fn_Item_LeadTime, the request's
+-- @LeadTimeMonths the fallback), + LeadTimeSource, LeadTimeHistoryMonths, LeadTimeReceipts. Nothing else.
 CREATE   PROCEDURE inventory.usp_Shortage_Calculate
     @WarehouseId     INT,
     @SupplierId      INT           = NULL,
@@ -16,14 +20,15 @@ BEGIN
     IF NOT EXISTS (SELECT 1 FROM masterdata.Warehouses WHERE Id = @WarehouseId AND IsActive = 1) THROW 66000, 'Warehouse not found or inactive.', 1;
 
     SELECT x.ItemId, x.ItemCode, x.ItemName, b.BrandName, f.FamilyName, x.IsBivac,
-           x.CurrentInventoryBase, x.TransitBase, x.OutstandingOrderBase,
-           StockPlusTransitBase   = x.CurrentInventoryBase + x.TransitBase,
-           TotalExpectedStockBase = x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase,
-           x.ExpectedMonthlySalesBase, x.SoldInPeriodBase, MonthsOfHistory = @MonthsOfHistory, LeadTimeMonths = @LeadTimeMonths,
-           ExpectedRequirementBase = CONVERT(DECIMAL(18,2), x.ExpectedMonthlySalesBase * @LeadTimeMonths),
+           x.CurrentInventoryBase, x.TransitBase, x.TransfersInBase, x.OutstandingOrderBase,      -- (90) + TransfersInBase
+           StockPlusTransitBase   = x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase,
+           TotalExpectedStockBase = x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase,
+           x.ExpectedMonthlySalesBase, x.SoldInPeriodBase, MonthsOfHistory = @MonthsOfHistory, LeadTimeMonths = lt.LeadTimeMonths,   -- (98) the item's
+           LeadTimeSource = lt.Source, LeadTimeHistoryMonths = lt.HistoryMonths, LeadTimeReceipts = lt.Receipts,                     -- (98)
+           ExpectedRequirementBase = CONVERT(DECIMAL(18,2), x.ExpectedMonthlySalesBase * lt.LeadTimeMonths),
            ShortageBase = c.ShortageBase,
            CoverageMonths = CASE WHEN x.ExpectedMonthlySalesBase > 0
-                                 THEN CONVERT(DECIMAL(9,2), (x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase) / x.ExpectedMonthlySalesBase) END,
+                                 THEN CONVERT(DECIMAL(9,2), (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) / x.ExpectedMonthlySalesBase) END,
            x.PurchaseItemUnitId, x.PurchaseUnitName, x.PurchasePackingFormula,
            SuggestedRequiredQty = CASE WHEN c.ShortageBase > 0 THEN CEILING(CAST(c.ShortageBase AS DECIMAL(18,4)) / x.PurchasePackingFormula) ELSE 0 END,
            PcPerContainer = x.ItemPcPerContainer, PcPerContainerFromUnit = x.PcPerContainerFromUnit,
@@ -33,8 +38,9 @@ BEGIN
            SupplierId = COALESCE(x.DefaultSupplierId, x.LastSupplierId), SupplierName = COALESCE(ds.PartyName, ls.PartyName),
            SupplierIsDefault = CASE WHEN x.DefaultSupplierId IS NOT NULL THEN 1 ELSE 0 END
     FROM inventory.fn_Shortage_Live(@WarehouseId, @MonthsOfHistory) x
-    CROSS APPLY (SELECT ShortageBase = CASE WHEN x.ExpectedMonthlySalesBase * @LeadTimeMonths - (x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase) > 0
-                                            THEN CONVERT(INT, CEILING(x.ExpectedMonthlySalesBase * @LeadTimeMonths - (x.CurrentInventoryBase + x.TransitBase + x.OutstandingOrderBase))) ELSE 0 END) c
+    CROSS APPLY inventory.fn_Item_LeadTime(x.ItemId, @LeadTimeMonths) lt                                                          -- (98)
+    CROSS APPLY (SELECT ShortageBase = CASE WHEN x.ExpectedMonthlySalesBase * lt.LeadTimeMonths - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase) > 0
+                                            THEN CONVERT(INT, CEILING(x.ExpectedMonthlySalesBase * lt.LeadTimeMonths - (x.CurrentInventoryBase + x.TransitBase + x.TransfersInBase + x.OutstandingOrderBase))) ELSE 0 END) c
     INNER JOIN masterdata.Brands b ON b.Id = x.BrandId
     INNER JOIN masterdata.ItemFamilies f ON f.Id = x.ItemFamilyId
     LEFT  JOIN masterdata.Parties ds ON ds.Id = x.DefaultSupplierId

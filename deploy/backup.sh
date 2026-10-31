@@ -5,7 +5,8 @@
 #
 # setup.sh schedules it every night; update.sh runs it before every update. Keeps BACKUP_KEEP_DAYS
 # days (14 unless deploy/.env says otherwise). The files stay on this server: copy them somewhere
-# else regularly, or a lost server takes its backups with it (see README.md).
+# else regularly, or a lost server takes its backups with it (see README.md). Testing on production's SQL Server
+# (README.md, "One SQL Server for both environments") is backed up by that SQL Server, into testing's deploy/backups.
 set -euo pipefail
 cd "$(dirname "$0")"
 . ./lib.sh
@@ -17,16 +18,18 @@ keep=$(env_get BACKUP_KEEP_DAYS 14)
 stamp=$(date -u +%Y%m%d-%H%M%S)
 file="$db-$stamp.bak"
 
-[ -n "$(docker compose ps -q --status running db)" ] || die "The db container is not running (docker compose up -d)."
+sql_running || die "The SQL Server of $(environment) is not running (sudo docker compose up -d in $(sql_home))."
 ensure_backup_dir
+stage=$(sql_stage)
 
 # An interrupted backup leaves no half-written .bak behind (gzip replaces a finished one by its .gz).
-trap 'rm -f "backups/$file"' EXIT
+trap 'rm -f "backups/$file" "$stage/$file"' EXIT
 trap 'exit 1' INT TERM HUP
 
 say "Backing up $db to backups/$file.gz"
 # No WITH COMPRESSION: the Express edition refuses it. gzip does the same job afterwards.
-sql_exec -Q "BACKUP DATABASE [$db] TO DISK = N'/var/opt/mssql/backups/$file' WITH CHECKSUM, INIT"
+sql_exec -Q "BACKUP DATABASE [$db] TO DISK = N'$(sql_stage_inside)/$file' WITH CHECKSUM, INIT"
+[ "$stage" = "$(pwd)/backups" ] || mv "$stage/$file" "backups/$file"
 gzip -f "backups/$file"
 
 if [ -n "$(docker compose ps -q --status running api)" ]; then

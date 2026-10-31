@@ -16,9 +16,6 @@ public sealed class ContainerService : IContainerService
 {
     private const string NotFoundMessage = "Container not found.";
 
-    /// <summary>usp_Container_CreateBatch's own limit, said before the call.</summary>
-    private const int MaxContainersPerPlan = 200;
-
     private readonly IContainerRepository _containers;
     private readonly ILogger<ContainerService> _logger;
 
@@ -43,6 +40,23 @@ public sealed class ContainerService : IContainerService
             return Result<PagedResult<ContainerListDto>>.Failure(
                 ErrorType.Validation,
                 "status must be 1-8 or Draft, Confirmed, InTransit, AtPort, Cleared, Offloaded, Closed, Cancelled.", "VALIDATION");
+        }
+
+        // (81) The "Next step" filter: one of the to-do list's values, case aside; anything else is a typo, not "no filter".
+        if (!string.IsNullOrWhiteSpace(query.NextStep))
+        {
+            if (ContainerNextStepKinds.Normalize(query.NextStep, ContainerNextStepKinds.ListFilters) is null)
+            {
+                return Result<PagedResult<ContainerListDto>>.Failure(
+                    ErrorType.Validation, "nextStep must be Ship, StartPlanned, Complete, NextLeg or Receive.", "VALIDATION");
+            }
+        }
+
+        // (95) The Journey filter: a typo is refused, as the Next step filter.
+        if (!string.IsNullOrWhiteSpace(query.Journey) && ContainerJourney.Normalize(query.Journey) is null)
+        {
+            return Result<PagedResult<ContainerListDto>>.Failure(
+                ErrorType.Validation, "journey must be NotDispatched, OnTheWay, Arrived or Received.", "VALIDATION");
         }
 
         var (items, totalCount) = await _containers.SearchAsync(query, cancellationToken);
@@ -249,12 +263,43 @@ public sealed class ContainerService : IContainerService
     public async Task<Result<TrackingDto>> GetTrackingAsync(
         TrackingQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        if (!permissions.Contains(Permissions.Containers.View))
+        // The Tracking board needs View Tracking; a container's page shows its own route with View Containers (script 75).
+        var ownRoute = query.ContainerId is not null && permissions.Contains(Permissions.Containers.View);
+        if (!ownRoute && !permissions.Contains(Permissions.Containers.TrackingView))
         {
-            return Forbidden<TrackingDto>(Permissions.Containers.View);
+            return Forbidden<TrackingDto>(Permissions.Containers.TrackingView);
         }
 
         return Result<TrackingDto>.Success(await _containers.GetTrackingAsync(query, cancellationToken));
+    }
+
+    /// <summary>
+    /// (82) Logistics › Shipments: every container on its way, by stage, with the server's filters. Its own screen
+    /// permission, View Shipments. Movement numbers come back whatever the reader may open: the page links them only for a
+    /// reader who may view movements.
+    /// </summary>
+    public async Task<Result<ShipmentBoardDto>> GetShipmentBoardAsync(
+        ShipmentBoardQuery query, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.ShipmentsView))
+        {
+            return Forbidden<ShipmentBoardDto>(Permissions.Containers.ShipmentsView);
+        }
+
+        // An id that names nothing is a typo, not "no filter".
+        var invalid = new (string Name, int? Value)[]
+            {
+                ("supplierId", query.SupplierId), ("purchaseOrderId", query.PurchaseOrderId),
+                ("branchId", query.BranchId), ("placeId", query.PlaceId),
+            }
+            .FirstOrDefault(f => f.Value is <= 0);
+        if (invalid.Name is not null)
+        {
+            return Result<ShipmentBoardDto>.Failure(
+                ErrorType.Validation, $"{invalid.Name} must be greater than zero.", "VALIDATION");
+        }
+
+        return Result<ShipmentBoardDto>.Success(await _containers.GetShipmentBoardAsync(query, cancellationToken));
     }
 
     public async Task<Result<IReadOnlyList<ContainerAttachmentCreatedDto>>> AddAttachmentAsync(
@@ -375,6 +420,31 @@ public sealed class ContainerService : IContainerService
     }
 
     /* ── many containers per order (script 28) ────────────────────────────────────────────────── */
+
+    public async Task<Result<IReadOnlyList<ContainerLookupDto>>> LookupAsync(
+        ContainerLookupRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.View))
+        {
+            return Forbidden<IReadOnlyList<ContainerLookupDto>>(Permissions.Containers.View);
+        }
+
+        return Result<IReadOnlyList<ContainerLookupDto>>.Success(await _containers.LookupAsync(request, cancellationToken));
+    }
+
+    public async Task<Result<ContainerOrderDefaultsDto>> GetOrderDefaultsAsync(
+        int purchaseOrderId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.Create))
+        {
+            return Forbidden<ContainerOrderDefaultsDto>(Permissions.Containers.Create);
+        }
+
+        var defaults = await _containers.GetOrderDefaultsAsync(purchaseOrderId, cancellationToken);
+        return defaults is null
+            ? Result<ContainerOrderDefaultsDto>.Failure(ErrorType.NotFound, "Purchase order not found.", "NOT_FOUND")
+            : Result<ContainerOrderDefaultsDto>.Success(defaults);
+    }
 
     public async Task<Result<AutoPlanDto>> AutoPlanAsync(
         AutoPlanRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
@@ -632,11 +702,8 @@ public sealed class ContainerService : IContainerService
             return "The plan has no container with a line to create.";
         }
 
+        // Any number of containers (script 78): the 200 ceiling is gone here and in usp_Container_CreateBatch.
         var total = containers.Count;
-        if (total > MaxContainersPerPlan)
-        {
-            return $"At most {MaxContainersPerPlan} containers can be created at once; the plan has {total}.";
-        }
 
         for (var position = 1; position <= total; position++)
         {

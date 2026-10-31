@@ -85,7 +85,8 @@ WHEN NOT MATCHED BY TARGET THEN
     VALUES (s.Code, s.Name, s.Family, s.StockDirection, s.NumberPrefix, s.NumberOnPost, s.RequiresReason);
 GO
 
-UPDATE inventory.DocumentTypes SET DefaultPricing = N'None', PriceEditable = 0, NumberPerBranch = 0, YearInNumber = 1 WHERE Code = N'SHR';
+-- (89) Only a type nobody has saved on Configuration › Document Types: this batch runs at every start, before any later script could restore an administrator's choice.
+UPDATE inventory.DocumentTypes SET DefaultPricing = N'None', PriceEditable = 0, NumberPerBranch = 0, YearInNumber = 1 WHERE Code = N'SHR' AND UpdatedAtUtc IS NULL;
 GO
 
 CREATE OR ALTER PROCEDURE inventory.usp_DocumentType_List

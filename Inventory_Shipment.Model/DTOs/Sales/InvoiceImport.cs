@@ -55,6 +55,13 @@ public sealed class InvoiceImportRow
     /// <summary>A manual price. Honoured only for a caller holding sales.invoices.priceoverride.</summary>
     public decimal? UnitPrice { get; init; }
 
+    /// <summary>
+    /// (90) What the price cell said when <see cref="UnitPrice"/> could not be read from it. Not sent to the database
+    /// (the procedure never quoted a price); a transfer import reads it, so a cell holding "n/a" in the Unit Price
+    /// column is refused like a number would be: a transfer has no cost.
+    /// </summary>
+    public string? RawUnitPrice { get; init; }
+
     public decimal? DiscountPercent { get; init; }
 
     public DateTime? ExpiryDate { get; init; }

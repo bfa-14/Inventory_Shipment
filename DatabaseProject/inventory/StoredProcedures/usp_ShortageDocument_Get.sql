@@ -21,8 +21,9 @@ BEGIN
     WHERE d.Id = @Id;
 
     SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName, br.BrandName, f.FamilyName, i.IsBivac,
-           l.CurrentInventoryBase, l.TransitBase, l.OutstandingOrderBase, l.StockPlusTransitBase, l.TotalExpectedStockBase,
+           l.CurrentInventoryBase, l.TransitBase, l.TransfersInBase, l.OutstandingOrderBase, l.StockPlusTransitBase, l.TotalExpectedStockBase,   -- (90)
            l.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, l.EffectiveMonthlySales, l.LeadTimeMonths,
+           l.LeadTimeManual, l.LeadTimeSource,                                                                 -- (98)
            l.ExpectedRequirementBase, l.ShortageBase, l.CoverageMonths,
            l.PurchaseItemUnitId, ut.UnitTypeName AS PurchaseUnitName, l.PurchasePackingFormula,
            l.RequiredQty, l.RequiredBase, l.PcPerContainer, l.PcPerContainerFromUnit, l.ContainerRequirement,
@@ -36,9 +37,12 @@ BEGIN
     WHERE l.DocumentId = @Id
     ORDER BY l.LineNumber;
 
-    SELECT p.Id, p.DocumentNumber, p.DocumentDate, p.Status, p.TotalAmount, c.CurrencyCode, p.CreatedAtUtc
+    -- (77) + InvoicingStatus (0 / 1 / 2: Saved, Partially posted, Posted on an approved order)
+    SELECT p.Id, p.DocumentNumber, p.DocumentDate, p.Status, p.TotalAmount, c.CurrencyCode, p.CreatedAtUtc,
+           inv.InvoicingStatus
     FROM purchase.PurchaseDocuments p
     INNER JOIN masterdata.Currencies c ON c.Id = p.CurrencyId
+    OUTER APPLY purchase.fn_PurchaseOrder_Invoicing(p.Id) inv
     WHERE p.SourceShortageId = @Id
     ORDER BY p.CreatedAtUtc;
 

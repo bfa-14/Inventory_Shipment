@@ -1,6 +1,8 @@
-/* ================================================================== 8. Order lines to load */
-
--- Re-created (54) from the body of script 43: PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
+-- purchase.fn_PoLine_CommittedOutside (invoiced, or received / on draft goods receipts, outside containers: the larger)
+-- in place of the "dir" subquery (invoiced only). InvoicedDirectBase keeps its name and its place in the sums
+-- (Ordered - InvoicedDirect - LoadedElsewhere = MaxHere) and now holds that larger figure; its parts follow at the end:
+-- InvoicedOutsideBase (the old meaning), ReceivedOutsideBase, InDraftReceiptsOutsideBase.
+-- (54) PcPerContainer from logistics.fn_ItemPcsPerContainer (the one place).
 CREATE   PROCEDURE logistics.usp_Container_AvailablePoLines
     @PurchaseOrderId INT           = NULL,
     @SupplierId      INT           = NULL,
@@ -29,7 +31,11 @@ BEGIN
            UnitValueBase = l.LineTotal / d.ExchangeRate / NULLIF(l.QuantityBase, 0),
            ItemOilQtyPerUnit = i.OilQtyPerUnit,
            PcPerContainer = cnt.PcsPerContainer,
-           i.WeightKg, i.VolumeCbm
+           i.WeightKg, i.VolumeCbm,
+           -- (65) the parts of InvoicedDirectBase (= the larger of invoiced, and received + on draft receipts, outside containers)
+           InvoicedOutsideBase        = ISNULL(dir.InvoicedOutsideBase, 0),
+           ReceivedOutsideBase        = ISNULL(dir.ReceivedOutsideBase, 0),
+           InDraftReceiptsOutsideBase = ISNULL(dir.InDraftReceiptsOutsideBase, 0)
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
     INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
@@ -40,9 +46,7 @@ BEGIN
     INNER JOIN masterdata.Brands br         ON br.Id = i.BrandId
     INNER JOIN inventory.ItemUnits iu       ON iu.Id = l.ItemUnitId
     INNER JOIN masterdata.UnitTypes ut      ON ut.Id = iu.UnitTypeId
-    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
-                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2) dir
+    OUTER APPLY purchase.fn_PoLine_CommittedOutside(l.Id, NULL) dir
     OUTER APPLY (SELECT Qty = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8 AND (@ContainerId IS NULL OR cl.ContainerId <> @ContainerId)) oth

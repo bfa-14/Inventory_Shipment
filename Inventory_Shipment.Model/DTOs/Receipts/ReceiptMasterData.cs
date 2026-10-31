@@ -144,6 +144,7 @@ public sealed class SaveCashBankAccountRequest
     [Range(1, int.MaxValue)]
     public int CurrencyId { get; init; }
 
+    /// <summary>Ignored since script 76: a cash / bank account belongs to no branch. Kept for older callers.</summary>
     [Range(1, int.MaxValue)]
     public int? BranchId { get; init; }
 

@@ -527,7 +527,8 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
 
     /// <summary>
     /// A container as "From a container..." and its "Receive goods..." see it. Receivable = status 2–5 (Confirmed to
-    /// Cleared) and no draft or posted receipt (rule 6) - the eligibility of usp_GoodsReceipt_CreateForContainer.
+    /// Cleared), no draft or posted receipt (rule 6) and (95) delivered - logistics.fn_Container_ReceiveBlock, the rule
+    /// of usp_GoodsReceipt_CreateForContainer.
     /// </summary>
     private const string ContainerSelect = """
         SELECT c.Id AS ContainerId, c.ContainerRef, c.ContainerNo, c.Status, c.BranchId, b.BranchCode, b.BranchName,
@@ -548,7 +549,7 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
                rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus, rb.ReceivedBy,
                DeliveryMovementNo = ld.MovementNo, DeliveredDate = ld.EndDate, DeliveryPlaceName = ld.PlaceName,
                MovementInProgressNo = mp.MovementNo,
-               CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT)
+               CanReceive = CAST(CASE WHEN rbk.Reason IS NULL THEN 1 ELSE 0 END AS BIT), ReceiveBlockedReason = rbk.Reason
         FROM logistics.Containers c
         INNER JOIN masterdata.Branches b   ON b.Id = c.BranchId
         LEFT  JOIN masterdata.Warehouses w ON w.Id = c.WarehouseId
@@ -561,6 +562,7 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
         LEFT  JOIN masterdata.Parties sp ON sp.Id = s.SupplierId AND s.Suppliers = 1
         CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb
         OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) ld
+        CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95) delivered first
         OUTER APPLY (SELECT TOP (1) m.MovementNo
                      FROM logistics.MovementContainers mc
                      INNER JOIN logistics.Movements m ON m.Id = mc.MovementId AND m.Status = 2
@@ -599,10 +601,9 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
             INNER JOIN inventory.ItemUnits iu             ON iu.Id = cl.ItemUnitId
             INNER JOIN masterdata.UnitTypes ut            ON ut.Id = iu.UnitTypeId
             LEFT  JOIN masterdata.Warehouses w            ON w.Id = c.WarehouseId
-            CROSS APPLY (SELECT Eligible = CASE WHEN c.Status BETWEEN 2 AND 5
-                                                     AND NOT EXISTS (SELECT 1 FROM purchase.GoodsReceipts g
-                                                                     WHERE g.ContainerId = c.Id AND g.Status < 3)
-                                                THEN 1 ELSE 0 END) e
+            -- (95) the rule of Receive goods... itself (logistics.fn_Container_ReceiveBlock): delivered first
+            CROSS APPLY (SELECT Eligible = CASE WHEN b.Reason IS NULL THEN 1 ELSE 0 END
+                         FROM logistics.fn_Container_ReceiveBlock(c.Id) b) e
             {BaseUnitApply}
             WHERE c.Id = @ContainerId
             ORDER BY cl.LineNumber;
@@ -632,12 +633,15 @@ public sealed class GoodsReceiptRepository : IGoodsReceiptRepository
     public async Task<IReadOnlyList<ReceivableContainerDto>> ReceivableContainersAsync(
         ReceivableContainersQuery query, CancellationToken cancellationToken = default)
     {
-        // At most 200, the delivered ones first (they are at the warehouse), then by reference.
+        // At most 200, the delivered ones first (they are at the warehouse), then by reference. (78) TotalCount = how many
+        // match (the window runs before the TOP), so the dialog can say "Showing 200 of N" instead of cutting silently.
         const string sql = $"""
-            SELECT TOP (200) q.*
+            SELECT TOP (200) q.*, TotalCount = COUNT(*) OVER ()
             FROM (
             {ContainerSelect}
             WHERE c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL
+              -- (95) only the containers Receive goods... takes: delivered (or followed by typed dates only)
+              AND NOT EXISTS (SELECT 1 FROM logistics.fn_Container_ReceiveBlock(c.Id) b WHERE b.Reason IS NOT NULL)
               AND (@BranchId IS NULL OR c.BranchId = @BranchId)
               AND (@SupplierId IS NULL
                    OR EXISTS (SELECT 1 FROM logistics.ContainerLines fl

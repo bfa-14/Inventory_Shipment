@@ -1,5 +1,3 @@
-/* ================================================================== 4. Post */
-
 CREATE   PROCEDURE purchase.usp_Payment_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -94,6 +92,21 @@ BEGIN
             WHERE a.PaymentId = @Id AND a.AmountDocCurrency > pd.OutstandingAmount + 0.005
             ORDER BY pd.DocumentNumber;
             IF @Msg IS NOT NULL THROW 73009, @Msg, 1;
+
+            -- Script 73: an invoice with containers is paid container by container, and the split adds up.
+            IF @Type = 2
+            BEGIN
+                DECLARE @SplitA purchase.tvp_PaymentAllocation, @SplitC purchase.tvp_PaymentAllocationContainer;
+                INSERT INTO @SplitA (DocumentKind, DocumentId, Amount, RateToPayment)
+                SELECT N'PINV', PurchaseDocumentId, AmountDocCurrency, RateToPayment
+                FROM purchase.PaymentAllocations WHERE PaymentId = @Id AND PurchaseDocumentId IS NOT NULL;
+                INSERT INTO @SplitC (DocumentId, ContainerId, Amount)
+                SELECT a.PurchaseDocumentId, pac.ContainerKey, pac.AmountDocCurrency
+                FROM purchase.PaymentAllocationContainers pac
+                INNER JOIN purchase.PaymentAllocations a ON a.Id = pac.PaymentAllocationId
+                WHERE a.PaymentId = @Id;
+                EXEC purchase.usp_Payment_CheckContainerSplit @SplitA, @SplitC, 1;
+            END
         END
 
         UPDATE purchase.Payments

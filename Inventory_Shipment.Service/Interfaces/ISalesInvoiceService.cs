@@ -24,8 +24,9 @@ public interface ISalesInvoiceService
     /// margin comes back null: a price is everybody's business, a margin is not. Null permissions
     /// means an internal caller that is not answering a request, and nothing is stripped.
     /// </summary>
+    /// <remarks>(92) <paramref name="userId"/>: the reader, for the invoice's WarehouseAccessRefusal.</remarks>
     Task<Result<SalesInvoiceDto>> GetAsync(
-        int id, IReadOnlySet<string>? permissions = null, CancellationToken cancellationToken = default);
+        int id, int userId, IReadOnlySet<string>? permissions = null, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Creates a draft (<paramref name="id"/> null) or replaces one.

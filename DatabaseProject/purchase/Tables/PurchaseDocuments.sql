@@ -47,6 +47,10 @@ CREATE TABLE [purchase].[PurchaseDocuments] (
     [RejectedAtUtc]          DATETIME2 (3)   NULL,
     [RejectedBy]             INT             NULL,
     [RejectReason]           NVARCHAR (300)  NULL,
+    [OneItemOnly]            BIT             NULL,
+    [UsesGoodsReceipts]      BIT             CONSTRAINT [DF_PurchaseDocuments_UsesGoodsReceipts] DEFAULT ((0)) NOT NULL,
+    [AffectsCost]            BIT             CONSTRAINT [DF_PurchaseDocuments_AffectsCost] DEFAULT ((1)) NOT NULL,
+    [ReceiveOnPost]          BIT             CONSTRAINT [DF_PurchaseDocuments_ReceiveOnPost] DEFAULT ((0)) NOT NULL,
     CONSTRAINT [PK_PurchaseDocuments] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_PurchaseDocuments_Rate] CHECK ([ExchangeRate]>(0)),
     CONSTRAINT [CK_PurchaseDocuments_RateType] CHECK ([RateType]=(3) OR [RateType]=(2) OR [RateType]=(1)),
@@ -72,8 +76,8 @@ CREATE TABLE [purchase].[PurchaseDocuments] (
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
-    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
+    ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
 
 
 GO
@@ -84,20 +88,20 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Supplier]
 
 GO
 
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_Source]
-    ON [purchase].[PurchaseDocuments]([SourceDocumentId] ASC) WHERE ([SourceDocumentId] IS NOT NULL);
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeDate]
+    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
+
+
+GO
+
+CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeStatus]
+    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [Status] ASC);
 
 
 GO
 
 CREATE UNIQUE NONCLUSTERED INDEX [UX_PurchaseDocuments_Number]
     ON [purchase].[PurchaseDocuments]([DocumentNumber] ASC) WHERE ([DocumentNumber] IS NOT NULL);
-
-
-GO
-
-CREATE NONCLUSTERED INDEX [IX_PurchaseDocuments_TypeDate]
-    ON [purchase].[PurchaseDocuments]([DocumentTypeId] ASC, [DocumentDate] DESC);
 
 
 GO

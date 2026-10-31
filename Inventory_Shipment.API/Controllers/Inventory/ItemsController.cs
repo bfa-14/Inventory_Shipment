@@ -33,7 +33,7 @@ public sealed class ItemsController : ControllerBase
     public async Task<ActionResult<PagedResult<ItemListDto>>> Search(
         [FromQuery] ItemQuery query, CancellationToken cancellationToken)
     {
-        var result = await _itemService.SearchAsync(query, cancellationToken);
+        var result = await _itemService.SearchAsync(query, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -66,7 +66,7 @@ public sealed class ItemsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ItemDetailsDto>> GetById(int id, CancellationToken cancellationToken)
     {
-        var result = await _itemService.GetAsync(id, cancellationToken);
+        var result = await _itemService.GetAsync(id, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -110,7 +110,7 @@ public sealed class ItemsController : ControllerBase
     public async Task<ActionResult<ItemStockStatementDto>> GetStockMovements(
         int id, [FromQuery] DateOnly? from, [FromQuery] DateOnly? to, CancellationToken cancellationToken)
     {
-        var result = await _itemService.GetStockStatementAsync(id, from, to, cancellationToken);
+        var result = await _itemService.GetStockStatementAsync(id, from, to, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -121,7 +121,7 @@ public sealed class ItemsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status404NotFound)]
     public async Task<ActionResult<ItemStockBalanceDto>> GetStockBalance(int id, CancellationToken cancellationToken)
     {
-        var result = await _itemService.GetStockBalanceAsync(id, cancellationToken);
+        var result = await _itemService.GetStockBalanceAsync(id, User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -137,7 +137,7 @@ public sealed class ItemsController : ControllerBase
     public async Task<ActionResult<ItemDetailsDto>> Create(
         [FromBody] SaveItemRequest request, CancellationToken cancellationToken)
     {
-        var result = await _itemService.CreateAsync(request, User.GetUserId(), cancellationToken);
+        var result = await _itemService.CreateAsync(request, User.GetUserId(), User.GetPermissions(), cancellationToken);
 
         return result.IsSuccess
             ? CreatedAtAction(nameof(GetById), new { id = result.Value!.Id }, result.Value)
@@ -154,7 +154,7 @@ public sealed class ItemsController : ControllerBase
     public async Task<ActionResult<ItemDetailsDto>> Update(
         int id, [FromBody] SaveItemRequest request, CancellationToken cancellationToken)
     {
-        var result = await _itemService.UpdateAsync(id, request, User.GetUserId(), cancellationToken);
+        var result = await _itemService.UpdateAsync(id, request, User.GetUserId(), User.GetPermissions(), cancellationToken);
         return result.ToActionResult(this);
     }
 
@@ -178,7 +178,7 @@ public sealed class ItemsController : ControllerBase
     [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
     public async Task<ActionResult> Delete(int id, CancellationToken cancellationToken)
     {
-        var result = await _itemService.DeleteAsync(id, cancellationToken);
+        var result = await _itemService.DeleteAsync(id, User.GetUserId(), cancellationToken);
         return result.ToNoContentResult(this);
     }
 

@@ -1,7 +1,8 @@
 # Deploying to a Linux server
 
-The application runs on one Linux server in **two environments**, each with its own web app, API and SQL
-Server database:
+The application runs on one Linux server in **two environments**, each with its own web app, API and database
+(testing's can live in production's SQL Server: [One SQL Server for both
+environments](#one-sql-server-for-both-environments)):
 
 | Environment | Address | Code | On the server |
 |-------------|---------|------|---------------|
@@ -18,7 +19,8 @@ browser ──https──► proxy                                     (/api goe
   addresses and sends each one to its environment. Production runs it.
 - **web**: the React app, from the Inventory_Shipment_Frontend repository.
 - **api**: Inventory_Shipment.API (ASP.NET Core 10). It applies `Schema.sql` to its own database at start-up.
-- **db**: SQL Server 2025 Express. It is never reachable from the internet.
+- **db**: SQL Server 2025 Express. It is never reachable from the internet. With one SQL Server for both
+  environments, testing runs none: its database `Inventory_Shipment_Test` is in production's.
 
 The **sign-in page has a "Test environment" switch** that moves between the two addresses. In testing, every
 page shows an orange **TESTING** badge, and **emails are never sent to real people**.
@@ -31,7 +33,7 @@ page shows an orange **TESTING** badge, and **emails are never sent to real peop
 | `setup.sh` | First-time installation; `setup.sh testing` adds the testing environment |
 | `update.sh` | Deploys the latest code of an environment: backup, `git pull`, rebuild, restart |
 | `copy-production-to-testing.sh` | Refreshes testing's database with a copy of production's |
-| `enable-github-deploy.sh` | One-time setup so a push to `main` or `production` deploys by itself (`../.github/workflows/deploy.yml`) |
+| `enable-github-deploy.sh` | One-time setup of the **Deploy to server** button on GitHub, in VS Code and in Visual Studio (`../.github/workflows/deploy.yml`; a push deploys nothing) |
 | `backup.sh` / `restore.sh` | Database backup (scheduled nightly) and restore |
 | `reset-database.sh` | Empties an environment's database, keeping only your admin account |
 | `../Dockerfile` | The API image |
@@ -112,6 +114,117 @@ says `http`. Closing the SSH window closes the tunnel.
 The server serves these ports on its own `127.0.0.1` only, so nobody can reach them from the internet. If a
 port is already taken on your PC, use another local one: `-L 9090:localhost:8080` and http://localhost:9090.
 
+## SQL Server from SSMS on your PC
+
+SQL Server is reachable only inside Docker. With [One SQL Server for both
+environments](#one-sql-server-for-both-environments), **one port shows both databases**, `Inventory_Shipment`
+(production) and `Inventory_Shipment_Test` (testing): it is opened on production's SQL Server, in production's
+folder. With a SQL Server per environment, a port shows one environment's database only (both are called
+`Inventory_Shipment`), opened in that environment's folder. To open it to SSMS on your PC, as
+`188.245.17.182,50555`, follow the steps below; when it holds **production's** data, prefer [Production through SSH
+only](#production-through-ssh-only), which opens nothing to the internet.
+
+> **A database port open to everyone is attacked.** Robots try logins on every open SQL Server port all day,
+> whatever its number. It stays safe only with long random passwords: never replace the `sa` password `setup.sh`
+> generated (27 random characters) with a simpler one, and give SSMS a login of its own (step 4). Better still, ask
+> the provider to let in only your own addresses. Docker's published ports go around ufw: the provider's rule is the
+> only filter.
+
+1. **At the provider:** allow inbound TCP **50555** to the server - from any address, or only from your office and
+   home addresses.
+2. **On the server**, in the folder of the SQL Server to open: production `/opt/inventory/Inventory_Shipment/deploy`
+   (with one SQL Server for both, the only one) or testing `/opt/inventory-test/Inventory_Shipment/deploy`. One port
+   serves one SQL Server; open the other one the same way on another port (50556):
+
+   ```bash
+   cd /opt/inventory/Inventory_Shipment/deploy
+   sudo tee db-port.local.yml > /dev/null <<'EOF'
+   # SQL Server for SSMS from outside the server (README.md, "SQL Server from SSMS on your PC").
+   services:
+     db:
+       ports:
+         - "50555:1433"
+   EOF
+   echo "deploy/db-port.local.yml" | sudo tee -a ../.git/info/exclude > /dev/null
+   sudo grep -q '^COMPOSE_FILE=' .env || echo "COMPOSE_FILE=docker-compose.yml" | sudo tee -a .env > /dev/null
+   sudo grep -q '^COMPOSE_FILE=.*db-port\.local\.yml' .env || sudo sed -i '/^COMPOSE_FILE=/s/$/:db-port.local.yml/' .env
+   sudo docker compose up -d db
+   ```
+
+   The file stays out of Git (`deploy/.gitignore` ignores `*.local.yml`; the `exclude` line does the same for a
+   checkout older than that), so `update.sh` pulls as before, and the `COMPOSE_FILE` line of `.env` makes every
+   `docker compose` use it, `update.sh` included (the two `COMPOSE_FILE` commands add it to that line and keep what
+   it already lists, such as `sql-host.local.yml`). Restarting SQL Server pauses the app for about half a minute: do it
+   at a quiet moment.
+3. **Check it:** on the server `sudo docker compose port db 1433` answers `0.0.0.0:50555`; from a Windows PC, in
+   PowerShell, `Test-NetConnection 188.245.17.182 -Port 50555` (TcpTestSucceeded : True); from Ubuntu
+   `nc -vz 188.245.17.182 50555`. If it already succeeds before you asked the provider, the provider does not block it.
+4. **A login for SSMS**, not `sa` (the app's). In the same folder, open sqlcmd in the database container:
+
+   ```bash
+   sudo docker compose exec db bash -c 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa'
+   ```
+
+   and create it, with a new password of 20 characters or more (`db_datareader` only reads; add `db_datawriter`
+   only if SSMS must change data):
+
+   ```sql
+   CREATE LOGIN ssms_user WITH PASSWORD = '<a long new password>', CHECK_POLICY = ON;
+   GO
+   USE Inventory_Shipment;
+   CREATE USER ssms_user FOR LOGIN ssms_user;
+   ALTER ROLE db_datareader ADD MEMBER ssms_user;
+   GO
+   EXIT
+   ```
+
+   With one SQL Server for both, the same login reads testing's database once it has a user there too: run the two
+   lines after `USE Inventory_Shipment_Test;` as well (`share-sql-server.sh` does it for the logins it brings over).
+   A reset (`reset-database.sh`) makes the database anew, without that user: run the lines again for it.
+
+5. **In SSMS:** Server name `188.245.17.182,50555` (a comma before the port), Authentication *SQL Server
+   Authentication*, Login `ssms_user` and its password, Encryption *Mandatory* with **Trust server certificate**
+   ticked (the server's certificate is its own), Connect.
+
+**Who knocks:** `sudo docker compose logs db | grep -c "Login failed"` counts the failed logins. **Close it again:**
+`sudo sed -i '/^COMPOSE_FILE=/s/:db-port\.local\.yml//' .env` (only that file leaves the line), then
+`sudo docker compose up -d db`, and ask the provider to close 50555.
+
+### Production through SSH only
+
+Production holds the company's real data: rather than a port open to everyone, publish its SQL Server on the
+server's own `127.0.0.1` and reach it through your SSH connection, like [Open the app through
+SSH](#open-the-app-through-ssh). No provider rule is needed, and robots cannot reach it.
+
+1. **On the server**, in production's folder (SQL Server restarts: the app pauses for about half a minute):
+
+   ```bash
+   cd /opt/inventory/Inventory_Shipment/deploy
+   sudo tee db-port.local.yml > /dev/null <<'EOF'
+   # Production's SQL Server for SSMS, on the server only: reach it through SSH (README.md).
+   services:
+     db:
+       ports:
+         - "127.0.0.1:50556:1433"
+   EOF
+   echo "deploy/db-port.local.yml" | sudo tee -a ../.git/info/exclude > /dev/null
+   sudo grep -q '^COMPOSE_FILE=' .env || echo "COMPOSE_FILE=docker-compose.yml" | sudo tee -a .env > /dev/null
+   sudo grep -q '^COMPOSE_FILE=.*db-port\.local\.yml' .env || sudo sed -i '/^COMPOSE_FILE=/s/$/:db-port.local.yml/' .env
+   sudo docker compose up -d db
+   sudo docker compose port db 1433
+   ```
+
+   The last command answers `127.0.0.1:50556`.
+2. **A login for SSMS** in production's SQL Server: step 4 above, in this folder (testing's `ssms_user` does not
+   exist here).
+3. **On your PC**, open the tunnel and leave the window open: `ssh -N -L 50556:127.0.0.1:50556 <user>@<server-ip>`.
+4. **In SSMS:** Server name `localhost,50556` (in VS Code: Server `localhost`, Port `50556`), the production login,
+   Trust server certificate. Name the connection "Production" and the other one "Testing": both databases have the
+   same name.
+
+Testing can work the same way (`127.0.0.1:50555:1433` in its `db-port.local.yml`); then ask the provider to close
+50555.
+
 ## Two environments: production and testing
 
 Production is what the company uses. Testing is where new work is tried first, on a copy of production's data,
@@ -133,7 +246,9 @@ sudo ./setup.sh testing
 It does everything in one go:
 
 1. Checks out both repositories on `main` into `/opt/inventory-test`.
-2. Writes testing's `.env`, with its own secrets and its own database.
+2. Writes testing's `.env`, with its own secrets and its own database, in production's SQL Server ([One SQL Server
+   for both environments](#one-sql-server-for-both-environments); `sudo SHARED_SQL=no ./setup.sh testing` gives it
+   a SQL Server of its own).
 3. Builds and starts testing.
 4. Turns on the switch on production's sign-in page.
 5. Offers to copy production's database into testing. Run again later, it keeps testing's data unless you
@@ -177,6 +292,92 @@ To see them anyway:
 
 Every email then goes to that one address only, with the subject starting with `[TEST]`.
 
+## One SQL Server for both environments
+
+Testing's database can live in **production's SQL Server**, next to production's: one SQL Server on the server
+(about 2 GB of memory less), and one SSMS connection that shows both databases, `Inventory_Shipment` (production) and
+`Inventory_Shipment_Test` (testing). Testing then runs no SQL Server of its own. A new testing environment is set up
+so (`setup.sh testing`; `SHARED_SQL=no` gives it one of its own); one set up before is moved once with
+`share-sql-server.sh` (below).
+
+What keeps production's data safe from testing:
+
+- **Testing's API signs in as a login of its own**, `inventory_test`, which owns testing's database and has no user
+  in production's: whatever the code under test does, SQL Server refuses it production's data. The login and its
+  password are in testing's `.env` (`DB_USER`, `DB_PASSWORD`), set again at every update of testing.
+- **The API applies its schema to its own database only.** The scripts of `Database/` start with
+  `USE [Inventory_Shipment];` for sqlcmd on a PC; the API points that line at its own database, and refuses to start
+  on any other `USE`.
+- **Testing's scripts act on testing's database only** (backup, restore, copy, reset): a `DB_NAME` missing from
+  testing's `.env`, or equal to production's, stops them before they touch anything.
+- **Production's SQL Server answers testing on a network of its own**: `inventory-sql`, as `inventory-db`
+  (`sql-host.local.yml` in production's folder, written by the scripts), never on production's own network.
+
+What it costs: production's SQL Server is testing's too. Restarting it pauses testing as well; heavy work in testing
+(an import, a test with thousands of containers) slows production; testing's updates, restores and copies wait for
+production's, and the other way round. When memory runs out, testing's processes are still stopped first.
+
+### Move testing's database into production's SQL Server (once)
+
+First deploy `main` to testing as usual (the **Deploy to server** button with `testing`, or `sudo ./update.sh` in
+testing's folder). Then, on the server:
+
+```bash
+cd /opt/inventory-test/Inventory_Shipment/deploy
+sudo ./share-sql-server.sh
+```
+
+After "Type YES" it stops testing's API, backs up testing's database, stops testing's SQL Server, puts production's
+on the shared network, restores the backup into it as `Inventory_Shipment_Test` (owned by `inventory_test`), writes
+testing's `.env`, and starts testing on it. Testing stops for a few minutes; **production's SQL Server restarts once**
+(the production app pauses for about half a minute): do it at a quiet moment. It ends by comparing a few figures
+(users, items, documents, stock movements, containers) before and after.
+
+- **SSMS:** the SSMS port of testing's SQL Server (its `db-port.local.yml`) moves to production's, and the SQL logins
+  of testing's database come along with their passwords (`ssms_user`); a read-only one may read production's
+  database too. The same connection then shows both databases. If production has an SSMS port of its own already,
+  it keeps it, and testing's port closes.
+- **Testing's old SQL Server** is only stopped, its volume kept. Once all is well:
+  `sudo docker volume rm inventory-test_sqldata`.
+- **Back to a SQL Server of testing's own**, with testing's data as it is then: `sudo ./share-sql-server.sh --undo`
+  in testing's folder.
+
+### Production with testing's data
+
+To go live with what was entered in testing, **after** releasing `main` to production (production must run the same
+code as testing: the script compares both repositories and refuses otherwise):
+
+```bash
+cd /opt/inventory/Inventory_Shipment/deploy
+sudo ./copy-testing-to-production.sh
+```
+
+It asks you to type production's address, backs up production into `deploy/backups/before-copy-from-testing` (kept,
+not pruned), backs up testing (only read), and restores that into production. The users and passwords become
+testing's, everyone signs in again, the emails testing still had to send are closed instead of being sent, and the
+SMTP password must be typed again in *Configuration > Settings > Email*. To undo: `sudo ./restore.sh` with the file it
+names.
+
+### Removing testing later
+
+When testing is no longer needed (copy its data into production first if production should keep it: [Production with
+testing's data](#production-with-testings-data)), on the server:
+
+```bash
+cd /opt/inventory-test/Inventory_Shipment/deploy
+sudo docker compose down -v
+sudo rm -f /etc/cron.d/inventory-shipment-backup-testing
+cd /opt/inventory/Inventory_Shipment/deploy
+sudo docker compose exec -T db bash -c 'SQLCMDPASSWORD="$MSSQL_SA_PASSWORD" /opt/mssql-tools18/bin/sqlcmd -C -S localhost -U sa -b -Q "ALTER DATABASE [Inventory_Shipment_Test] SET SINGLE_USER WITH ROLLBACK IMMEDIATE; DROP DATABASE [Inventory_Shipment_Test]; DROP LOGIN [inventory_test];"'
+sudo sed -i -e '/^COMPOSE_FILE=/s/:sql-host\.local\.yml//' -e '/^SWITCH_URL=/d' .env
+sudo docker compose up -d
+```
+
+`down -v` deletes testing's containers and volumes; its backups stay in
+`/opt/inventory-test/Inventory_Shipment/deploy/backups` (copy them off, then `sudo rm -rf /opt/inventory-test`). The
+last two lines take the Production / Testing switch off the sign-in page and restart production's SQL Server once
+(the app pauses for about half a minute). The testing address then shows an error page.
+
 ## Branches and deploying
 
 | Branch | Environment | Who pushes |
@@ -186,14 +387,17 @@ Every email then goes to that one address only, with the subject starting with `
 
 The everyday cycle:
 
-1. **Work** is pushed to `main`, and **testing** is updated with it (automatically, or `sudo ./update.sh` in
-   `/opt/inventory-test/Inventory_Shipment/deploy`).
+1. **Work** is pushed to `main`. **Testing** is updated with it when someone presses the **Deploy to server**
+   button with testing ([Deploying with a button](#deploying-with-a-button-one-time-setup)), or runs `sudo
+   ./update.sh` in `/opt/inventory-test/Inventory_Shipment/deploy`.
 2. **Test** it on `https://test.<domain>`.
 3. **Release**: merge `main` into `production`, in **both** repositories, and push. **Production** is updated
-   with it (automatically, or `sudo ./update.sh` in `/opt/inventory/Inventory_Shipment/deploy`).
+   with it when someone presses the button with production (and types `production` in its confirm box), or runs
+   `sudo ./update.sh` in `/opt/inventory/Inventory_Shipment/deploy`.
 
-   On GitLab: **Merge requests > New**, source `main`, target `production`, then **Merge**, in both projects.
-   Or on your PC, in **both** repositories (`Inventory_Shipment` and `Inventory_Shipment.Web`):
+   On GitHub: **Pull requests > New pull request**, base `production`, compare `main`, then **Merge pull
+   request** (keep "Create a merge commit"), in both repositories. Or on your PC, in **both** repositories
+   (`Inventory_Shipment` and `Inventory_Shipment.Web`):
 
    ```bash
    git fetch origin && (git checkout production 2>/dev/null || git checkout -b production --track origin/production) && git pull --ff-only origin production && git merge --no-edit origin/main && git push origin production && git checkout main
@@ -207,49 +411,73 @@ Database changes need nothing extra: each API applies `Schema.sql` to its own da
 
 **Never commit straight to `production`.** A fix goes to `main` first, is checked in testing, then is merged.
 
-### The server reads GitHub; keep GitLab and GitHub in step
+### Notes for the next release
 
-The server pulls from GitHub (`bfa-14/Inventory_Shipment`, `bfa-14/Inventory_Shipment_Frontend`). The team
-works on GitLab, so every push to `main` and `production` must also reach GitHub. Set up a **push mirror** on
-GitLab, once per project. From then on **GitLab is the only place where anything is pushed or merged**;
-GitHub is a read-only copy.
+- **Script 89** replays the costs of the items of cancelled documents once (possibly over several starts) and keeps
+  Document Types settings from now on: rehearse on testing, compare the before / after query below, and re-apply the
+  Document Types settings once (the ones saved before were reset at the last start). In SSMS on the server, run this
+  BEFORE and AFTER the deploy, save each result to a file and compare them: the averages of those items become the
+  replay's (Stock Valuation may move for them: that is the fix); last cost, FOB cost and last supplier do not move.
 
-1. **Bring GitLab level with GitHub first** (work merged on GitHub, such as the deployment itself, must not
-   be lost). On your PC, in both repositories, with `origin` = GitLab and `github` = GitHub:
+  ```sql
+  SELECT i.Id, i.ItemCode, i.AverageCost, i.LastCost, i.FobCost, i.LastSupplierId, OnHand = inventory.fn_StockOnHand(i.Id, NULL)
+  FROM inventory.Items i
+  WHERE i.Id IN (SELECT l.ItemId FROM inventory.StockDocumentLines l INNER JOIN inventory.StockDocuments d ON d.Id = l.DocumentId WHERE d.Status = 3
+                 UNION SELECT l.ItemId FROM sales.SalesDocumentLines l INNER JOIN sales.SalesDocuments d ON d.Id = l.DocumentId WHERE d.Status = 3)
+  ORDER BY i.ItemCode;
+  SELECT Code, Name, DefaultPricing, PriceEditable, NumberPerBranch, YearInNumber, NumberLength, UpdatedAtUtc FROM inventory.DocumentTypes ORDER BY Code;
+  ```
 
-   ```bash
-   git fetch origin && git fetch github
-   git push origin github/main:refs/heads/main github/production:refs/heads/production
-   ```
+### The repositories: GitHub
 
-   Both are plain fast-forwards. If one is refused, GitLab has commits GitHub lacks: merge them first
-   (`git checkout main && git pull --no-rebase origin main && git merge github/main && git push origin main`),
-   then push again.
+Both repositories live on GitHub, private, under the `bfa-14` account: **`bfa-14/Inventory_Shipment`** (API,
+database, deployment) and **`bfa-14/Inventory_Shipment_Frontend`** (web). Everyone pushes and merges there, and
+the server pulls from there.
 
-2. **A GitHub token** for the mirror, made by the `bfa-14` account: GitHub > Settings > Developer settings >
-   **Fine-grained tokens** > Generate. Resource owner `bfa-14`, repositories `Inventory_Shipment` and
-   `Inventory_Shipment_Frontend`, permissions **Contents: Read and write** and **Workflows: Read and write**
-   (without Workflows, GitHub refuses every push that touches `.github/workflows`). A classic token needs the
-   scopes `repo` and `workflow`. **Pick an expiry date and note it**: when the token expires, the mirror and so
-   every deployment stop.
+In every clone, `origin` is GitHub:
 
-3. **The mirror**, in each GitLab project: **Settings > Repository > Mirroring repositories**:
-   - Git repository URL: `https://github.com/bfa-14/<repo>.git`
-   - Mirror direction: **Push**
-   - Authentication method: **Username and Password**, username `bfa-14`, password = the token
-   - **Keep divergent refs**: leave it off. GitHub is then always forced to match GitLab; anything committed or
-     merged on GitHub alone is overwritten. That is why nothing is merged on GitHub any more.
+```bash
+git remote -v
+```
 
-4. **Check it** after a push: the same page shows "Last successful update" and any error. Anything pushed to
-   GitLab reaches GitHub within a minute, and deploys, as long as the mirror shows no error.
+shows `https://github.com/bfa-14/Inventory_Shipment` in the API folder and
+`https://github.com/bfa-14/Inventory_Shipment_Frontend` in the web folder. A clone that points anywhere else is
+switched with `git remote set-url origin <the address above>`, then `git fetch origin && git branch -u origin/main
+main`. Someone joining the team needs to be added on GitHub (**Settings > Collaborators** in each repository)
+before they can clone or push.
 
-Without a mirror, push to both remotes every time (`git push origin main && git push github main`, the same
-for `production`), and still merge only in one place.
+### Deploying with a button (one-time setup)
 
-### Deploying automatically from GitHub (one-time setup)
+Testing and production change only when someone presses the **Deploy to server** button: a push to `main` or
+`production` deploys nothing. The button runs the environment's `update.sh` on the server (backup, pull of both
+repositories, rebuild, restart), so nobody has to sign in to the server to deploy. The same workflow is in both
+repositories: pressing it in either one deploys both.
 
-A push to `main` or `production`, in either repository, then deploys the matching environment by itself. You
-can also deploy by hand: **Actions > Deploy to server > Run workflow**, choosing the environment.
+**The button**, in three places, always the same workflow (`.github/workflows/deploy.yml`):
+
+- **GitHub**, in any browser: **Actions > Deploy to server > Run workflow**, keep the branch `main`, choose the
+  environment, then **Run workflow**.
+- **VS Code**: install the extension **GitHub Actions** (by GitHub, `github.vscode-github-actions`; the
+  repositories recommend it) and sign in to GitHub when it asks. In its view (the GitHub Actions icon on the
+  left), under **Workflows**, hover **Deploy to server** and press its **Run workflow** button (or right-click it >
+  Run Workflow): it asks for the branch (`main`), the environment and the confirm box. The run and its log show
+  in the same view.
+- **Visual Studio** (Windows): install the GitHub CLI once (in a terminal: `winget install --id GitHub.cli`, then
+  `gh auth login`). Then **Tools > External Tools... > Add**:
+  - Title: `Deploy testing`
+  - Command: `C:\Program Files\GitHub CLI\gh.exe`
+  - Arguments: `workflow run deploy.yml --repo bfa-14/Inventory_Shipment -f environment=testing`
+  - tick **Use Output window**, then **OK**.
+
+  **Tools > Deploy testing** then starts it; follow the run on GitHub (**Actions**). Deploy production from GitHub
+  or VS Code, where the confirm box is asked.
+
+**Production** also asks you to type `production` in the confirm box: anything else stops before reaching the
+server ("Not deployed: to deploy production, type production in the confirm box of Run workflow."), so a click
+meant for testing never updates production. Releasing is still a pull request `main` > `production` first
+([Branches and deploying](#branches-and-deploying)); the button then deploys what `production` holds.
+
+**One-time setup**, before the button works:
 
 1. **On the server**, in the production folder, after `setup.sh testing`:
 
@@ -269,8 +497,10 @@ can also deploy by hand: **Actions > Deploy to server > Run workflow**, choosing
    - `DEPLOY_SSH_KEY`: the whole key, `BEGIN` and `END` lines included.
 3. **Try it:** Actions > Deploy to server > Run workflow > testing.
 
-Until the secrets are there, pushes skip the deployment (with a note in the Actions log). The key is shown only
-once: run the script again to make a new one (the old one stops working).
+Until the secrets are there, the button stops at once ("The secret DEPLOY_HOST is missing. …"). The key is shown
+only once: run the script again to make a new one (the old one stops working). GitHub connects to the server's SSH
+port from its own machines: if the server's firewall lets SSH in only from your own address, the button fails with
+a connection timeout.
 
 Each deployment is also written to `/var/log/inventory-deploy-production.log` (or `-testing.log`) on the
 server. A deployment runs to its end even if its GitHub job is cancelled or times out: cancelling only stops
@@ -462,7 +692,7 @@ Run these on the server, in the deploy folder of the environment concerned. Sign
 
 | To | Run |
 |----|-----|
-| Deploy the latest code from GitHub | `sudo ./update.sh` (or automatically: [Branches and deploying](#branches-and-deploying)) |
+| Deploy the latest code from GitHub | `sudo ./update.sh` (or the **Deploy to server** button: [Deploying with a button](#deploying-with-a-button-one-time-setup)) |
 | Back up now | `sudo ./backup.sh` |
 | Restore a backup | `sudo ./restore.sh backups/Inventory_Shipment-20261005-023000.bak.gz` |
 | Refresh testing with production's data | `sudo ./copy-production-to-testing.sh` (testing folder) |
@@ -547,6 +777,10 @@ Any SQL Server version up to 2025 can be restored.
 | Production | 02:30 | `/opt/inventory/Inventory_Shipment/deploy/backups` | `/var/log/inventory-shipment-backup.log` |
 | Testing | 02:45 | `/opt/inventory-test/Inventory_Shipment/deploy/backups` | `/var/log/inventory-shipment-backup-testing.log` |
 
+With [one SQL Server for both environments](#one-sql-server-for-both-environments), production's SQL Server makes
+testing's backups too (through `deploy/backups/testing` in production's folder), and they still land in testing's
+`deploy/backups`.
+
 Each backup is two files:
 
 - `Inventory_Shipment-<date>.bak.gz`: the database.
@@ -588,22 +822,29 @@ one. To change one, edit the file (`sudo nano .env`) and run `sudo docker compos
 ## Security
 
 - Only ports 80 and 443 (the proxy) are open to the internet. Each environment's API and web app listen on the
-  server's `127.0.0.1` only. SQL Server is reachable only from inside its environment's Docker network.
-- The two environments share nothing but the proxy: separate containers, databases, volumes, secrets and
-  images (`inventory-*` and `inventory-test-*`).
+  server's `127.0.0.1` only. SQL Server is reachable only from inside its environment's Docker network, unless you
+  open it to SSMS ([SQL Server from SSMS on your PC](#sql-server-from-ssms-on-your-pc)).
+- The two environments share nothing but the proxy, and, with [one SQL Server for
+  both](#one-sql-server-for-both-environments), production's SQL Server: separate containers, databases, volumes,
+  secrets and images (`inventory-*` and `inventory-test-*`). Testing's API then signs in to production's SQL Server
+  as `inventory_test`, which owns testing's database only.
 - HTTPS everywhere: `http://` redirects to `https://`, with HSTS.
 - Each server gets its own secrets in `.env`, which `.gitignore` keeps out of Git. The values in
   `appsettings.Development.json` are public development defaults and are not used on the server.
 - The API connects as `sa` because it creates the database on the first start. That is acceptable only
-  because SQL Server is not exposed to the internet. Keep it that way: do not publish port 1433.
+  because SQL Server is not exposed to the internet. Keep it that way: do not publish port 1433. Opening a port to
+  SSMS is the one exception, and then only with the generated `sa` password kept and a login of its own for SSMS.
 - Recommended for the server itself: sign in with an SSH key instead of a password, and turn on automatic
   security updates (`apt-get install -y unattended-upgrades`).
 - The GitHub deploy key can only start `inventory-deploy production|testing` (a forced command with `restrict`
   in `authorized_keys`); it cannot open a shell or reach anything else. `update.sh` runs the code it pulls, so
-  whoever can push to `main` or `production` decides what the server runs: keep that list short.
-- **Protect `production` on GitLab**, where the team pushes: **Settings > Repository > Protected branches**,
-  `production`, *Allowed to merge*: Maintainers, *Allowed to push and merge*: No one. Releases then go through a
-  merge request. On GitHub add no "require a pull request" rule: it would refuse the mirror's pushes.
+  whoever can push to `main` or `production` decides what the server runs, and whoever has write access to a
+  repository can press the button: keep that list short.
+- **Protect `production` on GitHub**, in both repositories: **Settings > Branches > Add branch protection rule**
+  (or **Rules > Rulesets**), branch `production`: *Require a pull request before merging*, and *Restrict who can
+  push* to the people who release. Releases then go through a pull request (see
+  [Branches and deploying](#branches-and-deploying)); the deploy workflow only reads the repositories, so the rule
+  does not stop it.
 - Testing holds a copy of production's data: see [Testing's data](#testings-data) to keep it to the company's
   network. The GitHub repositories should be **private**.
 - When memory runs out, the kernel stops testing's processes before production's (`OOM_SCORE_ADJ=500` in

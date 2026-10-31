@@ -110,7 +110,7 @@ public sealed class PendingApprovalDto
 /// <summary>usp_PurchaseOrder_ApprovalState, first result set, as seen by the signed-in user.</summary>
 public sealed class ApprovalStateDto
 {
-    /// <summary>Draft | PendingApproval | Posted | Cancelled | Closed.</summary>
+    /// <summary>Draft | PendingApproval | Posted (approved) | Cancelled.</summary>
     public string Status { get; init; } = PurchaseDocumentStatus.Draft;
 
     public bool NeedsApproval { get; init; }

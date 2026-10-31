@@ -35,7 +35,8 @@ public interface ISalesDocumentRepository
     /// <summary>The item + warehouse pairs the document asks more of than they hold, each with its policy verdict.</summary>
     Task<IReadOnlyList<OutOfStockLineDto>> GetOutOfStockLinesAsync(int id, CancellationToken cancellationToken = default);
 
-    Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+    /// <param name="cancelDate">The day the cancellation counts on (script 84); null = today.</param>
+    Task CancelAsync(int id, string reason, DateOnly? cancelDate, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
     /// <summary>Drafts only.</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);

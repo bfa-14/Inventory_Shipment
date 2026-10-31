@@ -1,10 +1,3 @@
-/* ================================================================== 5. Candidates of a movement */
-
--- Re-created (53) from the body of script 50: + @ToPlaceId and @MovementTypeId (the page's, saved or not; NULL = the
--- saved movement's) for the place rules of an Origin-stage movement.
--- The containers that can join a movement (@MovementId NULL = a new one) leaving from @FromPlaceId (the From on the
--- page, saved or not): not on the movement, not offloaded / closed / cancelled. @IncludeBlocked = 1 also lists the
--- ones the checks of Save refuse (CanAdd 0, Reason). At most 200 rows a page; TotalCount for the paging.
 CREATE   PROCEDURE logistics.usp_Movement_ContainerCandidates
     @MovementId      INT           = NULL,
     @FromPlaceId     INT,
@@ -21,7 +14,10 @@ AS
 BEGIN
     SET NOCOUNT ON;
     IF @PageNumber IS NULL OR @PageNumber < 1 SET @PageNumber = 1;
-    IF @PageSize IS NULL OR @PageSize < 1 OR @PageSize > 200 SET @PageSize = 200;
+    -- (78) up to 5,000 a page (200 before): the movement's list holds every candidate at its From, and like the search
+    -- every page costs the whole check (logistics.fn_Movement_ContainerCheck).
+    IF @PageSize IS NULL OR @PageSize < 1 SET @PageSize = 200;
+    IF @PageSize > 5000 SET @PageSize = 5000;
     SET @Search = NULLIF(LTRIM(RTRIM(@Search)), N'');
     SET @IncludeBlocked = ISNULL(@IncludeBlocked, 0);
 

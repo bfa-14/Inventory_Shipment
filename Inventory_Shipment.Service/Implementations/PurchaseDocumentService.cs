@@ -11,6 +11,7 @@ using Inventory_Shipment.Repository.Exceptions;
 using Inventory_Shipment.Repository.Interfaces;
 using Inventory_Shipment.Service.Documents;
 using Inventory_Shipment.Service.Interfaces;
+using Inventory_Shipment.Service.Security;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
 
@@ -23,15 +24,17 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
     private readonly IPurchaseDocumentRepository _documents;
     private readonly IPurchaseApprovalMailer _approvalMailer;
+    private readonly IWarehouseAccessService _access;
     private readonly PurchaseOptions _options;
     private readonly ILogger<PurchaseDocumentService> _logger;
 
     public PurchaseDocumentService(
-        IPurchaseDocumentRepository documents, IPurchaseApprovalMailer approvalMailer, IOptions<PurchaseOptions> options,
-        ILogger<PurchaseDocumentService> logger)
+        IPurchaseDocumentRepository documents, IPurchaseApprovalMailer approvalMailer, IWarehouseAccessService access,
+        IOptions<PurchaseOptions> options, ILogger<PurchaseDocumentService> logger)
     {
         _documents = documents;
         _approvalMailer = approvalMailer;
+        _access = access;
         _options = options.Value;
         _logger = logger;
     }
@@ -126,7 +129,11 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     }
 
     public async Task<Result<PurchaseDocumentDto>> GetAsync(
-        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => await WithAccessAsync(await GetCoreAsync(id, permissions, cancellationToken), userId, cancellationToken);
+
+    private async Task<Result<PurchaseDocumentDto>> GetCoreAsync(
+        int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken)
     {
         var document = await _documents.GetAsync(id, cancellationToken);
         if (document is null)
@@ -175,6 +182,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Forbidden<PurchaseDocumentDto>(set.Create);
         }
 
+        var isReturn = set == Returns;
         if (id is { } existingId)
         {
             // The kind of an existing draft is the kind of the request, or the procedure refuses it; the
@@ -184,6 +192,23 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             if (allowed.IsFailure)
             {
                 return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
+            }
+
+            isReturn |= IsReturn(allowed.Value?.DocumentTypeCode);
+        }
+
+        /* (92) A PURCHASE RETURN TAKES STOCK OUT: a warehouse its editor names must be theirs; a line already on the
+           stored draft in one that is not may stay as it is or move to one of theirs (A8) - nothing added, changed or
+           dropped there. Orders and supplier invoices move no stock and are not limited (A6). */
+        if (isReturn)
+        {
+            var refusal = await _access.DraftRefusalAsync(
+                userId, DraftOf(request),
+                id is { } storedId ? async () => DraftOf(await _documents.GetAsync(storedId, cancellationToken)) : null,
+                cancellationToken);
+            if (refusal is not null)
+            {
+                return WarehouseAccess.Failure<PurchaseDocumentDto>(refusal);
             }
         }
 
@@ -199,7 +224,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
 
         _logger.LogInformation("{Kind} {DocumentId} saved by user {UserId}", set.Label, savedId, userId);
 
-        return await ReadAsync(savedId, cancellationToken);
+        return await WithAccessAsync(await ReadAsync(savedId, cancellationToken), userId, cancellationToken);
     }
 
     public Task<Result<PurchaseDocumentDto>> PostAsync(
@@ -212,6 +237,10 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// receives its lines not in a container with a goods receipt, in a transaction of its own: it needs the goods
     /// receipt rights too, checked BEFORE anything is posted, and a receipt the database refuses leaves the invoice posted
     /// with the reason as a warning - never a failed answer for an invoice that is posted.
+    ///
+    /// (79) WHEN THE PINV TYPE RECEIVES THE GOODS ITSELF ("Affects on-hand", Configuration › Document Types), the database
+    /// does it on every posting, whoever posts: it is the document type's rule, not the user's choice, so the goods
+    /// receipt rights are not asked for then - a tick sent by an older page is simply not needed.
     /// </summary>
     public async Task<Result<PurchaseDocumentDto>> PostWithOptionsAsync(
         int id, PostPurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
@@ -224,16 +253,24 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         }
 
         var typeCode = PurchaseDocumentTypes.Normalize(allowed.Value?.DocumentTypeCode);
-        var receiveNow = request.ReceiveNow && typeCode == PurchaseDocumentTypes.Invoice;
-        if (receiveNow)
+
+        // (92) Posting a return takes its stock out of every warehouse of its lines: each must be the user's. An invoice is
+        // posted whoever posts it; the goods receipt its posting may make is refused by the ledger trigger, as its warning.
+        if (await StoredReturnRefusalAsync(id, typeCode, userId, cancellationToken) is { } refusal)
         {
-            foreach (var right in GoodsReceiptRights)
+            return WarehouseAccess.Failure<PurchaseDocumentDto>(refusal);
+        }
+
+        var receiveNow = request.ReceiveNow && typeCode == PurchaseDocumentTypes.Invoice;
+        if (receiveNow && GoodsReceiptRights.FirstOrDefault(right => !permissions.Contains(right)) is { } missing)
+        {
+            // The type receives the goods anyway: the tick asks for nothing more, and needs no right of its own.
+            if (await _documents.GetAsync(id, cancellationToken) is not { ReceiveOnPost: true })
             {
-                if (!permissions.Contains(right))
-                {
-                    return Forbidden<PurchaseDocumentDto>(right);
-                }
+                return Forbidden<PurchaseDocumentDto>(missing);
             }
+
+            receiveNow = false;
         }
 
         PurchasePostOutcome outcome;
@@ -250,9 +287,9 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             outcome.GoodsReceiptNumber is { } receipt ? $"; goods received with {receipt}"
             : outcome.ReceiveWarning is not null ? "; the goods receipt was refused" : string.Empty);
 
-        // Re-read: posting assigns the number, may close the order and adjust received goods. The document is the
+        // Re-read: posting assigns the number, may complete the order's invoicing and adjust received goods. The document is the
         // server's answer, with what the posting did beside it.
-        var posted = await ReadAsync(id, cancellationToken);
+        var posted = await WithAccessAsync(await ReadAsync(id, cancellationToken), userId, cancellationToken);
         if (posted.Value is { } document)
         {
             document.PostResult = PostResult(document, outcome, receiveNow);
@@ -289,6 +326,11 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             message.Add($"Goods received: {receipt}.");
         }
 
+        // The type's switch says what it would do, not what this posting did: a "Shipped in containers" invoice, or one
+        // with nothing left to receive, is posted without any receipt being tried, and then nothing is said. Only a
+        // receipt made or refused counts as received by the document type.
+        var byType = outcome.ReceiveOnPost && (outcome.GoodsReceiptId is not null || outcome.ReceiveWarning is not null);
+
         return new PurchasePostResultDto
         {
             DocumentNumber = number,
@@ -298,7 +340,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             CostAdjustedCogsBase = outcome.CostAdjustedCogsBase,
             CostAdjustedLines = outcome.CostAdjustedLines,
             BaseCurrencyCode = document.BaseCurrencyCode,
-            ReceiveRequested = receiveNow,
+            ReceiveRequested = receiveNow || byType,
+            ReceivedByDocumentType = byType,
             GoodsReceiptId = outcome.GoodsReceiptId,
             GoodsReceiptNumber = outcome.GoodsReceiptNumber,
             ReceiveWarning = outcome.ReceiveWarning,
@@ -346,6 +389,13 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         {
             message = $"Only a draft invoice is previewed: this one is {document.Status.ToLowerInvariant()}.";
         }
+        // (79) The PINV type does not change item costs: the goods keep what they cost - the database previews no difference.
+        else if (!document.AffectsCost)
+        {
+            message = pieces > 0
+                ? $"{pieces} pcs already received keep their cost: this invoice does not change item costs (Configuration › Document Types)."
+                : "Goods received against it will keep the order price: this invoice does not change item costs (Configuration › Document Types).";
+        }
         else if (pieces > 0)
         {
             message = $"{pieces} pcs already received will have their cost adjusted by {Signed(difference)} {currency}".TrimEnd()
@@ -366,6 +416,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             DifferenceBase = difference,
             EstimatedInventoryBase = inventory,
             EstimatedCogsBase = cogs,
+            AffectsCost = document.AffectsCost,
             Message = message,
             Lines = lines,
         });
@@ -381,29 +432,16 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
         }
 
-        return await ChangeAsync(id, cancellationToken,
-            version => _documents.CancelAsync(id, request.Reason, version, userId, cancellationToken),
-            request.RowVersion, userId, "cancelled");
-    }
-
-    /// <summary>
-    /// CLOSING IS THE POSTER'S RIGHT. Whoever may confirm an order decides when it is done: closing
-    /// reverses nothing and keeps every receipt, so it is a step of the order's life rather than the
-    /// undoing that cancelling is. The procedure refuses anything that is not an open order.
-    /// </summary>
-    public async Task<Result<PurchaseDocumentDto>> CloseAsync(
-        int id, ClosePurchaseDocumentRequest request, int userId, IReadOnlySet<string> permissions,
-        CancellationToken cancellationToken = default)
-    {
-        var allowed = await AllowAsync(id, s => s.Post, permissions, cancellationToken);
-        if (allowed.IsFailure)
+        // (92) Cancelling a return puts its stock back in every warehouse of its lines; cancelling an invoice posted before
+        // goods receipts takes its own stock back out of them (usp_PurchaseDocument_Cancel reverses its ledger rows).
+        if (await StoredCancelRefusalAsync(id, allowed.Value?.DocumentTypeCode, userId, cancellationToken) is { } refusal)
         {
-            return Result<PurchaseDocumentDto>.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
+            return WarehouseAccess.Failure<PurchaseDocumentDto>(refusal);
         }
 
         return await ChangeAsync(id, cancellationToken,
-            version => _documents.CloseAsync(id, request.Reason, version, userId, cancellationToken),
-            request.RowVersion, userId, "closed");
+            version => _documents.CancelAsync(id, request.Reason, version, userId, cancellationToken),
+            request.RowVersion, userId, "cancelled");
     }
 
     /// <summary>
@@ -477,6 +515,12 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result.Failure(allowed.ErrorType, allowed.Error ?? string.Empty, allowed.Code ?? "ERROR");
         }
 
+        // (92) Deleting a return draft needs every warehouse on it.
+        if (await StoredReturnRefusalAsync(id, allowed.Value?.DocumentTypeCode, userId, cancellationToken) is { } refusal)
+        {
+            return WarehouseAccess.Failure(refusal);
+        }
+
         try
         {
             await _documents.DeleteAsync(id, userId, cancellationToken);
@@ -501,13 +545,45 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Result<PurchaseDocumentDto>.Failure(created.ErrorType, created.Error ?? string.Empty, created.Code ?? "ERROR");
         }
 
-        return await ReadAsync(created.Value.NewId, cancellationToken);
+        // (92) A return made from its invoice is not checked when made (W5); its answer says whether this reader may post it.
+        return await WithAccessAsync(await ReadAsync(created.Value.NewId, cancellationToken), userId, cancellationToken);
+    }
+
+    /// <summary>
+    /// What "Create Purchase Invoice" offers on an order, line by line (script 86): ordered, invoiced by posted
+    /// invoices, in draft invoices and still available. Reading it is seeing the order; anything but a purchase order
+    /// is not found.
+    /// </summary>
+    public async Task<Result<IReadOnlyList<OrderInvoiceCandidateDto>>> GetOrderInvoiceCandidatesAsync(
+        int orderId, bool includeAll, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        var order = await AllowAsync(orderId, s => s.View, permissions, cancellationToken);
+        if (order.IsFailure)
+        {
+            return Result<IReadOnlyList<OrderInvoiceCandidateDto>>.Failure(order.ErrorType, order.Error ?? string.Empty, order.Code ?? "ERROR");
+        }
+
+        if (PurchaseDocumentTypes.Normalize(order.Value!.DocumentTypeCode) != PurchaseDocumentTypes.Order)
+        {
+            return Result<IReadOnlyList<OrderInvoiceCandidateDto>>.Failure(ErrorType.NotFound, "Purchase order not found.", "NOT_FOUND");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<OrderInvoiceCandidateDto>>.Success(
+                await _documents.GetOrderInvoiceCandidatesAsync(orderId, includeAll, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<OrderInvoiceCandidateDto>>(ex);
+        }
     }
 
     /// <summary>
     /// "Create invoice" on an order: ONE DRAFT PER ITEM of what remains (script 45 — a supplier invoice holds one
     /// item), or one draft of every item when the request says so (OnePerItem false, script 63; null = the setting),
-    /// the exporter's reference and the commercial invoice number copied to each.
+    /// the exporter's reference and the commercial invoice number copied to each. (86) Only the lines and quantities
+    /// the dialog chose when it sends them (request.Lines).
     /// </summary>
     public async Task<Result<CreatedPurchaseInvoicesDto>> CreateInvoicesFromOrderAsync(
         int orderId, CreateFromSourceRequest request, int userId,
@@ -538,6 +614,14 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Forbidden<CreatedFromSource>(set.Create);
         }
 
+        // The procedure's selection table is keyed by the source line: a line twice would be a SQL error, not a message.
+        var duplicate = request.Lines.GroupBy(l => l.SourceLineId).FirstOrDefault(g => g.Count() > 1);
+        if (duplicate is not null)
+        {
+            return Result<CreatedFromSource>.Failure(
+                ErrorType.Validation, $"Source line {duplicate.Key} appears more than once.", "VALIDATION");
+        }
+
         var source = await AllowAsync(sourceId, s => s.View, permissions, cancellationToken);
         if (source.IsFailure)
         {
@@ -548,9 +632,10 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         try
         {
             // One invoice per item or one of every item is a choice of PO -> PINV only: a return is one document.
+            // (86) The lines and quantities chosen in the dialog; none = everything still available, as before.
             created = await _documents.CreateFromSourceAsync(
                 sourceId, target!, request.DocumentDate, Trimmed(request.ExporterReference), Trimmed(request.CommercialInvoiceNo),
-                target == PurchaseDocumentTypes.Invoice ? request.OnePerItem : null, userId, cancellationToken);
+                target == PurchaseDocumentTypes.Invoice ? request.OnePerItem : null, userId, request.Lines, cancellationToken);
         }
         catch (BusinessRuleException ex)
         {
@@ -658,6 +743,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             return Forbidden<IReadOnlyList<BulkActionItemResult>>(Invoices.Post);
         }
 
+        var notes = new Dictionary<int, PurchasePostResultDto?>();
         var result = await BulkDocumentActions.RunAsync(ids, async id =>
         {
             var stub = await _documents.GetStubAsync(id, cancellationToken);
@@ -672,25 +758,52 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             }
 
             var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
+            notes[id] = posted.Value?.PostResult;
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
         });
 
-        return Result<IReadOnlyList<BulkActionItemResult>>.Success(result.Results);
+        return Result<IReadOnlyList<BulkActionItemResult>>.Success(WithPostNotes(result, notes).Results);
     }
+
+    /// <summary>
+    /// A BULK POST SAYS WHAT EACH POSTING DID BESIDES POSTING (script 79): a supplier invoice whose type receives its goods
+    /// names the goods receipt made, or - posted all the same - why it was refused, so a receipt that failed is never
+    /// lost behind a plain "Posted".
+    /// </summary>
+    private static BulkActionResult WithPostNotes(BulkActionResult result, IReadOnlyDictionary<int, PurchasePostResultDto?> notes)
+        => BulkActionResult.From(result.Results
+            .Select(item => item.Ok && notes.TryGetValue(item.Id, out var post) && post is not null
+                            && (post.GoodsReceiptNumber is not null || post.ReceiveWarning is not null)
+                ? new BulkActionItemResult
+                {
+                    Id = item.Id,
+                    DocumentNumber = item.DocumentNumber,
+                    Ok = true,
+                    Message = post.GoodsReceiptNumber is { } receipt ? $"Goods received: {receipt}." : null,
+                    Warning = post.ReceiveWarning,
+                }
+                : item)
+            .ToList());
 
     private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
-    public Task<BulkActionResult> BulkPostAsync(
+    public async Task<BulkActionResult> BulkPostAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
-        => BulkDocumentActions.RunAsync(ids, async id =>
+    {
+        var notes = new Dictionary<int, PurchasePostResultDto?>();
+        var result = await BulkDocumentActions.RunAsync(ids, async id =>
         {
             var posted = await PostAsync(id, null, userId, permissions, cancellationToken);
+            notes[id] = posted.Value?.PostResult;
             return posted.IsSuccess && posted.Value is not null
                 ? Result<string?>.Success(posted.Value.DocumentNumber)
                 : Result<string?>.Failure(posted.ErrorType, posted.Error ?? string.Empty, posted.Code ?? "ERROR");
         });
+
+        return WithPostNotes(result, notes);
+    }
 
     public Task<BulkActionResult> BulkDeleteAsync(
         IReadOnlyList<int> ids, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
@@ -792,12 +905,14 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
             }
 
             var document = saved.Value;
+            PurchasePostResultDto? postResult = null;
             if (request.PostImmediately)
             {
                 var result = await PostAsync(document.Id, null, userId, permissions, cancellationToken);
                 if (result.IsSuccess && result.Value is not null)
                 {
                     document = result.Value;
+                    postResult = document.PostResult;   // (79) the goods receipt its type made, or why not
                     posted++;
                 }
                 else
@@ -825,6 +940,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                 ItemId = item?.ItemId,
                 ItemCode = item?.ItemCode,
                 ItemName = item?.ItemName,
+                Warning = postResult?.ReceiveWarning,
+                GoodsReceiptNumber = postResult?.GoodsReceiptNumber,
             });
         }
 
@@ -955,7 +1072,7 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     public async Task<Result<(byte[] Content, string FileName)>> ExportAsync(
         int id, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {
-        var read = await GetAsync(id, permissions, cancellationToken);
+        var read = await GetCoreAsync(id, permissions, cancellationToken);
         if (read.IsFailure || read.Value is null)
         {
             return Result<(byte[], string)>.Failure(read.ErrorType, read.Error ?? NotFoundMessage, read.Code ?? "NOT_FOUND");
@@ -995,7 +1112,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         var header = new List<(string Label, string Value)>
         {
             ("Document No.", document.DocumentNumber ?? "DRAFT"),
-            ("Status", document.Status),
+            // (77) an approved order says Saved, Partially posted or Posted (its posted invoices), as on the page
+            ("Status", PurchaseDocumentStatus.Label(document.Status, document.DocumentTypeCode, document.InvoicingStatus)),
             ("Document Date", document.DocumentDate.ToString("dd/MM/yyyy")),
             (document.DocumentTypeCode == PurchaseDocumentTypes.Order ? "Expected Date" : "Due Date",
                 document.ExpectedDate?.ToString("dd/MM/yyyy") ?? string.Empty),
@@ -1029,11 +1147,6 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
                     ? (shipped ? "Yes - stock in at the container offload" : "No - stock in on posting")
                     : (shipped ? "Yes - received with its containers" : "No - received with Receive goods…")),
             ]);
-        }
-
-        if (document.Status == PurchaseDocumentStatus.Closed)
-        {
-            header.Add(("Closed", $"{document.ClosedAtUtc:dd/MM/yyyy} {document.CloseReason}".Trim()));
         }
 
         if (document.Status == PurchaseDocumentStatus.Cancelled)
@@ -1171,8 +1284,91 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
         _logger.LogInformation("Purchase document {DocumentId} {Verb} by user {UserId}", id, verb, userId);
 
         // Re-read: posting assigns the number, writes the ledger and the costs, moves the status and
-        // may close the source. The document is the server's answer, not a patch of what was sent.
-        return await ReadAsync(id, cancellationToken);
+        // may change how far its order is invoiced. The document is the server's answer, not a patch of what was sent.
+        return await WithAccessAsync(await ReadAsync(id, cancellationToken), userId, cancellationToken);
+    }
+
+    /* ── (92) warehouse access: purchase returns only ─────────────────────────────────────────── */
+
+    private static bool IsReturn(string? documentTypeCode)
+        => PurchaseDocumentTypes.Normalize(documentTypeCode) == PurchaseDocumentTypes.Return;
+
+    /// <summary>Every warehouse a stored document moves stock in: its lines' and its header's.</summary>
+    private static IEnumerable<int?> WarehousesOf(PurchaseDocumentDto? document)
+        => document is null ? [] : document.Lines.Select(line => (int?)line.WarehouseId).Append(document.WarehouseId);
+
+    /// <summary>
+    /// (92) A return request as the keep rule (A8) compares it: its header warehouse and each line's stock fields (its
+    /// warehouse the header's when it names none, and its invoice line).
+    /// </summary>
+    private static WarehouseDraft DraftOf(SavePurchaseDocumentRequest request)
+        => new(request.WarehouseId, (request.Lines ?? [])
+            .Select(line => new WarehouseDraftLine(line.WarehouseId ?? request.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate, line.SourceLineId)))
+            .ToList());
+
+    /// <summary>(92) The stored return, the same way (null when it no longer exists: the save answers that).</summary>
+    private static WarehouseDraft? DraftOf(PurchaseDocumentDto? document)
+        => document is null ? null : new(document.WarehouseId, document.Lines
+            .Select(line => new WarehouseDraftLine(line.WarehouseId, line.ItemId,
+                (line.ItemUnitId, line.Quantity, line.ExpiryDate is { } expiry ? DateOnly.FromDateTime(expiry) : (DateOnly?)null, line.SourceLineId)))
+            .ToList());
+
+    /// <summary>
+    /// For a purchase return, whether the user may move stock in every warehouse of the stored document (read only for a
+    /// restricted user); null for every other kind, which is not limited (A6).
+    /// </summary>
+    private Task<string?> StoredReturnRefusalAsync(int id, string? documentTypeCode, int userId, CancellationToken cancellationToken)
+        => IsReturn(documentTypeCode)
+            ? _access.RefusalAsync(userId, async () => WarehousesOf(await _documents.GetAsync(id, cancellationToken)), cancellationToken)
+            : Task.FromResult<string?>(null);
+
+    /// <summary>
+    /// (92) A SUPPLIER INVOICE POSTED BEFORE GOODS RECEIPTS with its own stock (UsesGoodsReceipts off, not shipped in
+    /// containers): its Cancel reverses the ledger rows its posting wrote, in its lines' warehouses
+    /// (usp_PurchaseDocument_Cancel, @OldStock), so it is the one invoice whose Cancel is limited like a return's. Every
+    /// other invoice moves no stock when it is cancelled (A6).
+    /// </summary>
+    private static bool CancelMovesStock(PurchaseDocumentDto document)
+        => PurchaseDocumentTypes.Normalize(document.DocumentTypeCode) == PurchaseDocumentTypes.Invoice
+        && document.Status == PurchaseDocumentStatus.Posted
+        && !document.UsesGoodsReceipts
+        && document.ReceiptMode == PurchaseReceiptModes.OnPosting;
+
+    /// <summary>(92) The warehouses such an invoice's Cancel takes stock out of: its lines'.</summary>
+    private static IEnumerable<int?> CancelWarehousesOf(PurchaseDocumentDto document)
+        => document.Lines.Select(line => (int?)line.WarehouseId);
+
+    /// <summary>
+    /// (92) Whether the user may cancel the stored document: a return as for its posting; an invoice posted before goods
+    /// receipts by its lines' warehouses (read only for a restricted user); null for every other kind.
+    /// </summary>
+    private Task<string?> StoredCancelRefusalAsync(int id, string? documentTypeCode, int userId, CancellationToken cancellationToken)
+        => PurchaseDocumentTypes.Normalize(documentTypeCode) == PurchaseDocumentTypes.Invoice
+            ? _access.RefusalAsync(userId, async () =>
+                await _documents.GetAsync(id, cancellationToken) is { } invoice && CancelMovesStock(invoice)
+                    ? CancelWarehousesOf(invoice)
+                    : Enumerable.Empty<int?>(), cancellationToken)
+            : StoredReturnRefusalAsync(id, documentTypeCode, userId, cancellationToken);
+
+    /// <summary>
+    /// The document as this reader receives it: a purchase return carries the sentence that says why they may not post,
+    /// cancel or delete it (no keep rule), null when they may; an invoice posted before goods receipts why they may not
+    /// cancel it; other orders and invoices always null, with no database call.
+    /// </summary>
+    private async Task<Result<PurchaseDocumentDto>> WithAccessAsync(
+        Result<PurchaseDocumentDto> read, int userId, CancellationToken cancellationToken)
+    {
+        if (read.Value is { } document && IsReturn(document.DocumentTypeCode))
+        {
+            document.WarehouseAccessRefusal = await _access.RefusalAsync(userId, WarehousesOf(document), cancellationToken: cancellationToken);
+        }
+        else if (read.Value is { } invoice && CancelMovesStock(invoice))
+        {
+            invoice.WarehouseAccessRefusal = await _access.RefusalAsync(userId, CancelWarehousesOf(invoice), cancellationToken: cancellationToken);
+        }
+
+        return read;
     }
 
     private static Result<T> Failure<T>(BusinessRuleException exception)
@@ -1188,6 +1384,8 @@ public sealed class PurchaseDocumentService : IPurchaseDocumentService
     /// </summary>
     internal static RuleFailure Describe(BusinessRuleException exception) => exception.Number switch
     {
+        // (92) The ledger trigger's refusal (or any other 50010): the user may not move stock in that warehouse.
+        SqlErrors.WarehouseAccessDenied => new RuleFailure(ErrorType.Forbidden, exception.Message, WarehouseAccess.Code),
         SqlErrors.PurchaseDocumentValidation => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION"),
         SqlErrors.PurchaseDocumentConcurrency => new RuleFailure(ErrorType.Conflict, exception.Message, "CONCURRENCY"),
         SqlErrors.PurchaseDocumentNotDraft => new RuleFailure(ErrorType.Conflict, exception.Message, "NOT_DRAFT"),

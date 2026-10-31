@@ -1,5 +1,3 @@
-/* ================================================================== 5. Save (a draft) */
-
 CREATE   PROCEDURE sales.usp_Receipt_Save
     @Id           INT            = NULL,           -- NULL = create
     @ReceiptDate  DATE,
@@ -65,7 +63,6 @@ BEGIN
              WHEN l.ExchangeRate IS NOT NULL AND l.ExchangeRate <= 0 THEN N'exchange rate must be greater than zero.'
              WHEN a.Id IS NULL OR a.IsActive = 0 THEN N'cash / bank account not found or inactive.'
              WHEN a.CurrencyId <> l.CurrencyId THEN N'account ' + a.AccountCode + N' holds ' + ac.CurrencyCode + N', not ' + cu.CurrencyCode + N'.'
-             WHEN a.BranchId IS NOT NULL AND a.BranchId <> @BranchId THEN N'account ' + a.AccountCode + N' is not available for this receipt''s branch.'
              WHEN l.ExchangeRate IS NULL AND cu.IsBaseCurrency = 0 AND masterdata.fn_GetRate(l.CurrencyId, 1, @ReceiptDate) IS NULL
                   THEN N'no official exchange rate is defined for ' + cu.CurrencyCode + N' on or before ' + CONVERT(NVARCHAR(10), @ReceiptDate, 120) + N'.'
         END) x

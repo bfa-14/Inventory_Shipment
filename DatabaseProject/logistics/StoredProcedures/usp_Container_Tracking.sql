@@ -1,3 +1,9 @@
+/* ================================================================== 18. The tracking board: the days at the port stop at the Delivery */
+
+-- Re-created (65) from the body of script 27: the days at the port stop at the latest completed Delivery while the
+-- goods wait for their receipt (edge case 29: the free time is over once the container left the port); + DeliveredDate,
+-- ReceivedBy and the open goods receipt at the end of the containers' set. The legs are unchanged.
+-- Tracking board: open containers (and those offloaded during the last @OffloadedDays days) with their route legs.
 CREATE   PROCEDURE logistics.usp_Container_Tracking
     @ContainerId   INT           = NULL,
     @Search        NVARCHAR(100) = NULL,
@@ -20,13 +26,15 @@ BEGIN
     -- 1: containers
     SELECT c.Id, c.ContainerRef, c.ContainerNo, ct.TypeCode AS ContainerTypeCode, c.Status, c.CurrentLocation,
            c.DispatchDate, c.Eta, c.ActualPortArrival, c.CustomsReleaseDate, c.OffloadedDate, c.LastFreeDay,
-           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL
-                             THEN DATEDIFF(DAY, c.ActualPortArrival, ISNULL(c.OffloadedDate, @Today)) END,
+           DaysAtPort = CASE WHEN c.ActualPortArrival IS NOT NULL      -- (65) up to the receipt, else the Delivery, else today
+                             THEN DATEDIFF(DAY, c.ActualPortArrival, COALESCE(c.OffloadedDate, dl.EndDate, @Today)) END,
            c.TotalAllocatedBase, c.TotalOilQty,
            ItemSummary = CASE WHEN ln.ItemCount = 1 THEN ln.FirstItem WHEN ln.ItemCount > 1 THEN N'Mixed - ' + CAST(ln.ItemCount AS NVARCHAR(10)) + N' items' END,
            SupplierName = ln.FirstSupplier,
            pl.PortName AS PortOfLoadingName, pd.PortName AS PortOfDestinationName, fd.PortName AS FinalDestinationName,
-           w.WarehouseName
+           w.WarehouseName,
+           DeliveredDate = dl.EndDate,                                  -- (65) goods receipts
+           rb.ReceivedBy, rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus
     FROM @Ids x
     INNER JOIN logistics.Containers c       ON c.Id = x.Id
     INNER JOIN masterdata.ContainerTypes ct ON ct.Id = c.ContainerTypeId
@@ -34,6 +42,8 @@ BEGIN
     LEFT  JOIN masterdata.Ports pd          ON pd.Id = c.PortOfDestinationId
     LEFT  JOIN masterdata.Ports fd          ON fd.Id = c.FinalDestinationId
     LEFT  JOIN masterdata.Warehouses w      ON w.Id = c.WarehouseId
+    CROSS APPLY logistics.fn_Container_ReceivedBy(c.Id) rb      -- (65) who received it; its open goods receipt
+    OUTER APPLY logistics.fn_Container_LastDelivery(c.Id) dl    -- (65) its latest completed Delivery
     OUTER APPLY (SELECT ItemCount = COUNT(DISTINCT cl.ItemId), FirstItem = MIN(i.ItemName), FirstSupplier = MIN(sp.PartyName)
                  FROM logistics.ContainerLines cl
                  INNER JOIN inventory.Items i ON i.Id = cl.ItemId

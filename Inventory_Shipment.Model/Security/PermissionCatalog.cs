@@ -14,6 +14,15 @@ public static class Permissions
     /// <summary>JWT claim type carrying one permission code per claim.</summary>
     public const string ClaimType = "permission";
 
+    /// <summary>
+    /// The Dashboard (script 74): opening it at all. Each figure on it still shows only to a reader who
+    /// may open the screen it comes from.
+    /// </summary>
+    public static class Dashboard
+    {
+        public const string View = "dashboard.view";
+    }
+
     public static class Security
     {
         public const string UsersView = "security.users.view";
@@ -68,6 +77,9 @@ public static class Permissions
         /* Customer receipts: money coming in. View sees them; Create covers drafts and their files; the
            rest are separate rights because they are the ones that move a customer's balance. */
         public const string ReceiptsView = "sales.receipts.view";
+
+        /// <summary>Sales › Customer Statement (script 75): its own screen, no longer View Receipts.</summary>
+        public const string StatementView = "sales.statement.view";
         public const string ReceiptsCreate = "sales.receipts.create";
         public const string ReceiptsPost = "sales.receipts.post";
         public const string ReceiptsReverse = "sales.receipts.reverse";
@@ -136,9 +148,26 @@ public static class Permissions
     public static class Inventory
     {
         public const string ItemsView = "inventory.items.view";
+
+        /// <summary>Inventory › Stock Valuation (script 75): its own screen, no longer View Items.</summary>
+        public const string ValuationView = "inventory.valuation.view";
+
+        /// <summary>
+        /// (94) What an item costs - average, last and FOB cost, stock values - on the inventory screens, goods receipts, the
+        /// item search, the Dashboard and transfer orders. Without it every such field leaves the API null and the pages
+        /// draw none of them; an Inventory In is then priced by the server. Stock Valuation, purchase documents, containers
+        /// (their invoices, charges and landed cost) and sales keep their own.
+        /// </summary>
+        public const string CostsView = "inventory.costs.view";
         public const string ItemsCreate = "inventory.items.create";
         public const string ItemsEdit = "inventory.items.edit";
         public const string ItemsDelete = "inventory.items.delete";
+
+        /* STOCK LEVELS PER WAREHOUSE (script 91): each warehouse's own Min / Max of an item, which Fill to Max tops a
+           warehouse up to. Viewing and keeping them are two jobs: everyone who sees items may see them; the people the
+           owner names keep them (Edit). Granted once, when first created, to the roles holding View / Edit items. */
+        public const string StockLevelsView = "inventory.stocklevels.view";
+        public const string StockLevelsEdit = "inventory.stocklevels.edit";
 
         /* THE FIVE VERBS OF A DOCUMENT, and they are five permissions rather than one because they
            are five different jobs. A storekeeper writes drafts; a supervisor posts them, which is the
@@ -163,6 +192,31 @@ public static class Permissions
         public const string BivacOutPost = "inventory.bivacout.post";
         public const string BivacOutCancel = "inventory.bivacout.cancel";
         public const string BivacOutDelete = "inventory.bivacout.delete";
+
+        /* TRANSFER ORDERS (script 90): stock moved between two warehouses of any branch, without changing its cost. TEN
+           VERBS, because they are different people's jobs: the branch that asks writes the order, a supervisor releases
+           it (or approves it, when Document Types asks for approval), the source's storekeeper dispatches, the
+           destination's receives, and closing, cancelling and reversing are rarer still. Each was granted once, when it
+           was first created, to the roles holding the matching Inventory In / Out right (FB table K). */
+        public const string TransfersView = "inventory.transfers.view";
+        public const string TransfersCreate = "inventory.transfers.create";
+        public const string TransfersDelete = "inventory.transfers.delete";
+        public const string TransfersRelease = "inventory.transfers.release";
+
+        /// <summary>
+        /// Approve or reject an order waiting for approval, or approve and release a draft, while the TRO type's "Needs
+        /// approval before release" is on. The one right the procedures check themselves (62015): the decision's rule.
+        /// </summary>
+        public const string TransfersApprove = "inventory.transfers.approve";
+
+        public const string TransfersDispatch = "inventory.transfers.dispatch";
+        public const string TransfersReceive = "inventory.transfers.receive";
+
+        /// <summary>"Nothing more will be sent…": what is left to dispatch becomes Not sent.</summary>
+        public const string TransfersClose = "inventory.transfers.close";
+
+        public const string TransfersCancel = "inventory.transfers.cancel";
+        public const string TransfersReverse = "inventory.transfers.reverse";
 
         /* Shortage plans: saved planning documents. A draft is a working sheet; posting freezes it
            into a historical snapshot. Creating the purchase order from a posted plan is NOT one of
@@ -271,6 +325,26 @@ public static class Permissions
         /* Script 27: the route, the costs and the documents of containers. Charges have their own
            view / create / post / cancel, because posting one moves the cost of the items. */
         public const string MovementsManage = "containers.movements.manage";
+
+        /// <summary>
+        /// Logistics › Movements and Tracking (script 75): their own screens, no longer View Containers. A
+        /// container's own page still shows its movements and route with View Containers.
+        /// </summary>
+        public const string MovementsView = "containers.movements.view";
+        public const string TrackingView = "containers.tracking.view";
+
+        /// <summary>
+        /// Logistics › Shipments (script 82): the board of the containers on their way, by stage. Granted once, when first
+        /// created, to the roles holding View Movements, View Tracking or Manage Shipment Movements.
+        /// </summary>
+        public const string ShipmentsView = "containers.shipments.view";
+
+        /// <summary>
+        /// Reports › Container Report (script 95): every container and order still to load with its order, invoices,
+        /// payments, journey, charges and cost, by stage. Granted once, when first created, to the roles holding View
+        /// Containers. Its charge figures also need View Container Charges, its payments View Supplier Payments.
+        /// </summary>
+        public const string ReportView = "containers.report.view";
         public const string ChargesView = "containers.charges.view";
         public const string ChargesCreate = "containers.charges.create";
         public const string ChargesPost = "containers.charges.post";
@@ -278,6 +352,7 @@ public static class Permissions
         public const string AttachmentsManage = "containers.attachments.manage";
     }
 
+    private const string DashboardModule = "Dashboard";
     private const string SecurityModule = "Security";
     private const string SalesModule = "Sales";
     private const string ConfigurationModule = "Configuration";
@@ -288,6 +363,8 @@ public static class Permissions
 
     public static IReadOnlyList<PermissionDefinition> All { get; } =
     [
+        new(Dashboard.View, "View Dashboard", DashboardModule,
+            "Open the Dashboard. Each figure on it still shows only to who may open the screen it comes from.", 5),
         new(Security.UsersView, "View users", SecurityModule,
             "See the list of user accounts and their details.", 10),
         new(Security.UsersCreate, "Create users", SecurityModule,
@@ -386,12 +463,22 @@ public static class Permissions
 
         new(Inventory.ItemsView, "View items", InventoryModule,
             "See the Item Definition list and item details.", 400),
+        new(Inventory.ValuationView, "View Stock Valuation", InventoryModule,
+            "Open Stock Valuation: the stock of every item and warehouse at its average cost.", 405),
+        // Script 94: name, module, description and order exactly as its MERGE writes them (the sync copies these over).
+        new(Inventory.CostsView, "View item costs", InventoryModule,
+            "See item costs (average, last, FOB) and stock values on Item Definition, Inventory In / Out / BIVAC Out, goods receipts, Shortages, transfers and the Dashboard. Without it an Inventory In takes the item's last cost, else its average.", 406),
         new(Inventory.ItemsCreate, "Create items", InventoryModule,
             "Add new items with units and attachments.", 410),
         new(Inventory.ItemsEdit, "Edit items", InventoryModule,
             "Change items, units, attachments and status.", 420),
         new(Inventory.ItemsDelete, "Delete items", InventoryModule,
             "Delete items not referenced by transactions.", 430),
+        // Script 91: name, module, description and order exactly as its MERGE writes them (the sync copies these over).
+        new(Inventory.StockLevelsView, "View Stock Levels", InventoryModule,
+            "Open Inventory › Stock Levels and the Stock levels per warehouse card of Item Definition: each warehouse's Min / Max, its stock and what released transfer orders bring or take.", 432),
+        new(Inventory.StockLevelsEdit, "Edit Stock Levels", InventoryModule,
+            "Set, change and remove an item's Min / Max in a warehouse, by hand or from an Excel file.", 434),
 
         new(Inventory.StockInView, "View Inventory In", InventoryModule,
             "See Inventory In documents.", 700),
@@ -426,6 +513,28 @@ public static class Permissions
         new(Inventory.BivacOutDelete, "Delete BIVAC Out", InventoryModule,
             "Delete draft BIVAC Out documents.", 850),
 
+        // Script 90: name, module, description and order exactly as its MERGE writes them (the sync copies these over).
+        new(Inventory.TransfersView, "View Transfer Orders", InventoryModule,
+            "See transfer orders, their dispatches and receipts.", 855),
+        new(Inventory.TransfersCreate, "Create Transfer Orders", InventoryModule,
+            "Create and edit draft transfer orders (lines, scan, import, Fill to Max), their documents, and returns.", 860),
+        new(Inventory.TransfersDelete, "Delete Transfer Orders", InventoryModule,
+            "Delete draft transfer orders.", 862),
+        new(Inventory.TransfersRelease, "Release Transfer Orders", InventoryModule,
+            "Release a transfer order, send it for approval, withdraw it, or take it back to draft.", 870),
+        new(Inventory.TransfersApprove, "Approve Transfer Orders", InventoryModule,
+            "Approve or reject transfer orders waiting for approval, or approve and release a draft (when Document Types asks for approval).", 872),
+        new(Inventory.TransfersDispatch, "Dispatch Transfers", InventoryModule,
+            "Dispatch goods of a released transfer order (stock leaves the source) and change a dispatch's ETA.", 875),
+        new(Inventory.TransfersReceive, "Receive Transfers", InventoryModule,
+            "Receive transferred goods into the destination, and write off what will not arrive.", 880),
+        new(Inventory.TransfersClose, "Close Transfer Orders", InventoryModule,
+            "Nothing more will be sent: settle what is left to dispatch.", 885),
+        new(Inventory.TransfersCancel, "Cancel Transfer Orders", InventoryModule,
+            "Cancel a released transfer order with nothing dispatched.", 888),
+        new(Inventory.TransfersReverse, "Reverse Transfers", InventoryModule,
+            "Reverse a posted dispatch or transfer receipt (stock reversal).", 890),
+
         new(Configuration.DocumentTypesManage, "Manage document types", ConfigurationModule,
             "Change numbering and behaviour of document types.", 900),
         new(Configuration.ChargeTypesManage, "Manage purchase charge types", ConfigurationModule,
@@ -452,7 +561,7 @@ public static class Permissions
         new(Purchase.OrdersCreate, "Create Purchase Orders", PurchaseModule,
             "Create and edit draft purchase orders.", 1010),
         new(Purchase.OrdersPost, "Post Purchase Orders", PurchaseModule,
-            "Confirm purchase orders (assigns number, stock becomes incoming) and close open ones.", 1020),
+            "Confirm purchase orders (assigns number, stock becomes incoming).", 1020),
         new(Purchase.OrdersCancel, "Cancel Purchase Orders", PurchaseModule,
             "Cancel confirmed purchase orders.", 1030),
         new(Purchase.OrdersDelete, "Delete Purchase Orders", PurchaseModule,
@@ -548,6 +657,16 @@ public static class Permissions
             "Define the document types used by attachments.", 1400),
 
         // Names, descriptions and sort orders match script 27's MERGE, so the start-up sync changes nothing.
+        new(Containers.MovementsView, "View Movements", ContainersModule,
+            "Open the Movements list and a movement's page (a container's own page shows its movements with View Containers).", 1405),
+        // Name, description and sort order match script 82's MERGE, so the start-up sync changes nothing.
+        new(Containers.ShipmentsView, "View Shipments", ContainersModule,
+            "Logistics › Shipments: the containers on their way, by stage.", 1406),
+        new(Containers.TrackingView, "View Tracking", ContainersModule,
+            "Open the Tracking board (a container's own page shows its route with View Containers).", 1407),
+        // Name, description and sort order match script 95's MERGE, so the start-up sync changes nothing.
+        new(Containers.ReportView, "View Container Report", ContainersModule,
+            "Reports › Container Report: every container and order still to load with its order, invoices, payments, journey, charges and cost, by stage.", 1408),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,
@@ -588,6 +707,8 @@ public static class Permissions
             "Delete draft sales invoices.", 660),
         new(Sales.ReceiptsView, "View Receipts", SalesModule,
             "See customer receipts and the invoices they paid.", 700),
+        new(Sales.StatementView, "View Customer Statement", SalesModule,
+            "Open the Customer Statement: a customer's invoices, receipts and balance.", 705),
         new(Sales.ReceiptsCreate, "Create Receipts", SalesModule,
             "Create and edit draft customer receipts, and attach files to them.", 710),
         new(Sales.ReceiptsPost, "Post Receipts", SalesModule,

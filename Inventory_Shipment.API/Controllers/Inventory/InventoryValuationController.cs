@@ -29,7 +29,7 @@ public sealed class InventoryValuationController : ControllerBase
     }
 
     [HttpGet]
-    [HasPermission(Permissions.Inventory.ItemsView)]
+    [HasPermission(Permissions.Inventory.ValuationView)]
     [ProducesResponseType<InventoryValuationResult>(StatusCodes.Status200OK)]
     public async Task<ActionResult<InventoryValuationResult>> Valuation(
         [FromQuery] int? warehouseId, CancellationToken cancellationToken)
@@ -39,7 +39,7 @@ public sealed class InventoryValuationController : ControllerBase
     }
 
     [HttpGet("export")]
-    [HasPermission(Permissions.Inventory.ItemsView)]
+    [HasPermission(Permissions.Inventory.ValuationView)]
     [Produces(SpreadsheetContentType)]
     [ProducesResponseType(StatusCodes.Status200OK)]
     public async Task<IActionResult> Export([FromQuery] int? warehouseId, CancellationToken cancellationToken)

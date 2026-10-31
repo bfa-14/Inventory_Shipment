@@ -52,14 +52,29 @@ public interface IItemRepository
         int id, int? defaultSupplierId, int? leadTimeDays, int? pcPerContainer, decimal? weightKg,
         decimal? volumeCbm, int? userId, CancellationToken cancellationToken = default);
 
+    /// <summary>inventory.usp_Item_SetNotes (script 87) - the note and the link; throws 56000.</summary>
+    Task SetNotesAsync(int id, string? note, string? link, int? userId, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (93) inventory.usp_Item_SetTracking - Tracking, Requires expiry date and Serial no. length, written after create /
+    /// update like the note (only when one of them changes); throws 56000 (the rules) and 56006 (no such item).
+    /// </summary>
+    /// <summary>(98) inventory.usp_Item_SetLeadTime - the lead time in months (the days follow), after create / update.</summary>
+    Task SetLeadTimeAsync(int id, decimal? leadTimeMonths, int? userId, CancellationToken cancellationToken = default);
+
+    Task SetTrackingAsync(
+        int id, Model.Enums.TrackingMode trackingMode, bool requiresExpiry, int? serialLength, int? userId,
+        CancellationToken cancellationToken = default);
+
     /// <summary>inventory.usp_Item_SetActive - throws 56006.</summary>
     Task SetActiveAsync(int id, bool isActive, int? userId, CancellationToken cancellationToken = default);
 
     /// <summary>
-    /// inventory.usp_Item_Delete - removes the item with its units and files.
+    /// inventory.usp_Item_Delete - removes the item with its units and files (and its stock levels per warehouse, whose
+    /// history records the removal by <paramref name="userId"/>, script 91).
     /// Throws 56003 when anything else references the item or one of its units, 56006 when it is gone.
     /// </summary>
-    Task DeleteAsync(int id, CancellationToken cancellationToken = default);
+    Task DeleteAsync(int id, int? userId, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// inventory.usp_Item_Lookup - the items an Item picker offers, each with the SKU of its base unit.

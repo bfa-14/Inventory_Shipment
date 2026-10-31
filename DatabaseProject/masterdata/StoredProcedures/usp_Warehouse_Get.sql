@@ -8,7 +8,8 @@ BEGIN
            w.ParentId, w.[Level], w.AllowOutOfStockOverride,
            ParentCode = p.WarehouseCode,
            ParentName = p.WarehouseName,
-           ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id)
+           ChildCount = (SELECT COUNT(*) FROM masterdata.Warehouses c WHERE c.ParentId = w.Id),
+           w.IsTransit                                                     -- (90)
     FROM masterdata.Warehouses w
     INNER JOIN masterdata.Branches b ON b.Id = w.BranchId
     LEFT  JOIN masterdata.Warehouses p ON p.Id = w.ParentId

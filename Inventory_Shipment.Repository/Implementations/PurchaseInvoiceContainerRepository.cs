@@ -12,6 +12,7 @@ namespace Inventory_Shipment.Repository.Implementations;
 public sealed class PurchaseInvoiceContainerRepository : IPurchaseInvoiceContainerRepository
 {
     private const string LinkTypeName = "logistics.tvp_ContainerLineQty";
+    private const string IdListTypeName = "logistics.tvp_IdList";
 
     private readonly ISqlConnectionFactory _connectionFactory;
 
@@ -114,8 +115,8 @@ public sealed class PurchaseInvoiceContainerRepository : IPurchaseInvoiceContain
             var parameters = ContainerRepository.CreateBatchParameters(plan, userId);
             parameters.Add("@ForInvoiceId", invoiceId, DbType.Int32);
             var created = (await connection.QueryAsync<CreatedContainerDto>(new CommandDefinition(
-                "logistics.usp_Container_CreateBatch", parameters, transaction,
-                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
+                "logistics.usp_Container_CreateBatch", parameters, transaction, _connectionFactory.BatchCommandTimeout,
+                CommandType.StoredProcedure, cancellationToken: cancellationToken))).AsList();
 
             var summary = await LinkWholeContainersAsync(
                 connection, transaction, invoiceId, created.Select(c => c.ContainerId).ToList(), rowVersion, userId, cancellationToken);
@@ -124,20 +125,31 @@ public sealed class PurchaseInvoiceContainerRepository : IPurchaseInvoiceContain
 
     /* ── the shared steps ─────────────────────────────────────────────────────────────────────── */
 
-    /// <summary>Every line of the given new containers, linked to the invoice with all its pieces.</summary>
-    private static async Task<InvoiceContainerSummaryDto> LinkWholeContainersAsync(
+    /// <summary>
+    /// Every line of the given new containers, linked to the invoice with all its pieces. The ids go as a table
+    /// (logistics.tvp_IdList), not as "IN @ContainerIds": Dapper makes that one parameter per id, and SQL Server takes at
+    /// most 2,100 parameters in a call (8003) - an Auto-plan from an invoice may create more containers than that.
+    /// </summary>
+    private async Task<InvoiceContainerSummaryDto> LinkWholeContainersAsync(
         DbConnection connection, DbTransaction transaction, int invoiceId, IReadOnlyList<int> containerIds, byte[]? rowVersion,
         int userId, CancellationToken cancellationToken)
     {
+        var ids = new DynamicParameters();
+        ids.Add("@ContainerIds", MovementRepository.ToIdTable(containerIds).AsTableValuedParameter(IdListTypeName));
         var links = (await connection.QueryAsync<ContainerLineQuantityRequest>(new CommandDefinition(
-            "SELECT ContainerLineId = Id, QuantityBase FROM logistics.ContainerLines WHERE ContainerId IN @ContainerIds",
-            new { ContainerIds = containerIds }, transaction, cancellationToken: cancellationToken))).AsList();
+            """
+            SELECT ContainerLineId = cl.Id, cl.QuantityBase
+            FROM logistics.ContainerLines cl
+            INNER JOIN @ContainerIds i ON i.Id = cl.ContainerId
+            """,
+            ids, transaction, _connectionFactory.BatchCommandTimeout, cancellationToken: cancellationToken))).AsList();
 
         using var multi = await connection.QueryMultipleAsync(LinkCommand(invoiceId, links, rowVersion, userId, transaction, cancellationToken));
         return await ReadSummaryAsync(multi);
     }
 
-    private static CommandDefinition LinkCommand(
+    /// <summary>Linking reallocates the charges of every container linked: any number of them, hence the batch timeout.</summary>
+    private CommandDefinition LinkCommand(
         int invoiceId, IReadOnlyList<ContainerLineQuantityRequest> links, byte[]? rowVersion, int userId,
         DbTransaction transaction, CancellationToken cancellationToken)
     {
@@ -156,7 +168,7 @@ public sealed class PurchaseInvoiceContainerRepository : IPurchaseInvoiceContain
         parameters.Add("@UserId", userId, DbType.Int32);
 
         return new CommandDefinition("purchase.usp_PurchaseInvoice_LinkContainers", parameters, transaction,
-            commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken);
+            _connectionFactory.BatchCommandTimeout, CommandType.StoredProcedure, cancellationToken: cancellationToken);
     }
 
     private static async Task<InvoiceContainerSummaryDto> ReadSummaryAsync(SqlMapper.GridReader multi)

@@ -72,7 +72,7 @@ public sealed partial class DatabaseInitializer : IDatabaseInitializer
 
             if (_options.ApplySchemaOnStartup)
             {
-                await ApplySchemaAsync(cancellationToken);
+                await ApplySchemaAsync(databaseName, cancellationToken);
             }
         }
         catch (SqlException ex)
@@ -120,12 +120,13 @@ public sealed partial class DatabaseInitializer : IDatabaseInitializer
     /// the index, the elapsed time and the first line of the batch text are exactly what turns a
     /// mystery into "batch 214, the CREATE on StockDocuments, waiting behind session 63".
     /// </summary>
-    private async Task ApplySchemaAsync(CancellationToken cancellationToken)
+    private async Task ApplySchemaAsync(string databaseName, CancellationToken cancellationToken)
     {
         var script = await ReadSchemaScriptAsync(cancellationToken);
         var batches = GoSeparator().Split(script)
             .Select(b => b.Trim())
             .Where(b => b.Length > 0)
+            .Select(b => InOwnDatabase(b, databaseName))
             .ToList();
 
         await using var connection = new SqlConnection(_options.ConnectionString);
@@ -165,9 +166,47 @@ public sealed partial class DatabaseInitializer : IDatabaseInitializer
             }
         }
 
+        // The last word on InOwnDatabase: whatever the batches did, the connection is still in its own database.
+        var current = await connection.ExecuteScalarAsync<string>(
+            new CommandDefinition("SELECT DB_NAME()", cancellationToken: cancellationToken));
+        if (!string.Equals(current, databaseName, StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                $"The schema was applied in database '{databaseName}' but the connection ended in '{current}'.");
+        }
+
         _logger.LogInformation("Database schema verified ({BatchCount} batches in {Elapsed} ms).",
             batches.Count, total.ElapsedMilliseconds);
     }
+
+    /// <summary>
+    /// A batch of the schema, pointed at this API's own database.
+    ///
+    /// THE SCHEMA RUNS ONLY IN THE DATABASE OF THE CONNECTION STRING. The scripts say "USE [Inventory_Shipment];"
+    /// for sqlcmd on a developer's PC, and run as they are they take the connection to the database of that name,
+    /// whatever the connection string says: testing's API, whose database lives in production's SQL Server under
+    /// another name (deploy/README.md, "One SQL Server for both environments"), would apply its new scripts to
+    /// production's. Each such line is pointed at this database instead, and a USE of any other database stops the
+    /// start-up before a single batch has run.
+    /// </summary>
+    private static string InOwnDatabase(string batch, string databaseName)
+        => UseStatement().Replace(batch, match =>
+        {
+            var name = match.Groups["name"].Value;
+            if (name.StartsWith('['))
+            {
+                name = name[1..^1].Replace("]]", "]");
+            }
+
+            if (!string.Equals(name, ScriptDatabaseName, StringComparison.OrdinalIgnoreCase))
+            {
+                throw new InvalidOperationException(
+                    $"Schema.sql switches to database '{name}' ('{match.Value.Trim()}'): the schema may only use its own " +
+                    $"database ({ScriptDatabaseName} in the scripts, '{databaseName}' here). Nothing was applied.");
+            }
+
+            return $"USE [{databaseName.Replace("]", "]]")}];";
+        });
 
     /// <summary>
     /// Says so when something else is already holding the database open.
@@ -220,4 +259,12 @@ public sealed partial class DatabaseInitializer : IDatabaseInitializer
     // Splits on lines that contain only "GO" (case-insensitive), as SSMS does.
     [GeneratedRegex(@"^\s*GO\s*(--.*)?$", RegexOptions.Multiline | RegexOptions.IgnoreCase)]
     private static partial Regex GoSeparator();
+
+    /// <summary>The database the scripts of Database/ are written for (their "USE [Inventory_Shipment];").</summary>
+    private const string ScriptDatabaseName = "Inventory_Shipment";
+
+    // A USE statement on a line of its own ("USE [Inventory_Shipment];"), any case, with or without the semicolon.
+    [GeneratedRegex(@"^[ \t]*USE[ \t]+(?<name>\[[^\]\r\n]+\]|[A-Za-z_][A-Za-z0-9_]*)[ \t]*;?[ \t]*$",
+        RegexOptions.Multiline | RegexOptions.IgnoreCase)]
+    private static partial Regex UseStatement();
 }

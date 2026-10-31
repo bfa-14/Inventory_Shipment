@@ -1,5 +1,7 @@
-/* ================================================================== 12. Shipment movements */
+/* ================================================================== 5. The movements: why a planned one cannot start yet */
 
+-- Re-created (80) from the body of script 27: + StartBlockedReason and StartNotBefore (fn_Movement_StartBlock), for the
+-- row's "Start..." action. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_Movement_Search
     @Search         NVARCHAR(100) = NULL,   -- movement no., vessel / truck, voyage, reference, container ref / no.
     @Status         TINYINT       = NULL,
@@ -38,6 +40,9 @@ BEGIN
            DurationDays = CASE WHEN m.StartDate IS NOT NULL THEN DATEDIFF(DAY, m.StartDate, ISNULL(m.EndDate, @Today)) END,
            IsLate = CAST(CASE WHEN m.Status IN (1, 2) AND m.Eta < @Today THEN 1 ELSE 0 END AS BIT),
            m.CreatedAtUtc, cu.FullName AS CreatedByName, m.UpdatedAtUtc, m.RowVersion,
+           -- (80) a planned movement: why it cannot start yet (NULL = it can) and its earliest start date; a movement in
+           -- progress: the earliest start date its edited start date may take (usp_Movement_Save, 70018)
+           StartBlockedReason = sb.Reason, sb.StartNotBefore, sb.StartNotBeforeMovementNo, sb.StartNotBeforePlaceName,
            COUNT(*) OVER () AS TotalCount
     FROM logistics.Movements m
     INNER JOIN masterdata.MovementTypes mt ON mt.Id = m.MovementTypeId
@@ -48,6 +53,7 @@ BEGIN
     OUTER APPLY (SELECT Cnt = COUNT(*), FirstRef = MIN(c.ContainerRef)
                  FROM logistics.MovementContainers mc INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId
                  WHERE mc.MovementId = m.Id) ctn
+    OUTER APPLY logistics.fn_Movement_StartBlock(m.Id) sb   -- (80)
     WHERE (@Search IS NULL OR m.MovementNo LIKE N'%' + @Search + N'%' OR m.VehicleOrVessel LIKE N'%' + @Search + N'%'
            OR m.VoyageNo LIKE N'%' + @Search + N'%' OR m.Reference LIKE N'%' + @Search + N'%'
            OR EXISTS (SELECT 1 FROM logistics.MovementContainers mc INNER JOIN logistics.Containers c ON c.Id = mc.ContainerId

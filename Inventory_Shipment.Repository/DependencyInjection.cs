@@ -19,6 +19,7 @@ public static class DependencyInjection
         services.TryAddSingleton<IDatabaseInitializer, DatabaseInitializer>();
 
         services.TryAddScoped<IUserRepository, UserRepository>();
+        services.TryAddScoped<IUserWarehouseRepository, UserWarehouseRepository>();
         services.TryAddScoped<IRefreshTokenRepository, RefreshTokenRepository>();
         services.TryAddScoped<ILoginAuditRepository, LoginAuditRepository>();
         services.TryAddScoped<IRoleRepository, RoleRepository>();
@@ -42,11 +43,14 @@ public static class DependencyInjection
         services.TryAddScoped<ISalesDocumentRepository, SalesDocumentRepository>();
         services.TryAddScoped<IPurchaseDocumentRepository, PurchaseDocumentRepository>();
         services.TryAddScoped<IGoodsReceiptRepository, GoodsReceiptRepository>();
+        services.TryAddScoped<ITransferOrderRepository, TransferOrderRepository>();
+        services.TryAddScoped<IStockLevelRepository, StockLevelRepository>();
         services.TryAddScoped<IShortageDocumentRepository, ShortageDocumentRepository>();
         services.TryAddScoped<IChargeTypeRepository, ChargeTypeRepository>();
         services.TryAddScoped<ILandedCostAdjustmentRepository, LandedCostAdjustmentRepository>();
         services.TryAddScoped<IPurchaseInvoiceContainerRepository, PurchaseInvoiceContainerRepository>();
         services.TryAddScoped<ICostingReportRepository, CostingReportRepository>();
+        services.TryAddScoped<IContainerReportRepository, ContainerReportRepository>();
         services.TryAddScoped<IContainerRepository, ContainerRepository>();
         services.TryAddScoped<IContainerTypeRepository, ContainerTypeRepository>();
         services.TryAddScoped<IPaymentMethodRepository, PaymentMethodRepository>();
@@ -59,6 +63,7 @@ public static class DependencyInjection
         services.TryAddScoped<IMovementTypeRepository, MovementTypeRepository>();
         services.TryAddScoped<IMovementRepository, MovementRepository>();
         services.TryAddScoped<IContainerChargeRepository, ContainerChargeRepository>();
+        services.TryAddScoped<IBivacCostRepository, BivacCostRepository>();   // (97)
         services.TryAddScoped<IAttachmentTypeRepository, AttachmentTypeRepository>();
 
         return services;

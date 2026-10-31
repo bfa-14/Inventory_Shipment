@@ -13,6 +13,14 @@ public class User
     public string FullName { get; set; } = string.Empty;
     public string PasswordHash { get; set; } = string.Empty;
     public bool IsActive { get; set; } = true;
+
+    /// <summary>
+    /// (92) True = the user may move stock in every warehouse, including those added later: every user before script 92
+    /// and every new user. False = only the warehouses ticked in security.UserWarehouses (a ticked parent gives its whole
+    /// tree). System administrators use every warehouse whatever this says.
+    /// </summary>
+    public bool AllWarehouses { get; set; } = true;
+
     public int FailedLoginAttempts { get; set; }
     public DateTime? LockoutEndUtc { get; set; }
     public DateTime? LastLoginAtUtc { get; set; }

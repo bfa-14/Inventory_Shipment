@@ -1,0 +1,24 @@
+# Testing whose database lives in production's SQL Server (README.md, "One SQL Server for both environments"):
+# listed in testing's COMPOSE_FILE (deploy/.env) by share-sql-server.sh or setup.sh testing, never in production's.
+#
+#   db    none of its own (its old volume is kept until it is deleted by hand)
+#   api   also on the network inventory-sql, where production's SQL Server answers as inventory-db
+#         (production's sql-host.local.yml puts it there); DB_SERVER, DB_NAME, DB_USER and DB_PASSWORD in deploy/.env
+#
+# Nothing on that network may use the names db, api or web: two environments' containers answer to them there.
+
+services:
+  db:
+    deploy:
+      replicas: 0
+
+  api:
+    # Its own db is gone. Should production's SQL Server not answer yet, the API stops at start-up and Docker starts
+    # it again (restart: unless-stopped) until it does.
+    depends_on: !reset {}
+    networks: [default, sql]
+
+networks:
+  sql:
+    name: inventory-sql
+    external: true

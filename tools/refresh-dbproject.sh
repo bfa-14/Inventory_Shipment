@@ -15,7 +15,9 @@
 #
 # Why it never creates conflicts for the others:
 #   - it stops when your branch is behind the remote (refreshing an old copy and pushing it is what makes conflicts);
-#   - the output only depends on the database, so two refreshes of the same database give the same files;
+#   - the output only depends on the schema, so two refreshes of the same database - or of two databases built by
+#     the same scripts - give the same files (tools/sort-dbproject-tables.py puts the indexes of each table in a
+#     fixed order: sqlpackage writes them in the order of their internal ids, which differ between databases);
 #   - schema / user definitions go in "DatabaseSecurity" (sqlpackage calls it "Security", the SAME folder as the
 #     "security" schema on Windows - the cause of the files that disappeared on the Windows PCs);
 #   - the .sqlproj file list is rewritten to match the files exactly, and tools/check-repo.sh refuses names that
@@ -27,6 +29,7 @@ PROJ=DatabaseProject
 SQLPROJ="$PROJ/DatabaseProject.sqlproj"
 [ -f "$SQLPROJ" ] || { echo "Not found: $SQLPROJ (run this inside the Inventory_Shipment repository)"; exit 1; }
 [ -f tools/sync-sqlproj.py ] || { echo "Missing tools/sync-sqlproj.py"; exit 1; }
+[ -f tools/sort-dbproject-tables.py ] || { echo "Missing tools/sort-dbproject-tables.py"; exit 1; }
 command -v sqlpackage >/dev/null || { echo "sqlpackage not found: dotnet tool install -g microsoft.sqlpackage"; exit 1; }
 
 # 1. Level with the remote first.
@@ -93,6 +96,7 @@ if ! sqlpackage /Action:Extract /SourceConnectionString:"$DB" /TargetFile:"$tmp/
   exit 1
 fi
 [ -d "$tmp/db/Security" ] && mv "$tmp/db/Security" "$tmp/db/DatabaseSecurity"
+python3 tools/sort-dbproject-tables.py "$tmp/db"
 
 git rm -r -q --cached --ignore-unmatch -- "$PROJ"
 find "$PROJ" -mindepth 1 -maxdepth 1 ! -name '*.sqlproj' ! -name '*.scmp' \

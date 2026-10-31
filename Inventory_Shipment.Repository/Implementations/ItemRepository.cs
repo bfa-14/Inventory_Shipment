@@ -215,13 +215,13 @@ public sealed class ItemRepository : IItemRepository
         }
     }
 
-    public async Task DeleteAsync(int id, CancellationToken cancellationToken = default)
+    public async Task DeleteAsync(int id, int? userId, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         try
         {
             await connection.ExecuteAsync(new CommandDefinition(
-                "inventory.usp_Item_Delete", new { Id = id },
+                "inventory.usp_Item_Delete", new { Id = id, UserId = userId },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
@@ -620,6 +620,72 @@ public sealed class ItemRepository : IItemRepository
                     WeightKg = weightKg,
                     VolumeCbm = volumeCbm,
                 },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task SetNotesAsync(
+        int id, string? note, string? link, int? userId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("@Id", id, DbType.Int32);
+            parameters.Add("@Note", note, DbType.String, size: 2000);
+            parameters.Add("@Link", link, DbType.String, size: 500);
+            parameters.Add("@UserId", userId, DbType.Int32);
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_Item_SetNotes", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task SetLeadTimeAsync(int id, decimal? leadTimeMonths, int? userId, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("@Id", id, DbType.Int32);
+            parameters.Add("@LeadTimeMonths", leadTimeMonths, DbType.Decimal, precision: 5, scale: 1);
+            parameters.Add("@UserId", userId, DbType.Int32);
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_Item_SetLeadTime", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
+    public async Task SetTrackingAsync(
+        int id, Model.Enums.TrackingMode trackingMode, bool requiresExpiry, int? serialLength, int? userId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var parameters = new DynamicParameters();
+            parameters.Add("@Id", id, DbType.Int32);
+            parameters.Add("@TrackingMode", (byte)trackingMode, DbType.Byte);
+            parameters.Add("@RequiresExpiry", requiresExpiry, DbType.Boolean);
+            // A length the TINYINT cannot hold goes as itself, refused by the procedure in its own words (1-50).
+            parameters.Add("@SerialLength", serialLength is { } length ? (byte)Math.Clamp(length, 0, 255) : null, DbType.Byte);
+            parameters.Add("@UserId", userId, DbType.Int32);
+
+            await connection.ExecuteAsync(new CommandDefinition(
+                "inventory.usp_Item_SetTracking", parameters,
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         }
         catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))

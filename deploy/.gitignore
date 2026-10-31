@@ -1,3 +1,5 @@
 # The server's settings and secrets (setup.sh writes it) and the database backups.
 .env
 backups/
+# A server's own Compose additions, such as the SSMS port (README.md, "SQL Server from SSMS on your PC").
+*.local.yml

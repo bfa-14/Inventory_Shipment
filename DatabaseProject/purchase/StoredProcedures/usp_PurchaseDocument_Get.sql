@@ -1,3 +1,6 @@
+/* ================================================================== 9. The invoice page reads them */
+
+-- Re-created (79) from the body of script 77: + AffectsCost and ReceiveOnPost on the header. Nothing else changes.
 CREATE   PROCEDURE purchase.usp_PurchaseDocument_Get
     @Id INT
 AS
@@ -41,7 +44,23 @@ BEGIN
            d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName,
            d.RowVersion,
            -- (47) supplier payments: posted purchase invoices only (NULL otherwise)
-           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
+           PaidAmount = pst.PaidAmount, ReturnedAmount = pst.ReturnedAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (63) supplier invoices: 1 = it holds one item (65029 refuses a second), 0 = it may hold several. Its own mode,
+           --      or the setting when it has none (saved before script 63). 0 on orders and returns: not concerned.
+           OneItemOnly = CAST(CASE WHEN dt.Code = N'PINV'
+                                   THEN COALESCE(d.OneItemOnly, configuration.fn_SettingBool(N'Purchase.OneItemPerInvoice')) ELSE 0 END AS BIT),
+           -- (65) goods receipts: 1 = a supplier invoice posted after the switch (its goods enter with goods receipts);
+           --      CanReceive / ReceiveBlockedReason = "Receive goods..." on this order or invoice (rules 14, 15);
+           --      GoodsReceiptsSinceUtc = the switch ("Posted before goods receipts ({date})")
+           d.UsesGoodsReceipts,
+           CanReceive = CAST(CASE WHEN rcv.Reason IS NULL THEN 1 ELSE 0 END AS BIT),
+           ReceiveBlockedReason = rcv.Reason,
+           GoodsReceiptsSinceUtc = (SELECT TOP (1) s.SwitchedAtUtc FROM purchase.GoodsReceiptSwitch s),
+           -- (79) a supplier invoice: its price becomes the cost of the goods received against it (AffectsCost), posting it
+           --      receives its goods (ReceiveOnPost) - what it captured when posted, the type's switch while a draft;
+           --      1 / 0 on orders and returns, not concerned
+           AffectsCost   = CAST(CASE WHEN dt.Code <> N'PINV' THEN 1 WHEN d.Status = 1 THEN dt.AffectsItemCost ELSE d.AffectsCost END AS BIT),
+           ReceiveOnPost = CAST(CASE WHEN dt.Code <> N'PINV' THEN 0 WHEN d.Status = 1 THEN dt.AffectsOnHand ELSE d.ReceiveOnPost END AS BIT)
     FROM purchase.PurchaseDocuments d
     OUTER APPLY purchase.fn_InvoiceSettlement(d.Id) pst
     INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
@@ -77,6 +96,50 @@ BEGIN
     OUTER APPLY (SELECT Containers = CASE WHEN dt.Code = N'PINV'
                                           THEN CAST(SUM(CAST(s.InvoicedBase AS DECIMAL(19,4)) / s.PcsPerContainer) AS DECIMAL(18,2)) END
                  FROM purchase.fn_PurchaseInvoice_ItemContainers(d.Id) s) need
+    -- (65) what "Receive goods..." would find: an order's lines (rule 14), an invoice's lines not in a container (rule 15)
+    OUTER APPLY (SELECT ToReceive = SUM(p.ToReceiveBase), MaxOutside = SUM(p.MaxOutsideBase), InContainers = SUM(p.InContainersBase),
+                        NotReceived = SUM(CASE WHEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase > 0
+                                               THEN p.OrderedBase - p.GoodsReceivedBase - p.GoodsShortBase ELSE 0 END),
+                        InDrafts = SUM(p.InDraftReceiptsBase),
+                        Room = SUM(CASE WHEN p.MaxOutsideBase > p.InDraftReceiptsBase THEN p.MaxOutsideBase - p.InDraftReceiptsBase ELSE 0 END)
+                 FROM purchase.fn_PoLine_Progress(d.Id) p
+                 WHERE dt.Code = N'PO') pr
+    OUTER APPLY (SELECT Lines = COUNT(*), ToReceive = SUM(t.ToReceiveBase), InDrafts = SUM(t.InDraftReceiptsBase),
+                        NotReceived = SUM(CASE WHEN t.InvoicedBase - t.ReceivedBase > 0 THEN t.InvoicedBase - t.ReceivedBase ELSE 0 END)
+                 FROM purchase.fn_InvoiceLine_ToReceive(d.Id) t
+                 WHERE dt.Code = N'PINV') ir
+    -- (65) why "Receive goods..." is disabled (NULL = it is not). An order also opens it for pieces recorded short that
+    --      turn up later (MaxOutsideBase: what remains outside containers, settled pieces included; the dialog proposes 0),
+    --      but not for what draft goods receipts already hold (Room: MaxOutsideBase - InDraftReceiptsBase per line).
+    CROSS APPLY (SELECT Reason = CAST(CASE
+                     WHEN dt.Code = N'PO' THEN
+                         CASE WHEN d.Status = 1 THEN N'Approve the order first: goods are received against an approved order.'
+                              WHEN d.Status = 5 THEN N'This order is waiting for approval.'
+                              WHEN d.Status = 3 THEN N'This order is cancelled.'
+                              WHEN ISNULL(pr.ToReceive, 0) > 0 OR ISNULL(pr.Room, 0) > 0 THEN NULL
+                              WHEN ISNULL(pr.InDrafts, 0) > 0
+                                  THEN N'The rest of this order is on draft goods receipts: post or delete them first.'
+                              WHEN ISNULL(pr.InContainers, 0) > 0 AND ISNULL(pr.NotReceived, 0) > 0
+                                  THEN N'Everything still to receive travels in containers: it is received with its containers.'
+                              ELSE N'Everything ordered is already received.' END
+                     WHEN dt.Code = N'PINV' THEN
+                         CASE WHEN d.Status = 1 THEN N'Post the invoice first: goods are received against a posted invoice, or from the order.'
+                              WHEN d.Status = 3 THEN N'This invoice is cancelled.'
+                              WHEN d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1
+                                  THEN N'Posted before goods receipts: its stock entered when it was posted (or when its container was offloaded).'
+                              -- an older "Shipped in containers" invoice whose lines are all in containers offloaded the old way
+                              WHEN d.UsesGoodsReceipts = 0 AND ISNULL(ir.Lines, 0) = 0
+                                   AND NOT EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines x
+                                                   INNER JOIN logistics.ContainerLines cl ON cl.Id = x.ContainerLineId
+                                                   CROSS APPLY logistics.fn_Container_ReceivedBy(cl.ContainerId) rb
+                                                   WHERE x.DocumentId = d.Id AND ISNULL(rb.ReceivedBy, N'') <> N'Offload')
+                                  THEN N'Posted before goods receipts: its stock entered when it was posted (or when its container was offloaded).'
+                              WHEN ISNULL(ir.Lines, 0) = 0 THEN N'This invoice''s goods travel in containers: they are received with their containers.'
+                              WHEN ISNULL(ir.ToReceive, 0) > 0 THEN NULL
+                              WHEN ISNULL(ir.InDrafts, 0) > 0 AND ISNULL(ir.NotReceived, 0) > 0
+                                  THEN N'The rest of this invoice is on draft goods receipts: post or delete them first.'
+                              ELSE N'Every piece of this invoice is already received.' END
+                     ELSE N'A purchase return takes goods out: it is not received.' END AS NVARCHAR(400))) rcv
     WHERE d.Id = @Id;
 
     SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName,
@@ -89,7 +152,9 @@ BEGIN
                                             WHEN l.ContainerLineId IS NOT NULL THEN l.QuantityBase ELSE 0 END,
            TransitBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(ct.Transit, 0)
                               WHEN lct.Status IN (3, 4, 5) THEN l.QuantityBase ELSE 0 END,
+           -- (65) an invoice whose goods come through goods receipts returns what was received (rule 23), as Post checks it
            RemainingBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase
+                                WHEN dt.Code = N'PINV' AND (d.UsesGoodsReceipts = 1 OR d.ReceiptMode = 2) THEN l.ReceivedQuantityBase - l.ReturnedQuantityBase
                                 WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReturnedQuantityBase END,
            AvailableForContainerBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - ISNULL(ct.Allocated, 0) - ISNULL(dir.Qty, 0) END,
            InvoicedDirectBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.Qty, 0) END,
@@ -104,7 +169,21 @@ BEGIN
            AvailableToInvoiceBase = CASE WHEN dt.Code = N'PO' THEN l.QuantityBase - l.ReceivedQuantityBase - ISNULL(dr.Qty, 0) END,
            l.ImportRowNumber, l.Notes, l.SourceLineId,
            OnHandBase  = inventory.fn_StockOnHand(l.ItemId, l.WarehouseId),
-           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost
+           ItemLastCost = i.LastCost, ItemAverageCost = i.AverageCost, ItemFobCost = i.FobCost,
+           -- (65) order lines: received, settled short, in containers / draft receipts, to receive, still to come
+           --      (purchase.fn_PoLine_Progress); invoice lines: to receive with "Receive goods..." (fn_InvoiceLine_ToReceive;
+           --      0 on a line in a container). InvoicedDirectBase above now holds what the order line committed outside
+           --      containers (fn_PoLine_CommittedOutside: the larger of invoiced, and received + on draft receipts); its parts:
+           GoodsReceivedBase   = pp.GoodsReceivedBase,
+           GoodsShortBase      = pp.GoodsShortBase,
+           InContainersBase    = pp.InContainersBase,
+           InDraftReceiptsBase = COALESCE(pp.InDraftReceiptsBase, ip.InDraftReceiptsBase, CASE WHEN dt.Code = N'PINV' THEN 0 END),
+           ToReceiveBase       = COALESCE(pp.ToReceiveBase, ip.ToReceiveBase, CASE WHEN dt.Code = N'PINV' THEN 0 END),
+           MaxOutsideBase      = pp.MaxOutsideBase,
+           OutstandingBase     = pp.OutstandingBase,
+           InvoicedOutsideBase        = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.InvoicedOutsideBase, 0) END,
+           ReceivedOutsideBase        = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.ReceivedOutsideBase, 0) END,
+           InDraftReceiptsOutsideBase = CASE WHEN dt.Code = N'PO' THEN ISNULL(dir.InDraftReceiptsOutsideBase, 0) END
     FROM purchase.PurchaseDocumentLines l
     INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
     INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
@@ -117,9 +196,12 @@ BEGIN
                  FROM logistics.ContainerLines cl
                  INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                  WHERE cl.PoLineId = l.Id AND c.Status <> 8) ct
-    OUTER APPLY (SELECT Qty = SUM(x.QuantityBase) FROM purchase.PurchaseDocumentLines x
-                 INNER JOIN purchase.PurchaseDocuments xd ON xd.Id = x.DocumentId
-                 WHERE x.SourceLineId = l.Id AND x.ContainerLineId IS NULL AND xd.Status IN (1, 2, 4) AND xd.ReceiptMode <> 2 AND dt.Code = N'PO') dir
+    -- (65) committed outside containers: the larger of invoiced, and received + on draft goods receipts (was: invoiced)
+    OUTER APPLY (SELECT co.Qty, co.InvoicedOutsideBase, co.ReceivedOutsideBase, co.InDraftReceiptsOutsideBase
+                 FROM purchase.fn_PoLine_CommittedOutside(l.Id, NULL) co
+                 WHERE dt.Code = N'PO') dir
+    LEFT  JOIN purchase.fn_PoLine_Progress(@Id) pp      ON pp.PoLineId = l.Id
+    LEFT  JOIN purchase.fn_InvoiceLine_ToReceive(@Id) ip ON ip.InvoiceLineId = l.Id
     LEFT  JOIN logistics.ContainerLines lcl ON lcl.Id = l.ContainerLineId
     LEFT  JOIN logistics.Containers lct     ON lct.Id = lcl.ContainerId
     OUTER APPLY (SELECT Charges = SUM(a.AmountBase)
@@ -145,17 +227,22 @@ BEGIN
     WHERE a.DocumentId = @Id
     ORDER BY a.AtUtc DESC, a.Id DESC;
 
-    SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    -- (77) + InvoicingStatus of a linked purchase order (0 / 1 / 2: Saved, Partially posted, Posted); NULL otherwise
+    SELECT Relation = N'Source', x.Id, dt.Code AS DocumentTypeCode, dt.Name AS DocumentTypeName, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode,
+           inv.InvoicingStatus
     FROM purchase.PurchaseDocuments d
     INNER JOIN purchase.PurchaseDocuments x ON x.Id = d.SourceDocumentId
     INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
     INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    OUTER APPLY purchase.fn_PurchaseOrder_Invoicing(x.Id) inv
     WHERE d.Id = @Id
     UNION ALL
-    SELECT N'Child', x.Id, dt.Code, dt.Name, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode
+    SELECT N'Child', x.Id, dt.Code, dt.Name, x.DocumentNumber, x.DocumentDate, x.Status, x.TotalAmount, c.CurrencyCode,
+           inv.InvoicingStatus
     FROM purchase.PurchaseDocuments x
     INNER JOIN inventory.DocumentTypes dt ON dt.Id = x.DocumentTypeId
     INNER JOIN masterdata.Currencies c ON c.Id = x.CurrencyId
+    OUTER APPLY purchase.fn_PurchaseOrder_Invoicing(x.Id) inv
     WHERE x.SourceDocumentId = @Id
     ORDER BY Relation DESC, DocumentDate, Id;
 
@@ -236,6 +323,55 @@ BEGIN
     LEFT  JOIN security.Users ru ON ru.Id = a.RequestedBy
     WHERE a.DocumentId = @Id
     ORDER BY a.RequestNo DESC, a.Id;
+
+    -- 9 (65): goods receipts of the document - an order: those of its lines (from the order, its invoices, its
+    --    containers); an invoice: those made from it and those whose pieces are matched to its lines. HereBase = the
+    --    pieces of the receipt that concern this document (an order: on its lines; an invoice: matched to its lines,
+    --    or received from it). Value = the value at receipt (fixed when posted).
+    SELECT g.Id, g.DocumentNumber, g.DocumentDate, g.Status, g.SourceKind, g.IsAuto,
+           g.ContainerId, ContainerRef = c.ContainerRef, g.WarehouseId, w.WarehouseCode, w.WarehouseName,
+           ReceivedBase = g.TotalReceivedBase, HereBase = ISNULL(h.Pcs, 0), ValueAtReceiptBase = g.ValueAtReceiptBase,
+           g.PostedAtUtc, g.CreatedAtUtc
+    FROM purchase.GoodsReceipts g
+    LEFT  JOIN logistics.Containers c    ON c.Id = g.ContainerId
+    LEFT  JOIN masterdata.Warehouses w   ON w.Id = g.WarehouseId
+    OUTER APPLY (SELECT Pcs = SUM(x.Pcs)
+                 FROM (SELECT Pcs = gl.QuantityBase
+                       FROM purchase.GoodsReceiptLines gl
+                       WHERE gl.GoodsReceiptId = g.Id AND gl.PurchaseOrderId = @Id
+                       UNION ALL
+                       SELECT m.QuantityBase
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.GoodsReceiptInvoiceMatches m ON m.GoodsReceiptLineId = gl.Id
+                       INNER JOIN purchase.PurchaseDocumentLines il     ON il.Id = m.InvoiceLineId AND il.DocumentId = @Id
+                       WHERE gl.GoodsReceiptId = g.Id
+                       UNION ALL
+                       SELECT gl.QuantityBase
+                       FROM purchase.GoodsReceiptLines gl
+                       INNER JOIN purchase.PurchaseDocumentLines il ON il.Id = gl.InvoiceLineId AND il.DocumentId = @Id
+                       WHERE gl.GoodsReceiptId = g.Id AND g.Status = 1) x) h
+    WHERE g.PurchaseOrderId = @Id OR g.PurchaseInvoiceId = @Id
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl WHERE gl.GoodsReceiptId = g.Id AND gl.PurchaseOrderId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines gl
+                  INNER JOIN purchase.GoodsReceiptInvoiceMatches m ON m.GoodsReceiptLineId = gl.Id
+                  INNER JOIN purchase.PurchaseDocumentLines il     ON il.Id = m.InvoiceLineId AND il.DocumentId = @Id
+                  WHERE gl.GoodsReceiptId = g.Id)
+    ORDER BY g.DocumentDate, g.Id;
+
+    -- 10 (65): cost adjustments of received goods caused by this invoice - posted or cancelled - and by its landed
+    --    cost adjustments (purchase.GoodsReceiptCostChanges; empty for an order or a return).
+    SELECT cc.Id, cc.ChangedAtUtc, cc.CauseKind, cc.CauseId, cc.CauseNumber,
+           cc.GoodsReceiptLineId, GoodsReceiptId = g.Id, GoodsReceiptNumber = g.DocumentNumber, gl.ItemId, i.ItemCode, i.ItemName,
+           cc.ReceivedBase, cc.InStockBase, cc.FobBefore, cc.FobAfter, cc.UnitCostBefore, cc.UnitCostAfter,
+           cc.AmountBase, cc.InventoryBase, cc.CogsBase
+    FROM purchase.GoodsReceiptCostChanges cc
+    INNER JOIN purchase.GoodsReceiptLines gl ON gl.Id = cc.GoodsReceiptLineId
+    INNER JOIN purchase.GoodsReceipts g      ON g.Id = gl.GoodsReceiptId
+    INNER JOIN inventory.Items i             ON i.Id = gl.ItemId
+    WHERE (cc.CauseKind IN (N'PINV', N'PINVCANCEL') AND cc.CauseId = @Id)
+       OR (cc.CauseKind IN (N'LCA', N'LCACANCEL')
+           AND cc.CauseId IN (SELECT a.Id FROM purchase.LandedCostAdjustments a WHERE a.SourceInvoiceId = @Id))
+    ORDER BY cc.ChangedAtUtc, cc.Id;
 END
 
 GO

@@ -160,8 +160,32 @@ public abstract record MovementStatusFlags
 
     public bool CanStart => Status == MovementStatus.Planned;
     public bool CanComplete => Status == MovementStatus.InProgress;
-    public bool CanCancel => Status is >= MovementStatus.Planned and <= MovementStatus.Completed;
+
+    /// <summary>
+    /// The status allows it (planned, in progress or completed). (83) The details (<see cref="MovementDto"/>) also ask the
+    /// database whether its Cancel would refuse it now, and say why (<see cref="MovementDto.CancelBlockedReason"/>); the
+    /// list row stays the status alone: the Movements list offers no Cancel.
+    /// </summary>
+    public virtual bool CanCancel => Status is >= MovementStatus.Planned and <= MovementStatus.Completed;
+
     public bool CanDelete => Status == MovementStatus.Planned;
+
+    /* (80) A PLANNED MOVEMENT SAYS WHY IT CANNOT START YET (logistics.fn_Movement_StartBlock), on the list row and the
+       details alike: the list's "Start..." and the Start dialogs give the reason before the click, not a refusal after. */
+
+    /// <summary>The refusal Start would give now (no container, a draft, a container travelling, its previous leg open, not at the From); null when it can start.</summary>
+    public string? StartBlockedReason { get; init; }
+
+    /// <summary>
+    /// The earliest start date: the latest end of its containers' previous movements (70018 before it); null when none.
+    /// Also on a movement in progress, whose start date the page lets the user change (the Save holds it to this date).
+    /// </summary>
+    public DateTime? StartNotBefore { get; init; }
+
+    /// <summary>The movement that ended on <see cref="StartNotBefore"/>, and where.</summary>
+    public string? StartNotBeforeMovementNo { get; init; }
+
+    public string? StartNotBeforePlaceName { get; init; }
 }
 
 /// <summary>One row of the movement list (logistics.usp_Movement_Search).</summary>
@@ -207,6 +231,42 @@ public record MovementListDto : MovementStatusFlags
     public DateTime CreatedAtUtc { get; init; }
     public string? CreatedByName { get; init; }
     public DateTime? UpdatedAtUtc { get; init; }
+    public byte[] RowVersion { get; init; } = [];
+}
+
+/// <summary>
+/// (80) A planned movement a container can join (logistics.usp_Movement_JoinCandidates, "Add to a movement..."): created
+/// after the container's latest movement and passing the checks the save makes for it - so joining is never refused for
+/// its place after the click.
+/// </summary>
+public sealed class MovementJoinCandidateDto
+{
+    public int Id { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+    public int MovementTypeId { get; init; }
+    public string TypeCode { get; init; } = string.Empty;
+    public string TypeName { get; init; } = string.Empty;
+    public string Stage { get; init; } = string.Empty;
+    public int FromPlaceId { get; init; }
+    public string FromCode { get; init; } = string.Empty;
+    public string FromName { get; init; } = string.Empty;
+    public int ToPlaceId { get; init; }
+    public string ToCode { get; init; } = string.Empty;
+    public string ToName { get; init; } = string.Empty;
+    public DateTime? PlannedDate { get; init; }
+    public DateTime? Eta { get; init; }
+    public byte Status { get; init; }
+    public int? CarrierPartyId { get; init; }
+    public string? CarrierName { get; init; }
+    public string? VehicleOrVessel { get; init; }
+    public int ContainerCount { get; init; }
+
+    /// <summary>"KTG-2026-0006 +1".</summary>
+    public string? ContainerRefs { get; init; }
+
+    /// <summary>What the save would say of the container there: "Not moved yet - port of loading: Chennai.", "Draft: confirm it…".</summary>
+    public string? Note { get; init; }
+
     public byte[] RowVersion { get; init; } = [];
 }
 
@@ -272,6 +332,17 @@ public sealed class MovementContainerDto
     public DateTime? GoodsReceiptUpdatedAtUtc { get; init; }
 
     public string? GoodsReceiptUpdatedByName { get; init; }
+
+    /* (82) "ONLY SOME CONTAINERS ARRIVED" in the Complete dialog: the checklist of the movement's containers */
+
+    /// <summary>The movement is in progress, carries other containers, and this one has no later leg: it can arrive alone.</summary>
+    public bool CanSplitOff { get; init; }
+
+    /// <summary>
+    /// Why not ("KTG-2026-0031 already has the next leg MOV-2026-000051 planned: complete MOV-2026-000046 for every
+    /// container, or take it off MOV-2026-000051 first."), null when it can.
+    /// </summary>
+    public string? SplitOffBlockedReason { get; init; }
 }
 
 /// <summary>Why a container of a completed Delivery got no draft goods receipt (purchase.usp_GoodsReceipt_CreateForMovement).</summary>
@@ -370,7 +441,23 @@ public sealed class MovementAttachmentDto
     public string? CreatedByName { get; init; }
 }
 
-/// <summary>A movement with its containers, charges and documents — the four sets of logistics.usp_Movement_Get.</summary>
+/// <summary>(82) What happened to a movement beyond its own stamps (set 5 of usp_Movement_Get): a split, on both movements.</summary>
+public sealed class MovementAuditDto
+{
+    public int Id { get; init; }
+
+    /// <summary>"Split off" (the original) or "Split from" (the movement made for the containers that arrived).</summary>
+    public string Action { get; init; } = string.Empty;
+
+    /// <summary>"Split off into MOV-2026-000052: KTG-2026-0031" / "Split from MOV-2026-000046: KTG-2026-0031 arrived on its own."</summary>
+    public string? Details { get; init; }
+
+    public int? UserId { get; init; }
+    public string? UserName { get; init; }
+    public DateTime AtUtc { get; init; }
+}
+
+/// <summary>A movement with its containers, charges and documents — the sets of logistics.usp_Movement_Get.</summary>
 public sealed record MovementDto : MovementStatusFlags
 {
     public int Id { get; init; }
@@ -412,6 +499,63 @@ public sealed record MovementDto : MovementStatusFlags
     public DateTime? UpdatedAtUtc { get; init; }
     public string? UpdatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
+
+    /// <summary>(82) The movement it was split off, when only part of that one arrived: "Split from MOV-2026-000046".</summary>
+    public int? SplitFromMovementId { get; init; }
+
+    public string? SplitFromMovementNo { get; init; }
+
+    /* (82) CANCELLING A SPLIT-OFF MOVEMENT UNDOES THE SPLIT: its containers go back onto the movement they were split from
+       (logistics.fn_Movement_SplitUndoTarget - or, when that one was cancelled itself, where its containers went). Its
+       Cancel dialog says it first: "Cancelling MOV-2026-000073 puts KTG-2026-0030 and KTG-2026-0031 back on
+       MOV-2026-000044, which is still in progress." Null on a movement that was not split off. */
+
+    /// <summary>The movement the containers go back to when this one is cancelled.</summary>
+    public int? SplitUndoMovementId { get; init; }
+
+    public string? SplitUndoMovementNo { get; init; }
+
+    /// <summary>That movement's status: 2 in progress (they travel on with it), 3 completed (they arrived with it), 4 cancelled (they are where they were before it).</summary>
+    public byte? SplitUndoStatus { get; init; }
+
+    /// <summary>Its end date, when it is completed.</summary>
+    public DateTime? SplitUndoEndDate { get; init; }
+
+    /// <summary>Its To.</summary>
+    public string? SplitUndoToName { get; init; }
+
+    /// <summary>The stage of its type: a completed Delivery leaves them delivered, not received (no draft goods receipt).</summary>
+    public string? SplitUndoStage { get; init; }
+
+    /* (83) A MOVEMENT THAT CANNOT BE CANCELLED SAYS WHY BEFORE THE CLICK (logistics.fn_Movement_CancelBlock, the one place of
+       the refusals of its Cancel, which throws the same words): the page disables its "Cancel..." with the reason instead
+       of opening a dialog that is refused after the reason is typed. */
+
+    /// <summary>
+    /// The refusal its Cancel would give now, word for word: "The movement is already cancelled.", "Container KTG-2026-0041
+    /// is already offloaded: its route can no longer change.", "MOV-2026-000091 is not the last leg of KTG-2026-0133: cancel
+    /// MOV-2026-000092 first."; null when it can be cancelled.
+    /// </summary>
+    public string? CancelBlockedReason { get; init; }
+
+    /// <summary>(83) The status allows it and its Cancel would not refuse it now (the procedure's CanCancel says the same).</summary>
+    public override bool CanCancel => base.CanCancel && CancelBlockedReason is null;
+
+    /// <summary>(82) Its history beyond its own stamps (created, started, completed, cancelled): its splits, newest first.</summary>
+    public IReadOnlyList<MovementAuditDto> History { get; init; } = [];
+
+    /// <summary>
+    /// (82) Only on the answer to Cancel of a split-off movement: the split was undone - where its containers went back and
+    /// the notification that says so. Null on every other answer.
+    /// </summary>
+    public MovementSplitUndoneDto? SplitUndone { get; init; }
+
+    /// <summary>
+    /// (79) The goods receipt type's "Create goods receipts on Delivery" (Configuration › Document Types): true, completing
+    /// a Delivery-stage movement drafts one per container; false, they are made by hand with Receive goods… on each
+    /// container, and the Complete dialog and its answer say so.
+    /// </summary>
+    public bool GoodsReceiptsAutomatic { get; init; } = true;
 
     /// <summary>Planned or in progress, and the ETA is behind us.</summary>
     public bool IsLate
@@ -493,6 +637,105 @@ public sealed class MovementStatusRequest
 }
 
 /// <summary>
+/// (82) "Only some containers arrived" (the movement page's Complete): the ticked containers of a movement in progress
+/// leave it for their own movement, which is completed on <see cref="Date"/>; the others stay on it, in progress.
+/// </summary>
+public sealed class CompleteSomeContainersRequest
+{
+    /// <summary>The containers that arrived: some of the movement's, not all of them.</summary>
+    public IReadOnlyList<int> ContainerIds { get; init; } = [];
+
+    /// <summary>The end date (arrival, clearance, delivery...); null = today. Never in the future, never before the start.</summary>
+    public DateOnly? Date { get; init; }
+
+    /// <summary>The movement's rowVersion as the page read it (70004 / 409 when someone changed it since).</summary>
+    public string? RowVersion { get; init; }
+}
+
+/// <summary>
+/// (82) The row logistics.usp_Movement_SetStatus answers when its Cancel undid a split: the movement the containers went
+/// back to, as it is now, and the containers put back (the first ten refs, comma-separated; <see cref="ContainerCount"/>
+/// all of them). <see cref="Message"/> is the service's notification.
+/// </summary>
+public sealed record MovementSplitUndoneDto
+{
+    public int MovementId { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+
+    /// <summary>2 in progress, 3 completed, 4 cancelled.</summary>
+    public byte Status { get; init; }
+
+    public DateTime? EndDate { get; init; }
+    public string ToName { get; init; } = string.Empty;
+    public string Stage { get; init; } = string.Empty;
+    public int ContainerCount { get; init; }
+
+    /// <summary>"KTG-2026-0030,KTG-2026-0031": the first ten, in ref order.</summary>
+    public string? ContainerRefs { get; init; }
+
+    /// <summary>
+    /// "MOV-2026-000073 cancelled, the split undone: KTG-2026-0030 and KTG-2026-0031 are back on MOV-2026-000044, still in
+    /// progress."
+    /// </summary>
+    public string Message { get; init; } = string.Empty;
+}
+
+/// <summary>(82) The row of logistics.usp_Movement_SplitContainers: the movement made for the containers that arrived.</summary>
+public sealed class MovementSplitDto
+{
+    public int NewId { get; init; }
+    public string MovementNo { get; init; } = string.Empty;
+    public byte Status { get; init; }
+    public byte[] RowVersion { get; init; } = [];
+    public int OriginalMovementId { get; init; }
+    public string OriginalMovementNo { get; init; } = string.Empty;
+    public int ContainersMoved { get; init; }
+
+    /// <summary>The containers still on the original, in progress.</summary>
+    public int ContainersLeft { get; init; }
+}
+
+/// <summary>
+/// (82) The answer to "Only some containers arrived": the split is committed; <see cref="Ok"/> says whether its movement
+/// was completed too. Not completed (rare: the date is checked before the split), the message says what happened -
+/// "MOV-2026-000052 was split off MOV-2026-000046 but not completed: {reason}. Complete it on its page."
+/// </summary>
+public sealed class MovementSplitResultDto
+{
+    /// <summary>The containers' own movement is completed.</summary>
+    public bool Ok { get; init; }
+
+    /// <summary>The completion's refusal code when <see cref="Ok"/> is false; null when completed.</summary>
+    public string? Code { get; init; }
+
+    /// <summary>
+    /// "KTG-2026-0031: arrived at Dar es Salaam on 17/10/2026 with MOV-2026-000052 (split off MOV-2026-000046). Now At
+    /// Port. The 11 others are still on MOV-2026-000046."
+    /// </summary>
+    public string Message { get; init; } = string.Empty;
+
+    public int OriginalMovementId { get; init; }
+    public string OriginalMovementNo { get; init; } = string.Empty;
+
+    /// <summary>The containers still on the original movement, in progress.</summary>
+    public int RemainingContainerCount { get; init; }
+
+    /// <summary>The containers' own movement, always given (<see cref="Movement"/> may be null when it could not be read back).</summary>
+    public int MovementId { get; init; }
+
+    public string MovementNo { get; init; } = string.Empty;
+
+    /// <summary>
+    /// The containers' own movement as it is now: completed (a Delivery's goodsReceipts, goodsReceiptsMessage and warnings
+    /// with it, as after a Complete), or in progress when its completion was refused - null only when the database did
+    /// not answer the read after a failed completion (<see cref="MovementId"/> and <see cref="MovementNo"/> name it).
+    /// </summary>
+    public MovementDto? Movement { get; init; }
+
+    public IReadOnlyList<string> Warnings { get; init; } = [];
+}
+
+/// <summary>
 /// One movement for the chosen containers (logistics.usp_Movement_ShipContainers): the drafts
 /// confirmed, the movement created and started, the shipping details copied to the containers — in
 /// one transaction.
@@ -505,10 +748,16 @@ public sealed class ShipContainersRequest
     /// <summary>Null = SEA.</summary>
     public int? MovementTypeId { get; init; }
 
-    /// <summary>Null = the containers' common port of loading (Sea only).</summary>
+    /// <summary>
+    /// Null = where the containers are (script 80): the place they are all at once one of them moved (the end of its
+    /// latest movement), else - none moved, Sea only - their common port of loading.
+    /// </summary>
     public int? FromPlaceId { get; init; }
 
-    /// <summary>Null = the containers' common port of destination (Sea only).</summary>
+    /// <summary>
+    /// Null = the containers' common port of destination (Sea only, and only when none of them moved); for a stay (Port,
+    /// Customs, Border) the From.
+    /// </summary>
     public int? ToPlaceId { get; init; }
 
     /// <summary>Null = today (the planned date when startNow is false).</summary>
@@ -623,7 +872,7 @@ public sealed class MovementContainerCandidateQuery
 
     public int Page { get; init; } = 1;
 
-    /// <summary>At most 200.</summary>
+    /// <summary>At most 5,000 (script 78; 200 before).</summary>
     public int PageSize { get; init; } = 200;
 }
 

@@ -28,6 +28,10 @@ public sealed class LateChargeService : ILateChargeService
     private const string ImportedInvoiceMessage =
         "This invoice comes from containers: late charges are entered on the containers (Container Charges), not as a landed cost adjustment.";
 
+    /// <summary>(79) The text of the procedures' THROW 67013, for the same reason.</summary>
+    private const string NoCostInvoiceMessage =
+        "This invoice does not change item costs (its document type was set so when it was posted): a landed cost adjustment on it would change no cost. Container charges still enter the cost of goods received in containers.";
+
     private const string NotPostedMessage = "Late charges are for posted invoices: edit the invoice's charges instead.";
 
     /// <summary>usp_LandedCostAdjustment_Search's page ceiling — far more adjustments than one invoice ever gets.</summary>
@@ -300,6 +304,13 @@ public sealed class LateChargeService : ILateChargeService
         if (invoice.IsContainerBound || invoice.ShippedInContainers)
         {
             return Result.Failure(ErrorType.Conflict, ImportedInvoiceMessage, "IMPORTED_INVOICE");
+        }
+
+        // (79) Posted without changing item costs: its late charges would change no cost, so they are not offered.
+        // (A draft is not concerned yet: it follows its type when it is posted, and "post it first" is the answer.)
+        if (invoice.Status == PurchaseDocumentStatus.Posted && !invoice.AffectsCost)
+        {
+            return Result.Failure(ErrorType.Conflict, NoCostInvoiceMessage, "NO_COST_INVOICE");
         }
 
         return invoice.Status == PurchaseDocumentStatus.Posted

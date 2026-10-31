@@ -1,3 +1,6 @@
+/* ================================================================== 10. Get */
+
+-- Re-created (97) from the body of script 67: + the BIVAC item and the BIVAC Out. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
     @Id INT
 AS
@@ -12,8 +15,13 @@ BEGIN
            ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, xu.FullName AS CancelledByName, ch.CancelReason,
            ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion,
            -- (47) supplier payments: posted charges only (NULL otherwise)
-           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (97) a BIVAC charge: its BIVAC item, and the BIVAC Out its posting made
+           ch.BivacItemId, BivacItemCode = bi.ItemCode, BivacItemName = bi.ItemName,
+           ch.BivacOutDocumentId, BivacOutNumber = bo.DocumentNumber, BivacOutStatus = bo.Status
     FROM logistics.ContainerCharges ch
+    LEFT  JOIN inventory.Items bi          ON bi.Id = ch.BivacItemId
+    LEFT  JOIN inventory.StockDocuments bo ON bo.Id = ch.BivacOutDocumentId
     OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
     INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
     INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
@@ -38,6 +46,7 @@ BEGIN
     ORDER BY cl.LineNumber;
 
     SELECT a.Id, a.ContainerId, a.MovementId, a.AttachmentTypeId, at.Category, at.SubType,
+           IsOther = CAST(CASE WHEN at.Id IS NULL OR (at.SubType = N'Other' AND at.Category IN (N'Other', N'General')) THEN 1 ELSE 0 END AS BIT),   -- (67)
            a.FileId, f.FileName, f.ContentType, f.SizeBytes, a.Note, a.DocumentDate, a.CreatedAtUtc, u.FullName AS CreatedByName
     FROM logistics.ContainerAttachments a
     INNER JOIN logistics.Files f ON f.Id = a.FileId

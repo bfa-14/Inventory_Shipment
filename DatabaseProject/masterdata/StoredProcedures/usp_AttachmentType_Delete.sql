@@ -11,7 +11,10 @@ BEGIN
        OR EXISTS (SELECT 1 FROM sales.SalesDocumentFiles WHERE AttachmentTypeId = @Id)
        OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentFiles WHERE AttachmentTypeId = @Id)
        OR EXISTS (SELECT 1 FROM purchase.PaymentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptFiles WHERE AttachmentTypeId = @Id)   -- (64)
        OR EXISTS (SELECT 1 FROM inventory.StockDocumentFiles WHERE AttachmentTypeId = @Id)
+       OR EXISTS (SELECT 1 FROM inventory.ItemFiles WHERE AttachmentTypeId = @Id)          -- (67)
+       OR EXISTS (SELECT 1 FROM inventory.TransferOrderFiles WHERE AttachmentTypeId = @Id) -- (90)
         THROW 69014, 'This attachment type is used by documents and cannot be deleted. Deactivate it instead.', 1;
     BEGIN TRY
         BEGIN TRANSACTION;

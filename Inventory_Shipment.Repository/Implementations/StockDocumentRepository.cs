@@ -56,6 +56,11 @@ public sealed class StockDocumentRepository : IStockDocumentRepository
         parameters.Add("@RowVersion", rowVersion, DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@YearInNumber", request.YearInNumber, DbType.Boolean);
+        parameters.Add("@AffectsItemCost", request.AffectsItemCost, DbType.Boolean);
+        parameters.Add("@AffectsOnHand", request.AffectsOnHand, DbType.Boolean);
+        parameters.Add("@AutoCreateOnDelivery", request.AutoCreateOnDelivery, DbType.Boolean);
+        // (90) The TRO type's approval switch; null = unchanged (and refused on another type when sent).
+        parameters.Add("@NeedsApproval", request.NeedsApproval, DbType.Boolean);
 
         await using var connection = _connectionFactory.Create();
         try
@@ -387,9 +392,15 @@ public sealed class StockDocumentRepository : IStockDocumentRepository
         => ExecuteAsync("inventory.usp_StockDocument_Post",
             new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
+    /// <summary>
+    /// Cancels a posted stock document. RETRIED ON A DEADLOCK (script 89): the cancel now takes the goods receipt
+    /// matching lock and replays its items' costs in its own transaction, so it can meet a posting of the same items;
+    /// a 1205 is not a business rule and would otherwise reach the user as a 500. The procedure is one transaction,
+    /// so running the killed one again is safe.
+    /// </summary>
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
-        => ExecuteAsync("inventory.usp_StockDocument_Cancel",
-            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+        => SqlRetry.OnDeadlockAsync(() => ExecuteAsync("inventory.usp_StockDocument_Cancel",
+            new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken), cancellationToken);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("inventory.usp_StockDocument_Delete", new { Id = id, UserId = userId }, cancellationToken);

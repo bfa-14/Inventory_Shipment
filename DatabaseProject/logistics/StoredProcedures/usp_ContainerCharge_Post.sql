@@ -1,5 +1,6 @@
--- Before the offload: the charge joins the provisional cost of the lines. After the offload: cost adjustment
--- (the part still in stock -> average cost, the part already sold -> COGS).
+/* ================================================================== 8. Post */
+
+-- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge (usp_ContainerCharge_PostBivacOut). Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
     @Id         INT       = NULL,
     @Ids        logistics.tvp_IdList READONLY,
@@ -30,6 +31,10 @@ BEGIN
     BEGIN TRY
         BEGIN TRANSACTION;
 
+        -- (65) the containers of the charges, held until the commit, before anything is written (see above)
+        DECLARE @HeldContainers INT = (SELECT COUNT(*) FROM logistics.Containers c WITH (UPDLOCK, HOLDLOCK)
+                                       WHERE c.Id IN (SELECT ch.ContainerId FROM @List x INNER JOIN logistics.ContainerCharges ch ON ch.Id = x.Id));
+
         DECLARE @ChargeId INT, @ContainerId INT, @CtStatus TINYINT, @Method NVARCHAR(10), @InLanded BIT,
                 @AmountBase DECIMAL(18,2), @Ref NVARCHAR(30), @Label NVARCHAR(200), @After BIT;
         DECLARE posts CURSOR LOCAL FAST_FORWARD FOR
@@ -38,11 +43,12 @@ BEGIN
         FETCH NEXT FROM posts INTO @ChargeId;
         WHILE @@FETCH_STATUS = 0
         BEGIN
+            -- (65) the container's status as committed: a goods receipt of it has finished (or not begun)
             SELECT @ContainerId = ch.ContainerId, @CtStatus = c.Status, @Method = ch.AllocationMethod, @InLanded = ch.IncludeInLandedCost,
                    @AmountBase = ch.AmountBase, @Ref = c.ContainerRef,
                    @Label = t.ChargeCode + N' ' + t.ChargeName + N' ' + CAST(ch.Amount AS NVARCHAR(30)) + N' ' + cur.CurrencyCode
             FROM logistics.ContainerCharges ch
-            INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
+            INNER JOIN logistics.Containers c WITH (UPDLOCK, HOLDLOCK) ON c.Id = ch.ContainerId
             INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId
             INNER JOIN masterdata.Currencies cur ON cur.Id = ch.CurrencyId
             WHERE ch.Id = @ChargeId;
@@ -67,9 +73,19 @@ BEGIN
             EXEC logistics.usp_Container_RecalcCosts @ContainerId;
             IF @After = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @ChargeId, 1, @UserId;
 
+            -- (97) A BIVAC CHARGE TAKES ITS BIVAC OUT OF THE CONTAINER'S WAREHOUSE: 1 piece of its BIVAC item, posted with
+            -- the charge (Inventory > BIVAC Out shows it, Reference No. the container); refused with the BIVAC Out's own
+            -- words (not enough stock, a warehouse the user may not use...), and then nothing of the post is kept.
+            IF EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @ChargeId AND BivacItemId IS NOT NULL AND BivacOutDocumentId IS NULL)
+                EXEC logistics.usp_ContainerCharge_PostBivacOut @ChargeId, @UserId;
+
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@ContainerId, N'Updated', LEFT(N'Charge posted: ' + @Label
-                                                   + CASE WHEN @After = 1 THEN N' (after the offload: item costs adjusted)' ELSE N'' END, 500), @UserId);
+                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END
+                                                   + ISNULL((SELECT N' (BIVAC Out ' + d.DocumentNumber + N')'
+                                                             FROM logistics.ContainerCharges x
+                                                             INNER JOIN inventory.StockDocuments d ON d.Id = x.BivacOutDocumentId
+                                                             WHERE x.Id = @ChargeId), N''), 500), @UserId);
 
             FETCH NEXT FROM posts INTO @ChargeId;
         END

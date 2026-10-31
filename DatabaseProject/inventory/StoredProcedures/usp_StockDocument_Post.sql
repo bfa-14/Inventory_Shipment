@@ -1,3 +1,7 @@
+/* ================================================================== 3. Inventory In / Out / BIVAC Out: post */
+
+-- Re-created (72) from the body of script 70 (Ali: 69 no branch check, each movement in the branch of its warehouse;
+-- 70 the leaf check) + script 66's BIVAC line check again at posting (the item may have been un-flagged since the save).
 CREATE   PROCEDURE inventory.usp_StockDocument_Post
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -11,9 +15,11 @@ BEGIN
         BEGIN TRANSACTION;
 
         DECLARE @Status TINYINT, @TypeCode NVARCHAR(20), @Direction SMALLINT, @Number NVARCHAR(30), @DocumentDate DATE, @BranchId INT, @ReasonCode NVARCHAR(20);
+        DECLARE @BivacOnly BIT, @TypeName NVARCHAR(100);   -- (66)
 
         SELECT @Status = d.Status, @TypeCode = dt.Code, @Direction = dt.StockDirection, @Number = d.DocumentNumber,
-               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @ReasonCode = r.ReasonCode
+               @DocumentDate = d.DocumentDate, @BranchId = d.BranchId, @ReasonCode = r.ReasonCode,
+               @BivacOnly = dt.BivacItemsOnly, @TypeName = dt.Name   -- (66)
         FROM inventory.StockDocuments d WITH (UPDLOCK, HOLDLOCK)
         INNER JOIN inventory.DocumentTypes dt ON dt.Id = d.DocumentTypeId
         LEFT  JOIN inventory.StockReasons r ON r.Id = d.ReasonId
@@ -29,15 +35,18 @@ BEGIN
         DECLARE @Msg NVARCHAR(400);
         SELECT TOP (1) @Msg =
             CASE WHEN i.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': item ' + i.ItemCode + N' is inactive.'
+                 -- (66) again at posting: the item may have been un-flagged since the draft was saved
+                 WHEN @BivacOnly = 1 AND i.IsBivac = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': ' + i.ItemCode
+                      + N' is not a BIVAC item. A ' + @TypeName + N' holds BIVAC items only.'
                  WHEN w.IsActive = 0 THEN N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' is inactive.' END
         FROM inventory.StockDocumentLines l
         INNER JOIN inventory.Items i ON i.Id = l.ItemId
         INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
-        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR w.IsActive = 0)
+        WHERE l.DocumentId = @Id AND (i.IsActive = 0 OR (@BivacOnly = 1 AND i.IsBivac = 0) OR w.IsActive = 0)
         ORDER BY l.LineNumber;
         IF @Msg IS NOT NULL THROW 62000, @Msg, 1;
 
-        -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 65).
+        -- A parent warehouse holds no stock of its own: a line takes a warehouse at the bottom of the tree (script 70).
         SELECT TOP (1) @Msg = N'Line ' + CAST(l.LineNumber AS NVARCHAR(10)) + N': warehouse ' + w.WarehouseCode + N' has warehouses under it. Choose one of those: stock is kept only in the warehouses at the bottom of the tree.'
         FROM inventory.StockDocumentLines l
         INNER JOIN masterdata.Warehouses w ON w.Id = l.WarehouseId
