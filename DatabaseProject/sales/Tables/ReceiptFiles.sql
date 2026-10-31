@@ -18,6 +18,8 @@ CREATE TABLE [sales].[ReceiptFiles] (
 );
 
 
+
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_ReceiptFiles_Receipt]
@@ -25,4 +27,7 @@ CREATE NONCLUSTERED INDEX [IX_ReceiptFiles_Receipt]
 
 
 GO
+CREATE NONCLUSTERED INDEX [IX_ReceiptFiles_Report]
+    ON [sales].[ReceiptFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
+    INCLUDE([ReceiptId], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
 

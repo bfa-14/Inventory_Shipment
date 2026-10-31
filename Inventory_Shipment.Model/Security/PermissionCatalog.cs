@@ -352,6 +352,17 @@ public static class Permissions
         public const string AttachmentsManage = "containers.attachments.manage";
     }
 
+    /// <summary>
+    /// Reports that read across modules (script 101). The Attachment Report lists every module's files, but each reader
+    /// sees and downloads only the files of the documents they may open: this permission opens the page, it never
+    /// widens what the reader may see.
+    /// </summary>
+    public static class Reports
+    {
+        public const string AttachmentsView = "reports.attachments.view";
+    }
+
+    private const string ReportsModule = "Reports";
     private const string DashboardModule = "Dashboard";
     private const string SecurityModule = "Security";
     private const string SalesModule = "Sales";
@@ -667,6 +678,9 @@ public static class Permissions
         // Name, description and sort order match script 95's MERGE, so the start-up sync changes nothing.
         new(Containers.ReportView, "View Container Report", ContainersModule,
             "Reports › Container Report: every container and order still to load with its order, invoices, payments, journey, charges and cost, by stage.", 1408),
+        // Name, description and sort order match script 101's MERGE, so the start-up sync changes nothing.
+        new(Reports.AttachmentsView, "View Attachment Report", ReportsModule,
+            "Reports › Attachment Report: find attachments by type and date and download them; each reader sees only the files of documents they may open.", 1500),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,

@@ -788,5 +788,18 @@
     <Build Include="security\Tables\Users.sql" />
     <Build Include="security\Tables\UserWarehouseAudit.sql" />
     <Build Include="security\Tables\UserWarehouses.sql" />
+    <Folder Include="reporting\Tables\" />
+    <Folder Include="reporting\Functions\" />
+    <Folder Include="reporting\Stored Procedures\" />
+    <Folder Include="logistics\Stored Procedures\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Build Include="reporting\Tables\AttachmentDownloads.sql" />
+    <Build Include="reporting\Functions\fn_Attachments.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_LogDownload.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_List.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_Files.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_Content.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ContainerReport.sql" />
   </ItemGroup>
 </Project>

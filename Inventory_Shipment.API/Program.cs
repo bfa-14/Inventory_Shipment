@@ -35,6 +35,10 @@ builder.Services.AddOptions<SeedOptions>()
 builder.Services.AddOptions<SalesOptions>()
     .Bind(builder.Configuration.GetSection(SalesOptions.SectionName));
 
+// The Attachment Report's download limits (script 101): Reports:AttachmentZipMaxFiles / AttachmentZipMaxBytes.
+builder.Services.AddOptions<ReportsOptions>()
+    .Bind(builder.Configuration.GetSection(ReportsOptions.SectionName));
+
 builder.Services.AddOptions<PurchaseOptions>()
     .Bind(builder.Configuration.GetSection(PurchaseOptions.SectionName));
 

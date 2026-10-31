@@ -18,6 +18,8 @@ CREATE TABLE [purchase].[PaymentFiles] (
 );
 
 
+
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_PaymentFiles_Payment]
@@ -25,4 +27,7 @@ CREATE NONCLUSTERED INDEX [IX_PaymentFiles_Payment]
 
 
 GO
+CREATE NONCLUSTERED INDEX [IX_PaymentFiles_Report]
+    ON [purchase].[PaymentFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
+    INCLUDE([PaymentId], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
 

@@ -397,7 +397,8 @@ without seeing costs, and View Stock Valuation for those who must see no value a
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
 - **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 100: every container and order still
-  to load, by stage; View Container Report), Customer Statement, Out-of-Stock Sales
+  to load, by stage; View Container Report), **Attachment Report** (script 101: every attachment by type and date,
+  downloaded one, several or all as a ZIP; View Attachment Report), Customer Statement, Out-of-Stock Sales
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
 - **Sales:** Sales Invoices, Sales Profit, Receipts, Customer Statement, Out-of-Stock Sales
 - **Backoffice › Master Data:** Branches / Sites, Warehouses, Currencies, Exchange Rates, Item Families, Brands,
@@ -635,6 +636,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   - Container Report: `containers.report.view` (1408, "View Container Report", script 100), granted once, when it was
     first created, to the system roles and the roles holding View Containers. Its charge columns also need View
     Container Charges, its payment columns View Supplier Payments: the server sends them empty to others.
+  - Attachment Report: `reports.attachments.view` (1500, "View Attachment Report", module Reports, script 101). Not granted
+    to any role by the script (the system roles get it at start-up); it opens the report, and each reader still sees and
+    downloads only the files of the documents they may open (4.20).
   - Purchase: `purchase.orders.approve` (now "(not used)"), `purchase.orders.post`, `purchase.approval.manage`;
     `purchase.invoices.post` is now "payable; adjusts the cost of goods already received".
   - Goods receipts: `purchase.goodsreceipts.view / create / post / cancel / delete` (1102–1110, script 64). Granted
@@ -2830,6 +2834,33 @@ rows moved between them by hand, subtotals and lead times typed. Reports › Con
 8. **Not in it yet:** the oil value ("FOB with oil", "Oil", "FOB without oil" in the sheet): the invoice price includes it,
    the owner will deal with it later.
 
+### 4.20 The Attachment Report **[Implemented – script 101]**
+
+Reports › Attachment Report finds the documents attached anywhere in the system and downloads them.
+
+1. **What it lists:** every attachment of the ten places files are kept - a container's documents (one row per container a
+   file is filed under), purchase orders / invoices / returns, goods receipts, supplier payments, sales invoices / returns,
+   receipts, Inventory In / Out / BIVAC Out, transfer orders and item documents (not the item's picture)
+   (`reporting.fn_Attachments`). Each row: file name, attachment type, reference (the container ref, document number or
+   item code, a link to its page), document date, upload date and who uploaded it, size.
+2. **Filters** (AND): attachment types (several; none = every type), the **document date** typed on the file (a range leaves
+   out files without one) and the **upload date**; dates inclusive; a "from" after its "to" stops the report. "Run report"
+   runs it; the filters live in the address, so a refresh or a shared link reruns it. Paged on the server (10/25/50), with
+   the total count and size.
+3. **Downloads:** tick rows (the header ticks the page; "Select all N matching" takes every result) and "Download selected":
+   one file comes back as itself, several as a ZIP; "Download all" is always a ZIP, named
+   `attachments_{from}_to_{to}_{report date}.zip` (the document dates, else "uploaded_...", else "all-dates"). Each file is
+   named "{reference} - {type} - {document date} - {original name}" (a repeated name gets " (2)"). "Preparing download" shows
+   while the ZIP is built (on the server, in a temporary file, never in memory).
+4. **Limits:** 500 files or 2 GB per download (`Reports:AttachmentZipMaxFiles` / `AttachmentZipMaxBytes` in appsettings);
+   above them the download is refused (409 TOO_LARGE): "... are more than one download may take ... Narrow the filters".
+5. **Who:** View Attachment Report opens it; each file shows and downloads only for a reader who may view its document (View
+   Containers, View Purchase Orders / Invoices / Returns, View Goods Receipts, View Supplier Payments, View Sales Invoices,
+   View Receipts, View Inventory In / Out / BIVAC Out, View Transfers, View Items) - on the server, for the list, the count and
+   every download.
+6. **Log:** every download is written to `reporting.AttachmentDownloads` (user, time, Selected / All, file count, size, the
+   filters or the keys).
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -2969,6 +3000,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `98_Inventory_LeadTimePerItem.sql` | Lead time per item (prompt 52): `inventory.Items.LeadTimeMonths` (days converted once, step `98.LeadTimeMonths`), `ShortageDocumentLines.LeadTimeManual` / `LeadTimeSource`, type `inventory.tvp_ShortageLeadTime`; new `inventory.fn_Item_LeadTimeHistory`, `fn_Item_LeadTime`, `usp_Item_SetLeadTime`; re-created `usp_Item_Get` (from 93), `usp_Shortage_Calculate`, `usp_ShortageDocument_WriteLines` and `_Get` (from 90), `_Save` and `_Recalculate` (from 25) |
 | `99_Inventory_LeadTimeShortDays.sql` | A short lead time is never converted to 0 months (prompt 52): the items script 98 converted to 0 months while their days are above 0 get the days in months to one decimal, at least 0.1; run at every start, it finds nothing a second time |
 | `100_Logistics_ContainerReport.sql` | The Container Report (prompt 52): the permission `containers.report.view` "View Container Report" (Containers, 1408) upserted and granted once per database (`inventory.OneTimeSteps` step `95.ContainerReportGrant`) to the system roles and the roles holding View Containers; new `logistics.usp_ContainerReport` (three result sets: the rows, their charges per type, the charge types; set-based over the rows, their legs read once); re-created `logistics.fn_ItemPcsPerContainer` (from 54): a packing formula of 1 is "not specified" (NULL), so capacity is not judged for it. Requires scripts 54, 82 and 89 |
+| `101_Reporting_AttachmentReport.sql` | The Attachment Report: the permission `reports.attachments.view` (Reports, 1500); `reporting.fn_Attachments` over the ten file tables; `usp_AttachmentReport_List` / `_Files` / `_Content` / `_LogDownload`; table `reporting.AttachmentDownloads`; covering indexes on each file table (4.20) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

@@ -1,5 +1,7 @@
-CREATE SCHEMA [logistics]
+﻿CREATE SCHEMA [logistics]
     AUTHORIZATION [dbo];
+
+
 
 
 GO

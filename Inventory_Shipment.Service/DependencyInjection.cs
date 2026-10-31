@@ -63,6 +63,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPurchaseInvoiceContainerService, PurchaseInvoiceContainerService>();
         services.TryAddScoped<ICostingReportService, CostingReportService>();
         services.TryAddScoped<IContainerReportService, ContainerReportService>();
+        services.TryAddScoped<IAttachmentReportService, AttachmentReportService>();
         services.TryAddScoped<IContainerService, ContainerService>();
         services.TryAddScoped<IContainerTypeService, ContainerTypeService>();
         services.TryAddScoped<IPaymentMethodService, PaymentMethodService>();
