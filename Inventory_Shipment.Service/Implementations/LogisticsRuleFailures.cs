@@ -65,6 +65,10 @@ internal static class LogisticsRuleFailures
             // Script 51: the container procedures called for an invoice check its rules first.
             SqlErrors.PurchaseInvoiceCannotTakeContainers => new(ErrorType.Conflict, exception.Message, "CANNOT_TAKE_CONTAINERS"),
             SqlErrors.PurchaseInvoiceTooManyPieces => new(ErrorType.Validation, exception.Message, "TOO_MANY_PIECES"),
+            // (97) the BIVAC Out a BIVAC charge's posting makes, refused with its own words
+            SqlErrors.StockDocumentInsufficientStock => new(ErrorType.Conflict, exception.Message, "INSUFFICIENT_STOCK"),
+            SqlErrors.StockDocumentNotDraft or SqlErrors.StockDocumentMasterInactive
+                => new(ErrorType.Conflict, exception.Message, "INVALID_STATUS"),
             _ => new(ErrorType.Validation, exception.Message, "VALIDATION"),
         };
 

@@ -63,6 +63,7 @@ public static class DependencyInjection
         services.TryAddScoped<IMovementTypeRepository, MovementTypeRepository>();
         services.TryAddScoped<IMovementRepository, MovementRepository>();
         services.TryAddScoped<IContainerChargeRepository, ContainerChargeRepository>();
+        services.TryAddScoped<IBivacCostRepository, BivacCostRepository>();   // (97)
         services.TryAddScoped<IAttachmentTypeRepository, AttachmentTypeRepository>();
 
         return services;

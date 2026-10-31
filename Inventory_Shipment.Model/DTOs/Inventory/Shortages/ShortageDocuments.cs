@@ -66,7 +66,12 @@ public abstract class ShortageFiguresDto
     /// <summary>Sales of the last "months of history" in the warehouse ÷ months. The computed value, never the override.</summary>
     public decimal ExpectedMonthlySalesBase { get; init; }
 
+    /// <summary>(98) The line's own lead time: typed on the line, else the item's history, the item's, the plan's.</summary>
     public decimal LeadTimeMonths { get; init; }
+
+    /// <summary>(98) Where LeadTimeMonths comes from: Manual | History | Item | Plan (null on a line saved before 98).</summary>
+    public string? LeadTimeSource { get; init; }
+
     public decimal ExpectedRequirementBase { get; init; }
     public int ShortageBase { get; init; }
     public decimal? CoverageMonths { get; init; }
@@ -97,6 +102,10 @@ public sealed class ShortageLiveRowDto : ShortageFiguresDto
     public decimal? AverageCost { get; set; }
     public int? LeadTimeDays { get; init; }
 
+    /// <summary>(98) The item's purchase history: order approval to goods receipt over the last 12 months, and its receipts.</summary>
+    public decimal? LeadTimeHistoryMonths { get; init; }
+    public int? LeadTimeReceipts { get; init; }
+
     /// <summary>The default supplier, else the last one the item was bought from — what the supplier filter matches.</summary>
     public int? SupplierId { get; init; }
 
@@ -114,6 +123,9 @@ public sealed class ShortageDocumentLineDto : ShortageFiguresDto
 
     /// <summary>The planner's override of the computed monthly sales; null when the computed value stands.</summary>
     public decimal? ExpectedMonthlySalesManual { get; init; }
+
+    /// <summary>(98) The lead time typed on the line; null when it is worked out (LeadTimeSource).</summary>
+    public decimal? LeadTimeManual { get; init; }
 
     /// <summary>The override when there is one, else the computed value — what every derived figure used.</summary>
     public decimal EffectiveMonthlySales { get; init; }
@@ -285,6 +297,10 @@ public sealed class SaveShortageDocumentLineRequest
 
     [StringLength(300)]
     public string? Notes { get; init; }
+
+    /// <summary>(98) The lead time typed on the line, in months. Null = worked out (history, the item's, the plan's).</summary>
+    [Range(0.1, 60)]
+    public decimal? LeadTimeMonths { get; init; }
 }
 
 public sealed class SaveShortageDocumentRequest

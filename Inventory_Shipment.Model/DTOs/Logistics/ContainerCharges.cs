@@ -261,6 +261,14 @@ public sealed record ContainerChargeDto : ContainerChargeFlags
     /// <summary>Unpaid, Partial or Paid.</summary>
     public string? PaymentStatus { get; init; }
 
+    /* (97) A BIVAC charge: its BIVAC item, and the BIVAC Out its posting made. */
+    public int? BivacItemId { get; init; }
+    public string? BivacItemCode { get; init; }
+    public string? BivacItemName { get; init; }
+    public int? BivacOutDocumentId { get; init; }
+    public string? BivacOutNumber { get; init; }
+    public byte? BivacOutStatus { get; init; }
+
     /// <summary>Every line of the container, with this charge's share (0 when it took none).</summary>
     public IReadOnlyList<ContainerChargeShareDto> Allocations { get; init; } = [];
 
@@ -318,6 +326,13 @@ public sealed class CreateContainerChargeRequest : IValidatableObject
 
     [StringLength(300)]
     public string? Notes { get; init; }
+
+    /// <summary>
+    /// (97) The BIVAC item of a BIVAC / Inspection charge (charge type BIV), required for it and refused for another type:
+    /// each container's charge is then the item's cost at its port, in the base currency (TotalAmount, CurrencyId and
+    /// SplitRule are not used), and posting the charge posts a BIVAC Out of 1 piece from the container's warehouse.
+    /// </summary>
+    public int? BivacItemId { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
@@ -510,4 +525,72 @@ public sealed class ContainerChargeQuery
     public string SortDir { get; init; } = "desc";
     public int Page { get; init; } = 1;
     public int PageSize { get; init; } = 10;
+}
+
+/* ── (97) BIVAC ────────────────────────────────────────────────────────────────────────────── */
+
+/// <summary>An active BIVAC item as Add charge offers it for the chosen containers: its cost at each one's port.</summary>
+public sealed class BivacChargeOptionDto
+{
+    public int ItemId { get; init; }
+    public string ItemCode { get; init; } = string.Empty;
+    public string ItemName { get; init; } = string.Empty;
+    public int Containers { get; init; }
+
+    /// <summary>The containers whose port has a cost for it: all of them, or the charge is refused.</summary>
+    public int Priced { get; init; }
+
+    /// <summary>The sum of the costs (base currency) over the priced containers.</summary>
+    public decimal? TotalBase { get; init; }
+
+    /// <summary>"Dar es Salaam, Beira": the ports with no cost for it.</summary>
+    public string? MissingPorts { get; init; }
+}
+
+/// <summary>The port each container's BIVAC is paid at (port of destination, else final destination, else loading).</summary>
+public sealed class BivacContainerPortDto
+{
+    public int ContainerId { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public int? PortId { get; init; }
+    public string? PortName { get; init; }
+}
+
+/// <summary>The containers a BIVAC charge is about to be typed for (a POST: any number of them).</summary>
+public sealed class BivacChargeOptionsRequest
+{
+    public IReadOnlyList<int> ContainerIds { get; init; } = [];
+}
+
+public sealed class BivacChargeOptionsDto
+{
+    public IReadOnlyList<BivacChargeOptionDto> Items { get; init; } = [];
+    public IReadOnlyList<BivacContainerPortDto> Containers { get; init; } = [];
+}
+
+/// <summary>A BIVAC item's cost at one port (base currency).</summary>
+public sealed class ItemBivacPortCostDto
+{
+    public int PortId { get; init; }
+    public string PortCode { get; init; } = string.Empty;
+    public string PortName { get; init; } = string.Empty;
+    public string? CountryCode { get; init; }
+    public decimal CostBase { get; init; }
+    public DateTime UpdatedAtUtc { get; init; }
+    public string? UpdatedByName { get; init; }
+}
+
+public sealed class ItemBivacPortCostRequest
+{
+    [Range(1, int.MaxValue)]
+    public int PortId { get; init; }
+
+    [Range(0, 9999999999999999.99)]
+    public decimal? CostBase { get; init; }
+}
+
+/// <summary>The whole list: a port left out has no cost.</summary>
+public sealed class SetItemBivacPortCostsRequest
+{
+    public IReadOnlyList<ItemBivacPortCostRequest> Costs { get; init; } = [];
 }

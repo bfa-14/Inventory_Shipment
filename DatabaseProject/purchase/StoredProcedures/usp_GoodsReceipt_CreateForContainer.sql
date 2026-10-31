@@ -1,8 +1,7 @@
-/* ================================================================== 10. Receive goods... on a container, and the Delivery hook */
+/* ================================================================== 5. Receive goods... on a container: only once delivered */
 
--- Re-created (72) from the body of script 64: the container's warehouse becomes "Receive into" only when it is also at
--- the bottom of the tree; otherwise the draft is made without one, as for an inactive warehouse or one of another
--- branch. Nothing is refused: the completion of a Delivery never fails because of its receipts.
+-- Re-created (95) from the body of script 72: + the rule of fn_Container_ReceiveBlock for "Receive goods..." (@Silent =
+-- 0); the Delivery hook (@Silent = 1) runs once the Delivery is completed and is unchanged. Nothing else changes.
 CREATE   PROCEDURE purchase.usp_GoodsReceipt_CreateForContainer
     @ContainerId  INT,
     @DocumentDate DATE         = NULL,
@@ -58,6 +57,15 @@ BEGIN
                 THROW 63009, @Msg, 1;
             END;
             THROW 63010, 'Only a confirmed container that is not received yet can be received.', 1;
+        END
+
+        -- (95) RECEIVE GOODS... ONLY ONCE DELIVERED: a container that travels with movements is received after its
+        -- Delivery is completed (the Delivery drafts it, or Receive goods... after it). One followed by typed dates only
+        -- (no movement) keeps the rule of before. The Delivery hook (@Silent = 1) runs after the completion: delivered.
+        IF @Silent = 0
+        BEGIN
+            SET @Msg = (SELECT b.Reason FROM logistics.fn_Container_ReceiveBlock(@ContainerId) b);
+            IF @Msg IS NOT NULL THROW 63010, @Msg, 1;
         END
 
         -- the received pieces given by the dialog: rows of this container's lines, each once, in a unit of the item

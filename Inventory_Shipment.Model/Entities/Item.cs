@@ -63,6 +63,14 @@ public class Item
     /// <summary>Days between ordering and receiving, for the shortage report's days-of-cover figure.</summary>
     public int? LeadTimeDays { get; set; }
 
+    /// <summary>(98) Months between ordering and receiving (usp_Item_SetLeadTime).</summary>
+    public decimal? LeadTimeMonths { get; set; }
+
+    /// <summary>(98) The lead time of its purchase history, read by usp_Item_Get only.</summary>
+    public decimal? LeadTimeHistoryMonths { get; set; }
+
+    public int? LeadTimeHistoryReceipts { get; set; }
+
     /// <summary>Pieces (base units) that fit in one container, for the shortage plan's container requirement.</summary>
     public int? PcPerContainer { get; set; }
 

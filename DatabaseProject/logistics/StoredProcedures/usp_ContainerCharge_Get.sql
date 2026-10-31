@@ -1,7 +1,6 @@
-/* ================================================================== 7. Container charges: their files say "Other" */
+/* ================================================================== 10. Get */
 
--- Re-created (67) from the body of script 47: + IsOther on the charge's files (the container list's expression: no
--- type, or Other / Other, General / Other).
+-- Re-created (97) from the body of script 67: + the BIVAC item and the BIVAC Out. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
     @Id INT
 AS
@@ -16,8 +15,13 @@ BEGIN
            ch.PostedAtUtc, pu.FullName AS PostedByName, ch.CancelledAtUtc, xu.FullName AS CancelledByName, ch.CancelReason,
            ch.CreatedAtUtc, cu.FullName AS CreatedByName, ch.UpdatedAtUtc, uu.FullName AS UpdatedByName, ch.RowVersion,
            -- (47) supplier payments: posted charges only (NULL otherwise)
-           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus
+           PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           -- (97) a BIVAC charge: its BIVAC item, and the BIVAC Out its posting made
+           ch.BivacItemId, BivacItemCode = bi.ItemCode, BivacItemName = bi.ItemName,
+           ch.BivacOutDocumentId, BivacOutNumber = bo.DocumentNumber, BivacOutStatus = bo.Status
     FROM logistics.ContainerCharges ch
+    LEFT  JOIN inventory.Items bi          ON bi.Id = ch.BivacItemId
+    LEFT  JOIN inventory.StockDocuments bo ON bo.Id = ch.BivacOutDocumentId
     OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
     INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId
     INNER JOIN purchase.ChargeTypes t    ON t.Id = ch.ChargeTypeId

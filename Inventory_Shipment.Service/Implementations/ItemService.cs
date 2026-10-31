@@ -185,6 +185,7 @@ public sealed class ItemService : IItemService
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
             // So do the note and the link (script 87).
             await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
+            await _items.SetLeadTimeAsync(id, item.LeadTimeMonths, userId, cancellationToken);   // (98)
             // And the tracking (script 93): always on a new item, None / no / any length when the request has none.
             var tracking = TrackingOf(request);
             await _items.SetTrackingAsync(id, tracking.Mode, tracking.RequiresExpiry, tracking.SerialLength, userId, cancellationToken);
@@ -222,6 +223,7 @@ public sealed class ItemService : IItemService
             await _items.SetPurchasingAsync(
                 id, item.DefaultSupplierId, item.LeadTimeDays, item.PcPerContainer, item.WeightKg, item.VolumeCbm, userId, cancellationToken);
             await _items.SetNotesAsync(id, item.Note, item.Link, userId, cancellationToken);
+            await _items.SetLeadTimeAsync(id, item.LeadTimeMonths, userId, cancellationToken);   // (98)
             // (93) Only when the request carries trackingMode: a client that does not know the fields changes nothing.
             if (request.TrackingMode is not null)
             {
@@ -554,7 +556,9 @@ public sealed class ItemService : IItemService
         CountryOfOrigin = request.CountryOfOrigin.Trim().ToUpperInvariant(),
         DefaultWarehouseId = request.DefaultWarehouseId,
         DefaultSupplierId = request.DefaultSupplierId,
-        LeadTimeDays = request.LeadTimeDays,
+        // (98) The months win; an older client's days become months (/ 30, to the half month), as script 98 converted them.
+        LeadTimeMonths = LeadTimeMonthsOf(request),
+        LeadTimeDays = LeadTimeMonthsOf(request) is { } months ? (int)Math.Round(months * 30, MidpointRounding.AwayFromZero) : null,
         PcPerContainer = request.PcPerContainer,
         WeightKg = request.WeightKg,
         VolumeCbm = request.VolumeCbm,
@@ -723,4 +727,28 @@ public sealed class ItemService : IItemService
 
         _ => new RuleFailure(ErrorType.Validation, exception.Message, "VALIDATION")
     };
+
+    /// <summary>(98) The request's lead time in months: typed, else its days as months (/ 30, to the half month), else none.</summary>
+    private static decimal? LeadTimeMonthsOf(SaveItemRequest request)
+        => request.LeadTimeMonths is { } months
+            ? Math.Round(months, 1, MidpointRounding.AwayFromZero)
+            : request.LeadTimeDays is { } days
+                ? DaysToMonths(days)
+                : null;
+
+    /// <summary>
+    /// (98, 99) Days as months: to the half month, but a short lead time (under 8 days) to one decimal, at least 0.1 -
+    /// never 0 months for days above 0, which Shortages would read as no lead time of its own.
+    /// </summary>
+    private static decimal DaysToMonths(int days)
+    {
+        if (days <= 0)
+        {
+            return 0m;
+        }
+
+        var halves = Math.Round(days / 30m * 2, MidpointRounding.AwayFromZero) / 2;
+        var months = halves > 0 ? halves : Math.Max(0.1m, Math.Round(days / 30m, 1, MidpointRounding.AwayFromZero));
+        return Math.Min(60m, months);
+    }
 }

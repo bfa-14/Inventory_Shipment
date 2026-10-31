@@ -59,6 +59,9 @@ public interface IItemRepository
     /// (93) inventory.usp_Item_SetTracking - Tracking, Requires expiry date and Serial no. length, written after create /
     /// update like the note (only when one of them changes); throws 56000 (the rules) and 56006 (no such item).
     /// </summary>
+    /// <summary>(98) inventory.usp_Item_SetLeadTime - the lead time in months (the days follow), after create / update.</summary>
+    Task SetLeadTimeAsync(int id, decimal? leadTimeMonths, int? userId, CancellationToken cancellationToken = default);
+
     Task SetTrackingAsync(
         int id, Model.Enums.TrackingMode trackingMode, bool requiresExpiry, int? serialLength, int? userId,
         CancellationToken cancellationToken = default);

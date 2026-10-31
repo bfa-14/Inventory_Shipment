@@ -3,7 +3,7 @@ SET ANSI_NULLS ON;
 GO
 
 /* =====================================================================================
-   Inventory_Shipment - 95: LOGISTICS - THE CONTAINER REPORT (prompt 52)
+   Inventory_Shipment - 100: LOGISTICS - THE CONTAINER REPORT (prompt 52)
 
    Reports › Container Report: every container line and every approved order line still to load, with its order, PI,
    invoices, payments, journey, charges and cost, grouped by where the goods are now - the purchasing team's tracking
@@ -11,7 +11,7 @@ GO
    MOKAMBO", ..., "OFFLOADED IN LUBUMBASHI"), worked out from the system instead of typed.
 
      1. THE PERMISSION containers.report.view "View Container Report" (Containers, 1408), granted ONCE per database
-        (inventory.OneTimeSteps, step 95.ContainerReportGrant) to the system roles and to every role holding View
+        (inventory.OneTimeSteps, step 95.ContainerReportGrant - its name from when this script was numbered 95; kept so a database that already ran it does not grant again) to the system roles and to every role holding View
         Containers. A role unticked later is never granted again.
      2. ONE ROW PER CONTAINER LINE (a cancelled container is left out) AND ONE PER APPROVED ORDER LINE WITH PIECES STILL
         TO LOAD (ordered - loaded on containers not cancelled - received outside containers - settled short, when above
@@ -59,12 +59,12 @@ GO
 IF OBJECT_ID(N'logistics.fn_ContainerLine_FobEstimate', N'IF') IS NULL
    OR OBJECT_ID(N'logistics.fn_ItemPcsPerContainer', N'IF') IS NULL
    OR OBJECT_ID(N'inventory.OneTimeSteps', N'U') IS NULL
-    THROW 70000, 'Script 95 requires scripts 54, 82 and 89: apply them first.', 1;
+    THROW 70000, 'Script 100 requires scripts 54, 82 and 89: apply them first.', 1;
 GO
 
 /* ================================================================== 1. containers.report.view "View Container Report", granted once */
 
--- (95) Granted ONCE per database (step 95.ContainerReportGrant) to the system roles and the roles holding View Containers:
+-- (100) Granted ONCE per database (step 95.ContainerReportGrant) to the system roles and the roles holding View Containers:
 --      the report shows nothing a container's own page does not already show them. The texts are PermissionCatalog.cs's.
 SET XACT_ABORT ON;
 BEGIN TRY
@@ -106,7 +106,7 @@ GO
 
 /* ================================================================== 2. Pieces per container: 1 is "not specified" */
 
--- Re-created (95) from the body of script 54: + A PACKING FORMULA OF 1 MEANS "NOT SPECIFIED" (the owner: a container unit of
+-- Re-created (100) from the body of script 54: + A PACKING FORMULA OF 1 MEANS "NOT SPECIFIED" (the owner: a container unit of
 -- 1 piece is the value nobody typed). NULL then, as for an item without a Container unit, so the fill is unknown, no
 -- over-capacity warning is raised and Auto-plan asks for the Container unit. The PackingFormula of the item's Container unit
 -- (the first by Id), NULL when it has none or a value <= 1. Always one row, so a CROSS APPLY keeps the item.
@@ -436,5 +436,5 @@ BEGIN
 END
 GO
 
-PRINT 'Script 95 applied: the Container Report (containers.report.view), and a packing formula of 1 is "not specified" for capacity.';
+PRINT 'Script 100 applied: the Container Report (containers.report.view), and a packing formula of 1 is "not specified" for capacity.';
 GO

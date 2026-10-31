@@ -27,6 +27,8 @@ CREATE TABLE [inventory].[ShortageDocumentLines] (
     [TotalExpectedStockBase]     AS              ((([CurrentInventoryBase]+[TransitBase])+[TransfersInBase])+[OutstandingOrderBase]) PERSISTED,
     [ShortageBase]               AS              (case when (isnull([ExpectedMonthlySalesManual],[ExpectedMonthlySalesBase])*[LeadTimeMonths]-((([CurrentInventoryBase]+[TransitBase])+[TransfersInBase])+[OutstandingOrderBase]))>(0) then CONVERT([int],ceiling(isnull([ExpectedMonthlySalesManual],[ExpectedMonthlySalesBase])*[LeadTimeMonths]-((([CurrentInventoryBase]+[TransitBase])+[TransfersInBase])+[OutstandingOrderBase]))) else (0) end) PERSISTED,
     [CoverageMonths]             AS              (case when isnull([ExpectedMonthlySalesManual],[ExpectedMonthlySalesBase])>(0) then CONVERT([decimal](9,2),((([CurrentInventoryBase]+[TransitBase])+[TransfersInBase])+[OutstandingOrderBase])/isnull([ExpectedMonthlySalesManual],[ExpectedMonthlySalesBase]))  end) PERSISTED,
+    [LeadTimeManual]             DECIMAL (6, 2)  NULL,
+    [LeadTimeSource]             NVARCHAR (10)   NULL,
     CONSTRAINT [PK_ShortageDocumentLines] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_ShortageDocumentLines_Container] CHECK ([PcPerContainer] IS NULL OR [PcPerContainer]>(0)),
     CONSTRAINT [CK_ShortageDocumentLines_Required] CHECK ([RequiredQty]>=(0)),

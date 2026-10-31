@@ -23,6 +23,7 @@ BEGIN
     SELECT l.Id, l.DocumentId, l.LineNumber, l.ItemId, i.ItemCode, i.ItemName, br.BrandName, f.FamilyName, i.IsBivac,
            l.CurrentInventoryBase, l.TransitBase, l.TransfersInBase, l.OutstandingOrderBase, l.StockPlusTransitBase, l.TotalExpectedStockBase,   -- (90)
            l.ExpectedMonthlySalesBase, l.ExpectedMonthlySalesManual, l.EffectiveMonthlySales, l.LeadTimeMonths,
+           l.LeadTimeManual, l.LeadTimeSource,                                                                 -- (98)
            l.ExpectedRequirementBase, l.ShortageBase, l.CoverageMonths,
            l.PurchaseItemUnitId, ut.UnitTypeName AS PurchaseUnitName, l.PurchasePackingFormula,
            l.RequiredQty, l.RequiredBase, l.PcPerContainer, l.PcPerContainerFromUnit, l.ContainerRequirement,

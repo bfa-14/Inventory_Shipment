@@ -99,6 +99,7 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
         parameters.Add("@AllocationMethod", ContainerChargeMethods.Normalize(request.AllocationMethod), DbType.String, size: 10);
         parameters.Add("@Notes", request.Notes, DbType.String, size: 300);
         parameters.Add("@UserId", userId, DbType.Int32);
+        parameters.Add("@BivacItemId", request.BivacItemId, DbType.Int32);   // (97)
 
         try
         {
@@ -221,6 +222,15 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
     /// say "not found", "found twice", "closed" or "already has this charge" before anything is created. The
     /// keys are compared with the function the movement import uses, so both imports read a number alike.
     /// </summary>
+    public async Task<string?> ReferenceClashAsync(int? providerPartyId, string reference, CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(
+            "SELECT r.Message FROM logistics.fn_ContainerCharge_ReferenceClash(@ProviderPartyId, @Reference, NULL, NULL) r;",
+            new { ProviderPartyId = providerPartyId, Reference = reference },
+            cancellationToken: cancellationToken));
+    }
+
     public async Task<(IReadOnlyList<ContainerChargeImportContainer> Containers, IReadOnlyList<ContainerChargeImportExistingCharge> Charges)>
         FindImportContainersAsync(IReadOnlyCollection<string> numberKeys, CancellationToken cancellationToken = default)
     {

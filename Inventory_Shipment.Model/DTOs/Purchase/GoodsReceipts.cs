@@ -1129,8 +1129,11 @@ public sealed class ReceivableContainerDto
     /// <summary>A movement of the container in progress: posting its receipt is refused until it is completed.</summary>
     public string? MovementInProgressNo { get; init; }
 
-    /// <summary>Status 2–5 and no draft or posted receipt.</summary>
+    /// <summary>Status 2–5, no draft or posted receipt, and (95) delivered (logistics.fn_Container_ReceiveBlock).</summary>
     public bool CanReceive { get; init; }
+
+    /// <summary>(95) Why it cannot be received now ("KTG-2026-0031 has not been delivered yet: …"), null when it can.</summary>
+    public string? ReceiveBlockedReason { get; init; }
 
     /// <summary>Confirmed and never dispatched (status 2): the page warns "has not left the supplier".</summary>
     public bool NotDispatched => Status == 2;

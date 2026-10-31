@@ -45,4 +45,10 @@ public interface IContainerChargeRepository
     /// </summary>
     Task<(IReadOnlyList<ContainerChargeImportContainer> Containers, IReadOnlyList<ContainerChargeImportExistingCharge> Charges)>
         FindImportContainersAsync(IReadOnlyCollection<string> numberKeys, CancellationToken cancellationToken = default);
+
+    /// <summary>
+    /// (96) logistics.fn_ContainerCharge_ReferenceClash: the refusal a new charge with this provider and reference would
+    /// get ("Reference INV-0042 of … is already entered: …"), null when none.
+    /// </summary>
+    Task<string?> ReferenceClashAsync(int? providerPartyId, string reference, CancellationToken cancellationToken = default);
 }

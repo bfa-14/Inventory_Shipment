@@ -1,10 +1,7 @@
-/* ================================================================== 8. The container list: the to-do list */
+/* ================================================================== 3. The Containers list: the journey and the receive rule */
 
--- Re-created (81) from the body of script 80: + the next step of each row (NextStepKind, NextStepBlockedReason) and the
--- @NextStep filter, which works with paging and any number of containers ("Start shipment" Ship, "Start planned leg"
--- StartPlanned, "Arrival due" Complete, "Next leg to plan" NextLeg, "Receive goods" Receive and OpenReceipt), and the
--- proposed next leg (Proposed*). The page is found first (step 1: the same filters and order), then the figures of
--- before are worked out for its rows only (step 2, the same columns), then the proposed leg (step 3).
+-- Re-created (95) from the body of script 81: + @Journey (the list's Journey filter, read in step 1 only when given),
+-- the journey columns, CanReceive by fn_Container_ReceiveBlock and its reason. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
     @ContainerRef        NVARCHAR(30)  = NULL,
@@ -28,7 +25,8 @@ CREATE   PROCEDURE logistics.usp_Container_Search
     @PageNumber          INT           = 1,
     @PageSize            INT           = 10,
     @DeliveredNotReceived BIT          = 0,      -- (65) 1 = delivered (or with a draft receipt) and not received yet
-    @NextStep            NVARCHAR(20)  = NULL    -- (81) Ship | StartPlanned | Complete | NextLeg | Receive (the to-do list)
+    @NextStep            NVARCHAR(20)  = NULL,   -- (81) Ship | StartPlanned | Complete | NextLeg | Receive (the to-do list)
+    @Journey             NVARCHAR(20)  = NULL    -- (95) NotDispatched | OnTheWay | Arrived | Received (fn_Container_Journey)
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -45,6 +43,7 @@ BEGIN
     SET @CommercialInvoiceNo = NULLIF(LTRIM(RTRIM(@CommercialInvoiceNo)), N'');
     SET @BlNo = NULLIF(LTRIM(RTRIM(@BlNo)), N'');
     SET @NextStep = NULLIF(LTRIM(RTRIM(@NextStep)), N'');
+    SET @Journey = NULLIF(LTRIM(RTRIM(@Journey)), N'');
     IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ContainerRef', N'ContainerNo', N'OrderDate', N'DispatchDate', N'Eta', N'Status', N'CreatedAtUtc')
         SET @SortColumn = N'OrderDate';
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
@@ -77,6 +76,7 @@ BEGIN
     OUTER APPLY logistics.fn_Container_ShipState(c.Id) ss
     OUTER APPLY logistics.fn_Container_NextStepKind(c.Id, c.Status, ss.MovementCount, ss.ActiveMovementId, ss.PlannedMovementId,
                                                     NULL, ss.LastMovementId, dl.MovementId, rb.GoodsReceiptStatus) nk
+    OUTER APPLY logistics.fn_Container_Journey(c.Id) jr                 -- (95) read only for @Journey
     WHERE (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
            OR c.BlNo LIKE N'%' + @Search + N'%' OR c.VesselName LIKE N'%' + @Search + N'%'
            OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
@@ -120,6 +120,7 @@ BEGIN
                AND (dl.MovementId IS NOT NULL OR rb.GoodsReceiptStatus = 1)))
       AND (@NextStep IS NULL OR nk.Kind = @NextStep                                     -- (81) the to-do list
            OR (@NextStep = N'Receive' AND nk.Kind = N'OpenReceipt'))
+      AND (@Journey IS NULL OR jr.JourneyStatus = @Journey)                       -- (95)
     ORDER BY Ord
     OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY
     OPTION (RECOMPILE);
@@ -177,7 +178,10 @@ BEGIN
            -- (65) goods receipts
            rb.ReceivedBy, rb.GoodsReceiptId, rb.GoodsReceiptNumber, rb.GoodsReceiptStatus,
            DeliveredDate = dl.EndDate,
-           CanReceive = CAST(CASE WHEN c.Status BETWEEN 2 AND 5 AND rb.GoodsReceiptId IS NULL THEN 1 ELSE 0 END AS BIT),
+           -- (95) Receive goods... only once delivered (fn_Container_ReceiveBlock: one place for the rule and its words)
+           CanReceive = CAST(CASE WHEN rbk.Reason IS NULL THEN 1 ELSE 0 END AS BIT), ReceiveBlockedReason = rbk.Reason,
+           -- (95) the journey: the latest leg's From -> To and whether it is on its way or arrived there
+           jr.JourneyStatus, jr.JourneyFromName, jr.JourneyToName, jr.JourneySince, jr.JourneyMovementNo,
            CloseBlockedReason = cb.Reason,
            -- (80) the shipment (fn_Container_ShipState): where it is, the movement in progress carrying it, its next
            -- planned movement (why it cannot start yet, its earliest start) and its last completed one
@@ -208,6 +212,8 @@ BEGIN
     OUTER APPLY (SELECT b.Reason FROM logistics.fn_Container_CloseBlock(c.Id) b WHERE c.Status = 6) cb  -- (65) why not Close
     CROSS APPLY logistics.fn_Container_ShipState(c.Id) ss       -- (80) the shipment
     LEFT  JOIN #Sb sb                       ON sb.MovementId = ss.PlannedMovementId          -- (81)
+    CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95)
+    CROSS APPLY logistics.fn_Container_Journey(c.Id) jr         -- (95)
     CROSS APPLY logistics.fn_Container_NextStepKind(c.Id, c.Status, ss.MovementCount, ss.ActiveMovementId, ss.PlannedMovementId,
                                                     sb.Reason, ss.LastMovementId, dl.MovementId,
                                                     rb.GoodsReceiptStatus) nk   -- (81) its next step

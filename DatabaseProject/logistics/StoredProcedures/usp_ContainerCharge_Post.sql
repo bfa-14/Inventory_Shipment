@@ -1,16 +1,6 @@
-/* ================================================================== 24. Container charges: the container's status read under lock */
+/* ================================================================== 8. Post */
 
--- Re-created (65) from the body of script 27. A charge posted while its container is being received: goods receipt Post
--- holds the container (UPDLOCK) and re-spreads and freezes the posted charges, then sets the container Offloaded; an
--- update lock does not stop a plain read, so this procedure read "Cleared" and posted the charge as one before the
--- receipt - after the receipt had frozen the others - leaving it neither frozen in the goods' cost nor adjusted after
--- (no CNTCHARGE rows): it entered no cost at all. Now the containers of the charges are read WITH (UPDLOCK, HOLDLOCK),
--- all of them first and in Id order (two postings never cross, and no charge is written before every container is
--- held): during a receipt this posting waits, then sees Offloaded and posts a late charge (usp_ContainerCharge_ApplyCost);
--- the other way round the receipt waits and freezes the posted charge itself. Nothing else changes.
--- Posts one draft (@Id) or several (@Ids, e.g. a whole group) in one transaction.
--- Before the offload: the charge joins the provisional cost of the lines. After the offload: cost adjustment
--- (the part still in stock -> average cost, the part already sold -> COGS).
+-- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge (usp_ContainerCharge_PostBivacOut). Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
     @Id         INT       = NULL,
     @Ids        logistics.tvp_IdList READONLY,
@@ -83,9 +73,19 @@ BEGIN
             EXEC logistics.usp_Container_RecalcCosts @ContainerId;
             IF @After = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @ChargeId, 1, @UserId;
 
+            -- (97) A BIVAC CHARGE TAKES ITS BIVAC OUT OF THE CONTAINER'S WAREHOUSE: 1 piece of its BIVAC item, posted with
+            -- the charge (Inventory > BIVAC Out shows it, Reference No. the container); refused with the BIVAC Out's own
+            -- words (not enough stock, a warehouse the user may not use...), and then nothing of the post is kept.
+            IF EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @ChargeId AND BivacItemId IS NOT NULL AND BivacOutDocumentId IS NULL)
+                EXEC logistics.usp_ContainerCharge_PostBivacOut @ChargeId, @UserId;
+
             INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
             VALUES (@ContainerId, N'Updated', LEFT(N'Charge posted: ' + @Label
-                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END, 500), @UserId);
+                                                   + CASE WHEN @After = 1 THEN N' (after receipt: item costs adjusted)' ELSE N'' END
+                                                   + ISNULL((SELECT N' (BIVAC Out ' + d.DocumentNumber + N')'
+                                                             FROM logistics.ContainerCharges x
+                                                             INNER JOIN inventory.StockDocuments d ON d.Id = x.BivacOutDocumentId
+                                                             WHERE x.Id = @ChargeId), N''), 500), @UserId);
 
             FETCH NEXT FROM posts INTO @ChargeId;
         END
