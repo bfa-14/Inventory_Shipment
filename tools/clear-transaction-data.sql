@@ -51,7 +51,7 @@ FROM (VALUES
     (N'logistics.ContainerAttachments'), (N'logistics.ContainerAudit'), (N'logistics.ContainerChargeAllocations'),
     (N'logistics.ContainerCharges'), (N'logistics.ContainerEvents'), (N'logistics.ContainerFiles'),
     (N'logistics.ContainerInvoices'), (N'logistics.ContainerLines'), (N'logistics.Containers'),
-    (N'logistics.Files'), (N'logistics.MovementContainers'), (N'logistics.Movements'),
+    (N'logistics.Files'), (N'logistics.MovementAudit'), (N'logistics.MovementContainers'), (N'logistics.Movements'),
     -- purchase
     (N'purchase.GoodsReceiptAudit'), (N'purchase.GoodsReceiptCostChanges'), (N'purchase.GoodsReceiptFiles'),
     (N'purchase.GoodsReceiptInvoiceMatches'), (N'purchase.GoodsReceiptLines'), (N'purchase.GoodsReceipts'),
