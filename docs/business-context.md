@@ -132,6 +132,10 @@ each container's port and posts a BIVAC Out of 1 pc (cancelled with the charge);
 months, and Shortages give each line its own lead time - its purchase history (order approval to goods receipt, last
 12 months), else the item's, else the plan's, or typed on the line (glossary, 4.18, 5.2, 5.4, 6.1).*
 
+*Updated on 31 October 2026 for **deduction charges** (script 102): a charge type may be a deduction (DED "Deduction /
+refund"): its amount, typed without a minus, is taken off the cost - spare parts removed from the box and sold apart, a
+refund - on containers and on a local invoice's own charges; never paid, never below zero (4.21).*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -2861,6 +2865,29 @@ Reports › Attachment Report finds the documents attached anywhere in the syste
 6. **Log:** every download is written to `reporting.AttachmentDownloads` (user, time, Selected / All, file count, size, the
    filters or the keys).
 
+### 4.21 Deduction charges **[Implemented – script 102]**
+
+The owner's case: a motorcycle arrives with spare parts in its box; at the main warehouse the parts are taken out and sold
+apart, so the motorcycle must cost less. A **deduction** is a charge that lowers the cost instead of adding to it.
+
+1. **The type says it:** Configuration › Charge Types, switch "Deduction (lowers the cost)" (`IsDeduction`). A deduction
+   is always in the landed cost and never a recoverable tax (68000). Seeded: **DED "Deduction / refund"** (By Item Value).
+   The flag cannot change once charges use the type (68005): their signs were set by it.
+2. **Typed positive, stored negative:** the user types the amount taken off, without a minus ("Amount deducted"); the
+   procedures store `-ABS(amount)` and allocate it negative over the lines (container charges, Apply to other containers,
+   the Excel import, a local invoice's own charges, late charges / LCAs). Zero: "Enter the amount deducted." A negative amount
+   on any other type is refused: "The amount cannot be negative. To lower the cost, choose a deduction charge type
+   (Deduction / refund)."
+3. **Never below zero:** Post refuses a container deduction that would bring a line's FOB × pieces + charges below 0, or,
+   after the goods receipt, an item's average cost below 0 (70013). On an invoice, the deductions together may not exceed
+   the value of its lines. *Not guarded:* a deduction posted before the goods receipt, on a container that then receives
+   fewer pieces, spreads over fewer pieces at the receipt (no check in `usp_GoodsReceipt_Post`).
+4. **Cost:** posted, it lowers the landed cost like any charge (before receipt) or as a late cost adjustment (after:
+   in stock → average cost, sold → COGS). Cancelled, it puts back no more than its posting took out.
+5. **Payments:** a deduction is paid to nobody. Its payment status is **Deduction**, nothing outstanding; supplier payments
+   never offer it. The lists show it in red, with a minus.
+6. **Who:** the same permissions as any container charge (Create / Post / Cancel Container Charges) or invoice charge.
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -3001,6 +3028,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `99_Inventory_LeadTimeShortDays.sql` | A short lead time is never converted to 0 months (prompt 52): the items script 98 converted to 0 months while their days are above 0 get the days in months to one decimal, at least 0.1; run at every start, it finds nothing a second time |
 | `100_Logistics_ContainerReport.sql` | The Container Report (prompt 52): the permission `containers.report.view` "View Container Report" (Containers, 1408) upserted and granted once per database (`inventory.OneTimeSteps` step `95.ContainerReportGrant`) to the system roles and the roles holding View Containers; new `logistics.usp_ContainerReport` (three result sets: the rows, their charges per type, the charge types; set-based over the rows, their legs read once); re-created `logistics.fn_ItemPcsPerContainer` (from 54): a packing formula of 1 is "not specified" (NULL), so capacity is not judged for it. Requires scripts 54, 82 and 89 |
 | `101_Reporting_AttachmentReport.sql` | The Attachment Report: the permission `reports.attachments.view` (Reports, 1500); `reporting.fn_Attachments` over the ten file tables; `usp_AttachmentReport_List` / `_Files` / `_Content` / `_LogDownload`; table `reporting.AttachmentDownloads`; covering indexes on each file table (4.20) |
+| `102_Purchase_DeductionCharges.sql` | Deduction charges: `purchase.ChargeTypes.IsDeduction` (+ check: a deduction is in the landed cost, never a recoverable tax), the seed DED "Deduction / refund"; the positive-amount checks on container and purchase charges dropped; a deduction type stores its charges negative (container charges, copies, invoice-own charges, LCAs), refused at Post when a line would cost below 0; a cancel puts back no more than its posting took out; `fn_ContainerChargeSettlement` answers 'Deduction', nothing outstanding (4.21) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

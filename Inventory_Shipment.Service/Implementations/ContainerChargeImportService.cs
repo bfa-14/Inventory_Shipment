@@ -787,7 +787,8 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
         }
 
         var same = lookups.ChargesByContainer[container.ContainerId].FirstOrDefault(c =>
-            c.ChargeTypeId == type.Id && c.Amount == amount && c.CurrencyId == currencyId
+            // A deduction is stored negative (script 102) and typed positive: compare the sizes.
+            c.ChargeTypeId == type.Id && Math.Abs(c.Amount) == amount && c.CurrencyId == currencyId
             && DateOnly.FromDateTime(c.ChargeDate) == date
             && string.Equals(c.Reference?.Trim() ?? string.Empty, v.Reference?.Trim() ?? string.Empty, StringComparison.OrdinalIgnoreCase));
         if (same is not null)

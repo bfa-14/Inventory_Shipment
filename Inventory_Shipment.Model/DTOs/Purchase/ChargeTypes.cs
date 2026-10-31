@@ -44,6 +44,9 @@ public sealed class ChargeTypeDto
     /// <summary>A recoverable VAT is claimed back, so it is never part of the cost — the two flags cannot both be true.</summary>
     public bool IsRecoverableTax { get; init; }
 
+    /// <summary>(102) Lowers the cost instead of adding to it: its charges are stored negative (spare parts taken out, a refund).</summary>
+    public bool IsDeduction { get; init; }
+
     public string? Description { get; init; }
     public bool IsActive { get; init; }
 
@@ -67,6 +70,9 @@ public sealed class ChargeTypeLookupDto
     public bool IncludeInLandedCost { get; init; }
     public bool IsRecoverableTax { get; init; }
     public bool IsActive { get; init; }
+
+    /// <summary>(102) A deduction: what is typed on a charge of this type is taken off the cost.</summary>
+    public bool IsDeduction { get; init; }
 }
 
 public sealed class ChargeTypeQuery
@@ -103,6 +109,9 @@ public sealed class SaveChargeTypeRequest : IValidatableObject
     public bool IncludeInLandedCost { get; init; } = true;
     public bool IsRecoverableTax { get; init; }
 
+    /// <summary>(102) A deduction type; null keeps what the type has (false on a new one). It cannot change once the type is used.</summary>
+    public bool? IsDeduction { get; init; }
+
     [StringLength(500)]
     public string? Description { get; init; }
 
@@ -128,6 +137,12 @@ public sealed class SaveChargeTypeRequest : IValidatableObject
         {
             yield return new ValidationResult(
                 "A recoverable tax cannot be included in the landed cost.", [nameof(IncludeInLandedCost), nameof(IsRecoverableTax)]);
+        }
+
+        if (IsDeduction == true && (!IncludeInLandedCost || IsRecoverableTax))
+        {
+            yield return new ValidationResult(
+                "A deduction lowers the landed cost: tick Include in landed cost and leave Recoverable tax off.", [nameof(IsDeduction)]);
         }
     }
 }

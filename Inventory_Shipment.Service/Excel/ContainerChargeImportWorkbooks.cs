@@ -316,6 +316,7 @@ public sealed class ContainerChargeImportWorkbooks
                 "The code or the name of an active charge type (sheet Lists). It decides whether the charge enters the landed cost, and its default allocation."),
             (ContainerChargeImportParser.ColumnAmount, "Required",
                 "The amount for THIS container, in the row's currency, greater than zero. It is rounded to the cent. "
+                + "On a deduction charge type (Deduction / refund) type the amount taken off, without a minus: the charge lowers the cost. "
                 + "Typed as text, the decimals take a point and commas only group thousands (2,100.50): 2100,50 is refused, not read as 210050."),
             (ContainerChargeImportParser.ColumnCurrency, "Optional",
                 $"A currency code (sheet Lists). Blank is the base currency ({baseCode})."),
