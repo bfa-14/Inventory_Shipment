@@ -122,7 +122,7 @@ saved without a cost takes the item's last cost, else its average (it took 0, al
 and for an import row without one), and a goods receipt line without an order the same; a line's cost follows a change of
 its unit (glossary, 1.6, 3.3, 3.8, 4.9, 4.11, 4.12, 4.13, 4.17, 5.2, 5.4, 6.1, 8.5; `docs/notes/costing-rules.md`).*
 
-*Updated on 30 October 2026 for **the container's journey, BIVAC charges and lead times** (scripts 95-98, prompt 52):
+*Updated on 30 October 2026 for **the container's journey, BIVAC charges and lead times** (scripts 95-99, prompt 52):
 the Containers list shows each container's leg (From → To, from its movements) and a Journey status (Not dispatched,
 On the way, Arrived, Received) with its filter; Receive goods… on a container that has movements waits until its
 Delivery is completed, and an order's or an invoice's Receive goods… is hidden when everything still to receive
@@ -2762,7 +2762,9 @@ line; every other permission and grant. No table, column, type, view or error nu
 **Lead time per item (script 98)**
 8. **Item Definition's lead time is in months** (`inventory.Items.LeadTimeMonths`, one decimal, 0 to 60). The days typed
    before were converted once per database (`98.LeadTimeMonths` in `inventory.OneTimeSteps`: days ÷ 30, to the half
-   month); LeadTimeDays stays = months × 30. An older client that sends only days gets them as months.
+   month); a lead time under 8 days, which that rounds to 0, gets its months to one decimal instead, at least 0.1 (7
+   days → 0.2; script 99); LeadTimeDays stays = months × 30. An older client that sends only days gets them as months,
+   by the same rule.
 9. **The lead time of the history** (`inventory.fn_Item_LeadTimeHistory`): over the goods receipts posted in the last 12
    months whose lines come from a purchase order, the time from the order's approval (its posting) to the receipt's
    posting, weighted by the pieces, in months of 30 days (at least 0.1). Item Definition shows it under the field.
@@ -2909,6 +2911,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `96_Logistics_ChargeReferenceUnique.sql` | A provider's invoice once (prompt 52): index `IX_ContainerCharges_Reference`, new `logistics.fn_ContainerCharge_ReferenceClash`; `usp_ContainerCharge_Create` / `_Update` re-created from 27 with the check under an application lock (70001); Check 96a lists the duplicates already there |
 | `97_Logistics_BivacChargeAndPortCosts.sql` | BIVAC cost per port and the BIVAC charge (prompt 52): new table `inventory.ItemBivacPortCosts`, type `inventory.tvp_ItemPortCost`, columns `ContainerCharges.BivacItemId` / `BivacOutDocumentId`; functions `fn_Container_BivacPort`, `fn_Container_BivacCost`, `fn_ContainerCharge_BivacBlock`; procedures `inventory.usp_Item_BivacPortCosts_Get`, `usp_Item_SetBivacPortCosts`, `logistics.usp_ContainerCharge_BivacOptions`, `_PostBivacOut`; re-created `usp_ContainerCharge_Create` / `_Update` (from 96), `_Post` / `_Cancel` (from 65), `_Get` (from 67), `_CopyToContainers` (from 28), `inventory.usp_StockDocument_Cancel` (from 90) |
 | `98_Inventory_LeadTimePerItem.sql` | Lead time per item (prompt 52): `inventory.Items.LeadTimeMonths` (days converted once, step `98.LeadTimeMonths`), `ShortageDocumentLines.LeadTimeManual` / `LeadTimeSource`, type `inventory.tvp_ShortageLeadTime`; new `inventory.fn_Item_LeadTimeHistory`, `fn_Item_LeadTime`, `usp_Item_SetLeadTime`; re-created `usp_Item_Get` (from 93), `usp_Shortage_Calculate`, `usp_ShortageDocument_WriteLines` and `_Get` (from 90), `_Save` and `_Recalculate` (from 25) |
+| `99_Inventory_LeadTimeShortDays.sql` | A short lead time is never converted to 0 months (prompt 52): the items script 98 converted to 0 months while their days are above 0 get the days in months to one decimal, at least 0.1; run at every start, it finds nothing a second time |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

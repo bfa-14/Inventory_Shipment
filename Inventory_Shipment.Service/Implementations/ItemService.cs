@@ -733,6 +733,22 @@ public sealed class ItemService : IItemService
         => request.LeadTimeMonths is { } months
             ? Math.Round(months, 1, MidpointRounding.AwayFromZero)
             : request.LeadTimeDays is { } days
-                ? Math.Min(60m, Math.Round(days / 30m * 2, MidpointRounding.AwayFromZero) / 2)
+                ? DaysToMonths(days)
                 : null;
+
+    /// <summary>
+    /// (98, 99) Days as months: to the half month, but a short lead time (under 8 days) to one decimal, at least 0.1 -
+    /// never 0 months for days above 0, which Shortages would read as no lead time of its own.
+    /// </summary>
+    private static decimal DaysToMonths(int days)
+    {
+        if (days <= 0)
+        {
+            return 0m;
+        }
+
+        var halves = Math.Round(days / 30m * 2, MidpointRounding.AwayFromZero) / 2;
+        var months = halves > 0 ? halves : Math.Max(0.1m, Math.Round(days / 30m, 1, MidpointRounding.AwayFromZero));
+        return Math.Min(60m, months);
+    }
 }
