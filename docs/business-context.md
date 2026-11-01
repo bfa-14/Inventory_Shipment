@@ -136,6 +136,11 @@ months, and Shortages give each line its own lead time - its purchase history (o
 refund"): its amount, typed without a minus, is taken off the cost - spare parts removed from the box and sold apart, a
 refund - on containers and on a local invoice's own charges; never paid, never below zero (4.21).*
 
+*Updated on 1 November 2026 for **the Item Balance Report by Warehouse** (script 103): Reports › Item Balance by
+Warehouse gives each item in each warehouse its opening, one column per kind of movement and its closing over a period,
+at the company's average cost replayed from the ledger, translated into any currency, with a drill-down, Excel and print /
+PDF; its own permission, View Item Balance Report (3.1, 4.22).*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -401,7 +406,8 @@ without seeing costs, and View Stock Valuation for those who must see no value a
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
 - **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 100: every container and order still
-  to load, by stage; View Container Report), **Attachment Report** (script 101: every attachment by type and date,
+  to load, by stage; View Container Report), **Item Balance by Warehouse** (script 103: each item's opening,
+  movements and closing per warehouse over a period; View Item Balance Report), **Attachment Report** (script 101: every attachment by type and date,
   downloaded one, several or all as a ZIP; View Attachment Report), Customer Statement, Out-of-Stock Sales
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
 - **Sales:** Sales Invoices, Sales Profit, Receipts, Customer Statement, Out-of-Stock Sales
@@ -2888,6 +2894,56 @@ apart, so the motorcycle must cost less. A **deduction** is a charge that lowers
    never offer it. The lists show it in red, with a minus.
 6. **Who:** the same permissions as any container charge (Create / Post / Cancel Container Charges) or invoice charge.
 
+### 4.22 The Item Balance Report by Warehouse **[Implemented – script 103]**
+
+Reports › Item Balance by Warehouse, for month-end: stock quantities and values checked, reconciled with the books.
+
+1. **Rows:** an item in a warehouse, when it has an opening or a movement up to Date To. A warehouse under another one is
+   shown as a **location** of the warehouse at the top of its tree, on its own row, never rolled up. The On the way
+   warehouses of transfers are rows too (badge "On the way"). Quantities in the item's base unit, **signed** (out is negative).
+2. **Columns:** item code, name, UoM, warehouse, location; Opening (Qty, Amount); one group per kind of movement with
+   activity - Purchase receipt (goods receipts, and the container offloads and local invoices that received goods before them), Purchase return, Sales
+   delivery, Sales return, Transfer in / out (both legs of TRD and TRR), Transfer loss, Inventory In / Out, BIVAC Out, and
+   Cost adjustments (an amount only: landed cost adjustments, late container charges, invoice true-ups); Total in, Total out;
+   Average cost change; Translation difference (another currency, when not zero); Closing (Qty, Amount, Unit cost).
+   There is no production, scrap or stock count in the system, so no such columns.
+3. **The cost is the system's** (the owner's choice, against the story's per-warehouse average): ONE weighted average per item
+   for the whole company, **replayed from the ledger at every run** exactly as `inventory.usp_Item_RebuildCosts` does it -
+   a receipt at its cost, every issue and both legs of a transfer at the average then, a cost adjustment spread over the
+   stock on hand, the average kept while the stock is at or below zero and set by the first receipt that brings it back.
+   No period-end snapshot. Opening = the quantity at the average of Date From; Closing = the quantity at the average of
+   Date To, so the closings of every warehouse add up to the company's stock value. **Average cost change** is the rest
+   (receipts into other warehouses, cost adjustments): what makes each row add up. Measured on the local database: the
+   closings equal a fresh rebuild of the averages to two cents; the stored `Items.AverageCost` (what Stock Valuation reads)
+   can drift from that replay until the rebuild runs (up to 240 USD on one item locally).
+4. **Only posted documents:** a cancelled or reversed document is left out, its posting and its reversal both, as the
+   rebuild leaves them out. **Integrity check:** each row's opening + movements must give the ledger's own quantity on Date
+   To (every row counted); a row that does not is flagged orange and counted above the table and in the footer.
+   **Negative stock** is shown, red, and in the totals.
+5. **Currency** (period-end translation, any rate type: Official by default): the opening at the rate in force on Date From
+   − 1, each movement at its day's rate, the closing and the average cost change at Date To's; the translation difference
+   is the rest. Refused without a rate on or before Date From − 1 ("No Official rate for CDF on or before 31/12/2025 ...").
+   The header says the currency, the rate type and the rates used with their dates.
+6. **Filters:** warehouses (none = all the reader's; a parent takes those under it), Date From (first of the month) and
+   Date To (today), both required and inclusive, currency (base), rate type, items and item families (added together; a
+   family takes its sub-families), Show zero-balance items (off), Hide empty transaction columns (on). The filters live in
+   the address; "Run report" applies them.
+7. **The grid:** column chooser, sort, a filter per column, a search box (item, family, warehouse, location) and
+   Group by with subtotals; **grouped by Location** (the warehouse the stock is in) to start, and no Warehouse column
+   on screen (print and Excel keep it). **Drill-down:** a movement figure opens a drawer with its documents (date,
+   number, kind, qty, unit cost, amount), each linked to its page when the reader may open it.
+8. **Export:** Excel (the API, ClosedXML) and Print / PDF (a print page: the browser's Save as PDF), both with the same rows,
+   columns and totals as the screen, and a header with the warehouses, dates, currency, rate dates, run date and user.
+   Rounding is for display: totals are sums of the unrounded values, and a column whose rounded rows differ from its
+   rounded total is named in the footer.
+9. **Who:** `reports.itembalance.view` "View Item Balance Report" (Reports, 1510; the system roles at start-up, others
+   in Role Permissions). The amounts need **View item costs** (4.17): without it the report shows quantities only.
+   **Warehouses:** unlike every other report (4.15), this one offers a restricted user only their own warehouses (no On the
+   way warehouse) and refuses another (50010) - the story asks for it.
+10. **Run log:** `reporting.ItemBalanceReportRuns`: who, when, Screen / Excel / Print, the filters as JSON, the rows and the
+    time it took. *Performance:* every run reads the items' whole ledger; the target for 12 months over 50,000 items and
+    20 warehouses is still to be set (the local database answers in under 0.6 s).
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -3029,6 +3085,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `100_Logistics_ContainerReport.sql` | The Container Report (prompt 52): the permission `containers.report.view` "View Container Report" (Containers, 1408) upserted and granted once per database (`inventory.OneTimeSteps` step `95.ContainerReportGrant`) to the system roles and the roles holding View Containers; new `logistics.usp_ContainerReport` (three result sets: the rows, their charges per type, the charge types; set-based over the rows, their legs read once); re-created `logistics.fn_ItemPcsPerContainer` (from 54): a packing formula of 1 is "not specified" (NULL), so capacity is not judged for it. Requires scripts 54, 82 and 89 |
 | `101_Reporting_AttachmentReport.sql` | The Attachment Report: the permission `reports.attachments.view` (Reports, 1500); `reporting.fn_Attachments` over the ten file tables; `usp_AttachmentReport_List` / `_Files` / `_Content` / `_LogDownload`; table `reporting.AttachmentDownloads`; covering indexes on each file table (4.20) |
 | `102_Purchase_DeductionCharges.sql` | Deduction charges: `purchase.ChargeTypes.IsDeduction` (+ check: a deduction is in the landed cost, never a recoverable tax), the seed DED "Deduction / refund"; the positive-amount checks on container and purchase charges dropped; a deduction type stores its charges negative (container charges, copies, invoice-own charges, LCAs), refused at Post when a line would cost below 0; a cancel puts back no more than its posting took out; `fn_ContainerChargeSettlement` answers 'Deduction', nothing outstanding (4.21) |
+| `103_Reporting_ItemBalanceReport.sql` | The Item Balance Report: permission `reports.itembalance.view`, `reporting.ItemBalanceReportRuns` (the run log), `usp_ItemBalance_Warehouses` (the reader's warehouses), `usp_ItemBalance_Data` (items, warehouses with their top warehouse, the events oldest first without cancelled documents, the ledger's quantity), `usp_ItemBalance_Rates`, `usp_ItemBalance_LogRun`; the average is replayed by the API (4.22) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

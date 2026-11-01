@@ -360,6 +360,12 @@ public static class Permissions
     public static class Reports
     {
         public const string AttachmentsView = "reports.attachments.view";
+
+        /// <summary>
+        /// Reports › Item Balance Report (script 103): each item's opening, movements and closing per warehouse over a
+        /// period. Its amounts also need <see cref="Inventory.CostsView"/>; its warehouses are the reader's own (script 92).
+        /// </summary>
+        public const string ItemBalanceView = "reports.itembalance.view";
     }
 
     private const string ReportsModule = "Reports";
@@ -681,6 +687,8 @@ public static class Permissions
         // Name, description and sort order match script 101's MERGE, so the start-up sync changes nothing.
         new(Reports.AttachmentsView, "View Attachment Report", ReportsModule,
             "Reports › Attachment Report: find attachments by type and date and download them; each reader sees only the files of documents they may open.", 1500),
+        new(Reports.ItemBalanceView, "View Item Balance Report", ReportsModule,
+            "Reports › Item Balance Report: opening, movements and closing of each item per warehouse over a period; the amounts also need View item costs.", 1510),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,
