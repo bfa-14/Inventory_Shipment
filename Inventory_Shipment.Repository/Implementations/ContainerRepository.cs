@@ -242,7 +242,7 @@ public sealed class ContainerRepository : IContainerRepository
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
         parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
-        parameters.Add("@ContainerNo", request.ContainerNo, DbType.String, size: 20);
+        parameters.Add("@ContainerNo", request.ContainerNo, DbType.String, size: 30);
         parameters.Add("@ContainerTypeId", request.ContainerTypeId, DbType.Int32);
         parameters.Add("@SealNo", request.SealNo, DbType.String, size: 30);
         parameters.Add("@CustomsSealNo", request.CustomsSealNo, DbType.String, size: 30);

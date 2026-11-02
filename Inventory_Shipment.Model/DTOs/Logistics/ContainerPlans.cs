@@ -259,7 +259,7 @@ public sealed class ContainerNumberRequest
 {
     public int ContainerId { get; init; }
 
-    /// <summary>Always sent: empty clears it. Trimmed, upper-cased by the procedure, at most 20 characters.</summary>
+    /// <summary>Always sent: empty clears it. Trimmed, upper-cased by the procedure, at most 30 characters.</summary>
     public string? ContainerNo { get; init; }
 
     /// <summary>Always sent: empty clears it. Trimmed, at most 30 characters.</summary>

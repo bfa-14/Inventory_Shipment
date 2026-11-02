@@ -141,6 +141,10 @@ Warehouse gives each item in each warehouse its opening, one column per kind of 
 at the company's average cost replayed from the ledger, translated into any currency, with a drill-down, Excel and print /
 PDF; its own permission, View Item Balance Report (3.1, 4.22).*
 
+*Updated on 2 November 2026 for **a container no. of up to 30 characters** (script 104): a container that travelled as
+two boxes under one ref keeps both numbers, comma delimited ("MRSU8190808 , CAAU9368456"); still unique among the open
+containers, compared as a whole (glossary).*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -321,7 +325,7 @@ without seeing costs, and View Stock Valuation for those who must see no value a
 | **COGS** | Cost of goods sold. Sales take stock out at average cost. |
 | **Average cost** | Weighted average cost per item, updated at every receipt and cost adjustment. Items also keep **last cost** and **FOB cost**. |
 | **Container** | A shipping container, created **from a purchase order**. App reference `KTG-2026-0031` (document type CNT: prefix KTG, year, 4-digit number). |
-| **Container No.** | The real box number: 4 letters + 7 digits, for example `MSKU1234565`. Typed when the forwarder sends the list. Unique among open containers (69013). |
+| **Container No.** | The real box number: 4 letters + 7 digits, for example `MSKU1234565`. Typed when the forwarder sends the list. Unique among open containers (69013). Up to 30 characters (script 104), so a container that travelled as two boxes under one ref keeps both, comma delimited: `MRSU8190808 , CAAU9368456`. |
 | **Seal No.** | The number of the seal closing the doors. |
 | **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is no longer used (script 54, prompt 46): capacity comes from the item's Container unit. |
 | **Container unit** | In Item Definition › units: the unit whose unit type is a container unit (`masterdata.UnitTypes.IsContainer = 1`). Its packing formula is the pieces of this item per container (for example 84). **The only source of container capacity** (prompt 46). |

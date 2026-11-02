@@ -155,7 +155,7 @@ public sealed class AddInvoiceContainerRequest
     [Range(0, 9999999.99)]
     public decimal? OilQtyPerUnit { get; init; }
 
-    [StringLength(20)]
+    [StringLength(30)]
     public string? ContainerNo { get; init; }
 
     [Range(1, int.MaxValue)]

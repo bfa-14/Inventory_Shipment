@@ -1136,7 +1136,7 @@ public sealed class SaveContainerRequest
     /// <summary>Required when creating: a container is created from an approved purchase order. Ignored on an update.</summary>
     public int? PurchaseOrderId { get; init; }
 
-    [StringLength(20)]
+    [StringLength(30)]
     public string? ContainerNo { get; init; }
 
     [Range(1, int.MaxValue)]

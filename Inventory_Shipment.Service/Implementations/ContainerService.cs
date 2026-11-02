@@ -611,9 +611,9 @@ public sealed class ContainerService : IContainerService
             })
             .ToList();
 
-        if (items.FirstOrDefault(i => i.ContainerNo is { Length: > 20 }) is { } longNo)
+        if (items.FirstOrDefault(i => i.ContainerNo is { Length: > 30 }) is { } longNo)
         {
-            return NumbersInvalid($"Container number {longNo.ContainerNo} is longer than 20 characters.");
+            return NumbersInvalid($"Container number {longNo.ContainerNo} is longer than 30 characters.");
         }
 
         if (items.FirstOrDefault(i => i.SealNo is { Length: > 30 }) is { } longSeal)
