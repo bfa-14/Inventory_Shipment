@@ -145,6 +145,11 @@ PDF; its own permission, View Item Balance Report (3.1, 4.22).*
 two boxes under one ref keeps both numbers, comma delimited ("MRSU8190808 , CAAU9368456"); still unique among the open
 containers, compared as a whole (glossary).*
 
+*Updated on 4 November 2026 for **the Container Charges report** (script 105): Reports › Container Charges lists the
+containers offloaded or dispatched in a period (one date basis, a radio button) and, per charge type chosen, whether the
+charge is entered, its amount, what is paid and the payment status; its own permission, View Container Charges Report
+(3.1, 4.23).*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -410,7 +415,8 @@ without seeing costs, and View Stock Valuation for those who must see no value a
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
 - **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 100: every container and order still
-  to load, by stage; View Container Report), **Item Balance by Warehouse** (script 103: each item's opening,
+  to load, by stage; View Container Report), **Container Charges** (script 105: each container of a period with each
+  charge type entered or missing, its amount and its payments; View Container Charges Report), **Item Balance by Warehouse** (script 103: each item's opening,
   movements and closing per warehouse over a period; View Item Balance Report), **Attachment Report** (script 101: every attachment by type and date,
   downloaded one, several or all as a ZIP; View Attachment Report), Customer Statement, Out-of-Stock Sales
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
@@ -2948,6 +2954,32 @@ Reports › Item Balance by Warehouse, for month-end: stock quantities and value
     time it took. *Performance:* every run reads the items' whole ledger; the target for 12 months over 50,000 items and
     20 warehouses is still to be set (the local database answers in under 0.6 s).
 
+### 4.23 The Container Charges report **[Implemented – script 105]**
+
+The logistics team's "charge per CONTAINER" sheet (# / container ref / container number / items / final destination /
+current location / amount / paid), worked out by the system (`reporting.usp_ContainerChargeReport`,
+`GET api/reports/container-charges`, `/export`, `/options`).
+
+1. **Criteria:** one or more **charge types** (required, in the order chosen: each adds a group of columns), **one date
+   basis** - Offload date (received: Offloaded or Closed, `OffloadedDate`) or Dispatched date (`DispatchDate`, the first
+   start of its Sea leg, or typed) - with Date from / Date to (inclusive; empty = no bound), Charge entered (All / A charge
+   missing / Every charge entered), Payment (All / Paid / Partly paid / Unpaid), Supplier (of its order lines), and a
+   container ref, container no. or B/L. Cancelled containers are left out.
+2. **Columns:** #, Container ref., Container number, Items ("HLX125 ×180"), Final destination and Current location (the
+   Container Report's words and order, 4.19), Dispatched, Offloaded (Pcs, Supplier, Order, B/L in the column chooser);
+   per charge type **Status** (Entered: one posted at least; Draft: only drafts; Missing: none), **Amount** (every Draft and
+   Posted charge of the type added up, base currency; a charge in another currency shows it on hover), **Paid** (posted
+   payments' live allocations) and **Payment** (Paid when every charge is covered in its own currency, Partly paid,
+   Unpaid; a deduction is Not payable, 4.21); with two types or more, All charges Amount / Paid / Balance.
+3. **Summary:** Containers (COUNT), With a charge missing, Total, Paid, Balance, and per type entered / draft / missing.
+   The grid starts grouped by current location, a row with a missing type is red, the ref. opens a drawer with each
+   charge (date, reference, provider, currency, status) and its payments (number, date, amount).
+4. **Excel:** the sheet's layout - "Charge per container", the count and the total, two header rows (the type over its
+   four columns), rows grouped by current location, the missing ones red, totals at the bottom.
+5. **Who:** `reports.containercharges.view` "View Container Charges Report" (Reports, 1520; the system roles at start-up,
+   others in Role Permissions). The payment columns need **View Supplier Payments**: the server sends them empty to others
+   and ignores the Payment filter.
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -3090,6 +3122,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `101_Reporting_AttachmentReport.sql` | The Attachment Report: the permission `reports.attachments.view` (Reports, 1500); `reporting.fn_Attachments` over the ten file tables; `usp_AttachmentReport_List` / `_Files` / `_Content` / `_LogDownload`; table `reporting.AttachmentDownloads`; covering indexes on each file table (4.20) |
 | `102_Purchase_DeductionCharges.sql` | Deduction charges: `purchase.ChargeTypes.IsDeduction` (+ check: a deduction is in the landed cost, never a recoverable tax), the seed DED "Deduction / refund"; the positive-amount checks on container and purchase charges dropped; a deduction type stores its charges negative (container charges, copies, invoice-own charges, LCAs), refused at Post when a line would cost below 0; a cancel puts back no more than its posting took out; `fn_ContainerChargeSettlement` answers 'Deduction', nothing outstanding (4.21) |
 | `103_Reporting_ItemBalanceReport.sql` | The Item Balance Report: permission `reports.itembalance.view`, `reporting.ItemBalanceReportRuns` (the run log), `usp_ItemBalance_Warehouses` (the reader's warehouses), `usp_ItemBalance_Data` (items, warehouses with their top warehouse, the events oldest first without cancelled documents, the ledger's quantity), `usp_ItemBalance_Rates`, `usp_ItemBalance_LogRun`; the average is replayed by the API (4.22) |
+| `105_Reporting_ContainerChargesReport.sql` | The Container Charges report: permission `reports.containercharges.view` (Reports, 1520); `reporting.usp_ContainerChargeReport` (the containers of a period by offload or dispatch date with their items, final destination and current location as script 100, every Draft / Posted charge of the types asked with its posted payments, the types asked); the service adds them up per container and type (4.23) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
