@@ -60,6 +60,24 @@ public static class ContainerJourney
         => All.FirstOrDefault(v => string.Equals(v, value?.Trim(), StringComparison.OrdinalIgnoreCase));
 }
 
+/// <summary>
+/// (108) What the posted supplier invoices of a container's goods are paid (purchase.fn_Container_PaymentStatus), and the
+/// list's Payment filter. Unpaid / Partial / Paid are the purchase invoice list's words (script 107).
+/// </summary>
+public static class ContainerPaymentStatus
+{
+    public const string Unpaid = "Unpaid";
+    public const string Partial = "Partial";
+    public const string Paid = "Paid";
+    public const string NotInvoiced = "NotInvoiced";
+
+    public static readonly IReadOnlyList<string> All = [Unpaid, Partial, Paid, NotInvoiced];
+
+    /// <summary>The canonical spelling of a filter value, null when it is none of them.</summary>
+    public static string? Normalize(string? value)
+        => All.FirstOrDefault(v => string.Equals(v, value?.Trim(), StringComparison.OrdinalIgnoreCase));
+}
+
 public static class ShippingMethods
 {
     public static readonly string[] All = ["Sea", "Air", "Road"];
@@ -448,6 +466,16 @@ public record ContainerListDto : ContainerStatusFlags
            && last.Date < (DeliveredDate?.Date ?? DateTime.UtcNow.Date);
 
     protected override bool FullyInvoiced => InvoicingStatus == ContainerInvoicingStatus.Fully;
+
+    /// <summary>
+    /// (108) What the posted supplier invoices of its goods are paid (<see cref="ContainerPaymentStatus"/>): Unpaid,
+    /// Partial, Paid or NotInvoiced. Null, with the two amounts, without View Supplier Payments.
+    /// </summary>
+    public string? PaymentStatus { get; init; }
+
+    /// <summary>(108) Its share of those invoices and what is paid of it, in the base currency.</summary>
+    public decimal? InvoicedAmountBase { get; init; }
+    public decimal? PaidAmountBase { get; init; }
 }
 
 /// <summary>
@@ -1340,6 +1368,12 @@ public sealed class ContainerQuery
 
     /// <summary>(95) NotDispatched, OnTheWay, Arrived or Received (<see cref="ContainerJourney"/>).</summary>
     public string? Journey { get; init; }
+
+    /// <summary>
+    /// (108) Unpaid, Partial, Paid or NotInvoiced (<see cref="ContainerPaymentStatus"/>). Needs View Supplier Payments: the
+    /// service clears it for anybody else.
+    /// </summary>
+    public string? PaymentStatus { get; set; }
 
     public string SortBy { get; init; } = "OrderDate";
     public string SortDir { get; init; } = "desc";

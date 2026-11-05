@@ -64,6 +64,23 @@ public sealed class ContainerReportRowDto
     public bool FobIsEstimate { get; init; }
     public decimal? OilQtyPerUnit { get; init; }
 
+    /// <summary>(106) The container line's "oil included" and its oil quantity (null when none is typed).</summary>
+    public bool? OilIncluded { get; init; }
+    public decimal? TotalOilQty { get; init; }
+
+    /// <summary>(106) The item's family and its top family ("Main Items" - the vehicles - or "Maintenance and Accessories").</summary>
+    public string? ItemFamilyName { get; init; }
+    public string? RootFamilyName { get; init; }
+
+    /// <summary>(106) The country of the container's port of loading, else its country of origin ("IN").</summary>
+    public string? LoadingCountry { get; init; }
+
+    /// <summary>
+    /// (106) This line's share of the posted deduction charges (DED "OIL Deduction / refund"), as a positive amount: what
+    /// is taken off its cost. Worked out by Dispatched Items from <see cref="Charges"/>; null without View Container Charges.
+    /// </summary>
+    public decimal? DeductionBase { get; set; }
+
     public string? PaidDates { get; set; }
     public string? PaymentReferences { get; set; }
 
@@ -125,6 +142,9 @@ public sealed class ContainerReportChargeTypeDto
 
     /// <summary>Freight / Shipping or Inland Transportation: summed into TOTAL TRANSPORT AMOUNT, not a column of its own.</summary>
     public bool IsTransport { get; init; }
+
+    /// <summary>(106) A deduction (DED): its amounts are negative, taken off the cost.</summary>
+    public bool IsDeduction { get; init; }
 }
 
 public sealed class ContainerReportResult
@@ -159,4 +179,11 @@ public sealed class ContainerReportQuery
 
     public bool IncludePending { get; init; } = true;
     public bool IncludeReceived { get; init; } = true;
+
+    /// <summary>(106) The container's dispatch date: container lines only (Dispatched Items).</summary>
+    public DateOnly? DispatchFrom { get; init; }
+    public DateOnly? DispatchTo { get; init; }
+
+    /// <summary>(106) "IN": the country of the port of loading, else of origin. Null = any.</summary>
+    public string? LoadingCountry { get; init; }
 }

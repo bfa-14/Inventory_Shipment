@@ -1281,6 +1281,9 @@ public sealed class PurchaseDocumentQuery
     /// <summary>(65) Supplier invoices: posted and not every piece received ("Not fully received").</summary>
     public bool? NotFullyReceived { get; init; }
 
+    /// <summary>(107) Supplier invoices: Unpaid, Partial or Paid (posted invoices only, as the Payment column).</summary>
+    public string? PaymentStatus { get; init; }
+
     public string SortBy { get; init; } = "DocumentDate";
     public string SortDir { get; init; } = "desc";
     public int Page { get; init; } = 1;

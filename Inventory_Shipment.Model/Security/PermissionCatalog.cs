@@ -372,6 +372,12 @@ public static class Permissions
         /// amount and its payments. Its payment columns also need <see cref="Purchase.PaymentsView"/>.
         /// </summary>
         public const string ContainerChargesView = "reports.containercharges.view";
+
+        /// <summary>
+        /// Reports › Dispatched Items (script 106): the items dispatched in a period, per item and per container. Its oil
+        /// deduction also needs <see cref="Containers.ChargesView"/>, its payment columns <see cref="Purchase.PaymentsView"/>.
+        /// </summary>
+        public const string DispatchedItemsView = "reports.dispatcheditems.view";
     }
 
     private const string ReportsModule = "Reports";
@@ -698,6 +704,9 @@ public static class Permissions
         // Name, description and sort order match script 105's MERGE, so the start-up sync changes nothing.
         new(Reports.ContainerChargesView, "View Container Charges Report", ReportsModule,
             "Reports › Container Charges: the containers offloaded or dispatched in a period with each charge type entered or missing, its amount and its payments.", 1520),
+        // Name, description and sort order match script 106's MERGE, so the start-up sync changes nothing.
+        new(Reports.DispatchedItemsView, "View Dispatched Items Report", ReportsModule,
+            "Reports › Dispatched Items: the items dispatched in a period, per item and per container, with their FOB, oil and where they are now.", 1530),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,

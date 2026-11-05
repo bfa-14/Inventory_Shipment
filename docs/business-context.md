@@ -150,6 +150,19 @@ containers offloaded or dispatched in a period (one date basis, a radio button) 
 charge is entered, its amount, what is paid and the payment status; its own permission, View Container Charges Report
 (3.1, 4.23).*
 
+*Updated on 5 November 2026 for **the Dispatched Items report** (script 106): Reports › Dispatched Items gives the items
+dispatched in a period (from India by default) as an item balance and as items / containers - FOB, oil, the oil
+deduction and where they are now; its own permission, View Dispatched Items Report; the Container Report shows the
+dispatch and port arrival dates typed on a container followed without legs (3.1, 4.24).*
+
+*Updated on 5 November 2026 for **the supplier invoice list by payment status** (script 107): Purchase › Purchase
+Invoices has a Payment filter (Unpaid / Partially Paid / Fully Paid, posted invoices only) on the filter line.*
+
+*Updated on 5 November 2026 for **the containers list by payment status** (script 108): Logistics › Containers has a
+Payment column and filter - what the posted supplier invoices of each container's goods are paid, from its share of
+each (script 73's split by container): Unpaid, Partially Paid, Fully Paid or Not invoiced; both need View Supplier
+Payments.*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -416,7 +429,8 @@ without seeing costs, and View Stock Valuation for those who must see no value a
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
 - **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 100: every container and order still
   to load, by stage; View Container Report), **Container Charges** (script 105: each container of a period with each
-  charge type entered or missing, its amount and its payments; View Container Charges Report), **Item Balance by Warehouse** (script 103: each item's opening,
+  charge type entered or missing, its amount and its payments; View Container Charges Report), **Dispatched Items** (script
+  106: the items dispatched in a period, per item and per container; View Dispatched Items Report), **Item Balance by Warehouse** (script 103: each item's opening,
   movements and closing per warehouse over a period; View Item Balance Report), **Attachment Report** (script 101: every attachment by type and date,
   downloaded one, several or all as a ZIP; View Attachment Report), Customer Statement, Out-of-Stock Sales
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
@@ -2980,6 +2994,38 @@ current location / amount / paid), worked out by the system (`reporting.usp_Cont
    others in Role Permissions). The payment columns need **View Supplier Payments**: the server sends them empty to others
    and ignores the Payment filter.
 
+### 4.24 The Dispatched Items report **[Implemented – script 106]**
+
+The purchasing team's "DISPATCH FROM INDIA" sheet (a summary per model group, then one row per container), worked out by
+the system (`GET api/reports/dispatched-items`, `/export`). Its rows are the Container Report's
+(`logistics.usp_ContainerReport`, 4.19, re-created by script 106 with `@DispatchFrom` / `@DispatchTo` /
+`@LoadingCountry`), so the two reports never disagree.
+
+1. **Criteria:** Dispatch date from / to (required; the container's `DispatchDate`: the first start of its Sea leg, or
+   typed), Loaded in (the country of its port of loading, else its country of origin; India by default, or any country),
+   supplier, item family (with the families under it), item, Where now (At sea / At port / On the road / Offloaded) and a
+   container ref, container no., B/L, PO, PI or invoice no. Container lines only: an order line still to load has no
+   dispatch. Cancelled containers are left out.
+2. **Item balance** (the owner: grouped by item): one row per item - Containers (a container of two items counts in
+   both rows, once in the totals), Qty, FOB value (the invoice price once received, else the container page's estimate,
+   in grey italics), FOB / unit, Oil qty (the container lines' typed oil; "Included" when only "oil included" is
+   ticked), the oil deduction (the posted DED "OIL Deduction / refund" charges, shown positive), and the pieces At sea /
+   At port / On the road / Offloaded now. Grouped by **top family**, so the vehicles (Main Items: the sheet's "QTY
+   (MOTOS)") are added up apart from the spare parts. A row opens its containers.
+3. **Items / containers:** one row per container line, grouped by item: Con. ref., Container no., Qty, Order date, PI
+   no., Invoice no., FOB, Oil qty, the oil deduction, Paid date, Dispatched, Arrived port, Left port, Final destination,
+   Offloaded, Lead time, Where now (more in the column chooser: Order month, PI exporter's ref., C.I. & P.L. date - the
+   posted supplier invoices' dates -, payment ref., trucks, current location, status, B/L, supplier, PO). A ref. opens a
+   drawer with its journey and "Open container".
+4. **Where now:** received (Offloaded / Closed) = Offloaded; a vessel leg = At sea; at a sea port = At port; after the
+   port = On the road; a container followed by typed dates, by its status.
+5. **Excel:** one sheet like the team's - "DISPATCH FROM INDIA - SEP 2026", the period, the item balance with a subtotal
+   per top family and the total, then the items / containers grouped by item with subtotals.
+6. **Who:** `reports.dispatcheditems.view` "View Dispatched Items Report" (Reports, 1530; the system roles at start-up,
+   others in Role Permissions). The oil deduction needs **View Container Charges**, the payment columns **View Supplier
+   Payments**: the server sends them empty to others. Not in the system, so not on the report: the oil's dollar value
+   (the deduction says it once posted), the sheet's "OLIVE" and "ROW IN CARGO TRACKING".
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -3123,6 +3169,9 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `102_Purchase_DeductionCharges.sql` | Deduction charges: `purchase.ChargeTypes.IsDeduction` (+ check: a deduction is in the landed cost, never a recoverable tax), the seed DED "Deduction / refund"; the positive-amount checks on container and purchase charges dropped; a deduction type stores its charges negative (container charges, copies, invoice-own charges, LCAs), refused at Post when a line would cost below 0; a cancel puts back no more than its posting took out; `fn_ContainerChargeSettlement` answers 'Deduction', nothing outstanding (4.21) |
 | `103_Reporting_ItemBalanceReport.sql` | The Item Balance Report: permission `reports.itembalance.view`, `reporting.ItemBalanceReportRuns` (the run log), `usp_ItemBalance_Warehouses` (the reader's warehouses), `usp_ItemBalance_Data` (items, warehouses with their top warehouse, the events oldest first without cancelled documents, the ledger's quantity), `usp_ItemBalance_Rates`, `usp_ItemBalance_LogRun`; the average is replayed by the API (4.22) |
 | `105_Reporting_ContainerChargesReport.sql` | The Container Charges report: permission `reports.containercharges.view` (Reports, 1520); `reporting.usp_ContainerChargeReport` (the containers of a period by offload or dispatch date with their items, final destination and current location as script 100, every Draft / Posted charge of the types asked with its posted payments, the types asked); the service adds them up per container and type (4.23) |
+| `106_Reporting_DispatchedItemsReport.sql` | The Dispatched Items report: permission `reports.dispatcheditems.view` (Reports, 1530); `logistics.usp_ContainerReport` re-created from script 100 with `@DispatchFrom` / `@DispatchTo` / `@LoadingCountry`, the oil, the item's family and top family, the loading country, the charge types' IsDeduction, and the typed dispatch / port arrival dates of a container without legs (4.24) |
+| `107_Purchase_InvoiceListPaymentFilter.sql` | `purchase.usp_PurchaseDocument_Search` re-created from script 65 with `@PaymentStatus` (Unpaid / Partial / Paid from `purchase.fn_InvoiceSettlement`): the Payment filter of the supplier invoice list |
+| `108_Logistics_ContainerPaymentStatus.sql` | `purchase.fn_Container_PaymentStatus` (a container's share of each posted supplier invoice and what is paid of it, from `fn_InvoiceContainerSettlement`: Unpaid / Partial / Paid / NotInvoiced); `logistics.usp_Container_Search` re-created from script 104 with `@PaymentStatus` and the row's PaymentStatus, InvoicedAmountBase, PaidAmountBase |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

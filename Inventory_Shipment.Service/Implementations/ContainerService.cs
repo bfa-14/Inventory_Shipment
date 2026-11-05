@@ -59,7 +59,22 @@ public sealed class ContainerService : IContainerService
                 ErrorType.Validation, "journey must be NotDispatched, OnTheWay, Arrived or Received.", "VALIDATION");
         }
 
+        // (108) The Payment filter: a typo is refused, as the Journey filter. Without View Supplier Payments the filter is
+        // dropped and the payment figures leave empty, as on the Container Report.
+        if (!string.IsNullOrWhiteSpace(query.PaymentStatus) && ContainerPaymentStatus.Normalize(query.PaymentStatus) is null)
+        {
+            return Result<PagedResult<ContainerListDto>>.Failure(
+                ErrorType.Validation, "paymentStatus must be Unpaid, Partial, Paid or NotInvoiced.", "VALIDATION");
+        }
+
+        var seesPayments = permissions.Contains(Permissions.Purchase.PaymentsView);
+        if (!seesPayments) query.PaymentStatus = null;
+
         var (items, totalCount) = await _containers.SearchAsync(query, cancellationToken);
+        if (!seesPayments)
+        {
+            items = items.Select(i => i with { PaymentStatus = null, InvoicedAmountBase = null, PaidAmountBase = null }).ToList();
+        }
 
         return Result<PagedResult<ContainerListDto>>.Success(new PagedResult<ContainerListDto>
         {
