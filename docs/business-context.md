@@ -163,6 +163,12 @@ Payment column and filter - what the posted supplier invoices of each container'
 each (script 73's split by container): Unpaid, Partially Paid, Fully Paid or Not invoiced; both need View Supplier
 Payments.*
 
+*Updated on 6 November 2026 for **the Goods on Order report** (script 109): Reports › Goods on Order gives everything
+ordered and not received yet, one row per item (by top family) and one Qty / Containers pair per stage the goods are at
+now - the columns are the stages the containers' movements put them at (the Container Report's stage, every order month
+in one "Order pending"), so a new route or border post is a new column by itself; the containers of pieces not loaded
+are estimated from the item's container unit; its own permission, View Goods on Order Report.*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -3172,6 +3178,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `106_Reporting_DispatchedItemsReport.sql` | The Dispatched Items report: permission `reports.dispatcheditems.view` (Reports, 1530); `logistics.usp_ContainerReport` re-created from script 100 with `@DispatchFrom` / `@DispatchTo` / `@LoadingCountry`, the oil, the item's family and top family, the loading country, the charge types' IsDeduction, and the typed dispatch / port arrival dates of a container without legs (4.24) |
 | `107_Purchase_InvoiceListPaymentFilter.sql` | `purchase.usp_PurchaseDocument_Search` re-created from script 65 with `@PaymentStatus` (Unpaid / Partial / Paid from `purchase.fn_InvoiceSettlement`): the Payment filter of the supplier invoice list |
 | `108_Logistics_ContainerPaymentStatus.sql` | `purchase.fn_Container_PaymentStatus` (a container's share of each posted supplier invoice and what is paid of it, from `fn_InvoiceContainerSettlement`: Unpaid / Partial / Paid / NotInvoiced); `logistics.usp_Container_Search` re-created from script 104 with `@PaymentStatus` and the row's PaymentStatus, InvoicedAmountBase, PaidAmountBase |
+| `109_Reporting_GoodsOnOrderReport.sql` | The Goods on Order report: permission `reports.goodsonorder.view` (Reports, 1540). Its rows are `logistics.usp_ContainerReport`'s without the received containers; the service makes one column per stage (StageLabel, the pending months in one) |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

@@ -378,6 +378,12 @@ public static class Permissions
         /// deduction also needs <see cref="Containers.ChargesView"/>, its payment columns <see cref="Purchase.PaymentsView"/>.
         /// </summary>
         public const string DispatchedItemsView = "reports.dispatcheditems.view";
+
+        /// <summary>
+        /// Reports › Goods on Order (script 109): everything ordered and not received yet, per item and per stage of the
+        /// journey (the columns are the stages the containers are at).
+        /// </summary>
+        public const string GoodsOnOrderView = "reports.goodsonorder.view";
     }
 
     private const string ReportsModule = "Reports";
@@ -707,6 +713,9 @@ public static class Permissions
         // Name, description and sort order match script 106's MERGE, so the start-up sync changes nothing.
         new(Reports.DispatchedItemsView, "View Dispatched Items Report", ReportsModule,
             "Reports › Dispatched Items: the items dispatched in a period, per item and per container, with their FOB, oil and where they are now.", 1530),
+        // Name, description and sort order match script 109's MERGE, so the start-up sync changes nothing.
+        new(Reports.GoodsOnOrderView, "View Goods on Order Report", ReportsModule,
+            "Reports › Goods on Order: everything ordered and not received yet, per item and per stage of the journey.", 1540),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,

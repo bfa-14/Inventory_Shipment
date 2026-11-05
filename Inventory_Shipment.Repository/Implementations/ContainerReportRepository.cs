@@ -60,6 +60,22 @@ public sealed class ContainerReportRepository : IContainerReportRepository
         return (rows, chargeTypes);
     }
 
+    public async Task<IReadOnlyDictionary<int, decimal>> PcsPerContainerAsync(
+        IReadOnlyCollection<int> itemIds, CancellationToken cancellationToken = default)
+    {
+        if (itemIds.Count == 0) return new Dictionary<int, decimal>();
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<(int ItemId, decimal PcsPerContainer)>(new CommandDefinition(
+            """
+            SELECT ItemId = i.Id, p.PcsPerContainer
+            FROM inventory.Items i
+            CROSS APPLY logistics.fn_ItemPcsPerContainer(i.Id) p
+            WHERE i.Id IN @Ids AND p.PcsPerContainer IS NOT NULL
+            """,
+            new { Ids = itemIds }, cancellationToken: cancellationToken));
+        return rows.ToDictionary(r => r.ItemId, r => r.PcsPerContainer);
+    }
+
     private sealed class ChargeShare
     {
         public string RowKey { get; init; } = string.Empty;
