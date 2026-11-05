@@ -1,16 +1,7 @@
--- other caller is unchanged):
---   @PlanChecked = 1   the caller checked the whole plan: the invoice's rules and what the order lines still allow
---                      (69008). Not again for each container: both read a total that grows with every container made,
---                      which made a plan of N containers cost N x N.
---   @ContainerRef      the ref to give a new container instead of the next CNT number: CreateBatch gives each container
---                      a placeholder and takes the real numbers only at its end, so the CNT counter is not held locked
---                      (every other Add Container waiting) while the whole plan is created.
--- And a new container skips the update of its existing lines (it has none): that join read every container line of the
--- order line. Nothing else changes.
-CREATE   PROCEDURE logistics.usp_Container_Save
+﻿CREATE   PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
     @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
-    @ContainerNo         NVARCHAR(20)   = NULL,
+    @ContainerNo         NVARCHAR(30)   = NULL,
     @ContainerTypeId     INT,
     @SealNo              NVARCHAR(30)   = NULL,
     @CustomsSealNo       NVARCHAR(30)   = NULL,

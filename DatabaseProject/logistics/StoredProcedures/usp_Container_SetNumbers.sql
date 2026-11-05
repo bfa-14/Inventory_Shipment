@@ -1,8 +1,5 @@
-/* ================================================================== 4. Bulk actions on selected containers */
+﻿/* ================================================================== 3. The procedures, from their current bodies */
 
--- Container no. and seal no. of several containers at once (e.g. the list sent by the forwarder after loading).
--- Both values are written: an empty one clears it. Rows that do not change are left alone.
--- Returns the containers (Id, ContainerRef, ContainerNo, SealNo, RowVersion).
 CREATE   PROCEDURE logistics.usp_Container_SetNumbers
     @Items  logistics.tvp_ContainerNumber READONLY,
     @UserId INT = NULL
@@ -11,7 +8,7 @@ BEGIN
     SET NOCOUNT ON;
     SET XACT_ABORT ON;
 
-    DECLARE @N TABLE (ContainerId INT NOT NULL PRIMARY KEY, ContainerNo NVARCHAR(20) NULL, SealNo NVARCHAR(30) NULL,
+    DECLARE @N TABLE (ContainerId INT NOT NULL PRIMARY KEY, ContainerNo NVARCHAR(30) NULL, SealNo NVARCHAR(30) NULL,
                       Changed BIT NOT NULL, IsOpen BIT NOT NULL);
     INSERT INTO @N (ContainerId, ContainerNo, SealNo, Changed, IsOpen)
     SELECT ContainerId, UPPER(NULLIF(LTRIM(RTRIM(ContainerNo)), N'')), NULLIF(LTRIM(RTRIM(SealNo)), N''), 0, 0

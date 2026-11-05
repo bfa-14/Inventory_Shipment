@@ -1,11 +1,4 @@
-/* ================================================================== 6. The next step's dialogs: can a container complete alone */
-
--- Re-created (82) from the body of script 81: + whether each container of a movement to complete can be split off it and
--- why not (set 1: CanSplitOff, SplitOffBlockedReason - fn_Movement_SplitBlock), and whether a Complete group of only part
--- of its movement can complete the ticked ones alone (set 2: SplitPossible, SplitBlockedReason): the dialogs offer "Only
--- KTG-2026-0031: it leaves MOV-2026-000046 and gets its own movement" / "Only the 20 ticked", disabled with the reason.
--- GET next-step reads set 1 for one container. Nothing else changes.
-CREATE   PROCEDURE logistics.usp_Container_NextStepPreview
+﻿CREATE   PROCEDURE logistics.usp_Container_NextStepPreview
     @ContainerIds logistics.tvp_IdList READONLY,
     @CanConfirm   BIT = 1
 AS
@@ -21,7 +14,7 @@ BEGIN
     -- 1. the step of each container (the reads of fn_Container_NextStep, without its suggestion)
     CREATE TABLE #Step
     (
-        ContainerId INT NOT NULL PRIMARY KEY, Found BIT NOT NULL, ContainerRef NVARCHAR(30) NULL, ContainerNo NVARCHAR(20) NULL,
+        ContainerId INT NOT NULL PRIMARY KEY, Found BIT NOT NULL, ContainerRef NVARCHAR(30) NULL, ContainerNo NVARCHAR(30) NULL,
         Status TINYINT NULL, Kind NVARCHAR(12) NULL, BlockedReason NVARCHAR(400) NULL,
         MovementCount INT NULL, PlaceId INT NULL, PlaceName NVARCHAR(100) NULL, PlaceKind NVARCHAR(10) NULL, PlaceSince DATE NULL,
         LastStage NVARCHAR(10) NULL, LastMovementId INT NULL, LastMovementNo NVARCHAR(30) NULL, LastMovementEndDate DATE NULL,

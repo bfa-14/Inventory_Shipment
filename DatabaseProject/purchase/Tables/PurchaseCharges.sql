@@ -1,4 +1,4 @@
-CREATE TABLE [purchase].[PurchaseCharges] (
+﻿CREATE TABLE [purchase].[PurchaseCharges] (
     [Id]                        INT             IDENTITY (1, 1) NOT NULL,
     [DocumentKind]              NVARCHAR (10)   NOT NULL,
     [DocumentId]                INT             NOT NULL,
@@ -19,7 +19,6 @@ CREATE TABLE [purchase].[PurchaseCharges] (
     [CreatedAtUtc]              DATETIME2 (3)   CONSTRAINT [DF_PurchaseCharges_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
     [CreatedBy]                 INT             NULL,
     CONSTRAINT [PK_PurchaseCharges] PRIMARY KEY CLUSTERED ([Id] ASC),
-    CONSTRAINT [CK_PurchaseCharges_Amount] CHECK ([Amount]>=(0)),
     CONSTRAINT [CK_PurchaseCharges_Kind] CHECK ([DocumentKind]=N'LCA' OR [DocumentKind]=N'PINV'),
     CONSTRAINT [CK_PurchaseCharges_Method] CHECK ([AllocationMethod]=N'Manual' OR [AllocationMethod]=N'Volume' OR [AllocationMethod]=N'Weight' OR [AllocationMethod]=N'Quantity' OR [AllocationMethod]=N'Value'),
     CONSTRAINT [FK_PurchaseCharges_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]),
@@ -27,6 +26,8 @@ CREATE TABLE [purchase].[PurchaseCharges] (
     CONSTRAINT [FK_PurchaseCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]),
     CONSTRAINT [UQ_PurchaseCharges_Line] UNIQUE NONCLUSTERED ([DocumentKind] ASC, [DocumentId] ASC, [LineNumber] ASC)
 );
+
+
 
 
 GO

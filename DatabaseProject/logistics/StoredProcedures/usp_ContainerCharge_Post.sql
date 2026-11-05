@@ -1,7 +1,4 @@
-/* ================================================================== 8. Post */
-
--- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge (usp_ContainerCharge_PostBivacOut). Nothing else changes.
-CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
     @Id         INT       = NULL,
     @Ids        logistics.tvp_IdList READONLY,
     @RowVersion BINARY(8) = NULL,     -- checked with @Id only
@@ -72,6 +69,36 @@ BEGIN
 
             EXEC logistics.usp_Container_RecalcCosts @ContainerId;
             IF @After = 1 EXEC logistics.usp_ContainerCharge_ApplyCost @ChargeId, 1, @UserId;
+
+            -- (102) A DEDUCTION NEVER TAKES A COST BELOW ZERO: not a line's value with its charges (its FOB x the pieces,
+            -- received or loaded, plus every posted charge on it) and, after the receipt, not the item's average cost.
+            -- Refused here, inside the post's transaction, so nothing of it is kept.
+            IF @AmountBase < 0
+            BEGIN
+                SET @Msg = NULL;
+                SELECT TOP (1) @Msg = N'Container ' + @Ref + N': this deduction would bring ' + i.ItemCode + N' below zero ('
+                                    + CAST(CAST(cl.FobCostBase * ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) + cl.ChargesBase AS DECIMAL(18,2)) AS NVARCHAR(30))
+                                    + N' with its charges). Lower the deduction or allocate it differently.'
+                FROM logistics.ContainerLines cl
+                INNER JOIN inventory.Items i ON i.Id = cl.ItemId
+                WHERE cl.ContainerId = @ContainerId AND cl.FobCostBase IS NOT NULL
+                  AND cl.FobCostBase * ISNULL(cl.ReceivedQuantityBase, cl.QuantityBase) + ISNULL(cl.ChargesBase, 0) < 0
+                ORDER BY cl.LineNumber;
+                IF @Msg IS NOT NULL THROW 70013, @Msg, 1;
+
+                IF @After = 1
+                BEGIN
+                    SELECT TOP (1) @Msg = N'Container ' + @Ref + N': this deduction would bring the average cost of ' + i.ItemCode
+                                        + N' below zero (' + CAST(CAST(i.AverageCost AS DECIMAL(18,2)) AS NVARCHAR(30)) + N'). Lower the deduction.'
+                    FROM inventory.Items i
+                    WHERE i.AverageCost < 0
+                      AND i.Id IN (SELECT cl.ItemId FROM logistics.ContainerChargeAllocations a
+                                   INNER JOIN logistics.ContainerLines cl ON cl.Id = a.ContainerLineId
+                                   WHERE a.ChargeId = @ChargeId)
+                    ORDER BY i.ItemCode;
+                    IF @Msg IS NOT NULL THROW 70013, @Msg, 1;
+                END
+            END
 
             -- (97) A BIVAC CHARGE TAKES ITS BIVAC OUT OF THE CONTAINER'S WAREHOUSE: 1 piece of its BIVAC item, posted with
             -- the charge (Inventory > BIVAC Out shows it, Reference No. the container); refused with the BIVAC Out's own

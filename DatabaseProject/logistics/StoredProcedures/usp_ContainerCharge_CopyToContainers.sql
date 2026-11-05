@@ -1,7 +1,4 @@
-/* ================================================================== 11. Apply to other containers */
-
--- Re-created (97) from the body of script 28: + a copy of a BIVAC charge takes its item at each container's port cost. Nothing else changes.
-CREATE   PROCEDURE logistics.usp_ContainerCharge_CopyToContainers
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_CopyToContainers
     @ChargeId         INT,
     @ContainerIds     logistics.tvp_IdList READONLY,
     @Amount           DECIMAL(18,2) = NULL,
@@ -31,7 +28,7 @@ BEGIN
 
     IF @SrcContainer IS NULL THROW 70006, 'Charge not found.', 1;
     IF @SrcStatus = 3 THROW 70010, 'A cancelled charge cannot be copied.', 1;
-    IF @Amount IS NOT NULL AND @Amount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    -- (102) the sign is decided below, from the charge type: a deduction's copies are deductions
     IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume')
         THROW 70000, 'Allocation method of the copies must be Value, Quantity, Weight or Volume (a manual split can be typed on each draft afterwards).', 1;
 
@@ -43,6 +40,10 @@ BEGIN
     DECLARE @Method NVARCHAR(10) = COALESCE(@AllocationMethod, CASE WHEN @SrcMethod = N'Manual' THEN @TypeMethod ELSE @SrcMethod END);
     IF @Method IS NULL OR @Method NOT IN (N'Value', N'Quantity', N'Weight', N'Volume') SET @Method = N'Value';
     SET @Amount = ISNULL(@Amount, @SrcAmount);
+    IF EXISTS (SELECT 1 FROM purchase.ChargeTypes WHERE Id = @TypeId AND IsDeduction = 1)
+        SET @Amount = -ABS(@Amount);
+    ELSE IF @Amount < 0
+        THROW 70000, 'The amount cannot be negative.', 1;
     SET @ChargeDate = ISNULL(@ChargeDate, @SrcDate);
     DECLARE @AmountBase DECIMAL(18,2) = ROUND(@Amount / @Rate, 2);
     DECLARE @CurrencyCode NVARCHAR(10) = (SELECT CurrencyCode FROM masterdata.Currencies WHERE Id = @CurrencyId);

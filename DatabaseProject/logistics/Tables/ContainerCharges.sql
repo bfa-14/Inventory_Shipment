@@ -1,4 +1,4 @@
-CREATE TABLE [logistics].[ContainerCharges] (
+﻿CREATE TABLE [logistics].[ContainerCharges] (
     [Id]                   INT              IDENTITY (1, 1) NOT NULL,
     [ContainerId]          INT              NOT NULL,
     [MovementId]           INT              NULL,
@@ -32,7 +32,6 @@ CREATE TABLE [logistics].[ContainerCharges] (
     [BivacItemId]          INT              NULL,
     [BivacOutDocumentId]   INT              NULL,
     CONSTRAINT [PK_ContainerCharges] PRIMARY KEY CLUSTERED ([Id] ASC),
-    CONSTRAINT [CK_ContainerCharges_Amount] CHECK ([Amount]>=(0)),
     CONSTRAINT [CK_ContainerCharges_Method] CHECK ([AllocationMethod]=N'Manual' OR [AllocationMethod]=N'Volume' OR [AllocationMethod]=N'Weight' OR [AllocationMethod]=N'Quantity' OR [AllocationMethod]=N'Value'),
     CONSTRAINT [CK_ContainerCharges_Rate] CHECK ([ExchangeRate]>(0)),
     CONSTRAINT [CK_ContainerCharges_Status] CHECK ([Status]>=(1) AND [Status]<=(3)),
@@ -48,6 +47,8 @@ CREATE TABLE [logistics].[ContainerCharges] (
     CONSTRAINT [FK_ContainerCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]),
     CONSTRAINT [FK_ContainerCharges_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id])
 );
+
+
 
 
 GO

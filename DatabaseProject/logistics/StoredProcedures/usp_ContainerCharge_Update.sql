@@ -1,7 +1,4 @@
-/* ================================================================== 7. A draft charge changed */
-
--- Re-created (97) from the body of script 96: a BIVAC charge keeps its type, no other charge becomes one. Nothing else changes.
-CREATE   PROCEDURE logistics.usp_ContainerCharge_Update
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Update
     @Id               INT,
     @MovementId       INT            = NULL,
     @ChargeTypeId     INT,
@@ -40,7 +37,7 @@ BEGIN
         THROW 70004, 'This charge was modified by another user. Reload the page and try again.', 1;
 
     IF @ChargeDate IS NULL THROW 70000, 'The charge date is required.', 1;
-    IF @Amount IS NULL OR @Amount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @Amount IS NULL THROW 70000, 'The amount is required.', 1;
     IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume', N'Manual')
         THROW 70000, 'Allocation method must be Value, Quantity, Weight, Volume or Manual.', 1;
     IF @RateType NOT IN (1, 2, 3) THROW 70000, 'Unknown rate type.', 1;
@@ -50,6 +47,20 @@ BEGIN
     SELECT @Method = ISNULL(@AllocationMethod, AllocationMethod), @InLanded = IncludeInLandedCost
     FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsActive = 1;
     IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
+    -- (102) A DEDUCTION TYPE LOWERS THE COST: what is typed is taken off (stored negative, whichever sign was sent). Any
+    -- other type is a cost and cannot be negative.
+    DECLARE @IsDeduction BIT = CASE WHEN EXISTS (SELECT 1 FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsDeduction = 1) THEN 1 ELSE 0 END;
+    IF @IsDeduction = 1
+    BEGIN
+        IF @Amount = 0 THROW 70000, 'Enter the amount deducted.', 1;
+        SET @Amount = -ABS(@Amount);
+    END
+    ELSE IF @Amount < 0
+        THROW 70000, 'The amount cannot be negative. To lower the cost, choose a deduction charge type (Deduction / refund).', 1;
+    -- (102) the manual shares of a deduction are shares of what is taken off: negative, whichever sign was sent
+    DECLARE @M TABLE (ContainerLineId INT NOT NULL, AmountBase DECIMAL(18,2) NOT NULL);
+    INSERT INTO @M (ContainerLineId, AmountBase)
+    SELECT ContainerLineId, CASE WHEN @IsDeduction = 1 THEN -ABS(AmountBase) ELSE AmountBase END FROM @Manual;
     IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
         THROW 70000, 'The provider is not found or inactive.', 1;
     -- (97) a BIVAC charge keeps its type (its BIVAC item goes with it); another charge does not become one here
@@ -72,14 +83,14 @@ BEGIN
     IF @Rate IS NULL OR @Rate <= 0 THROW 70000, 'No exchange rate for this currency on the charge date. Add one or enter the rate.', 1;
     DECLARE @AmountBase DECIMAL(18,2) = ROUND(@Amount / @Rate, 2);
 
-    IF @Method = N'Manual' AND @InLanded = 1 AND EXISTS (SELECT 1 FROM @Manual)
+    IF @Method = N'Manual' AND @InLanded = 1 AND EXISTS (SELECT 1 FROM @M)
     BEGIN
-        IF EXISTS (SELECT 1 FROM @Manual m WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.Id = m.ContainerLineId AND cl.ContainerId = @ContainerId))
+        IF EXISTS (SELECT 1 FROM @M m WHERE NOT EXISTS (SELECT 1 FROM logistics.ContainerLines cl WHERE cl.Id = m.ContainerLineId AND cl.ContainerId = @ContainerId))
             THROW 70000, 'A manual share refers to a line that is not in the container.', 1;
-        IF EXISTS (SELECT 1 FROM @Manual WHERE AmountBase < 0) THROW 70000, 'Manual shares cannot be negative.', 1;
-        IF ABS((SELECT SUM(AmountBase) FROM @Manual) - @AmountBase) > 0.01
+        IF @IsDeduction = 0 AND EXISTS (SELECT 1 FROM @M WHERE AmountBase < 0) THROW 70000, 'Manual shares cannot be negative.', 1;
+        IF ABS((SELECT SUM(AmountBase) FROM @M) - @AmountBase) > 0.01
         BEGIN
-            DECLARE @Msg NVARCHAR(400) = N'The manual shares (' + CAST((SELECT SUM(AmountBase) FROM @Manual) AS NVARCHAR(30))
+            DECLARE @Msg NVARCHAR(400) = N'The manual shares (' + CAST((SELECT SUM(AmountBase) FROM @M) AS NVARCHAR(30))
                                        + N') must add up to the charge in base currency (' + CAST(@AmountBase AS NVARCHAR(30)) + N').';
             THROW 70013, @Msg, 1;
         END
@@ -109,11 +120,11 @@ BEGIN
 
         IF @Method = N'Manual' AND @InLanded = 1
         BEGIN
-            IF EXISTS (SELECT 1 FROM @Manual)
+            IF EXISTS (SELECT 1 FROM @M)
             BEGIN
                 DELETE FROM logistics.ContainerChargeAllocations WHERE ChargeId = @Id;
                 INSERT INTO logistics.ContainerChargeAllocations (ChargeId, ContainerLineId, Basis, AmountBase, IsManual)
-                SELECT @Id, ContainerLineId, NULL, AmountBase, 1 FROM @Manual WHERE AmountBase > 0;
+                SELECT @Id, ContainerLineId, NULL, AmountBase, 1 FROM @M WHERE AmountBase <> 0;     -- (102) a deduction's shares are negative
             END
             ELSE
                 DELETE FROM logistics.ContainerChargeAllocations WHERE ChargeId = @Id AND IsManual = 0;

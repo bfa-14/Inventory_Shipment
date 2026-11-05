@@ -1,6 +1,8 @@
-﻿/* ================================================================== 3. The report */
+﻿/* ================================================================== 2. The Container Report's rows, by dispatch date */
 
--- Reports › Container Report (see the header, 2-4). Three result sets:
+-- Re-created (106) from the body of script 100, + the header's 2: @DispatchFrom / @DispatchTo / @LoadingCountry, the
+-- dispatch and port arrival dates typed on a container without legs, the oil, the item's families and IsDeduction.
+-- Reports › Container Report (see script 100's header, 2-4), and Reports › Dispatched Items. Three result sets:
 --   1. the rows: one per container line, then one per order line still to load;
 --   2. each row's share of the posted charges, per charge type (RowKey, ChargeTypeId, AmountBase);
 --   3. the charge types: every active one and any inactive one the rows carry (IsTransport: FRE, TRP).
@@ -19,7 +21,10 @@ CREATE   PROCEDURE logistics.usp_ContainerReport
     @OffloadedFrom   DATE          = NULL,
     @OffloadedTo     DATE          = NULL,
     @IncludePending  BIT           = 1,
-    @IncludeReceived BIT           = 1
+    @IncludeReceived BIT           = 1,
+    @DispatchFrom    DATE          = NULL,   -- (106) the container's dispatch date: only container lines, no order line
+    @DispatchTo      DATE          = NULL,
+    @LoadingCountry  NCHAR(2)      = NULL    -- (106) its port of loading's country, else its country of origin
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -51,11 +56,15 @@ BEGIN
     WHERE c.Status <> 8
       AND (@IncludeReceived = 1 OR c.Status NOT IN (6, 7))
       AND (@OffloadedFrom IS NULL OR c.Status NOT IN (6, 7) OR c.OffloadedDate >= @OffloadedFrom)
-      AND (@OffloadedTo IS NULL OR c.Status NOT IN (6, 7) OR c.OffloadedDate <= @OffloadedTo);
+      AND (@OffloadedTo IS NULL OR c.Status NOT IN (6, 7) OR c.OffloadedDate <= @OffloadedTo)
+      AND (@DispatchFrom IS NULL OR c.DispatchDate >= @DispatchFrom)
+      AND (@DispatchTo IS NULL OR c.DispatchDate <= @DispatchTo)
+      AND (@LoadingCountry IS NULL
+           OR ISNULL((SELECT pl.CountryCode FROM masterdata.Ports pl WHERE pl.Id = c.PortOfLoadingId), c.CountryOfOrigin) = @LoadingCountry);
 
     -- Order lines still to load: approved orders (status 2), pieces not on a container, not received outside one, not
-    -- settled short.
-    IF @IncludePending = 1
+    -- settled short. (106) None when a dispatch date or a loading country is asked: an order line has neither.
+    IF @IncludePending = 1 AND @DispatchFrom IS NULL AND @DispatchTo IS NULL AND @LoadingCountry IS NULL
         INSERT INTO #R (RowKey, IsPending, ContainerId, ContainerLineId, PoId, PoLineId, ItemId, Qty, OrderPriceBase)
         SELECT N'P' + CAST(pol.Id AS NVARCHAR(12)), 1, NULL, NULL, po.Id, pol.Id, pol.ItemId, x.ToLoad,
                pol.LineTotal / NULLIF(po.ExchangeRate, 0) / NULLIF(pol.QuantityBase, 0)
@@ -184,6 +193,14 @@ BEGIN
     DECLARE @Transport TABLE (Id INT PRIMARY KEY);
     INSERT INTO @Transport (Id) SELECT Id FROM purchase.ChargeTypes WHERE ChargeCode IN (N'FRE', N'TRP');
 
+    -- (106) Each family's top family ("Main Items", "Maintenance and Accessories"): Dispatched Items counts its pieces apart.
+    CREATE TABLE #Root (FamilyId INT NOT NULL PRIMARY KEY, RootName NVARCHAR(150) NULL);
+    WITH f AS (SELECT Id, RootId = Id FROM masterdata.ItemFamilies WHERE ParentId IS NULL
+               UNION ALL
+               SELECT ch.Id, f.RootId FROM masterdata.ItemFamilies ch INNER JOIN f ON ch.ParentId = f.Id)
+    INSERT INTO #Root (FamilyId, RootName)
+    SELECT f.Id, r.FamilyName FROM f INNER JOIN masterdata.ItemFamilies r ON r.Id = f.RootId;
+
     /* ---------------------------------------------------------------- 1. the rows */
     SELECT r.RowKey, r.IsPending,
            st.StageSort, st.StageLabel,
@@ -202,12 +219,17 @@ BEGIN
            FobAmountBase = CAST(r.Qty * fob.UnitFob AS DECIMAL(18,2)),
            FobIsEstimate = CAST(CASE WHEN cl.FobCostBase IS NULL THEN 1 ELSE 0 END AS BIT),
            OilQtyPerUnit = cl.OilQtyPerUnit,
+           OilIncluded = cl.OilIncluded, TotalOilQty = NULLIF(cl.TotalOilQty, 0),
+           ItemFamilyName = fam.FamilyName, RootFamilyName = rt.RootName,
+           LoadingCountry = ISNULL(pl.CountryCode, c.CountryOfOrigin),
            PaidDates = pay.Dates, PaymentReferences = pay.Refs,
            PaymentStatus = CASE WHEN inv.FirstDate IS NULL THEN N'Not invoiced'
                                 WHEN pay.Paid IS NULL THEN N'Not paid'
                                 WHEN pay.Paid >= inv.Total - 0.005 THEN N'Paid'
                                 ELSE N'Partly paid' END,
-           j.DispatchDate, j.ArrivedPortDate, j.LeftPortDate,
+           -- (106) a container followed by typed dates (no Sea leg) shows them
+           DispatchDate = COALESCE(j.DispatchDate, c.DispatchDate),
+           ArrivedPortDate = COALESCE(j.ArrivedPortDate, c.ActualPortArrival), j.LeftPortDate,
            FinalDestination = COALESCE(j.FinalDestination, fd.PortName),
            Trucks = COALESCE(j.Trucks, NULLIF(LTRIM(RTRIM(c.TruckNo)), N'')),
            OffloadedDate = CASE WHEN c.Status IN (6, 7) THEN c.OffloadedDate END,
@@ -235,6 +257,9 @@ BEGIN
     LEFT JOIN masterdata.Branches b ON b.Id = ISNULL(c.BranchId, po.BranchId)
     LEFT JOIN masterdata.Warehouses w ON w.Id = ISNULL(c.WarehouseId, po.WarehouseId)
     LEFT JOIN masterdata.Ports fd ON fd.Id = c.FinalDestinationId
+    LEFT JOIN masterdata.Ports pl ON pl.Id = c.PortOfLoadingId
+    LEFT JOIN masterdata.ItemFamilies fam ON fam.Id = i.ItemFamilyId
+    LEFT JOIN #Root rt ON rt.FamilyId = i.ItemFamilyId
     LEFT JOIN #J j ON j.ContainerId = r.ContainerId
     LEFT JOIN #Legs act ON act.ContainerId = r.ContainerId AND act.MovementId = j.ActiveMovementId
     LEFT JOIN #Legs lst ON lst.ContainerId = r.ContainerId AND lst.MovementId = j.LastMovementId
@@ -306,7 +331,8 @@ BEGIN
 
     /* ---------------------------------------------------------------- 3. the charge types */
     SELECT t.Id, t.ChargeCode, t.ChargeName,
-           IsTransport = CAST(CASE WHEN t.Id IN (SELECT Id FROM @Transport) THEN 1 ELSE 0 END AS BIT)
+           IsTransport = CAST(CASE WHEN t.Id IN (SELECT Id FROM @Transport) THEN 1 ELSE 0 END AS BIT),
+           t.IsDeduction
     FROM purchase.ChargeTypes t
     WHERE t.IsActive = 1 OR t.Id IN (SELECT ChargeTypeId FROM #Ch)
     ORDER BY t.Id;

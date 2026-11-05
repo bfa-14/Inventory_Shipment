@@ -1,7 +1,5 @@
-/* ================================================================== 6. Add charge */
+﻿/* ================================================================== 4. Container charges */
 
--- Re-created (97) from the body of script 96: + @BivacItemId (fn_ContainerCharge_BivacBlock; a BIVAC charge's amount
--- is the item's cost at each container's port, in the base currency). Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Create
     @ContainerIds     logistics.tvp_IdList READONLY,
     @MovementId       INT            = NULL,
@@ -32,7 +30,7 @@ BEGIN
     SET @RateType = ISNULL(@RateType, 1);
 
     IF @ChargeDate IS NULL THROW 70000, 'The charge date is required.', 1;
-    IF @TotalAmount IS NULL OR @TotalAmount < 0 THROW 70000, 'The amount cannot be negative.', 1;
+    IF @TotalAmount IS NULL THROW 70000, 'The amount is required.', 1;
     IF @SplitRule NOT IN (N'Same', N'Equal', N'Pieces', N'Value') THROW 70000, 'Split rule must be Same, Equal, Pieces or Value.', 1;
     IF @AllocationMethod IS NOT NULL AND @AllocationMethod NOT IN (N'Value', N'Quantity', N'Weight', N'Volume', N'Manual')
         THROW 70000, 'Allocation method must be Value, Quantity, Weight, Volume or Manual.', 1;
@@ -43,6 +41,16 @@ BEGIN
     SELECT @Method = ISNULL(@AllocationMethod, AllocationMethod), @InLanded = IncludeInLandedCost, @TypeLabel = ChargeCode + N' ' + ChargeName
     FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsActive = 1;
     IF @Method IS NULL THROW 70000, 'Charge type not found or inactive.', 1;
+    -- (102) A DEDUCTION TYPE LOWERS THE COST: what is typed is taken off (stored negative, whichever sign was sent). Any
+    -- other type is a cost and cannot be negative.
+    DECLARE @IsDeduction BIT = CASE WHEN EXISTS (SELECT 1 FROM purchase.ChargeTypes WHERE Id = @ChargeTypeId AND IsDeduction = 1) THEN 1 ELSE 0 END;
+    IF @IsDeduction = 1
+    BEGIN
+        IF @TotalAmount = 0 THROW 70000, 'Enter the amount deducted.', 1;
+        SET @TotalAmount = -ABS(@TotalAmount);
+    END
+    ELSE IF @TotalAmount < 0
+        THROW 70000, 'The amount cannot be negative. To lower the cost, choose a deduction charge type (Deduction / refund).', 1;
     IF @ProviderPartyId IS NOT NULL AND NOT EXISTS (SELECT 1 FROM masterdata.Parties WHERE Id = @ProviderPartyId AND IsActive = 1)
         THROW 70000, 'The provider is not found or inactive.', 1;
 
