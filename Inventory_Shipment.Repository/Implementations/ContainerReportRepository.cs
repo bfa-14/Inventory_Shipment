@@ -39,6 +39,7 @@ public sealed class ContainerReportRepository : IContainerReportRepository
         parameters.Add("DispatchTo", query.DispatchTo?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("LoadingCountry", string.IsNullOrWhiteSpace(query.LoadingCountry) ? null : query.LoadingCountry.Trim().ToUpperInvariant(),
             DbType.StringFixedLength, size: 2);
+        parameters.Add("WithCharges", query.WithCharges, DbType.Boolean);
 
         await using var connection = _connectionFactory.Create();
         await using var grid = await connection.QueryMultipleAsync(new CommandDefinition(

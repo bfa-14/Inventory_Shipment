@@ -55,7 +55,8 @@ public sealed class ContainerReportService : IContainerReportService
         }
 
         var (rows, chargeTypes) = await _reports.ReportAsync(query, cancellationToken);
-        var seesCharges = permissions.Contains(Permissions.Containers.ChargesView);
+        // (110) Run without charges, the procedure read none: shown as for a reader who may not see them.
+        var seesCharges = query.WithCharges && permissions.Contains(Permissions.Containers.ChargesView);
         var seesPayments = permissions.Contains(Permissions.Purchase.PaymentsView);
 
         foreach (var row in rows)
@@ -93,6 +94,7 @@ public sealed class ContainerReportService : IContainerReportService
             Rows = rows,
             ChargeTypes = columns,
             ChargesVisible = seesCharges,
+            WithCharges = query.WithCharges,
             PaymentsVisible = seesPayments,
         });
     }
@@ -172,7 +174,6 @@ public sealed class ContainerReportService : IContainerReportService
             new("OFFLOADED DATE", r => r.OffloadedDate, Date),
             new("LEAD TIME (MONTHS)", r => r.LeadTimeMonths, "0.00", false, r => r.LeadTimeSoFar),
             new("B.L.", r => r.BlNo),
-            new("FERI", r => r.FeriNo),
         ]);
         if (result.ChargesVisible)
         {
@@ -187,9 +188,9 @@ public sealed class ContainerReportService : IContainerReportService
             }
             columns.Add(new("TOTAL CHARGES", r => r.ChargesBase, Amount, true));
         }
+        if (result.WithCharges) columns.Add(new("TOTAL EXPENSES", r => r.TotalExpensesBase, Amount, true, r => r.FobIsEstimate));
         columns.AddRange(
         [
-            new("TOTAL EXPENSES", r => r.TotalExpensesBase, Amount, true, r => r.FobIsEstimate),
             new("COST PER UNIT", r => r.CostPerUnitBase, Amount, false, r => r.CostIsEstimate),
             new("STATUS", r => r.StatusName),
         ]);

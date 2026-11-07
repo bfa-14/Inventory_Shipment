@@ -157,6 +157,9 @@ public sealed class ContainerReportResult
     /// <summary>False without View Container Charges: the charge columns are left out.</summary>
     public bool ChargesVisible { get; init; }
 
+    /// <summary>(110) False when the report was run without charges: no charge column, no total expenses.</summary>
+    public bool WithCharges { get; init; } = true;
+
     /// <summary>False without View Supplier Payments: the payment columns are left out.</summary>
     public bool PaymentsVisible { get; init; }
 }
@@ -186,4 +189,7 @@ public sealed class ContainerReportQuery
 
     /// <summary>(106) "IN": the country of the port of loading, else of origin. Null = any.</summary>
     public string? LoadingCountry { get; init; }
+
+    /// <summary>(110) False: no charge is read (the slow part) - no charge, transport or total expenses figure.</summary>
+    public bool WithCharges { get; init; } = true;
 }
