@@ -1,13 +1,9 @@
-﻿/* ================================================================== 2. The Container Report's rows, by dispatch date */
+﻿/* ================================================================== 1. The Container Report, with or without charges */
 
--- Re-created (106) from the body of script 100, + the header's 2: @DispatchFrom / @DispatchTo / @LoadingCountry, the
--- dispatch and port arrival dates typed on a container without legs, the oil, the item's families and IsDeduction.
--- Reports › Container Report (see script 100's header, 2-4), and Reports › Dispatched Items. Three result sets:
+-- Re-created (110) from the body of script 106, + @WithCharges (see the header, 1). Three result sets:
 --   1. the rows: one per container line, then one per order line still to load;
---   2. each row's share of the posted charges, per charge type (RowKey, ChargeTypeId, AmountBase);
---   3. the charge types: every active one and any inactive one the rows carry (IsTransport: FRE, TRP).
--- The filters are the server's; no paging (the page holds the whole report). @IncludePending / @IncludeReceived leave the
--- order lines still to load / the received containers out. @OffloadedFrom / @OffloadedTo narrow the received ones only.
+--   2. each row's share of the posted charges, per charge type (RowKey, ChargeTypeId, AmountBase) - none without charges;
+--   3. the charge types: every active one and any inactive one the rows carry - none without charges.
 -- SET-BASED: the rows are found first, their legs read once, every list built over them - never a function per row
 -- but the FOB estimate of a line not received yet (the container page's own).
 CREATE   PROCEDURE logistics.usp_ContainerReport
@@ -24,7 +20,9 @@ CREATE   PROCEDURE logistics.usp_ContainerReport
     @IncludeReceived BIT           = 1,
     @DispatchFrom    DATE          = NULL,   -- (106) the container's dispatch date: only container lines, no order line
     @DispatchTo      DATE          = NULL,
-    @LoadingCountry  NCHAR(2)      = NULL    -- (106) its port of loading's country, else its country of origin
+    @LoadingCountry  NCHAR(2)      = NULL,   -- (106) its port of loading's country, else its country of origin
+    @WithCharges     BIT           = 1       -- (110) 0: no charge is read - result sets 2 and 3 empty, no transport or
+                                             --       charge figure and no total expenses on the rows
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -182,13 +180,15 @@ BEGIN
     /* ---------------------------------------------------------------- charges */
     CREATE TABLE #Ch (RowKey NVARCHAR(20) NOT NULL, ChargeTypeId INT NOT NULL, AmountBase DECIMAL(18,2) NOT NULL,
                       PRIMARY KEY (RowKey, ChargeTypeId));
-    INSERT INTO #Ch (RowKey, ChargeTypeId, AmountBase)
-    SELECT r.RowKey, ch.ChargeTypeId, SUM(a.AmountBase)
-    FROM #R r
-    INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = r.ContainerLineId
-    INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
-    WHERE ch.Status = 2
-    GROUP BY r.RowKey, ch.ChargeTypeId;
+    -- (110) Read only when asked: left empty, the transport and charge figures below are empty too.
+    IF @WithCharges = 1
+        INSERT INTO #Ch (RowKey, ChargeTypeId, AmountBase)
+        SELECT r.RowKey, ch.ChargeTypeId, SUM(a.AmountBase)
+        FROM #R r
+        INNER JOIN logistics.ContainerChargeAllocations a ON a.ContainerLineId = r.ContainerLineId
+        INNER JOIN logistics.ContainerCharges ch ON ch.Id = a.ChargeId
+        WHERE ch.Status = 2
+        GROUP BY r.RowKey, ch.ChargeTypeId;
 
     DECLARE @Transport TABLE (Id INT PRIMARY KEY);
     INSERT INTO @Transport (Id) SELECT Id FROM purchase.ChargeTypes WHERE ChargeCode IN (N'FRE', N'TRP');
@@ -241,7 +241,7 @@ BEGIN
            TransportReferences = tr.Refs, TransportInvoices = tr.Invoices,
            TransportBase = trs.Amount,
            ChargesBase = chs.Amount,
-           TotalExpensesBase = CAST(r.Qty * fob.UnitFob AS DECIMAL(18,2)) + ISNULL(chs.Amount, 0),
+           TotalExpensesBase = CASE WHEN @WithCharges = 1 THEN CAST(r.Qty * fob.UnitFob AS DECIMAL(18,2)) + ISNULL(chs.Amount, 0) END,
            CostPerUnitBase = CAST(CASE WHEN r.IsPending = 1 THEN r.OrderPriceBase
                                        ELSE COALESCE(cl.LandedCostBase, fob.UnitFob + cl.ChargesBase / NULLIF(cl.QuantityBase, 0)) END
                                   AS DECIMAL(18,4)),
@@ -294,7 +294,7 @@ BEGIN
                                    WITHIN GROUP (ORDER BY z.ChargeDate, z.Id)
                  FROM (SELECT ch.Id, ch.ChargeDate, Reference = NULLIF(ch.Reference, N''), ch.AmountBase
                        FROM logistics.ContainerCharges ch
-                       WHERE ch.ContainerId = r.ContainerId AND ch.Status = 2
+                       WHERE @WithCharges = 1 AND ch.ContainerId = r.ContainerId AND ch.Status = 2
                          AND ch.ChargeTypeId IN (SELECT Id FROM @Transport)) z) tr
     OUTER APPLY (SELECT Amount = SUM(x.AmountBase) FROM #Ch x WHERE x.RowKey = r.RowKey AND x.ChargeTypeId IN (SELECT Id FROM @Transport)) trs
     OUTER APPLY (SELECT Amount = SUM(x.AmountBase) FROM #Ch x WHERE x.RowKey = r.RowKey) chs
@@ -334,6 +334,6 @@ BEGIN
            IsTransport = CAST(CASE WHEN t.Id IN (SELECT Id FROM @Transport) THEN 1 ELSE 0 END AS BIT),
            t.IsDeduction
     FROM purchase.ChargeTypes t
-    WHERE t.IsActive = 1 OR t.Id IN (SELECT ChargeTypeId FROM #Ch)
+    WHERE @WithCharges = 1 AND (t.IsActive = 1 OR t.Id IN (SELECT ChargeTypeId FROM #Ch))
     ORDER BY t.Id;
 END
