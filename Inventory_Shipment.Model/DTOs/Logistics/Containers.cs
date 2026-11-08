@@ -476,6 +476,14 @@ public record ContainerListDto : ContainerStatusFlags
     /// <summary>(108) Its share of those invoices and what is paid of it, in the base currency.</summary>
     public decimal? InvoicedAmountBase { get; init; }
     public decimal? PaidAmountBase { get; init; }
+
+    /// <summary>
+    /// (111) Where it stands (logistics.fn_Container_Stage): the shipment stage, else "Pending", "Followed by typed
+    /// dates", "Offloaded" or "Not on a stage"; StageReceiptPending when it is delivered and waits for its goods receipt.
+    /// </summary>
+    public int? StageId { get; init; }
+    public string? StageName { get; init; }
+    public bool StageReceiptPending { get; init; }
 }
 
 /// <summary>
@@ -1374,6 +1382,9 @@ public sealed class ContainerQuery
     /// service clears it for anybody else.
     /// </summary>
     public string? PaymentStatus { get; set; }
+
+    /// <summary>(111) A shipment stage's id; 0 Pending (never moved), -1 not on a stage.</summary>
+    public int? StageId { get; init; }
 
     public string SortBy { get; init; } = "OrderDate";
     public string SortDir { get; init; } = "desc";

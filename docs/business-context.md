@@ -173,6 +173,16 @@ are estimated from the item's container unit; its own permission, View Goods on 
 "With charges" switch, off by default; off, the server reads no charge at all (the slow part of a large report) and the
 page shows no transport, charge or total expenses column, its stage tiles adding the FOB instead.*
 
+*Updated on 8 November 2026 for **shipment stages** (script 111, the owner: "the movement process is complicated"): a
+container moves on by choosing its NEW STAGE - Pending, Dispatched to Dar es Salaam, At port Dar es Salaam, Dar es Salaam →
+Mokambo or Dar es Salaam → Lubumbashi (two routes, chosen by cost), Offloaded in Lubumbashi - with "Update stage…" (ticked
+containers, a row, its page) or the forwarder's list from Excel; the movements are recorded behind each stage by the
+movement procedures, always started at once; "Offloaded in Lubumbashi" completes the last leg and POSTS the goods receipt
+for the full quantity loaded (a short container: cancel it and make it again); customs is a charge, not a stage; an
+administrator keeps the stages (Backoffice › Master Data › Shipment Stages, Manage shipment stages) and sees the containers
+the stages do not describe; the Containers list has a Stage column and filter; Shipments, Movements and Tracking are
+hidden from the menu unless Show Shipments, Movements and Tracking is ticked, Next step with them.*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -3184,6 +3194,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `108_Logistics_ContainerPaymentStatus.sql` | `purchase.fn_Container_PaymentStatus` (a container's share of each posted supplier invoice and what is paid of it, from `fn_InvoiceContainerSettlement`: Unpaid / Partial / Paid / NotInvoiced); `logistics.usp_Container_Search` re-created from script 104 with `@PaymentStatus` and the row's PaymentStatus, InvoicedAmountBase, PaidAmountBase |
 | `109_Reporting_GoodsOnOrderReport.sql` | The Goods on Order report: permission `reports.goodsonorder.view` (Reports, 1540). Its rows are `logistics.usp_ContainerReport`'s without the received containers; the service makes one column per stage (StageLabel, the pending months in one) |
 | `110_Logistics_ContainerReportWithCharges.sql` | `logistics.usp_ContainerReport` re-created from script 106 with `@WithCharges` (default 1): 0 reads no charge - result sets 2 and 3 empty, the transport, charge and total expenses columns empty; the Container Report page sends 0 unless "With charges" is ticked, Dispatched Items and Goods on Order keep 1 |
+| `111_Logistics_ShipmentStages.sql` | Shipment stages: table `logistics.ShipmentStages` (Kind 1 Leg / 2 Arrive / 3 Offload, MovementTypeId, FromPlaceId NULL = port of loading, ToPlaceId), seeded once (step `111.ShipmentStages`) where Dar es Salaam and Lubumbashi exist; `logistics.fn_Container_Stage` (where a container stands), `usp_ShipmentStage_Preview / _MatchNumbers / _Check / _List / _Save / _Delete`; permissions `masterdata.shipmentstages.manage` (1475) and `containers.movements.advanced` (1409, the three hidden menus); `usp_Port_Delete`, `usp_MovementType_Delete` and `usp_Container_Search` (script 108 + `@StageId`, StageId / StageName / StageReceiptPending) re-created. The service (`ShipmentStageService`) moves containers with `usp_Movement_AddLeg`, Complete / Complete only some, and posts the goods receipt of an Offload stage |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

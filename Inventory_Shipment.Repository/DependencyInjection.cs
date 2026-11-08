@@ -64,6 +64,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPaymentRepository, PaymentRepository>();
         services.TryAddScoped<IPortRepository, PortRepository>();
         services.TryAddScoped<IMovementTypeRepository, MovementTypeRepository>();
+        services.TryAddScoped<IShipmentStageRepository, ShipmentStageRepository>();
         services.TryAddScoped<IMovementRepository, MovementRepository>();
         services.TryAddScoped<IContainerChargeRepository, ContainerChargeRepository>();
         services.TryAddScoped<IBivacCostRepository, BivacCostRepository>();   // (97)

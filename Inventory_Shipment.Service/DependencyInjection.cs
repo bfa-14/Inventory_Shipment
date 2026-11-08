@@ -79,6 +79,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPortService, PortService>();
         services.TryAddScoped<IMovementTypeService, MovementTypeService>();
         services.TryAddScoped<IMovementService, MovementService>();
+        services.TryAddScoped<IShipmentStageService, ShipmentStageService>();
         services.TryAddScoped<IContainerChargeService, ContainerChargeService>();
         services.TryAddScoped<IBivacCostService, BivacCostService>();   // (97)
         // Container charges from Excel: the reader and writer hold nothing per request, like the invoice import's.

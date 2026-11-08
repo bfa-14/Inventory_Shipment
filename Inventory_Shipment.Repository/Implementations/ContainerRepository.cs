@@ -69,6 +69,7 @@ public sealed class ContainerRepository : IContainerRepository
             NextStep = ContainerNextStepKinds.Normalize(query.NextStep, ContainerNextStepKinds.ListFilters),
             Journey = ContainerJourney.Normalize(query.Journey),   // (95) refused by the service when unknown
             PaymentStatus = ContainerPaymentStatus.Normalize(query.PaymentStatus),   // (108) refused by the service when unknown
+            query.StageId,   // (111)
         };
 
         await using var connection = _connectionFactory.Create();

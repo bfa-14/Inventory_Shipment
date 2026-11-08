@@ -139,6 +139,9 @@ public static class Permissions
         public const string AttachmentTypesManage = "masterdata.attachmenttypes.manage";
         public const string MovementTypesManage = "masterdata.movementtypes.manage";
 
+        /// <summary>(111) The shipment stages a container moves through (Backoffice › Master Data › Shipment Stages).</summary>
+        public const string ShipmentStagesManage = "masterdata.shipmentstages.manage";
+
         /* The two lists a customer receipt line picks from. One "manage" each, like the container lists;
            the lookups are open to any signed-in user because the receipt page reads from them. */
         public const string PaymentMethodsManage = "masterdata.paymentmethods.manage";
@@ -338,6 +341,12 @@ public static class Permissions
         /// created, to the roles holding View Movements, View Tracking or Manage Shipment Movements.
         /// </summary>
         public const string ShipmentsView = "containers.shipments.view";
+
+        /// <summary>
+        /// (111) The Shipments, Movements and Tracking menus: hidden from everyone else (containers move by their stage).
+        /// The pages and their own permissions are unchanged, for an administrator's corrections.
+        /// </summary>
+        public const string MovementsAdvanced = "containers.movements.advanced";
 
         /// <summary>
         /// Reports › Container Report (script 95): every container and order still to load with its order, invoices,
@@ -699,6 +708,9 @@ public static class Permissions
             "Logistics › Shipments: the containers on their way, by stage.", 1406),
         new(Containers.TrackingView, "View Tracking", ContainersModule,
             "Open the Tracking board (a container's own page shows its route with View Containers).", 1407),
+        // Names, descriptions and sort orders match script 111's MERGE, so the start-up sync changes nothing.
+        new(Containers.MovementsAdvanced, "Show Shipments, Movements and Tracking", ContainersModule,
+            "Show the Shipments, Movements and Tracking menus (hidden from everyone else: containers move by their stage).", 1409),
         // Name, description and sort order match script 95's MERGE, so the start-up sync changes nothing.
         new(Containers.ReportView, "View Container Report", ContainersModule,
             "Reports › Container Report: every container and order still to load with its order, invoices, payments, journey, charges and cost, by stage.", 1408),
@@ -730,6 +742,8 @@ public static class Permissions
             "Add and remove documents on containers and movements.", 1460),
         new(MasterData.MovementTypesManage, "Manage movement types", MasterDataModule,
             "Define the movement types and the stage each one represents.", 1470),
+        new(MasterData.ShipmentStagesManage, "Manage shipment stages", MasterDataModule,
+            "Define the stages a container moves through (Update stage…, the import of stages) and the leg each one records.", 1475),
         new(MasterData.PaymentMethodsManage, "Manage payment methods", MasterDataModule,
             "Define the payment methods a receipt line can use.", 1480),
         new(MasterData.CashBankAccountsManage, "Manage cash / bank accounts", MasterDataModule,
