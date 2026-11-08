@@ -808,5 +808,13 @@
     <Build Include="reporting\Stored Procedures\usp_ItemBalance_Data.sql" />
     <Build Include="reporting\Stored Procedures\usp_ContainerChargeReport.sql" />
     <Build Include="purchase\Functions\fn_Container_PaymentStatus.sql" />
+    <Build Include="logistics\Tables\ShipmentStages.sql" />
+    <Build Include="logistics\Functions\fn_Container_Stage.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Save.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Preview.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_MatchNumbers.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_List.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Delete.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Check.sql" />
   </ItemGroup>
 </Project>
