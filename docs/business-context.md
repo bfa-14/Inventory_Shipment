@@ -183,6 +183,8 @@ administrator keeps the stages (Backoffice › Master Data › Shipment Stages, 
 the stages do not describe; the Containers list has a Stage column and filter; Shipments, Movements and Tracking are
 hidden from the menu unless Show Shipments, Movements and Tracking is ticked, Next step with them.*
 
+*Updated on 8 November 2026 for **one port per place** (script 112): Dar es Salaam and Lubumbashi were each in Ports twice (TZ-DAR / TZDAR, CD-LUB / CDLUB); the used rows took the seed codes TZDAR and CDLUB and the empty duplicates were deleted (1.3).*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -3195,6 +3197,7 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `109_Reporting_GoodsOnOrderReport.sql` | The Goods on Order report: permission `reports.goodsonorder.view` (Reports, 1540). Its rows are `logistics.usp_ContainerReport`'s without the received containers; the service makes one column per stage (StageLabel, the pending months in one) |
 | `110_Logistics_ContainerReportWithCharges.sql` | `logistics.usp_ContainerReport` re-created from script 106 with `@WithCharges` (default 1): 0 reads no charge - result sets 2 and 3 empty, the transport, charge and total expenses columns empty; the Container Report page sends 0 unless "With charges" is ticked, Dispatched Items and Goods on Order keep 1 |
 | `111_Logistics_ShipmentStages.sql` | Shipment stages: table `logistics.ShipmentStages` (Kind 1 Leg / 2 Arrive / 3 Offload, MovementTypeId, FromPlaceId NULL = port of loading, ToPlaceId), seeded once (step `111.ShipmentStages`) where Dar es Salaam and Lubumbashi exist; `logistics.fn_Container_Stage` (where a container stands), `usp_ShipmentStage_Preview / _MatchNumbers / _Check / _List / _Save / _Delete`; permissions `masterdata.shipmentstages.manage` (1475) and `containers.movements.advanced` (1409, the three hidden menus); `usp_Port_Delete`, `usp_MovementType_Delete` and `usp_Container_Search` (script 108 + `@StageId`, StageId / StageName / StageReceiptPending) re-created. The service (`ShipmentStageService`) moves containers with `usp_Movement_AddLeg`, Complete / Complete only some, and posts the goods receipt of an Offload stage |
+| `112_MasterData_MergeDuplicatePorts.sql` | One port per place: the data migration made Dar es Salaam and Lubumbashi as TZ-DAR and CD-LUB, script 24 seeds them as TZDAR and CDLUB, so both showed twice. When the seeded row is used nowhere it is deleted and the used row takes its code (same Id, nothing else changes); a used seeded row is left alone with a PRINT. Idempotent |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they
