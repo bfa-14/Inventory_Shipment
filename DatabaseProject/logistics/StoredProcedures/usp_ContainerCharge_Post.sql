@@ -119,6 +119,12 @@ BEGIN
         CLOSE posts;
         DEALLOCATE posts;
 
+        -- (113) A CASH CHARGE PAYS FOR ITSELF, through the supplier payment module: one payment for the charges of a group
+        -- posted together, posted now. Refused, nothing of the post is kept.
+        DECLARE @Paid logistics.tvp_IdList;
+        INSERT INTO @Paid (Id) SELECT Id FROM @List;
+        EXEC logistics.usp_ContainerCharge_PayCash @Paid, @UserId;
+
         COMMIT TRANSACTION;
     END TRY
     BEGIN CATCH

@@ -14,7 +14,11 @@
     @Notes            NVARCHAR(300)  = NULL,
     @Manual           logistics.tvp_ChargeManual READONLY,
     @RowVersion       BINARY(8)      = NULL,
-    @UserId           INT            = NULL
+    @UserId           INT            = NULL,
+    @PaymentType      TINYINT        = NULL,      -- (113) 1 Cash, 2 On account (NULL = On account)
+    @PaymentMethodId  INT            = NULL,
+    @PaymentAccountId INT            = NULL,
+    @PaymentReference NVARCHAR(100)  = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -96,6 +100,14 @@ BEGIN
         END
     END
 
+    -- (113) how the charge is paid (see Create)
+    SET @PaymentType = ISNULL(@PaymentType, 2);
+    SET @PaymentReference = NULLIF(LTRIM(RTRIM(@PaymentReference)), N'');
+    IF @PaymentType = 2 SELECT @PaymentMethodId = NULL, @PaymentAccountId = NULL, @PaymentReference = NULL;
+    DECLARE @PayMsg NVARCHAR(400) = (SELECT p.Message FROM logistics.fn_ContainerCharge_PaymentProblem(@PaymentType, @PaymentMethodId,
+                                         @PaymentAccountId, @CurrencyId, @ProviderPartyId, @ChargeTypeId) p);
+    IF @PayMsg IS NOT NULL THROW 70000, @PayMsg, 1;
+
     BEGIN TRY
         BEGIN TRANSACTION;
 
@@ -115,6 +127,7 @@ BEGIN
         SET MovementId = @MovementId, ChargeTypeId = @ChargeTypeId, Description = @Description, ProviderPartyId = @ProviderPartyId,
             Reference = @Reference, ChargeDate = @ChargeDate, CurrencyId = @CurrencyId, RateType = @RateType, ExchangeRate = @Rate,
             Amount = @Amount, AmountBase = @AmountBase, AllocationMethod = @Method, IncludeInLandedCost = @InLanded, Notes = @Notes,
+            PaymentType = @PaymentType, PaymentMethodId = @PaymentMethodId, PaymentAccountId = @PaymentAccountId, PaymentReference = @PaymentReference,
             UpdatedAtUtc = SYSUTCDATETIME(), UpdatedBy = @UserId
         WHERE Id = @Id;
 

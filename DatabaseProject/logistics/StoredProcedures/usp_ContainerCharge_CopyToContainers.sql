@@ -123,6 +123,14 @@ BEGIN
         FROM @Ids x
         OUTER APPLY logistics.fn_Container_BivacCost(x.Id, @SrcBivac) bc;
 
+        -- (113) the copies are paid as the charge copied is
+        UPDATE ch SET PaymentType = src.PaymentType, PaymentMethodId = src.PaymentMethodId, PaymentAccountId = src.PaymentAccountId,
+                      PaymentReference = src.PaymentReference
+        FROM logistics.ContainerCharges ch
+        INNER JOIN @New n ON n.Id = ch.Id
+        CROSS JOIN logistics.ContainerCharges src
+        WHERE src.Id = @ChargeId;
+
         DECLARE new_cur CURSOR LOCAL STATIC READ_ONLY FORWARD_ONLY FOR SELECT Id FROM @New ORDER BY Id;
         OPEN new_cur;
         FETCH NEXT FROM new_cur INTO @NewChargeId;

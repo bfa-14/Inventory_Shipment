@@ -1,5 +1,6 @@
-﻿/* ================================================================== 4. Container charges */
+﻿/* ================================================================== 4-6. The procedures re-created */
 
+-- Re-created (113) from script 102's body: + PaymentType, PaymentMethodId, PaymentAccountId, PaymentReference. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Create
     @ContainerIds     logistics.tvp_IdList READONLY,
     @MovementId       INT            = NULL,
@@ -16,7 +17,11 @@ CREATE   PROCEDURE logistics.usp_ContainerCharge_Create
     @AllocationMethod NVARCHAR(10)   = NULL,      -- NULL = the charge type's method
     @Notes            NVARCHAR(300)  = NULL,
     @UserId           INT            = NULL,
-    @BivacItemId      INT            = NULL       -- (97) the BIVAC item of a BIVAC charge (charge type BIV)
+    @BivacItemId      INT            = NULL,      -- (97) the BIVAC item of a BIVAC charge (charge type BIV)
+    @PaymentType      TINYINT        = NULL,      -- (113) 1 Cash, 2 On account (NULL = On account)
+    @PaymentMethodId  INT            = NULL,      -- (113) Cash: how it was paid
+    @PaymentAccountId INT            = NULL,      -- (113) Cash: the cash / bank account it was paid from
+    @PaymentReference NVARCHAR(100)  = NULL       -- (113) Cash: a transfer no.
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -143,6 +148,14 @@ BEGIN
         SET @SplitRule = N'Same';
     END
 
+    -- (113) how the charge is paid: Cash pays it when it is posted, On account leaves it payable to its provider
+    SET @PaymentType = ISNULL(@PaymentType, 2);
+    SET @PaymentReference = NULLIF(LTRIM(RTRIM(@PaymentReference)), N'');
+    IF @PaymentType = 2 SELECT @PaymentMethodId = NULL, @PaymentAccountId = NULL, @PaymentReference = NULL;
+    SET @Msg = (SELECT p.Message FROM logistics.fn_ContainerCharge_PaymentProblem(@PaymentType, @PaymentMethodId, @PaymentAccountId,
+                                                                                  @CurrencyId, @ProviderPartyId, @ChargeTypeId) p);
+    IF @Msg IS NOT NULL THROW 70000, @Msg, 1;
+
     DECLARE @Group UNIQUEIDENTIFIER = CASE WHEN @Count > 1 THEN NEWID() END;
     DECLARE @New TABLE (Id INT PRIMARY KEY, ContainerId INT);
 
@@ -162,11 +175,11 @@ BEGIN
 
         INSERT INTO logistics.ContainerCharges (ContainerId, MovementId, GroupId, ChargeTypeId, Description, ProviderPartyId, Reference, ChargeDate,
                                                 CurrencyId, RateType, ExchangeRate, Amount, AmountBase, AllocationMethod, IncludeInLandedCost, Notes, CreatedBy,
-                                                BivacItemId)
+                                                BivacItemId, PaymentType, PaymentMethodId, PaymentAccountId, PaymentReference)
         OUTPUT inserted.Id, inserted.ContainerId INTO @New (Id, ContainerId)
         SELECT s.ContainerId, @MovementId, @Group, @ChargeTypeId, @Description, @ProviderPartyId, @Reference, @ChargeDate,
                @CurrencyId, @RateType, @Rate, s.Amount, ROUND(s.Amount / @Rate, 2), @Method, @InLanded, @Notes, @UserId,
-               @BivacItemId
+               @BivacItemId, @PaymentType, @PaymentMethodId, @PaymentAccountId, @PaymentReference
         FROM @Split s;
 
         DECLARE @ChargeId INT;

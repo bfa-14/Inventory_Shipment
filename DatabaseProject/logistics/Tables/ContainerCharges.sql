@@ -31,8 +31,13 @@
     [RowVersion]           ROWVERSION       NOT NULL,
     [BivacItemId]          INT              NULL,
     [BivacOutDocumentId]   INT              NULL,
+    [PaymentType]          TINYINT          CONSTRAINT [DF_ContainerCharges_PaymentType] DEFAULT ((2)) NOT NULL,
+    [PaymentMethodId]      INT              NULL,
+    [PaymentAccountId]     INT              NULL,
+    [PaymentReference]     NVARCHAR (100)   NULL,
     CONSTRAINT [PK_ContainerCharges] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [CK_ContainerCharges_Method] CHECK ([AllocationMethod]=N'Manual' OR [AllocationMethod]=N'Volume' OR [AllocationMethod]=N'Weight' OR [AllocationMethod]=N'Quantity' OR [AllocationMethod]=N'Value'),
+    CONSTRAINT [CK_ContainerCharges_PaymentType] CHECK ([PaymentType]=(2) OR [PaymentType]=(1)),
     CONSTRAINT [CK_ContainerCharges_Rate] CHECK ([ExchangeRate]>(0)),
     CONSTRAINT [CK_ContainerCharges_Status] CHECK ([Status]>=(1) AND [Status]<=(3)),
     CONSTRAINT [FK_ContainerCharges_BivacItem] FOREIGN KEY ([BivacItemId]) REFERENCES [inventory].[Items] ([Id]),
@@ -42,11 +47,15 @@
     CONSTRAINT [FK_ContainerCharges_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_ContainerCharges_Currency] FOREIGN KEY ([CurrencyId]) REFERENCES [masterdata].[Currencies] ([Id]),
     CONSTRAINT [FK_ContainerCharges_Movement] FOREIGN KEY ([MovementId]) REFERENCES [logistics].[Movements] ([Id]),
+    CONSTRAINT [FK_ContainerCharges_PaymentAccount] FOREIGN KEY ([PaymentAccountId]) REFERENCES [masterdata].[CashBankAccounts] ([Id]),
+    CONSTRAINT [FK_ContainerCharges_PaymentMethod] FOREIGN KEY ([PaymentMethodId]) REFERENCES [masterdata].[PaymentMethods] ([Id]),
     CONSTRAINT [FK_ContainerCharges_PostedBy] FOREIGN KEY ([PostedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_ContainerCharges_Provider] FOREIGN KEY ([ProviderPartyId]) REFERENCES [masterdata].[Parties] ([Id]),
     CONSTRAINT [FK_ContainerCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]),
     CONSTRAINT [FK_ContainerCharges_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id])
 );
+
+
 
 
 

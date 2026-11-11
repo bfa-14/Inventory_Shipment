@@ -1,4 +1,4 @@
-CREATE   PROCEDURE purchase.usp_Payment_Get
+﻿CREATE   PROCEDURE purchase.usp_Payment_Get
     @Id INT
 AS
 BEGIN
@@ -17,7 +17,8 @@ BEGIN
            p.PostedAtUtc, p.PostedBy, pu.FullName AS PostedByName,
            p.ReversedAtUtc, p.ReversedBy, ru.FullName AS ReversedByName, p.ReverseReason,
            p.CreatedAtUtc, p.CreatedBy, cu.FullName AS CreatedByName, p.UpdatedAtUtc, p.UpdatedBy, uu.FullName AS UpdatedByName,
-           p.RowVersion
+           p.RowVersion,
+           p.FromChargePost   -- (113) made by a container charge paid cash
     FROM purchase.Payments p
     INNER JOIN masterdata.Parties py    ON py.Id = p.PayeeId
     INNER JOIN masterdata.Branches b    ON b.Id = p.BranchId

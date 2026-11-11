@@ -1,4 +1,4 @@
-CREATE   PROCEDURE logistics.usp_ContainerCharge_Search
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Search
     @Search          NVARCHAR(100) = NULL,   -- container ref / no., reference, description, provider
     @ContainerId     INT           = NULL,
     @MovementId      INT           = NULL,
@@ -33,6 +33,7 @@ BEGIN
            TotalAmountBase = SUM(ch.AmountBase) OVER (),
            -- (47) supplier payments: posted charges only (NULL otherwise)
            PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
+           ch.PaymentType,   -- (113)
            COUNT(*) OVER () AS TotalCount
     FROM logistics.ContainerCharges ch
     OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst

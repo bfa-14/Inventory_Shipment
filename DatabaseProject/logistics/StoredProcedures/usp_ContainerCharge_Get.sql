@@ -1,7 +1,4 @@
-/* ================================================================== 10. Get */
-
--- Re-created (97) from the body of script 67: + the BIVAC item and the BIVAC Out. Nothing else changes.
-CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
     @Id INT
 AS
 BEGIN
@@ -18,9 +15,18 @@ BEGIN
            PaidAmount = pst.PaidAmount, OutstandingAmount = pst.OutstandingAmount, PaymentStatus = pst.PaymentStatus,
            -- (97) a BIVAC charge: its BIVAC item, and the BIVAC Out its posting made
            ch.BivacItemId, BivacItemCode = bi.ItemCode, BivacItemName = bi.ItemName,
-           ch.BivacOutDocumentId, BivacOutNumber = bo.DocumentNumber, BivacOutStatus = bo.Status
+           ch.BivacOutDocumentId, BivacOutNumber = bo.DocumentNumber, BivacOutStatus = bo.Status,
+           -- (113) how it is paid, and the payment a cash charge made
+           ch.PaymentType, ch.PaymentMethodId, PaymentMethodName = pm.MethodName, ch.PaymentAccountId,
+           PaymentAccountCode = pa.AccountCode, PaymentAccountName = pa.AccountName, ch.PaymentReference,
+           CashPaymentId = cp.Id, CashPaymentNumber = cp.PaymentNumber
     FROM logistics.ContainerCharges ch
     LEFT  JOIN inventory.Items bi          ON bi.Id = ch.BivacItemId
+    LEFT  JOIN masterdata.PaymentMethods pm   ON pm.Id = ch.PaymentMethodId
+    LEFT  JOIN masterdata.CashBankAccounts pa ON pa.Id = ch.PaymentAccountId
+    OUTER APPLY (SELECT TOP (1) p.Id, p.PaymentNumber FROM purchase.PaymentAllocations a
+                 INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+                 WHERE a.ContainerChargeId = ch.Id AND a.RemovedAtUtc IS NULL AND p.Status = 2 AND p.FromChargePost = 1) cp
     LEFT  JOIN inventory.StockDocuments bo ON bo.Id = ch.BivacOutDocumentId
     OUTER APPLY logistics.fn_ContainerChargeSettlement(ch.Id) pst
     INNER JOIN logistics.Containers c    ON c.Id = ch.ContainerId

@@ -816,5 +816,7 @@
     <Build Include="logistics\Stored Procedures\usp_ShipmentStage_List.sql" />
     <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Delete.sql" />
     <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Check.sql" />
+    <Build Include="logistics\Functions\fn_ContainerCharge_PaymentProblem.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ContainerCharge_PayCash.sql" />
   </ItemGroup>
 </Project>
