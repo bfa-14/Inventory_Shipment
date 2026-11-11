@@ -23,6 +23,13 @@ public interface IContainerChargeImportService
         Stream file, string fileName, long fileLength, DateOnly? today, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>(113) The file's rows as they are (the Import Container Charges page keeps them); 400 INVALID_FILE as validate.</summary>
+    Result<ContainerChargeImportParsed> Parse(Stream file, string fileName, long fileLength, IReadOnlySet<string> permissions);
+
+    /// <summary>(113) The page's rows judged again with its options (what to validate on) and its Payment panel.</summary>
+    Task<Result<ContainerChargeImportValidation>> ValidateRowsAsync(
+        ContainerChargeImportValidateRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     /// <summary>The Warning and Error rows as a workbook to correct and upload again.</summary>
     Result<(byte[] Content, string FileName)> GenerateErrorReport(
         IReadOnlyList<ContainerChargeImportValidatedRow> rows, IReadOnlySet<string> permissions);

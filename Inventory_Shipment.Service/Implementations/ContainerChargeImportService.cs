@@ -124,19 +124,80 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             return Forbidden<ContainerChargeImportValidation>(Permissions.Containers.ChargesCreate);
         }
 
+        var read = Read(file, fileName, fileLength);
+        if (read.Rows is null)
+        {
+            return Invalid<ContainerChargeImportValidation>(read.Error!);
+        }
+
+        return await JudgeAsync(read.Rows, fileName, today, new ContainerChargeImportOptions(), new ContainerChargeImportPayment(), cancellationToken);
+    }
+
+    /// <summary>(113) The Import Container Charges page: the file's rows as they are, kept by the page and judged with its options.</summary>
+    public Result<ContainerChargeImportParsed> Parse(Stream file, string fileName, long fileLength, IReadOnlySet<string> permissions)
+    {
+        if (!permissions.Contains(Permissions.Containers.ChargesCreate))
+        {
+            return Forbidden<ContainerChargeImportParsed>(Permissions.Containers.ChargesCreate);
+        }
+
+        var read = Read(file, fileName, fileLength);
+        return read.Rows is not null
+            ? Result<ContainerChargeImportParsed>.Success(new ContainerChargeImportParsed { FileName = fileName, Rows = read.Rows })
+            : Invalid<ContainerChargeImportParsed>(read.Error!);
+    }
+
+    /// <summary>
+    /// (113) The rows the page holds - the file's, less the ones deleted - judged again: what the Container column is
+    /// matched against, whether the provider's invoice no. makes two charges the same, and how they are paid.
+    /// </summary>
+    public async Task<Result<ContainerChargeImportValidation>> ValidateRowsAsync(
+        ContainerChargeImportValidateRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.ChargesCreate))
+        {
+            return Forbidden<ContainerChargeImportValidation>(Permissions.Containers.ChargesCreate);
+        }
+
+        var rows = request.Rows ?? [];
+        if (rows.Count == 0)
+        {
+            return Result<ContainerChargeImportValidation>.Failure(ErrorType.Validation, "There are no rows to validate.", "VALIDATION");
+        }
+
+        if (rows.Count > ContainerChargeImportParser.MaxDataRows)
+        {
+            return Result<ContainerChargeImportValidation>.Failure(ErrorType.Validation,
+                $"At most {ContainerChargeImportParser.MaxDataRows} rows can be validated at a time.", "VALIDATION");
+        }
+
+        var options = request.Options ?? new ContainerChargeImportOptions();
+        if (!options.MatchContainerNo && !options.MatchContainerRef)
+        {
+            return Result<ContainerChargeImportValidation>.Failure(ErrorType.Validation,
+                "Validate on the container no., the container ref or both: the Container column must find its container.", "VALIDATION");
+        }
+
+        return await JudgeAsync(rows, request.FileName ?? string.Empty, request.Today, options,
+            request.Payment ?? new ContainerChargeImportPayment(), cancellationToken);
+    }
+
+    /// <summary>The file's own checks: an .xlsx of the template's columns, within the limits, with rows.</summary>
+    private (IReadOnlyList<ContainerChargeImportRow>? Rows, string? Error) Read(Stream file, string fileName, long fileLength)
+    {
         if (fileLength <= 0)
         {
-            return Invalid("The file is empty.");
+            return (null, "The file is empty.");
         }
 
         if (fileLength > ContainerChargeImportParser.MaxFileBytes)
         {
-            return Invalid($"The file is larger than {ContainerChargeImportParser.MaxFileBytes / (1024 * 1024)} MB.");
+            return (null, $"The file is larger than {ContainerChargeImportParser.MaxFileBytes / (1024 * 1024)} MB.");
         }
 
         if (!fileName.EndsWith(".xlsx", StringComparison.OrdinalIgnoreCase))
         {
-            return Invalid("Only .xlsx files can be imported. Save the file as an Excel workbook and try again.");
+            return (null, "Only .xlsx files can be imported. Save the file as an Excel workbook and try again.");
         }
 
         IReadOnlyList<ContainerChargeImportRow> rows;
@@ -147,20 +208,23 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
         catch (ContainerChargeImportFileException ex)
         {
             // The parser's own sentence: it is written for the person holding the file.
-            return Invalid(ex.Message);
+            return (null, ex.Message);
         }
 
-        if (rows.Count == 0)
-        {
-            return Invalid("The file has no rows to import.");
-        }
+        return rows.Count == 0 ? (null, "The file has no rows to import.") : (rows, null);
+    }
 
+    private async Task<Result<ContainerChargeImportValidation>> JudgeAsync(
+        IReadOnlyList<ContainerChargeImportRow> rows, string fileName, DateOnly? today, ContainerChargeImportOptions options,
+        ContainerChargeImportPayment payment, CancellationToken cancellationToken)
+    {
         var date = EffectiveToday(today);
         var lookups = await LoadLookupsAsync(rows, date, cancellationToken);
-        var verdicts = rows.Select(r => Judge(r, lookups, date)).ToList();
+        var verdicts = rows.Select(r => Judge(r, lookups, date, options)).ToList();
 
-        WarnDuplicates(verdicts);
-        await RefuseReferenceClashesAsync(verdicts, cancellationToken);
+        MarkDuplicates(verdicts, options);
+        await RefuseReferenceClashesAsync(verdicts, options, cancellationToken);
+        await CheckPaymentAsync(verdicts, payment, cancellationToken);
 
         foreach (var verdict in verdicts)
         {
@@ -168,7 +232,7 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
         }
 
         var judged = verdicts.Select(v => v.Row).ToList();
-        foreach (var group in Batches(judged.Where(r => r.Status != ContainerChargeImportStatus.Error)).Where(b => b.Count > 1))
+        foreach (var group in Batches(judged.Where(Importable)).Where(b => b.Count > 1))
         {
             foreach (var member in group)
             {
@@ -183,13 +247,14 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             ValidRows = judged.Count(r => r.Status == ContainerChargeImportStatus.Valid),
             WarningRows = judged.Count(r => r.Status == ContainerChargeImportStatus.Warning),
             ErrorRows = judged.Count(r => r.Status == ContainerChargeImportStatus.Error),
+            DuplicateRows = judged.Count(r => r.Status == ContainerChargeImportStatus.Duplicate),
             BaseCurrencyCode = lookups.BaseCurrency?.CurrencyCode,
             Rows = judged,
         };
 
         _logger.LogInformation(
-            "Container charge import validated {FileName}: {Total} rows, {Valid} valid, {Warning} warning, {Error} error.",
-            fileName, result.TotalRows, result.ValidRows, result.WarningRows, result.ErrorRows);
+            "Container charge import validated {FileName}: {Total} rows, {Valid} valid, {Warning} warning, {Error} error, {Duplicate} duplicate.",
+            fileName, result.TotalRows, result.ValidRows, result.WarningRows, result.ErrorRows, result.DuplicateRows);
 
         return Result<ContainerChargeImportValidation>.Success(result);
     }
@@ -323,18 +388,22 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
         public List<string> Errors { get; } = [];
         public List<string> Warnings { get; } = [];
 
-        /// <summary>An Error row says only what is wrong; a Warning row what to look at.</summary>
+        /// <summary>(113) The same charge as another row or a charge already entered.</summary>
+        public List<string> Duplicates { get; } = [];
+
+        /// <summary>An Error row says only what is wrong; a Duplicate row what it repeats (and its warnings); a Warning row what to look at.</summary>
         public void Close()
         {
             Row.Status = Errors.Count > 0 ? ContainerChargeImportStatus.Error
+                : Duplicates.Count > 0 ? ContainerChargeImportStatus.Duplicate
                 : Warnings.Count > 0 ? ContainerChargeImportStatus.Warning
                 : ContainerChargeImportStatus.Valid;
-            var lines = Errors.Count > 0 ? Errors : Warnings;
+            List<string> lines = Errors.Count > 0 ? Errors : [.. Duplicates, .. Warnings];
             Row.Message = lines.Count > 0 ? string.Join(" ", lines) : null;
         }
     }
 
-    private static Verdict Judge(ContainerChargeImportRow row, Lookups lookups, DateOnly today)
+    private static Verdict Judge(ContainerChargeImportRow row, Lookups lookups, DateOnly today, ContainerChargeImportOptions options)
     {
         var verdict = new Verdict(new ContainerChargeImportValidatedRow
         {
@@ -358,7 +427,7 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             errors.Add("This is an example row of the template: delete it before importing.");
         }
 
-        var container = JudgeContainer(row, lookups, verdict);
+        var container = JudgeContainer(row, lookups, verdict, options);
         var type = JudgeChargeType(row, lookups, verdict);
         JudgeAmount(row, verdict);
         var currency = JudgeCurrency(row, lookups, verdict);
@@ -411,7 +480,7 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
 
         if (container is not null && type is not null && v.ContainerId is not null)
         {
-            WarnAboutContainer(container, type, lookups, verdict);
+            WarnAboutContainer(container, type, lookups, verdict, options);
         }
 
         return verdict;
@@ -428,7 +497,8 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
     /// for the other container would move the wrong costs, so the row warns, names the others and says to type
     /// the ref to choose.
     /// </summary>
-    private static ContainerChargeImportContainer? JudgeContainer(ContainerChargeImportRow row, Lookups lookups, Verdict verdict)
+    private static ContainerChargeImportContainer? JudgeContainer(
+        ContainerChargeImportRow row, Lookups lookups, Verdict verdict, ContainerChargeImportOptions options)
     {
         if (string.IsNullOrWhiteSpace(row.Container))
         {
@@ -436,11 +506,16 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             return null;
         }
 
+        // (113) only the keys the page validates on
         var key = ContainerKey(row.Container);
-        var hits = lookups.ByNumber.GetValueOrDefault(key) ?? lookups.ByRef.GetValueOrDefault(key);
+        var hits = (options.MatchContainerNo ? lookups.ByNumber.GetValueOrDefault(key) : null)
+                   ?? (options.MatchContainerRef ? lookups.ByRef.GetValueOrDefault(key) : null);
         if (hits is null or { Count: 0 })
         {
-            verdict.Errors.Add($"No container with the number or ref '{row.Container}'. The number may not be typed on its container yet.");
+            var what = options.MatchContainerNo && options.MatchContainerRef ? "number or ref"
+                : options.MatchContainerNo ? "number" : "ref";
+            verdict.Errors.Add($"No container with the {what} '{row.Container}'."
+                               + (options.MatchContainerNo ? " The number may not be typed on its container yet." : string.Empty));
             return null;
         }
 
@@ -752,7 +827,8 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
     /// needed for it, so only a container of several lines is warned about.
     /// </summary>
     private static void WarnAboutContainer(
-        ContainerChargeImportContainer container, ChargeTypeLookupDto type, Lookups lookups, Verdict verdict)
+        ContainerChargeImportContainer container, ChargeTypeLookupDto type, Lookups lookups, Verdict verdict,
+        ContainerChargeImportOptions options)
     {
         var v = verdict.Row;
         var warnings = verdict.Warnings;
@@ -786,31 +862,43 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             return;
         }
 
+        // (113) THE SAME CHARGE ALREADY ON THE CONTAINER is a Duplicate: with Charge reference ticked and a reference typed,
+        // the same type and provider's invoice no.; else the same type, amount, currency, date and reference.
+        var byReference = options.MatchReference && !string.IsNullOrWhiteSpace(v.Reference);
         var same = lookups.ChargesByContainer[container.ContainerId].FirstOrDefault(c =>
-            // A deduction is stored negative (script 102) and typed positive: compare the sizes.
-            c.ChargeTypeId == type.Id && Math.Abs(c.Amount) == amount && c.CurrencyId == currencyId
-            && DateOnly.FromDateTime(c.ChargeDate) == date
-            && string.Equals(c.Reference?.Trim() ?? string.Empty, v.Reference?.Trim() ?? string.Empty, StringComparison.OrdinalIgnoreCase));
+            c.ChargeTypeId == type.Id
+            && (byReference
+                ? Normalized(c.Reference) == Normalized(v.Reference)
+                // A deduction is stored negative (script 102) and typed positive: compare the sizes.
+                : Math.Abs(c.Amount) == amount && c.CurrencyId == currencyId && DateOnly.FromDateTime(c.ChargeDate) == date
+                  && Normalized(c.Reference) == Normalized(v.Reference)));
         if (same is not null)
         {
-            warnings.Add($"Container {container.ContainerRef} already has this charge ({type.ChargeCode} {amount.ToString("N2", Invariant)} "
-                         + $"{v.CurrencyCode} of {date.ToString("dd/MM/yyyy", Invariant)}, {ContainerChargeStatus.Name(same.Status).ToLowerInvariant()}): "
-                         + "importing adds it again.");
+            verdict.Duplicates.Add($"Already entered on {container.ContainerRef}: {type.ChargeCode} {Math.Abs(same.Amount).ToString("N2", Invariant)} "
+                                   + $"of {DateOnly.FromDateTime(same.ChargeDate).ToString("dd/MM/yyyy", Invariant)}"
+                                   + (string.IsNullOrWhiteSpace(same.Reference) ? string.Empty : $", ref. {same.Reference!.Trim()}")
+                                   + $" ({ContainerChargeStatus.Name(same.Status).ToLowerInvariant()}).");
         }
     }
 
-    /// <summary>Two rows of the file for the same charge are both imported: the second one says so.</summary>
-    private static void WarnDuplicates(IReadOnlyList<Verdict> verdicts)
+    /// <summary>
+    /// (113) Two rows of the file for the same charge: the second is a Duplicate of the first. The same container and
+    /// charge type, and with Charge reference ticked (a reference typed) the same provider's invoice no., else the same
+    /// amount, currency, date, provider and reference.
+    /// </summary>
+    private static void MarkDuplicates(IReadOnlyList<Verdict> verdicts, ContainerChargeImportOptions options)
     {
         var first = new Dictionary<string, int>(StringComparer.Ordinal);
         foreach (var verdict in verdicts.Where(x => x.Errors.Count == 0))
         {
             var v = verdict.Row;
-            var key = string.Join('|', v.ContainerId, v.ChargeTypeId, v.Amount?.ToString("0.00", Invariant), v.CurrencyId,
-                v.ChargeDate?.ToString("yyyy-MM-dd", Invariant), v.ProviderPartyId, Normalized(v.Reference));
+            var key = options.MatchReference && !string.IsNullOrWhiteSpace(v.Reference)
+                ? string.Join('|', "R", v.ContainerId, v.ChargeTypeId, v.ProviderPartyId, Normalized(v.Reference))
+                : string.Join('|', "A", v.ContainerId, v.ChargeTypeId, v.Amount?.ToString("0.00", Invariant), v.CurrencyId,
+                    v.ChargeDate?.ToString("yyyy-MM-dd", Invariant), v.ProviderPartyId, Normalized(v.Reference));
             if (first.TryGetValue(key, out var rowNumber))
             {
-                verdict.Warnings.Add($"Same charge as row {rowNumber}: both rows are imported.");
+                verdict.Duplicates.Add($"Duplicate of row {rowNumber}.");
             }
             else
             {
@@ -825,17 +913,19 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
     /// are rows of the file that share a provider and an invoice no. but cannot be one charge group (another charge type,
     /// date, currency, rate or notes, or the same container twice) - the second group would be refused at Create.
     /// </summary>
-    private async Task RefuseReferenceClashesAsync(IReadOnlyList<Verdict> verdicts, CancellationToken cancellationToken)
+    private async Task RefuseReferenceClashesAsync(
+        IReadOnlyList<Verdict> verdicts, ContainerChargeImportOptions options, CancellationToken cancellationToken)
     {
-        var candidates = verdicts.Where(x => x.Errors.Count == 0 && !string.IsNullOrWhiteSpace(x.Row.Reference)).ToList();
+        var candidates = verdicts.Where(x => x.Errors.Count == 0 && x.Duplicates.Count == 0 && !string.IsNullOrWhiteSpace(x.Row.Reference)).ToList();
         foreach (var invoice in candidates.GroupBy(x => (x.Row.ProviderPartyId, Normalized(x.Row.Reference))))
         {
             var reference = invoice.First().Row.Reference!.Trim();
             if (await _charges.ReferenceClashAsync(invoice.Key.ProviderPartyId, reference, cancellationToken) is { } clash)
             {
+                // (113) validated on the charge reference: the provider's invoice is already entered - a Duplicate
                 foreach (var verdict in invoice)
                 {
-                    verdict.Errors.Add(clash);
+                    (options.MatchReference ? verdict.Duplicates : verdict.Errors).Add(clash);
                 }
 
                 continue;
@@ -887,15 +977,14 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
                 $"At most {ContainerChargeImportParser.MaxDataRows} rows can be imported at a time.", "VALIDATION");
         }
 
-        var importable = rows
-            .Where(r => !string.Equals(r.Status, ContainerChargeImportStatus.Error, StringComparison.Ordinal))
-            .OrderBy(r => r.RowNumber)
-            .ToList();
+        var importable = rows.Where(Importable).OrderBy(r => r.RowNumber).ToList();
         if (importable.Count == 0)
         {
             return Result<ContainerChargeImportResult>.Failure(ErrorType.Validation,
-                "Nothing to import: every row has an error. Correct the file and validate it again.", "VALIDATION");
+                "Nothing to import: every row is an error or a duplicate. Correct the file and validate it again.", "VALIDATION");
         }
+
+        var payment = request.Payment ?? new ContainerChargeImportPayment();
 
         var outcomes = new Dictionary<ContainerChargeImportValidatedRow, ContainerChargeImportRowResult>(ReferenceEqualityComparer.Instance);
         var ready = new List<ContainerChargeImportValidatedRow>(importable.Count);
@@ -941,6 +1030,10 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
                             SplitRule = ChargeSplitRules.Same,
                             AllocationMethod = row.AllocationMethod,
                             Notes = Trimmed(row.Notes),
+                            PaymentType = payment.PaymentType,                // (113) the copies of the group take it too
+                            PaymentMethodId = payment.IsCash ? payment.PaymentMethodId : null,
+                            PaymentAccountId = payment.IsCash ? payment.PaymentAccountId : null,
+                            PaymentReference = payment.IsCash ? Trimmed(payment.PaymentReference) : null,
                         }, userId, CancellationToken.None);
 
                         var charge = made[0];
@@ -980,12 +1073,31 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
             }
         }
 
+        // (113) PAID CASH, THE CHARGES OF ONE GROUP ARE POSTED TOGETHER, so one supplier payment pays the provider's invoice;
+        // a group refused as a whole is tried charge by charge, so one bad row leaves only itself a draft.
+        var postedTogether = new HashSet<int>();
+        if (request.Post && payment.IsCash)
+        {
+            foreach (var group in created.GroupBy(c => c.GroupId?.ToString() ?? "#" + c.Id).Where(g => g.Count() > 1))
+            {
+                try
+                {
+                    await _charges.PostAsync(null, [.. group.Select(c => c.Id)], null, userId, CancellationToken.None);
+                    postedTogether.UnionWith(group.Select(c => c.Id));
+                }
+                catch (BusinessRuleException)
+                {
+                    // each charge of the group is posted on its own below, with its own reason
+                }
+            }
+        }
+
         foreach (var (row, id, groupId, amount, amountBase, containerRef, containerNo) in created)
         {
-            var outcome = ContainerChargeImportOutcome.Draft;
+            var outcome = postedTogether.Contains(id) ? ContainerChargeImportOutcome.Posted : ContainerChargeImportOutcome.Draft;
             string? message = null;
 
-            if (request.Post)
+            if (request.Post && outcome != ContainerChargeImportOutcome.Posted)
             {
                 try
                 {
@@ -1143,6 +1255,41 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
 
     private static string Normalized(string? value) => value?.Trim().ToUpperInvariant() ?? string.Empty;
 
+    /// <summary>(113) What an import creates: neither an Error nor a Duplicate row.</summary>
+    private static bool Importable(ContainerChargeImportValidatedRow row)
+        => !string.Equals(row.Status, ContainerChargeImportStatus.Error, StringComparison.Ordinal)
+           && !string.Equals(row.Status, ContainerChargeImportStatus.Duplicate, StringComparison.Ordinal);
+
+    /// <summary>
+    /// (113) PAID CASH, EVERY ROW MUST BE PAYABLE as the procedures will judge it (logistics.fn_ContainerCharge_PaymentProblem):
+    /// a provider that is an active supplier, an account in the row's currency. Asked once per combination.
+    /// </summary>
+    private async Task CheckPaymentAsync(IReadOnlyList<Verdict> verdicts, ContainerChargeImportPayment payment, CancellationToken cancellationToken)
+    {
+        if (!payment.IsCash)
+        {
+            return;
+        }
+
+        var answers = new Dictionary<(int?, int?, int?), string?>();
+        foreach (var verdict in verdicts.Where(x => x.Errors.Count == 0))
+        {
+            var v = verdict.Row;
+            var key = (v.CurrencyId, v.ProviderPartyId, v.ChargeTypeId);
+            if (!answers.TryGetValue(key, out var problem))
+            {
+                problem = await _charges.PaymentProblemAsync(payment.PaymentType, payment.PaymentMethodId, payment.PaymentAccountId,
+                    v.CurrencyId, v.ProviderPartyId, v.ChargeTypeId, cancellationToken);
+                answers[key] = problem;
+            }
+
+            if (problem is not null)
+            {
+                verdict.Errors.Add("Paid cash: " + char.ToLowerInvariant(problem[0]) + problem[1..]);
+            }
+        }
+    }
+
     private static string? Trimmed(string? value) => string.IsNullOrWhiteSpace(value) ? null : value.Trim();
 
     private DateOnly ServerToday() => DateOnly.FromDateTime(_clock.GetUtcNow().UtcDateTime);
@@ -1154,6 +1301,6 @@ public sealed class ContainerChargeImportService : IContainerChargeImportService
         return today is { } local && Math.Abs(local.DayNumber - server.DayNumber) <= 2 ? local : server;
     }
 
-    private static Result<ContainerChargeImportValidation> Invalid(string message)
-        => Result<ContainerChargeImportValidation>.Failure(ErrorType.Validation, message, InvalidFileCode);
+    private static Result<T> Invalid<T>(string message)
+        => Result<T>.Failure(ErrorType.Validation, message, InvalidFileCode);
 }

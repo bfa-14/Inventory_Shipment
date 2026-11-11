@@ -81,6 +81,50 @@ public sealed class ContainerChargeImportController : ControllerBase
     }
 
     /// <summary>
+    /// (113) The Import Container Charges page: reads the uploaded .xlsx (form field "file") and answers its rows as the
+    /// file says them, judged by nothing yet - the page keeps them, deletes some, and validates them with validate-rows.
+    /// </summary>
+    [HttpPost("parse")]
+    [HasPermission(Permissions.Containers.ChargesCreate)]
+    [Consumes("multipart/form-data")]
+    [ProducesResponseType<ContainerChargeImportParsed>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [RequestSizeLimit(ContainerChargeImportParser.MaxFileBytes * 2)]
+    public async Task<ActionResult<ContainerChargeImportParsed>> Parse([FromForm] IFormFile file)
+    {
+        if (file is null || file.Length == 0)
+        {
+            return BadRequest(new ProblemDetails
+            {
+                Status = StatusCodes.Status400BadRequest,
+                Title = "Validation failed",
+                Detail = "No file was uploaded.",
+                Instance = HttpContext.Request.Path,
+                Extensions = { ["code"] = "INVALID_FILE" },
+            });
+        }
+
+        await using var stream = file.OpenReadStream();
+        return _imports.Parse(stream, file.FileName, file.Length, User.GetPermissions()).ToActionResult(this);
+    }
+
+    /// <summary>
+    /// (113) The page's rows judged: body { fileName, today, rows, options { matchContainerNo, matchContainerRef,
+    /// matchReference }, payment { paymentType, paymentMethodId, paymentAccountId, paymentReference } }. Each row Valid,
+    /// Warning, Duplicate or Error; nothing is created.
+    /// </summary>
+    [HttpPost("validate-rows")]
+    [HasPermission(Permissions.Containers.ChargesCreate)]
+    [ProducesResponseType<ContainerChargeImportValidation>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    public async Task<ActionResult<ContainerChargeImportValidation>> ValidateRows(
+        [FromBody] ContainerChargeImportValidateRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _imports.ValidateRowsAsync(request, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
+    /// <summary>
     /// The Warning and Error rows posted back (the validate answer's rows, as they came), as a workbook with the
     /// template's columns plus Row, Status and Message: "Import_Container_Charges_Errors.xlsx".
     /// </summary>

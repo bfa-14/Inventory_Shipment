@@ -18,6 +18,58 @@ public static class ContainerChargeImportStatus
 
     /// <summary>Never imported.</summary>
     public const string Error = "Error";
+
+    /// <summary>
+    /// (113) The same charge twice - in the file, or already entered on the container - by the keys the page validates
+    /// on (see <see cref="ContainerChargeImportOptions"/>). Never imported: the row is deleted, then the rows validated
+    /// again.
+    /// </summary>
+    public const string Duplicate = "Duplicate";
+}
+
+/// <summary>
+/// (113) What the Import Container Charges page validates on. The Container column is matched against the container
+/// number, the container ref, or both (the number first); with Charge reference the provider's invoice no. is part of
+/// what makes two charges the same one, without it their amount, currency and date are.
+/// </summary>
+public sealed class ContainerChargeImportOptions
+{
+    public bool MatchContainerNo { get; init; } = true;
+    public bool MatchContainerRef { get; init; } = true;
+    public bool MatchReference { get; init; } = true;
+}
+
+/// <summary>(113) How every charge of the file is paid: one Payment panel for the file (see ChargePaymentTypes).</summary>
+public sealed class ContainerChargeImportPayment
+{
+    /// <summary>1 Cash, 2 On account.</summary>
+    public byte PaymentType { get; init; } = ChargePaymentTypes.OnAccount;
+
+    public int? PaymentMethodId { get; init; }
+    public int? PaymentAccountId { get; init; }
+    public string? PaymentReference { get; init; }
+
+    public bool IsCash => PaymentType == ChargePaymentTypes.Cash;
+}
+
+/// <summary>(113) The rows of a file as it says them, before anything is judged: the page keeps them and sends them back.</summary>
+public sealed class ContainerChargeImportParsed
+{
+    public string FileName { get; init; } = string.Empty;
+    public IReadOnlyList<ContainerChargeImportRow> Rows { get; init; } = [];
+}
+
+/// <summary>(113) The rows the page holds (some deleted since the file was read), judged again with its options.</summary>
+public sealed class ContainerChargeImportValidateRequest
+{
+    public string? FileName { get; init; }
+
+    /// <summary>The browser's date, for a blank Charge Date.</summary>
+    public DateOnly? Today { get; init; }
+
+    public IReadOnlyList<ContainerChargeImportRow> Rows { get; init; } = [];
+    public ContainerChargeImportOptions Options { get; init; } = new();
+    public ContainerChargeImportPayment Payment { get; init; } = new();
 }
 
 /// <summary>What happened to one row at the import.</summary>
@@ -184,6 +236,9 @@ public sealed class ContainerChargeImportValidation
     public int WarningRows { get; init; }
     public int ErrorRows { get; init; }
 
+    /// <summary>(113) The same charge twice: never imported.</summary>
+    public int DuplicateRows { get; init; }
+
     /// <summary>Valid + Warning: what an import would create.</summary>
     public int ImportableRows => ValidRows + WarningRows;
 
@@ -199,6 +254,9 @@ public sealed class ContainerChargeImportValidation
 public sealed class ContainerChargeImportRequest
 {
     public bool Post { get; init; }
+
+    /// <summary>(113) How the charges are paid; Cash pays each when it is posted (one payment per charge group).</summary>
+    public ContainerChargeImportPayment Payment { get; init; } = new();
 
     /// <summary>The file's name, for the log.</summary>
     public string? FileName { get; init; }
