@@ -1,5 +1,4 @@
-﻿/* ================================================================== 4. reporting.usp_ItemBalance_Data */
-
+﻿-- Re-created (114) from the body of script 103: COLLATE DATABASE_DEFAULT on the text columns of its #tables (3).
 CREATE   PROCEDURE reporting.usp_ItemBalance_Data
     @UserId       INT,
     @WarehouseIds NVARCHAR(MAX) = NULL,    -- comma separated; a parent takes every warehouse under it; NULL / empty = all the user's
@@ -58,8 +57,8 @@ BEGIN
     END
 
     /* -- The documents left out: cancelled or reversed (their posting and its reversal), as usp_Item_RebuildCosts -- */
-    CREATE TABLE #Undone (DocumentFamily NVARCHAR(20) NOT NULL, DocumentTypeCode NVARCHAR(20) NOT NULL, DocumentId INT NOT NULL,
-                          DocumentNumber NVARCHAR(30) NOT NULL);
+    CREATE TABLE #Undone (DocumentFamily NVARCHAR(20) COLLATE DATABASE_DEFAULT NOT NULL, DocumentTypeCode NVARCHAR(20) COLLATE DATABASE_DEFAULT NOT NULL, DocumentId INT NOT NULL,
+                          DocumentNumber NVARCHAR(30) COLLATE DATABASE_DEFAULT NOT NULL);
     INSERT INTO #Undone (DocumentFamily, DocumentTypeCode, DocumentId, DocumentNumber)
     SELECT DISTINCT r.DocumentFamily, r.DocumentTypeCode, r.DocumentId, r.DocumentNumber
     FROM inventory.StockMovements r

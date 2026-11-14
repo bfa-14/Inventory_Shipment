@@ -1,8 +1,4 @@
-/* ================================================================== 1. Send for approval */
-
--- 6.2 Draft PO -> Pending approval. Returns one row per approver: a personal token (shown ONCE, only its hash is kept)
--- for the by-email approvers, none for the in-app ones; SendEmail = whether the API emails that approver.
--- 65016 only while the approved order is emailed to the supplier (ApprovalSettings.EmailSupplierOnApproval).
+-- Re-created (114) from the body of script 44: COLLATE DATABASE_DEFAULT on the text columns of its #tables (4).
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_RequestApproval
     @Id         INT,
     @RowVersion BINARY(8) = NULL,
@@ -35,8 +31,8 @@ BEGIN
 
     CREATE TABLE #IssuedLinks
     (
-        PurchaseDocumentId INT NOT NULL, UserId INT NOT NULL, FullName NVARCHAR(100) NOT NULL, Email NVARCHAR(256) NULL,
-        Token VARCHAR(64) NULL, ExpiresAtUtc DATETIME2(3) NULL, RequestNo INT NOT NULL, Channel NVARCHAR(10) NOT NULL,
+        PurchaseDocumentId INT NOT NULL, UserId INT NOT NULL, FullName NVARCHAR(100) COLLATE DATABASE_DEFAULT NOT NULL, Email NVARCHAR(256) COLLATE DATABASE_DEFAULT NULL,
+        Token VARCHAR(64) COLLATE DATABASE_DEFAULT NULL, ExpiresAtUtc DATETIME2(3) NULL, RequestNo INT NOT NULL, Channel NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL,
         CanApproveInApp BIT NOT NULL, SendEmail BIT NOT NULL
     );
 

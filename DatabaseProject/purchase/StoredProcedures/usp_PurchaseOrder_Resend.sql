@@ -1,4 +1,4 @@
--- order is decided). Same result rows as usp_PurchaseOrder_RequestApproval.
+-- Re-created (114) from the body of script 42: COLLATE DATABASE_DEFAULT on the text columns of its #tables (4).
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_Resend
     @PurchaseDocumentId INT,
     @RowVersion         BINARY(8) = NULL,
@@ -10,8 +10,8 @@ BEGIN
 
     CREATE TABLE #IssuedLinks
     (
-        PurchaseDocumentId INT NOT NULL, UserId INT NOT NULL, FullName NVARCHAR(100) NOT NULL, Email NVARCHAR(256) NULL,
-        Token VARCHAR(64) NULL, ExpiresAtUtc DATETIME2(3) NULL, RequestNo INT NOT NULL, Channel NVARCHAR(10) NOT NULL,
+        PurchaseDocumentId INT NOT NULL, UserId INT NOT NULL, FullName NVARCHAR(100) COLLATE DATABASE_DEFAULT NOT NULL, Email NVARCHAR(256) COLLATE DATABASE_DEFAULT NULL,
+        Token VARCHAR(64) COLLATE DATABASE_DEFAULT NULL, ExpiresAtUtc DATETIME2(3) NULL, RequestNo INT NOT NULL, Channel NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL,
         CanApproveInApp BIT NOT NULL, SendEmail BIT NOT NULL
     );
 

@@ -1,13 +1,4 @@
-/* ================================================================== 7. The stock level procedures */
-
-/* (91) INVENTORY > STOCK LEVELS, "Per warehouse" (and the item card, with @ItemId, activeItemsOnly 0, inactive
-   warehouses too): every level of the scope with where its warehouse stands, or (@Status NoLevel) the item /
-   warehouse pairs of the scope WITHOUT a level that hold stock (a ledger balance other than 0) or appear on a released
-   transfer order (as To with goods on the way or to dispatch, as From with goods to dispatch). Scope: warehouses at
-   the bottom of the tree, never On the way, active unless @IncludeInactiveWarehouses; @WarehouseId = that warehouse or
-   the leaves under it; @ItemFamilyId = the family and its sub-families; @Search = item code or name (LIKE) or a unit's
-   barcode (exactly). Result 1: the rows, Below Min first, then Below Min covered, Above Max, OK (then the pairs without
-   a level), item code, warehouse code. Result 2: the scope's totals, levels only, whatever @Status. */
+-- Re-created (114) from the body of script 91: COLLATE DATABASE_DEFAULT on the text columns of its #tables (1).
 CREATE   PROCEDURE inventory.usp_StockLevel_Search
     @Search                    NVARCHAR(100) = NULL,
     @BranchId                  INT           = NULL,
@@ -105,7 +96,7 @@ BEGIN
     (
         ItemId INT NOT NULL, WarehouseId INT NOT NULL, HasLevel BIT NOT NULL, MinQuantityBase INT NULL, MaxQuantityBase INT NULL,
         OnHandBase INT NOT NULL, InOnTheWayBase INT NOT NULL, InToDispatchBase INT NOT NULL, OutToDispatchBase INT NOT NULL,
-        ProjectedBase INT NOT NULL, ToReachMaxBase INT NOT NULL, Status NVARCHAR(10) NOT NULL,
+        ProjectedBase INT NOT NULL, ToReachMaxBase INT NOT NULL, Status NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL,
         PRIMARY KEY (ItemId, WarehouseId)
     );
 

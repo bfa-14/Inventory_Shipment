@@ -1,5 +1,4 @@
-﻿/* ================================================================== 2. reporting.usp_ContainerChargeReport */
-
+﻿-- Re-created (114) from the body of script 105: COLLATE DATABASE_DEFAULT on the text columns of its #tables (8).
 CREATE   PROCEDURE reporting.usp_ContainerChargeReport
     @ChargeTypeIds NVARCHAR(MAX),                -- comma separated, in the order of the columns
     @DateBasis     NVARCHAR(10)  = N'Offload',   -- Offload | Dispatch
@@ -43,9 +42,9 @@ BEGIN
 
     /* ---------------------------------------------------------------- their legs (as script 100) */
     CREATE TABLE #Legs (
-        ContainerId INT NOT NULL, MovementId INT NOT NULL, Status TINYINT NOT NULL, Stage NVARCHAR(10) NOT NULL,
-        TypeCode NVARCHAR(10) NOT NULL, FromId INT NOT NULL, ToId INT NOT NULL, FromKind NVARCHAR(10) NULL,
-        ToKind NVARCHAR(10) NULL, FromName NVARCHAR(100) NULL, ToName NVARCHAR(100) NULL, StartDate DATE NULL,
+        ContainerId INT NOT NULL, MovementId INT NOT NULL, Status TINYINT NOT NULL, Stage NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL,
+        TypeCode NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL, FromId INT NOT NULL, ToId INT NOT NULL, FromKind NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL,
+        ToKind NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL, FromName NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL, ToName NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL, StartDate DATE NULL,
         EndDate DATE NULL, Seq INT NULL, IsVessel BIT NULL, IsStay BIT NULL, PRIMARY KEY (ContainerId, MovementId));
 
     INSERT INTO #Legs (ContainerId, MovementId, Status, Stage, TypeCode, FromId, ToId, FromKind, ToKind, FromName, ToName,
@@ -70,7 +69,7 @@ BEGIN
                 FROM #Legs) s ON s.ContainerId = l.ContainerId AND s.MovementId = l.MovementId;
 
     CREATE TABLE #J (
-        ContainerId INT NOT NULL PRIMARY KEY, FinalDestination NVARCHAR(400) NULL, DeliveredTo NVARCHAR(100) NULL,
+        ContainerId INT NOT NULL PRIMARY KEY, FinalDestination NVARCHAR(400) COLLATE DATABASE_DEFAULT NULL, DeliveredTo NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL,
         ActiveMovementId INT NULL, LastMovementId INT NULL);
 
     INSERT INTO #J (ContainerId, DeliveredTo, ActiveMovementId, LastMovementId)

@@ -1,12 +1,4 @@
-/* (91) THE IMPORT (S13): every Valid and Warning row in ONE transaction, judged again by the same function; Error and
-   Unchanged rows skipped. The levels the file sets or removes are read again WITH (UPDLOCK, HOLDLOCK) inside the
-   transaction (the judgement read them without a lock), so a level added, changed or removed meanwhile is counted as
-   it stands now. Audit Source Import with the file name. Result 1, per row: RowNumber, Outcome (Added | Changed |
-   Removed | Unchanged | Skipped), Message (the judgement's; a Skipped row's error). Result 2: the counts and the
-   sentence. A 20,000-row import holds its locks until it commits: readers of the levels wait a few seconds. */
--- Re-created (92) from the body of script 91: + a row in a warehouse the user may not use is Skipped with the
--- sentence (W6, W17): the same step as the check on #j, inside the transaction and before the levels are read and
--- written, so nothing is written for it.
+-- Re-created (114) from the body of script 92: COLLATE DATABASE_DEFAULT on the text columns of its #tables (4).
 CREATE   PROCEDURE inventory.usp_ItemWarehouseLevel_Import
     @Rows     inventory.tvp_ItemWarehouseLevelImport READONLY,
     @FileName NVARCHAR(260) = NULL,
@@ -20,8 +12,8 @@ BEGIN
 
     CREATE TABLE #j
     (
-        RowNumber INT NOT NULL PRIMARY KEY, Status NVARCHAR(10) NOT NULL, Action NVARCHAR(10) NOT NULL, Message NVARCHAR(500) NULL,
-        ItemId INT NULL, WarehouseId INT NULL, MinQuantityBase INT NULL, MaxQuantityBase INT NULL, Outcome NVARCHAR(10) NULL
+        RowNumber INT NOT NULL PRIMARY KEY, Status NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL, Action NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL, Message NVARCHAR(500) COLLATE DATABASE_DEFAULT NULL,
+        ItemId INT NULL, WarehouseId INT NULL, MinQuantityBase INT NULL, MaxQuantityBase INT NULL, Outcome NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL
     );
     CREATE TABLE #cur
     (

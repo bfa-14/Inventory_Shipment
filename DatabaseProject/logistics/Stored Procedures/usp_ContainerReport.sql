@@ -1,11 +1,4 @@
-﻿/* ================================================================== 1. The Container Report, with or without charges */
-
--- Re-created (110) from the body of script 106, + @WithCharges (see the header, 1). Three result sets:
---   1. the rows: one per container line, then one per order line still to load;
---   2. each row's share of the posted charges, per charge type (RowKey, ChargeTypeId, AmountBase) - none without charges;
---   3. the charge types: every active one and any inactive one the rows carry - none without charges.
--- SET-BASED: the rows are found first, their legs read once, every list built over them - never a function per row
--- but the FOB estimate of a line not received yet (the container page's own).
+﻿-- Re-created (114) from the body of script 110: COLLATE DATABASE_DEFAULT on the text columns of its #tables (14).
 CREATE   PROCEDURE logistics.usp_ContainerReport
     @Search          NVARCHAR(100) = NULL,   -- container ref or no., B/L, order number, PI no., invoice no.
     @SupplierId      INT           = NULL,
@@ -39,7 +32,7 @@ BEGIN
 
     /* ---------------------------------------------------------------- the rows */
     CREATE TABLE #R (
-        RowKey NVARCHAR(20) NOT NULL PRIMARY KEY, IsPending BIT NOT NULL,
+        RowKey NVARCHAR(20) COLLATE DATABASE_DEFAULT NOT NULL PRIMARY KEY, IsPending BIT NOT NULL,
         ContainerId INT NULL, ContainerLineId INT NULL, PoId INT NOT NULL, PoLineId INT NOT NULL, ItemId INT NOT NULL,
         Qty INT NOT NULL, OrderPriceBase DECIMAL(18,6) NULL);
 
@@ -102,10 +95,10 @@ BEGIN
 
     /* ---------------------------------------------------------------- the legs of their containers */
     CREATE TABLE #Legs (
-        ContainerId INT NOT NULL, MovementId INT NOT NULL, Status TINYINT NOT NULL, Stage NVARCHAR(10) NOT NULL,
-        TypeCode NVARCHAR(10) NOT NULL, FromId INT NOT NULL, ToId INT NOT NULL, FromKind NVARCHAR(10) NULL,
-        ToKind NVARCHAR(10) NULL, FromName NVARCHAR(100) NULL, ToName NVARCHAR(100) NULL, StartDate DATE NULL,
-        EndDate DATE NULL, Eta DATE NULL, Vehicle NVARCHAR(100) NULL, Seq INT NULL,
+        ContainerId INT NOT NULL, MovementId INT NOT NULL, Status TINYINT NOT NULL, Stage NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL,
+        TypeCode NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL, FromId INT NOT NULL, ToId INT NOT NULL, FromKind NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL,
+        ToKind NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL, FromName NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL, ToName NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL, StartDate DATE NULL,
+        EndDate DATE NULL, Eta DATE NULL, Vehicle NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL, Seq INT NULL,
         IsVessel BIT NULL, IsStay BIT NULL, PRIMARY KEY (ContainerId, MovementId));
 
     INSERT INTO #Legs (ContainerId, MovementId, Status, Stage, TypeCode, FromId, ToId, FromKind, ToKind, FromName, ToName,
@@ -131,7 +124,7 @@ BEGIN
 
     CREATE TABLE #J (
         ContainerId INT NOT NULL PRIMARY KEY, DispatchDate DATE NULL, ArrivedPortDate DATE NULL, LeftPortDate DATE NULL,
-        FinalDestination NVARCHAR(400) NULL, Trucks NVARCHAR(400) NULL, DeliveredTo NVARCHAR(100) NULL,
+        FinalDestination NVARCHAR(400) COLLATE DATABASE_DEFAULT NULL, Trucks NVARCHAR(400) COLLATE DATABASE_DEFAULT NULL, DeliveredTo NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL,
         ActiveMovementId INT NULL, LastMovementId INT NULL);
 
     INSERT INTO #J (ContainerId, DispatchDate, ArrivedPortDate, LeftPortDate, DeliveredTo, ActiveMovementId, LastMovementId)
@@ -160,7 +153,7 @@ BEGIN
                        GROUP BY l.Vehicle) x) t;
 
     /* ---------------------------------------------------------------- invoices and payments */
-    CREATE TABLE #Inv (RowKey NVARCHAR(20) NOT NULL, InvoiceId INT NOT NULL, PRIMARY KEY (RowKey, InvoiceId));
+    CREATE TABLE #Inv (RowKey NVARCHAR(20) COLLATE DATABASE_DEFAULT NOT NULL, InvoiceId INT NOT NULL, PRIMARY KEY (RowKey, InvoiceId));
     INSERT INTO #Inv (RowKey, InvoiceId)
     SELECT DISTINCT r.RowKey, inv.Id
     FROM #R r
@@ -178,7 +171,7 @@ BEGIN
     GROUP BY a.PurchaseDocumentId, a.PaymentId;
 
     /* ---------------------------------------------------------------- charges */
-    CREATE TABLE #Ch (RowKey NVARCHAR(20) NOT NULL, ChargeTypeId INT NOT NULL, AmountBase DECIMAL(18,2) NOT NULL,
+    CREATE TABLE #Ch (RowKey NVARCHAR(20) COLLATE DATABASE_DEFAULT NOT NULL, ChargeTypeId INT NOT NULL, AmountBase DECIMAL(18,2) NOT NULL,
                       PRIMARY KEY (RowKey, ChargeTypeId));
     -- (110) Read only when asked: left empty, the transport and charge figures below are empty too.
     IF @WithCharges = 1
@@ -194,7 +187,7 @@ BEGIN
     INSERT INTO @Transport (Id) SELECT Id FROM purchase.ChargeTypes WHERE ChargeCode IN (N'FRE', N'TRP');
 
     -- (106) Each family's top family ("Main Items", "Maintenance and Accessories"): Dispatched Items counts its pieces apart.
-    CREATE TABLE #Root (FamilyId INT NOT NULL PRIMARY KEY, RootName NVARCHAR(150) NULL);
+    CREATE TABLE #Root (FamilyId INT NOT NULL PRIMARY KEY, RootName NVARCHAR(150) COLLATE DATABASE_DEFAULT NULL);
     WITH f AS (SELECT Id, RootId = Id FROM masterdata.ItemFamilies WHERE ParentId IS NULL
                UNION ALL
                SELECT ch.Id, f.RootId FROM masterdata.ItemFamilies ch INNER JOIN f ON ch.ParentId = f.Id)

@@ -1,7 +1,4 @@
--- was last sent (event 1, 2 or 3; before script 42: the request date of script 26). One transaction per order; an
--- order without approver is skipped (no event), another failure is reported as an informational message and the
--- order is tried again at the next call. Returns the rows of usp_PurchaseOrder_RequestApproval for every reminded
--- order, plus PurchaseDocumentId and WaitingSinceUtc. Calling it again at once returns nothing.
+-- Re-created (114) from the body of script 42: COLLATE DATABASE_DEFAULT on the text columns of its #tables (4).
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_DueReminders
     @MaxOrders INT = 50
 AS
@@ -14,8 +11,8 @@ BEGIN
 
     CREATE TABLE #IssuedLinks
     (
-        PurchaseDocumentId INT NOT NULL, UserId INT NOT NULL, FullName NVARCHAR(100) NOT NULL, Email NVARCHAR(256) NULL,
-        Token VARCHAR(64) NULL, ExpiresAtUtc DATETIME2(3) NULL, RequestNo INT NOT NULL, Channel NVARCHAR(10) NOT NULL,
+        PurchaseDocumentId INT NOT NULL, UserId INT NOT NULL, FullName NVARCHAR(100) COLLATE DATABASE_DEFAULT NOT NULL, Email NVARCHAR(256) COLLATE DATABASE_DEFAULT NULL,
+        Token VARCHAR(64) COLLATE DATABASE_DEFAULT NULL, ExpiresAtUtc DATETIME2(3) NULL, RequestNo INT NOT NULL, Channel NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL,
         CanApproveInApp BIT NOT NULL, SendEmail BIT NOT NULL
     );
     CREATE TABLE #Due (PurchaseDocumentId INT NOT NULL PRIMARY KEY, WaitingSinceUtc DATETIME2(3) NULL, LastSentUtc DATETIME2(3) NULL);

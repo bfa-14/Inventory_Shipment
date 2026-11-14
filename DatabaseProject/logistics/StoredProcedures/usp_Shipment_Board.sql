@@ -1,27 +1,4 @@
-/* ================================================================== 4. The Shipments board */
-
--- Logistics › Shipments: one row per container on the board, with its card, its column (fn_Container_BoardPhase) and its
--- group in the column; then the containers and pieces of each column (the columns of the board, left to right, Received
--- only with @ShowReceived). The filters are the server's; NO PAGING (the board shows every container on its way).
--- Groups in a column (GroupKey, GroupLabel; GroupOrder = their order in the column):
---   At supplier      by port of loading ("Chennai"; "No port of loading")
---   At sea           by movement ("MOV-2026-000046 · MSC Aurora V.123 · Chennai → Dar es Salaam · ETA 20/10/2026"); the
---                    containers followed by typed dates in one group of their own, last ("Followed by typed dates")
---   On the road      by leg, From → To ("Dar es Salaam → Kasumbalesa"): trucks travel one movement per container; a
---                    border crossing (a stay) by its place ("Border crossing at Kasumbalesa")
---   At port, At border / customs   by place
---   Delivered, to receive          by the place delivered to
---   Received         by the warehouse received into
--- Card: AtPlace* = where it stands (none while a leg carries it); IsLate = the leg in progress has an ETA before today;
--- IsFreeTimeOver = the rule of the container page, the Tracking board and the Dashboard (at port or cleared, the last free
--- day passed before the end of its Delivery, else before today); the ship state, next step and proposed leg in the
--- columns and words of usp_Container_Search (81). Movement numbers are always given: the page links them for readers who
--- may open movements.
--- SET-BASED FOR THE BOARD'S ROWS ONLY: the containers are found first (each filter a step of its own), then their ship
--- state (the definitions of fn_Container_ShipState, over their movements read once), the planned movement's refusal once
--- per movement, and the usual next leg once per (place, last stage) - never a function over every container per row.
--- Measured on 5,000 open containers in a database of 50,000 (21,200 movements in the last 365 days): about 1.6 s, two
--- thirds of it the usual next leg (fn_Movement_NextLegHistory, phase 2's, read once per pair).
+-- Re-created (114) from the body of script 82: COLLATE DATABASE_DEFAULT on the text columns of its #tables (1).
 CREATE   PROCEDURE logistics.usp_Shipment_Board
     @Search          NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel or truck, purchase order number
     @SupplierId      INT           = NULL,
@@ -288,7 +265,7 @@ BEGIN
     -- the history of a (place, none) pair only when a container that never moved has no port of destination: with one,
     -- fn_Container_NextLegProposal proposes Sea freight to it and reads no history
     -- (one statement per pair: the same pairs through one CROSS APPLY took half as long again)
-    CREATE TABLE #Hist (PlaceId INT NOT NULL, LastStage NVARCHAR(10) NULL, MovementTypeId INT NULL, ToPlaceId INT NULL, Legs INT NULL);
+    CREATE TABLE #Hist (PlaceId INT NOT NULL, LastStage NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL, MovementTypeId INT NULL, ToPlaceId INT NULL, Legs INT NULL);
     DECLARE @Pairs TABLE (Seq INT IDENTITY(1, 1) PRIMARY KEY, PlaceId INT NOT NULL, LastStage NVARCHAR(10) NULL);
     INSERT INTO @Pairs (PlaceId, LastStage)
     SELECT DISTINCT PlaceId, LastStage FROM #Leg
