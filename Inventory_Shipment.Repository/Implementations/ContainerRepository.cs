@@ -68,6 +68,8 @@ public sealed class ContainerRepository : IContainerRepository
             // the service refuses anything else before this
             NextStep = ContainerNextStepKinds.Normalize(query.NextStep, ContainerNextStepKinds.ListFilters),
             Journey = ContainerJourney.Normalize(query.Journey),   // (95) refused by the service when unknown
+            PaymentStatus = ContainerPaymentStatus.Normalize(query.PaymentStatus),   // (108) refused by the service when unknown
+            query.StageId,   // (111)
         };
 
         await using var connection = _connectionFactory.Create();
@@ -242,7 +244,7 @@ public sealed class ContainerRepository : IContainerRepository
         var parameters = new DynamicParameters();
         parameters.Add("@Id", id, DbType.Int32);
         parameters.Add("@PurchaseOrderId", request.PurchaseOrderId, DbType.Int32);
-        parameters.Add("@ContainerNo", request.ContainerNo, DbType.String, size: 20);
+        parameters.Add("@ContainerNo", request.ContainerNo, DbType.String, size: 30);
         parameters.Add("@ContainerTypeId", request.ContainerTypeId, DbType.Int32);
         parameters.Add("@SealNo", request.SealNo, DbType.String, size: 30);
         parameters.Add("@CustomsSealNo", request.CustomsSealNo, DbType.String, size: 30);

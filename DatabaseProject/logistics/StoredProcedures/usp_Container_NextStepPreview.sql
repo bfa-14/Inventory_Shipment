@@ -1,10 +1,4 @@
-/* ================================================================== 6. The next step's dialogs: can a container complete alone */
-
--- Re-created (82) from the body of script 81: + whether each container of a movement to complete can be split off it and
--- why not (set 1: CanSplitOff, SplitOffBlockedReason - fn_Movement_SplitBlock), and whether a Complete group of only part
--- of its movement can complete the ticked ones alone (set 2: SplitPossible, SplitBlockedReason): the dialogs offer "Only
--- KTG-2026-0031: it leaves MOV-2026-000046 and gets its own movement" / "Only the 20 ticked", disabled with the reason.
--- GET next-step reads set 1 for one container. Nothing else changes.
+﻿-- Re-created (114) from the body of script 104: COLLATE DATABASE_DEFAULT on the text columns of its #tables (10).
 CREATE   PROCEDURE logistics.usp_Container_NextStepPreview
     @ContainerIds logistics.tvp_IdList READONLY,
     @CanConfirm   BIT = 1
@@ -21,14 +15,14 @@ BEGIN
     -- 1. the step of each container (the reads of fn_Container_NextStep, without its suggestion)
     CREATE TABLE #Step
     (
-        ContainerId INT NOT NULL PRIMARY KEY, Found BIT NOT NULL, ContainerRef NVARCHAR(30) NULL, ContainerNo NVARCHAR(20) NULL,
-        Status TINYINT NULL, Kind NVARCHAR(12) NULL, BlockedReason NVARCHAR(400) NULL,
-        MovementCount INT NULL, PlaceId INT NULL, PlaceName NVARCHAR(100) NULL, PlaceKind NVARCHAR(10) NULL, PlaceSince DATE NULL,
-        LastStage NVARCHAR(10) NULL, LastMovementId INT NULL, LastMovementNo NVARCHAR(30) NULL, LastMovementEndDate DATE NULL,
+        ContainerId INT NOT NULL PRIMARY KEY, Found BIT NOT NULL, ContainerRef NVARCHAR(30) COLLATE DATABASE_DEFAULT NULL, ContainerNo NVARCHAR(30) COLLATE DATABASE_DEFAULT NULL,
+        Status TINYINT NULL, Kind NVARCHAR(12) COLLATE DATABASE_DEFAULT NULL, BlockedReason NVARCHAR(400) COLLATE DATABASE_DEFAULT NULL,
+        MovementCount INT NULL, PlaceId INT NULL, PlaceName NVARCHAR(100) COLLATE DATABASE_DEFAULT NULL, PlaceKind NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL, PlaceSince DATE NULL,
+        LastStage NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL, LastMovementId INT NULL, LastMovementNo NVARCHAR(30) COLLATE DATABASE_DEFAULT NULL, LastMovementEndDate DATE NULL,
         MovementId INT NULL, PlannedNotBefore DATE NULL,
         ActiveMovementId INT NULL, PlannedMovementId INT NULL, LastDeliveryMovementId INT NULL,
-        GoodsReceiptId INT NULL, GoodsReceiptNumber NVARCHAR(30) NULL, GoodsReceiptStatus TINYINT NULL,
-        HistPlaceId INT NULL, HistStage NVARCHAR(10) NULL      -- the (place, last stage) of its suggestion
+        GoodsReceiptId INT NULL, GoodsReceiptNumber NVARCHAR(30) COLLATE DATABASE_DEFAULT NULL, GoodsReceiptStatus TINYINT NULL,
+        HistPlaceId INT NULL, HistStage NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL      -- the (place, last stage) of its suggestion
     );
 
     INSERT INTO #Step (ContainerId, Found, ContainerRef, ContainerNo, Status, Kind, BlockedReason, MovementCount, PlaceId, PlaceName,

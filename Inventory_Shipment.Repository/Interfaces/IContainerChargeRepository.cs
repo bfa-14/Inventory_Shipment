@@ -50,5 +50,7 @@ public interface IContainerChargeRepository
     /// (96) logistics.fn_ContainerCharge_ReferenceClash: the refusal a new charge with this provider and reference would
     /// get ("Reference INV-0042 of … is already entered: …"), null when none.
     /// </summary>
+    /// <summary>(113) Why a charge could not be paid this way (logistics.fn_ContainerCharge_PaymentProblem); null when it can.</summary>
+    Task<string?> PaymentProblemAsync(byte paymentType, int? methodId, int? accountId, int? currencyId, int? providerPartyId, int? chargeTypeId, CancellationToken cancellationToken = default);
     Task<string?> ReferenceClashAsync(int? providerPartyId, string reference, CancellationToken cancellationToken = default);
 }

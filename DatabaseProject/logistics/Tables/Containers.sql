@@ -1,8 +1,8 @@
-CREATE TABLE [logistics].[Containers] (
+﻿CREATE TABLE [logistics].[Containers] (
     [Id]                  INT             IDENTITY (1, 1) NOT NULL,
     [DocumentTypeId]      INT             NOT NULL,
     [ContainerRef]        NVARCHAR (30)   NOT NULL,
-    [ContainerNo]         NVARCHAR (20)   NULL,
+    [ContainerNo]         NVARCHAR (30)   NULL,
     [ContainerTypeId]     INT             NOT NULL,
     [SealNo]              NVARCHAR (30)   NULL,
     [CustomsSealNo]       NVARCHAR (30)   NULL,
@@ -89,6 +89,8 @@ CREATE TABLE [logistics].[Containers] (
     CONSTRAINT [FK_Containers_Warehouse] FOREIGN KEY ([WarehouseId]) REFERENCES [masterdata].[Warehouses] ([Id]),
     CONSTRAINT [UQ_Containers_Ref] UNIQUE NONCLUSTERED ([ContainerRef] ASC)
 );
+
+
 
 
 GO

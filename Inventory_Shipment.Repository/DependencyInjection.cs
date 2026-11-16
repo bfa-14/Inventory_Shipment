@@ -51,6 +51,9 @@ public static class DependencyInjection
         services.TryAddScoped<IPurchaseInvoiceContainerRepository, PurchaseInvoiceContainerRepository>();
         services.TryAddScoped<ICostingReportRepository, CostingReportRepository>();
         services.TryAddScoped<IContainerReportRepository, ContainerReportRepository>();
+        services.TryAddScoped<IAttachmentReportRepository, AttachmentReportRepository>();
+        services.TryAddScoped<IItemBalanceReportRepository, ItemBalanceReportRepository>();
+        services.TryAddScoped<IContainerChargeReportRepository, ContainerChargeReportRepository>();
         services.TryAddScoped<IContainerRepository, ContainerRepository>();
         services.TryAddScoped<IContainerTypeRepository, ContainerTypeRepository>();
         services.TryAddScoped<IPaymentMethodRepository, PaymentMethodRepository>();
@@ -61,6 +64,7 @@ public static class DependencyInjection
         services.TryAddScoped<IPaymentRepository, PaymentRepository>();
         services.TryAddScoped<IPortRepository, PortRepository>();
         services.TryAddScoped<IMovementTypeRepository, MovementTypeRepository>();
+        services.TryAddScoped<IShipmentStageRepository, ShipmentStageRepository>();
         services.TryAddScoped<IMovementRepository, MovementRepository>();
         services.TryAddScoped<IContainerChargeRepository, ContainerChargeRepository>();
         services.TryAddScoped<IBivacCostRepository, BivacCostRepository>();   // (97)

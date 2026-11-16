@@ -35,6 +35,11 @@ public sealed class ContainerReportRepository : IContainerReportRepository
         parameters.Add("OffloadedTo", query.OffloadedTo?.ToDateTime(TimeOnly.MinValue), DbType.Date);
         parameters.Add("IncludePending", query.IncludePending, DbType.Boolean);
         parameters.Add("IncludeReceived", query.IncludeReceived, DbType.Boolean);
+        parameters.Add("DispatchFrom", query.DispatchFrom?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("DispatchTo", query.DispatchTo?.ToDateTime(TimeOnly.MinValue), DbType.Date);
+        parameters.Add("LoadingCountry", string.IsNullOrWhiteSpace(query.LoadingCountry) ? null : query.LoadingCountry.Trim().ToUpperInvariant(),
+            DbType.StringFixedLength, size: 2);
+        parameters.Add("WithCharges", query.WithCharges, DbType.Boolean);
 
         await using var connection = _connectionFactory.Create();
         await using var grid = await connection.QueryMultipleAsync(new CommandDefinition(
@@ -54,6 +59,22 @@ public sealed class ContainerReportRepository : IContainerReportRepository
         }
 
         return (rows, chargeTypes);
+    }
+
+    public async Task<IReadOnlyDictionary<int, decimal>> PcsPerContainerAsync(
+        IReadOnlyCollection<int> itemIds, CancellationToken cancellationToken = default)
+    {
+        if (itemIds.Count == 0) return new Dictionary<int, decimal>();
+        await using var connection = _connectionFactory.Create();
+        var rows = await connection.QueryAsync<(int ItemId, decimal PcsPerContainer)>(new CommandDefinition(
+            """
+            SELECT ItemId = i.Id, p.PcsPerContainer
+            FROM inventory.Items i
+            CROSS APPLY logistics.fn_ItemPcsPerContainer(i.Id) p
+            WHERE i.Id IN @Ids AND p.PcsPerContainer IS NOT NULL
+            """,
+            new { Ids = itemIds }, cancellationToken: cancellationToken));
+        return rows.ToDictionary(r => r.ItemId, r => r.PcsPerContainer);
     }
 
     private sealed class ChargeShare

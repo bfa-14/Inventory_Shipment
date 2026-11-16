@@ -788,5 +788,35 @@
     <Build Include="security\Tables\Users.sql" />
     <Build Include="security\Tables\UserWarehouseAudit.sql" />
     <Build Include="security\Tables\UserWarehouses.sql" />
+    <Folder Include="reporting\Tables\" />
+    <Folder Include="reporting\Functions\" />
+    <Folder Include="reporting\Stored Procedures\" />
+    <Folder Include="logistics\Stored Procedures\" />
+  </ItemGroup>
+  <ItemGroup>
+    <Build Include="reporting\Tables\AttachmentDownloads.sql" />
+    <Build Include="reporting\Functions\fn_Attachments.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_LogDownload.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_List.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_Files.sql" />
+    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_Content.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ContainerReport.sql" />
+    <Build Include="reporting\Tables\ItemBalanceReportRuns.sql" />
+    <Build Include="reporting\Stored Procedures\usp_ItemBalance_Warehouses.sql" />
+    <Build Include="reporting\Stored Procedures\usp_ItemBalance_Rates.sql" />
+    <Build Include="reporting\Stored Procedures\usp_ItemBalance_LogRun.sql" />
+    <Build Include="reporting\Stored Procedures\usp_ItemBalance_Data.sql" />
+    <Build Include="reporting\Stored Procedures\usp_ContainerChargeReport.sql" />
+    <Build Include="purchase\Functions\fn_Container_PaymentStatus.sql" />
+    <Build Include="logistics\Tables\ShipmentStages.sql" />
+    <Build Include="logistics\Functions\fn_Container_Stage.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Save.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Preview.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_MatchNumbers.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_List.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Delete.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Check.sql" />
+    <Build Include="logistics\Functions\fn_ContainerCharge_PaymentProblem.sql" />
+    <Build Include="logistics\Stored Procedures\usp_ContainerCharge_PayCash.sql" />
   </ItemGroup>
 </Project>

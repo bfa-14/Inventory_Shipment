@@ -1,9 +1,4 @@
-/* (91) INVENTORY > STOCK LEVELS, "Company (Item Definition)" (L2): the item's company Minimum / Maximum Quantity against
-   the stock of a branch or the company. Result 1: the items with a company Min (above 0) or a Max, Below Min first by
-   what is missing, then item code; WarehouseLevelCount = the item's levels at the active warehouses of the scope (what
-   "Per warehouse" shows for the item with the same branch). Result 2: the scope's totals (the status filter ignored):
-   with the defaults, BelowMin is the Dashboard's "Items below their minimum" for the same branch. Result 3: the scope
-   (BranchId NULL = the company). */
+-- Re-created (114) from the body of script 91: COLLATE DATABASE_DEFAULT on the text columns of its #tables (1).
 CREATE   PROCEDURE inventory.usp_StockLevel_CompanySearch
     @Search          NVARCHAR(100) = NULL,
     @BranchId        INT           = NULL,
@@ -35,7 +30,7 @@ BEGIN
 
     CREATE TABLE #co
     (
-        ItemId INT NOT NULL PRIMARY KEY, OnHandBase INT NOT NULL, Status NVARCHAR(10) NOT NULL, MissingBase INT NOT NULL
+        ItemId INT NOT NULL PRIMARY KEY, OnHandBase INT NOT NULL, Status NVARCHAR(10) COLLATE DATABASE_DEFAULT NOT NULL, MissingBase INT NOT NULL
     );
     INSERT INTO #co (ItemId, OnHandBase, Status, MissingBase)
     SELECT i.Id, s.OnHand,

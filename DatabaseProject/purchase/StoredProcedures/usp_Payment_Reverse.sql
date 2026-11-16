@@ -1,10 +1,9 @@
-/* ================================================================== 5. Reverse */
-
-CREATE   PROCEDURE purchase.usp_Payment_Reverse
+﻿CREATE   PROCEDURE purchase.usp_Payment_Reverse
     @Id         INT,
     @Reason     NVARCHAR(500),
     @RowVersion BINARY(8) = NULL,
-    @UserId     INT       = NULL
+    @UserId     INT       = NULL,
+    @FromCharge BIT       = 0      -- (113) 1: the cancel of the cash charge that made it
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -23,6 +22,9 @@ BEGIN
         IF @Status <> 2 THROW 73010, 'Only a posted payment can be reversed.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM purchase.Payments WHERE Id = @Id AND RowVersion = @RowVersion)
             THROW 73004, 'This payment was modified by another user. Reload the page and try again.', 1;
+        -- (113) a cash charge's payment is part of the charge: it goes when the charge is cancelled
+        IF ISNULL(@FromCharge, 0) = 0 AND EXISTS (SELECT 1 FROM purchase.Payments WHERE Id = @Id AND FromChargePost = 1)
+            THROW 73010, 'This payment was made automatically when a container charge paid cash was posted: cancel the charge instead.', 1;
 
         /* A FREE PAYMENT THAT HAS SINCE PAID DOCUMENTS CANNOT JUST VANISH: they would go back to owing money
            nobody told them about. Its allocations are removed first, so somebody decides about each one. An

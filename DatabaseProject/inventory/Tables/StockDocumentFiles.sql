@@ -18,6 +18,8 @@ CREATE TABLE [inventory].[StockDocumentFiles] (
 );
 
 
+
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_StockDocumentFiles_Document]
@@ -25,4 +27,7 @@ CREATE NONCLUSTERED INDEX [IX_StockDocumentFiles_Document]
 
 
 GO
+CREATE NONCLUSTERED INDEX [IX_StockDocumentFiles_Report]
+    ON [inventory].[StockDocumentFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
+    INCLUDE([DocumentId], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
 

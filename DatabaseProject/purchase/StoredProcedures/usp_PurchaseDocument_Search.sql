@@ -1,13 +1,4 @@
-/* ================================================================== 9. Search: received and invoiced progress, "To receive" */
-
--- Re-created (65) from the body of script 63 (each supplier invoice's mode): ReceivedPercent of an order = pieces
--- received (GoodsReceivedBase) / ordered - it was the invoiced percent, which InvoicedPercent still gives. + the
--- invoice's UsesGoodsReceipts, and QuantityBase / ReceivedBase for the lists' "Received" progress (an order: ordered /
--- received; an invoice: invoiced / received). Two filters: @ToReceive (posted or closed orders with goods still to
--- come, the outstanding of rule 17) and @NotFullyReceived (posted or closed supplier invoices not fully received; one
--- posted with its stock before goods receipts is). ReceivedPercent and InvoicedPercent are NULL on a draft order. Every
--- other column, filter and sort is unchanged.
-CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
+﻿CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
     @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
                                                -- (45) the item code of a supplier invoice
@@ -26,7 +17,9 @@ CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     --      supplier invoices posted or closed whose pieces are not all received (those posted with their stock before
     --      goods receipts are received)
     @ToReceive        BIT          = NULL,
-    @NotFullyReceived BIT          = NULL
+    @NotFullyReceived BIT          = NULL,
+    -- (107) supplier invoices: Unpaid | Partial | Paid, the Payment column (posted invoices only)
+    @PaymentStatus    NVARCHAR(10) = NULL
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -113,6 +106,7 @@ BEGIN
       AND (ISNULL(@NotFullyReceived, 0) = 0 OR (dt.Code = N'PINV' AND d.Status IN (2, 4)
            AND NOT (d.UsesGoodsReceipts = 0 AND d.ReceiptMode = 1)
            AND ISNULL(prog.Invoiced, 0) < ISNULL(prog.Ordered, 0)))
+      AND (@PaymentStatus IS NULL OR pst.PaymentStatus = @PaymentStatus)
     ORDER BY
         CASE WHEN @SortDirection = N'ASC' THEN
             CASE @SortColumn WHEN N'DocumentNumber' THEN d.DocumentNumber WHEN N'SupplierName' THEN sp.PartyName END

@@ -67,6 +67,19 @@ public static class ContainerChargeMethods
 }
 
 /// <summary>
+/// (113) How a container charge is paid. Cash: posting it also makes and posts a Container Charge Payment to its
+/// provider, from the account chosen, and the charge is Paid. On account: it stays payable to its provider (every
+/// charge before script 113).
+/// </summary>
+public static class ChargePaymentTypes
+{
+    public const byte Cash = 1;
+    public const byte OnAccount = 2;
+
+    public static string Name(byte type) => type == Cash ? "Cash" : "On account";
+}
+
+/// <summary>
 /// What a charge's status — and its container's — allows. A closed container is reopened before a
 /// late charge is added or changed; the permission is checked separately.
 /// </summary>
@@ -137,6 +150,9 @@ public record ContainerChargeListDto : ContainerChargeFlags
 
     /// <summary>Unpaid, Partial or Paid.</summary>
     public string? PaymentStatus { get; init; }
+
+    /// <summary>(113) 1 Cash, 2 On account.</summary>
+    public byte PaymentType { get; init; } = ChargePaymentTypes.OnAccount;
 }
 
 /// <summary>The charge list: one page, and the total (base) of the WHOLE filter.</summary>
@@ -261,6 +277,9 @@ public sealed record ContainerChargeDto : ContainerChargeFlags
     /// <summary>Unpaid, Partial or Paid.</summary>
     public string? PaymentStatus { get; init; }
 
+    /// <summary>(113) 1 Cash, 2 On account.</summary>
+    public byte PaymentType { get; init; } = ChargePaymentTypes.OnAccount;
+
     /* (97) A BIVAC charge: its BIVAC item, and the BIVAC Out its posting made. */
     public int? BivacItemId { get; init; }
     public string? BivacItemCode { get; init; }
@@ -268,6 +287,16 @@ public sealed record ContainerChargeDto : ContainerChargeFlags
     public int? BivacOutDocumentId { get; init; }
     public string? BivacOutNumber { get; init; }
     public byte? BivacOutStatus { get; init; }
+
+    /* (113) A cash charge: how and from where it was paid, and the payment its posting made. */
+    public int? PaymentMethodId { get; init; }
+    public string? PaymentMethodName { get; init; }
+    public int? PaymentAccountId { get; init; }
+    public string? PaymentAccountCode { get; init; }
+    public string? PaymentAccountName { get; init; }
+    public string? PaymentReference { get; init; }
+    public int? CashPaymentId { get; init; }
+    public string? CashPaymentNumber { get; init; }
 
     /// <summary>Every line of the container, with this charge's share (0 when it took none).</summary>
     public IReadOnlyList<ContainerChargeShareDto> Allocations { get; init; } = [];
@@ -333,6 +362,20 @@ public sealed class CreateContainerChargeRequest : IValidatableObject
     /// SplitRule are not used), and posting the charge posts a BIVAC Out of 1 piece from the container's warehouse.
     /// </summary>
     public int? BivacItemId { get; init; }
+
+    /// <summary>(113) 1 Cash, 2 On account (null = On account).</summary>
+    [Range(1, 2)]
+    public byte? PaymentType { get; init; }
+
+    /// <summary>(113) Cash: the payment method (not a cheque).</summary>
+    public int? PaymentMethodId { get; init; }
+
+    /// <summary>(113) Cash: the cash / bank account it was paid from, in the charge's currency.</summary>
+    public int? PaymentAccountId { get; init; }
+
+    /// <summary>(113) Cash: a transfer no.</summary>
+    [StringLength(100)]
+    public string? PaymentReference { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {
@@ -403,6 +446,20 @@ public sealed class UpdateContainerChargeRequest : IValidatableObject
     public IReadOnlyList<ChargeManualShareRequest> Manual { get; init; } = [];
 
     public string? RowVersion { get; init; }
+
+    /// <summary>(113) 1 Cash, 2 On account (null = On account).</summary>
+    [Range(1, 2)]
+    public byte? PaymentType { get; init; }
+
+    /// <summary>(113) Cash: the payment method (not a cheque).</summary>
+    public int? PaymentMethodId { get; init; }
+
+    /// <summary>(113) Cash: the cash / bank account it was paid from, in the charge's currency.</summary>
+    public int? PaymentAccountId { get; init; }
+
+    /// <summary>(113) Cash: a transfer no.</summary>
+    [StringLength(100)]
+    public string? PaymentReference { get; init; }
 
     public IEnumerable<ValidationResult> Validate(ValidationContext validationContext)
     {

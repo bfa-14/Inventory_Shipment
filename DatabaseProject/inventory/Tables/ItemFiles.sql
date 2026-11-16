@@ -20,6 +20,8 @@ CREATE TABLE [inventory].[ItemFiles] (
 );
 
 
+
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_ItemFiles_Item]
@@ -33,4 +35,7 @@ CREATE UNIQUE NONCLUSTERED INDEX [UX_ItemFiles_ItemImage]
 
 
 GO
+CREATE NONCLUSTERED INDEX [IX_ItemFiles_Report]
+    ON [inventory].[ItemFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
+    INCLUDE([ItemId], [IsItemImage], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
 

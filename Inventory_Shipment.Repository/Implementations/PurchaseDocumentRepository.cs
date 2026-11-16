@@ -176,6 +176,8 @@ public sealed class PurchaseDocumentRepository : IPurchaseDocumentRepository
             // (65) "To receive" (orders) and "Not fully received" (supplier invoices)
             query.ToReceive,
             query.NotFullyReceived,
+            // (107) the Payment column's value; anything else is no filter
+            PaymentStatus = query.PaymentStatus is "Unpaid" or "Partial" or "Paid" ? query.PaymentStatus : null,
         };
 
         await using var connection = _connectionFactory.Create();

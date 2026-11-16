@@ -132,6 +132,61 @@ each container's port and posts a BIVAC Out of 1 pc (cancelled with the charge);
 months, and Shortages give each line its own lead time - its purchase history (order approval to goods receipt, last
 12 months), else the item's, else the plan's, or typed on the line (glossary, 4.18, 5.2, 5.4, 6.1).*
 
+*Updated on 31 October 2026 for **deduction charges** (script 102): a charge type may be a deduction (DED "Deduction /
+refund"): its amount, typed without a minus, is taken off the cost - spare parts removed from the box and sold apart, a
+refund - on containers and on a local invoice's own charges; never paid, never below zero (4.21).*
+
+*Updated on 1 November 2026 for **the Item Balance Report by Warehouse** (script 103): Reports › Item Balance by
+Warehouse gives each item in each warehouse its opening, one column per kind of movement and its closing over a period,
+at the company's average cost replayed from the ledger, translated into any currency, with a drill-down, Excel and print /
+PDF; its own permission, View Item Balance Report (3.1, 4.22).*
+
+*Updated on 2 November 2026 for **a container no. of up to 30 characters** (script 104): a container that travelled as
+two boxes under one ref keeps both numbers, comma delimited ("MRSU8190808 , CAAU9368456"); still unique among the open
+containers, compared as a whole (glossary).*
+
+*Updated on 4 November 2026 for **the Container Charges report** (script 105): Reports › Container Charges lists the
+containers offloaded or dispatched in a period (one date basis, a radio button) and, per charge type chosen, whether the
+charge is entered, its amount, what is paid and the payment status; its own permission, View Container Charges Report
+(3.1, 4.23).*
+
+*Updated on 5 November 2026 for **the Dispatched Items report** (script 106): Reports › Dispatched Items gives the items
+dispatched in a period (from India by default) as an item balance and as items / containers - FOB, oil, the oil
+deduction and where they are now; its own permission, View Dispatched Items Report; the Container Report shows the
+dispatch and port arrival dates typed on a container followed without legs (3.1, 4.24).*
+
+*Updated on 5 November 2026 for **the supplier invoice list by payment status** (script 107): Purchase › Purchase
+Invoices has a Payment filter (Unpaid / Partially Paid / Fully Paid, posted invoices only) on the filter line.*
+
+*Updated on 5 November 2026 for **the containers list by payment status** (script 108): Logistics › Containers has a
+Payment column and filter - what the posted supplier invoices of each container's goods are paid, from its share of
+each (script 73's split by container): Unpaid, Partially Paid, Fully Paid or Not invoiced; both need View Supplier
+Payments.*
+
+*Updated on 6 November 2026 for **the Goods on Order report** (script 109): Reports › Goods on Order gives everything
+ordered and not received yet, one row per item (by top family) and one Qty / Containers pair per stage the goods are at
+now - the columns are the stages the containers' movements put them at (the Container Report's stage, every order month
+in one "Order pending"), so a new route or border post is a new column by itself; the containers of pieces not loaded
+are estimated from the item's container unit; its own permission, View Goods on Order Report.*
+
+*Updated on 7 November 2026 for **the Container Report without charges** (script 110): the Container Report has a
+"With charges" switch, off by default; off, the server reads no charge at all (the slow part of a large report) and the
+page shows no transport, charge or total expenses column, its stage tiles adding the FOB instead.*
+
+*Updated on 8 November 2026 for **shipment stages** (script 111, the owner: "the movement process is complicated"): a
+container moves on by choosing its NEW STAGE - Pending, Dispatched to Dar es Salaam, At port Dar es Salaam, Dar es Salaam →
+Mokambo or Dar es Salaam → Lubumbashi (two routes, chosen by cost), Offloaded in Lubumbashi - with "Update stage…" (ticked
+containers, a row, its page) or the forwarder's list from Excel; the movements are recorded behind each stage by the
+movement procedures, always started at once; "Offloaded in Lubumbashi" completes the last leg and POSTS the goods receipt
+for the full quantity loaded (a short container: cancel it and make it again); customs is a charge, not a stage; an
+administrator keeps the stages (Backoffice › Master Data › Shipment Stages, Manage shipment stages) and sees the containers
+the stages do not describe; the Containers list has a Stage column and filter; Shipments, Movements and Tracking are
+hidden from the menu unless Show Shipments, Movements and Tracking is ticked, Next step with them.*
+
+*Updated on 8 November 2026 for **one port per place** (script 112): Dar es Salaam and Lubumbashi were each in Ports twice (TZ-DAR / TZDAR, CD-LUB / CDLUB); the used rows took the seed codes TZDAR and CDLUB and the empty duplicates were deleted (1.3).*
+*Updated on 11 November 2026 for **a container charge paid cash or on account** and **the Import Container Charges page** (script 113, the owner: "when the charge is paid cash, an automatic payment will be done related to the container charge, and the status of it will be paid, while if the user select on account, then the charge will be unpaid and the amount will be payable to the selected charge supplier"): every charge form has the sales invoice's Payment panel - Payment Type Cash or On account (the default, and what every earlier charge is), and for Cash the Payment Method (not a cheque), the Cash / Bank Account in the charge's currency and a Payment Reference; posting a cash charge also makes and posts a Container Charge Payment to its provider (one for the charges of a group posted together), and the charge is Paid; cancelling the charge reverses that payment (the other charges it paid get a payment of their own again), and the payment cannot be reversed on its own. "Import charges from Excel…" is now a page, Logistics › Import Charges: the file's rows in a grid, validated on the container no., the container ref and/or the charge reference; Errors (red) and Duplicates (violet: the same charge twice in the file or already on the container) are never imported - ticked, deleted, the rest validated again - and Apply creates the charges (drafts or posted) with one Payment panel for the whole file.*
+*Updated on 14 November 2026 for **temporary tables in the database's collation** (script 114, reported on testing: the Container Report and Container Charges answered "The server ran into a problem."): testing's database was restored from a copy made on a SQL Server whose collation is Arabic (SQL_Latin1_General_CP1256_CI_AS) into production's SQL Server (SQL_Latin1_General_CP1_CI_AS); a #table's text column took the server's collation and every statement mixing it with the database's text failed (Msg 451 / 468) - the two reports, the Shipments board, Next step… for several containers and the Item Balance report; the twelve procedures that create #tables give each text column COLLATE DATABASE_DEFAULT, so the application works whatever the server's collation.*
+
 *Updated on 30 October 2026 for **the Container Report** (script 100, prompt 52): Reports › Container Report is the
 purchasing team's tracking sheet worked out by the system - every container line and every approved order line still to
 load, with its order, PI, invoices, payments, journey, charges and cost, grouped by where the goods are now ("Order
@@ -312,7 +367,7 @@ without seeing costs, and View Stock Valuation for those who must see no value a
 | **COGS** | Cost of goods sold. Sales take stock out at average cost. |
 | **Average cost** | Weighted average cost per item, updated at every receipt and cost adjustment. Items also keep **last cost** and **FOB cost**. |
 | **Container** | A shipping container, created **from a purchase order**. App reference `KTG-2026-0031` (document type CNT: prefix KTG, year, 4-digit number). |
-| **Container No.** | The real box number: 4 letters + 7 digits, for example `MSKU1234565`. Typed when the forwarder sends the list. Unique among open containers (69013). |
+| **Container No.** | The real box number: 4 letters + 7 digits, for example `MSKU1234565`. Typed when the forwarder sends the list. Unique among open containers (69013). Up to 30 characters (script 104), so a container that travelled as two boxes under one ref keeps both, comma delimited: `MRSU8190808 , CAAU9368456`. |
 | **Seal No.** | The number of the seal closing the doors. |
 | **Container type** | Master data: 20GP (20 ft General Purpose, inactive) and **40HC** (40 ft High Cube, active), with Max Weight (kg) and Max Volume (CBM). Their "Max Units" is no longer used (script 54, prompt 46): capacity comes from the item's Container unit. |
 | **Container unit** | In Item Definition › units: the unit whose unit type is a container unit (`masterdata.UnitTypes.IsContainer = 1`). Its packing formula is the pieces of this item per container (for example 84). **The only source of container capacity** (prompt 46). |
@@ -397,7 +452,11 @@ without seeing costs, and View Stock Valuation for those who must see no value a
 - **Purchase:** Purchase Orders, Approvals (with a red count), **Goods Receipts** (with the count of drafts waiting to
   be posted), Purchase Invoices, Purchase Returns, Supplier Payments, Landed Cost Adjustments
 - **Reports:** Shortages, Stock Valuation, Sales Profit, **Container Report** (script 100: every container and order still
-  to load, by stage; View Container Report), Customer Statement, Out-of-Stock Sales
+  to load, by stage; View Container Report), **Container Charges** (script 105: each container of a period with each
+  charge type entered or missing, its amount and its payments; View Container Charges Report), **Dispatched Items** (script
+  106: the items dispatched in a period, per item and per container; View Dispatched Items Report), **Item Balance by Warehouse** (script 103: each item's opening,
+  movements and closing per warehouse over a period; View Item Balance Report), **Attachment Report** (script 101: every attachment by type and date,
+  downloaded one, several or all as a ZIP; View Attachment Report), Customer Statement, Out-of-Stock Sales
 - **Logistics:** Shipments (script 82: first in the menu), Containers, Movements, Container Charges, Tracking
 - **Sales:** Sales Invoices, Sales Profit, Receipts, Customer Statement, Out-of-Stock Sales
 - **Backoffice › Master Data:** Branches / Sites, Warehouses, Currencies, Exchange Rates, Item Families, Brands,
@@ -635,6 +694,9 @@ Each list has its own permission, for example `masterdata.movementtypes.manage`.
   - Container Report: `containers.report.view` (1408, "View Container Report", script 100), granted once, when it was
     first created, to the system roles and the roles holding View Containers. Its charge columns also need View
     Container Charges, its payment columns View Supplier Payments: the server sends them empty to others.
+  - Attachment Report: `reports.attachments.view` (1500, "View Attachment Report", module Reports, script 101). Not granted
+    to any role by the script (the system roles get it at start-up); it opens the report, and each reader still sees and
+    downloads only the files of the documents they may open (4.20).
   - Purchase: `purchase.orders.approve` (now "(not used)"), `purchase.orders.post`, `purchase.approval.manage`;
     `purchase.invoices.post` is now "payable; adjusts the cost of goods already received".
   - Goods receipts: `purchase.goodsreceipts.view / create / post / cancel / delete` (1102–1110, script 64). Granted
@@ -2830,6 +2892,164 @@ rows moved between them by hand, subtotals and lead times typed. Reports › Con
 8. **Not in it yet:** the oil value ("FOB with oil", "Oil", "FOB without oil" in the sheet): the invoice price includes it,
    the owner will deal with it later.
 
+### 4.20 The Attachment Report **[Implemented – script 101]**
+
+Reports › Attachment Report finds the documents attached anywhere in the system and downloads them.
+
+1. **What it lists:** every attachment of the ten places files are kept - a container's documents (one row per container a
+   file is filed under), purchase orders / invoices / returns, goods receipts, supplier payments, sales invoices / returns,
+   receipts, Inventory In / Out / BIVAC Out, transfer orders and item documents (not the item's picture)
+   (`reporting.fn_Attachments`). Each row: file name, attachment type, reference (the container ref, document number or
+   item code, a link to its page), document date, upload date and who uploaded it, size.
+2. **Filters** (AND): attachment types (several; none = every type), the **document date** typed on the file (a range leaves
+   out files without one) and the **upload date**; dates inclusive; a "from" after its "to" stops the report. "Run report"
+   runs it; the filters live in the address, so a refresh or a shared link reruns it. Paged on the server (10/25/50), with
+   the total count and size.
+3. **Downloads:** tick rows (the header ticks the page; "Select all N matching" takes every result) and "Download selected":
+   one file comes back as itself, several as a ZIP; "Download all" is always a ZIP, named
+   `attachments_{from}_to_{to}_{report date}.zip` (the document dates, else "uploaded_...", else "all-dates"). Each file is
+   named "{reference} - {type} - {document date} - {original name}" (a repeated name gets " (2)"). "Preparing download" shows
+   while the ZIP is built (on the server, in a temporary file, never in memory).
+4. **Limits:** 500 files or 2 GB per download (`Reports:AttachmentZipMaxFiles` / `AttachmentZipMaxBytes` in appsettings);
+   above them the download is refused (409 TOO_LARGE): "... are more than one download may take ... Narrow the filters".
+5. **Who:** View Attachment Report opens it; each file shows and downloads only for a reader who may view its document (View
+   Containers, View Purchase Orders / Invoices / Returns, View Goods Receipts, View Supplier Payments, View Sales Invoices,
+   View Receipts, View Inventory In / Out / BIVAC Out, View Transfers, View Items) - on the server, for the list, the count and
+   every download.
+6. **Log:** every download is written to `reporting.AttachmentDownloads` (user, time, Selected / All, file count, size, the
+   filters or the keys).
+
+### 4.21 Deduction charges **[Implemented – script 102]**
+
+The owner's case: a motorcycle arrives with spare parts in its box; at the main warehouse the parts are taken out and sold
+apart, so the motorcycle must cost less. A **deduction** is a charge that lowers the cost instead of adding to it.
+
+1. **The type says it:** Configuration › Charge Types, switch "Deduction (lowers the cost)" (`IsDeduction`). A deduction
+   is always in the landed cost and never a recoverable tax (68000). Seeded: **DED "Deduction / refund"** (By Item Value).
+   The flag cannot change once charges use the type (68005): their signs were set by it.
+2. **Typed positive, stored negative:** the user types the amount taken off, without a minus ("Amount deducted"); the
+   procedures store `-ABS(amount)` and allocate it negative over the lines (container charges, Apply to other containers,
+   the Excel import, a local invoice's own charges, late charges / LCAs). Zero: "Enter the amount deducted." A negative amount
+   on any other type is refused: "The amount cannot be negative. To lower the cost, choose a deduction charge type
+   (Deduction / refund)."
+3. **Never below zero:** Post refuses a container deduction that would bring a line's FOB × pieces + charges below 0, or,
+   after the goods receipt, an item's average cost below 0 (70013). On an invoice, the deductions together may not exceed
+   the value of its lines. *Not guarded:* a deduction posted before the goods receipt, on a container that then receives
+   fewer pieces, spreads over fewer pieces at the receipt (no check in `usp_GoodsReceipt_Post`).
+4. **Cost:** posted, it lowers the landed cost like any charge (before receipt) or as a late cost adjustment (after:
+   in stock → average cost, sold → COGS). Cancelled, it puts back no more than its posting took out.
+5. **Payments:** a deduction is paid to nobody. Its payment status is **Deduction**, nothing outstanding; supplier payments
+   never offer it. The lists show it in red, with a minus.
+6. **Who:** the same permissions as any container charge (Create / Post / Cancel Container Charges) or invoice charge.
+
+### 4.22 The Item Balance Report by Warehouse **[Implemented – script 103]**
+
+Reports › Item Balance by Warehouse, for month-end: stock quantities and values checked, reconciled with the books.
+
+1. **Rows:** an item in a warehouse, when it has an opening or a movement up to Date To. A warehouse under another one is
+   shown as a **location** of the warehouse at the top of its tree, on its own row, never rolled up. The On the way
+   warehouses of transfers are rows too (badge "On the way"). Quantities in the item's base unit, **signed** (out is negative).
+2. **Columns:** item code, name, UoM, warehouse, location; Opening (Qty, Amount); one group per kind of movement with
+   activity - Purchase receipt (goods receipts, and the container offloads and local invoices that received goods before them), Purchase return, Sales
+   delivery, Sales return, Transfer in / out (both legs of TRD and TRR), Transfer loss, Inventory In / Out, BIVAC Out, and
+   Cost adjustments (an amount only: landed cost adjustments, late container charges, invoice true-ups); Total in, Total out;
+   Average cost change; Translation difference (another currency, when not zero); Closing (Qty, Amount, Unit cost).
+   There is no production, scrap or stock count in the system, so no such columns.
+3. **The cost is the system's** (the owner's choice, against the story's per-warehouse average): ONE weighted average per item
+   for the whole company, **replayed from the ledger at every run** exactly as `inventory.usp_Item_RebuildCosts` does it -
+   a receipt at its cost, every issue and both legs of a transfer at the average then, a cost adjustment spread over the
+   stock on hand, the average kept while the stock is at or below zero and set by the first receipt that brings it back.
+   No period-end snapshot. Opening = the quantity at the average of Date From; Closing = the quantity at the average of
+   Date To, so the closings of every warehouse add up to the company's stock value. **Average cost change** is the rest
+   (receipts into other warehouses, cost adjustments): what makes each row add up. Measured on the local database: the
+   closings equal a fresh rebuild of the averages to two cents; the stored `Items.AverageCost` (what Stock Valuation reads)
+   can drift from that replay until the rebuild runs (up to 240 USD on one item locally).
+4. **Only posted documents:** a cancelled or reversed document is left out, its posting and its reversal both, as the
+   rebuild leaves them out. **Integrity check:** each row's opening + movements must give the ledger's own quantity on Date
+   To (every row counted); a row that does not is flagged orange and counted above the table and in the footer.
+   **Negative stock** is shown, red, and in the totals.
+5. **Currency** (period-end translation, any rate type: Official by default): the opening at the rate in force on Date From
+   − 1, each movement at its day's rate, the closing and the average cost change at Date To's; the translation difference
+   is the rest. Refused without a rate on or before Date From − 1 ("No Official rate for CDF on or before 31/12/2025 ...").
+   The header says the currency, the rate type and the rates used with their dates.
+6. **Filters:** warehouses (none = all the reader's; a parent takes those under it), Date From (first of the month) and
+   Date To (today), both required and inclusive, currency (base), rate type, items and item families (added together; a
+   family takes its sub-families), Show zero-balance items (off), Hide empty transaction columns (on). The filters live in
+   the address; "Run report" applies them.
+7. **The grid:** column chooser, sort, a filter per column, a search box (item, family, warehouse, location) and
+   Group by with subtotals; **grouped by Location** (the warehouse the stock is in) to start, and no Warehouse column
+   on screen (print and Excel keep it). **Drill-down:** a movement figure opens a drawer with its documents (date,
+   number, kind, qty, unit cost, amount), each linked to its page when the reader may open it.
+8. **Export:** Excel (the API, ClosedXML) and Print / PDF (a print page: the browser's Save as PDF), both with the same rows,
+   columns and totals as the screen, and a header with the warehouses, dates, currency, rate dates, run date and user.
+   Rounding is for display: totals are sums of the unrounded values, and a column whose rounded rows differ from its
+   rounded total is named in the footer.
+9. **Who:** `reports.itembalance.view` "View Item Balance Report" (Reports, 1510; the system roles at start-up, others
+   in Role Permissions). The amounts need **View item costs** (4.17): without it the report shows quantities only.
+   **Warehouses:** unlike every other report (4.15), this one offers a restricted user only their own warehouses (no On the
+   way warehouse) and refuses another (50010) - the story asks for it.
+10. **Run log:** `reporting.ItemBalanceReportRuns`: who, when, Screen / Excel / Print, the filters as JSON, the rows and the
+    time it took. *Performance:* every run reads the items' whole ledger; the target for 12 months over 50,000 items and
+    20 warehouses is still to be set (the local database answers in under 0.6 s).
+
+### 4.23 The Container Charges report **[Implemented – script 105]**
+
+The logistics team's "charge per CONTAINER" sheet (# / container ref / container number / items / final destination /
+current location / amount / paid), worked out by the system (`reporting.usp_ContainerChargeReport`,
+`GET api/reports/container-charges`, `/export`, `/options`).
+
+1. **Criteria:** one or more **charge types** (required, in the order chosen: each adds a group of columns), **one date
+   basis** - Offload date (received: Offloaded or Closed, `OffloadedDate`) or Dispatched date (`DispatchDate`, the first
+   start of its Sea leg, or typed) - with Date from / Date to (inclusive; empty = no bound), Charge entered (All / A charge
+   missing / Every charge entered), Payment (All / Paid / Partly paid / Unpaid), Supplier (of its order lines), and a
+   container ref, container no. or B/L. Cancelled containers are left out.
+2. **Columns:** #, Container ref., Container number, Items ("HLX125 ×180"), Final destination and Current location (the
+   Container Report's words and order, 4.19), Dispatched, Offloaded (Pcs, Supplier, Order, B/L in the column chooser);
+   per charge type **Status** (Entered: one posted at least; Draft: only drafts; Missing: none), **Amount** (every Draft and
+   Posted charge of the type added up, base currency; a charge in another currency shows it on hover), **Paid** (posted
+   payments' live allocations) and **Payment** (Paid when every charge is covered in its own currency, Partly paid,
+   Unpaid; a deduction is Not payable, 4.21); with two types or more, All charges Amount / Paid / Balance.
+3. **Summary:** Containers (COUNT), With a charge missing, Total, Paid, Balance, and per type entered / draft / missing.
+   The grid starts grouped by current location, a row with a missing type is red, the ref. opens a drawer with each
+   charge (date, reference, provider, currency, status) and its payments (number, date, amount).
+4. **Excel:** the sheet's layout - "Charge per container", the count and the total, two header rows (the type over its
+   four columns), rows grouped by current location, the missing ones red, totals at the bottom.
+5. **Who:** `reports.containercharges.view` "View Container Charges Report" (Reports, 1520; the system roles at start-up,
+   others in Role Permissions). The payment columns need **View Supplier Payments**: the server sends them empty to others
+   and ignores the Payment filter.
+
+### 4.24 The Dispatched Items report **[Implemented – script 106]**
+
+The purchasing team's "DISPATCH FROM INDIA" sheet (a summary per model group, then one row per container), worked out by
+the system (`GET api/reports/dispatched-items`, `/export`). Its rows are the Container Report's
+(`logistics.usp_ContainerReport`, 4.19, re-created by script 106 with `@DispatchFrom` / `@DispatchTo` /
+`@LoadingCountry`), so the two reports never disagree.
+
+1. **Criteria:** Dispatch date from / to (required; the container's `DispatchDate`: the first start of its Sea leg, or
+   typed), Loaded in (the country of its port of loading, else its country of origin; India by default, or any country),
+   supplier, item family (with the families under it), item, Where now (At sea / At port / On the road / Offloaded) and a
+   container ref, container no., B/L, PO, PI or invoice no. Container lines only: an order line still to load has no
+   dispatch. Cancelled containers are left out.
+2. **Item balance** (the owner: grouped by item): one row per item - Containers (a container of two items counts in
+   both rows, once in the totals), Qty, FOB value (the invoice price once received, else the container page's estimate,
+   in grey italics), FOB / unit, Oil qty (the container lines' typed oil; "Included" when only "oil included" is
+   ticked), the oil deduction (the posted DED "OIL Deduction / refund" charges, shown positive), and the pieces At sea /
+   At port / On the road / Offloaded now. Grouped by **top family**, so the vehicles (Main Items: the sheet's "QTY
+   (MOTOS)") are added up apart from the spare parts. A row opens its containers.
+3. **Items / containers:** one row per container line, grouped by item: Con. ref., Container no., Qty, Order date, PI
+   no., Invoice no., FOB, Oil qty, the oil deduction, Paid date, Dispatched, Arrived port, Left port, Final destination,
+   Offloaded, Lead time, Where now (more in the column chooser: Order month, PI exporter's ref., C.I. & P.L. date - the
+   posted supplier invoices' dates -, payment ref., trucks, current location, status, B/L, supplier, PO). A ref. opens a
+   drawer with its journey and "Open container".
+4. **Where now:** received (Offloaded / Closed) = Offloaded; a vessel leg = At sea; at a sea port = At port; after the
+   port = On the road; a container followed by typed dates, by its status.
+5. **Excel:** one sheet like the team's - "DISPATCH FROM INDIA - SEP 2026", the period, the item balance with a subtotal
+   per top family and the total, then the items / containers grouped by item with subtotals.
+6. **Who:** `reports.dispatcheditems.view` "View Dispatched Items Report" (Reports, 1530; the system roles at start-up,
+   others in Role Permissions). The oil deduction needs **View Container Charges**, the payment columns **View Supplier
+   Payments**: the server sends them empty to others. Not in the system, so not on the report: the oil's dollar value
+   (the deduction says it once posted), the sheet's "OLIVE" and "ROW IN CARGO TRACKING".
+
 ## 5. The prompts so far
 
 Prompts (`docs/prompts/NN-*.md`) and SQL scripts (`Database/NN_*.sql`) have **separate numbers**. Each prompt has
@@ -2969,6 +3189,19 @@ From 42 on, as they are in `Database/` on 11 October 2026:
 | `98_Inventory_LeadTimePerItem.sql` | Lead time per item (prompt 52): `inventory.Items.LeadTimeMonths` (days converted once, step `98.LeadTimeMonths`), `ShortageDocumentLines.LeadTimeManual` / `LeadTimeSource`, type `inventory.tvp_ShortageLeadTime`; new `inventory.fn_Item_LeadTimeHistory`, `fn_Item_LeadTime`, `usp_Item_SetLeadTime`; re-created `usp_Item_Get` (from 93), `usp_Shortage_Calculate`, `usp_ShortageDocument_WriteLines` and `_Get` (from 90), `_Save` and `_Recalculate` (from 25) |
 | `99_Inventory_LeadTimeShortDays.sql` | A short lead time is never converted to 0 months (prompt 52): the items script 98 converted to 0 months while their days are above 0 get the days in months to one decimal, at least 0.1; run at every start, it finds nothing a second time |
 | `100_Logistics_ContainerReport.sql` | The Container Report (prompt 52): the permission `containers.report.view` "View Container Report" (Containers, 1408) upserted and granted once per database (`inventory.OneTimeSteps` step `95.ContainerReportGrant`) to the system roles and the roles holding View Containers; new `logistics.usp_ContainerReport` (three result sets: the rows, their charges per type, the charge types; set-based over the rows, their legs read once); re-created `logistics.fn_ItemPcsPerContainer` (from 54): a packing formula of 1 is "not specified" (NULL), so capacity is not judged for it. Requires scripts 54, 82 and 89 |
+| `101_Reporting_AttachmentReport.sql` | The Attachment Report: the permission `reports.attachments.view` (Reports, 1500); `reporting.fn_Attachments` over the ten file tables; `usp_AttachmentReport_List` / `_Files` / `_Content` / `_LogDownload`; table `reporting.AttachmentDownloads`; covering indexes on each file table (4.20) |
+| `102_Purchase_DeductionCharges.sql` | Deduction charges: `purchase.ChargeTypes.IsDeduction` (+ check: a deduction is in the landed cost, never a recoverable tax), the seed DED "Deduction / refund"; the positive-amount checks on container and purchase charges dropped; a deduction type stores its charges negative (container charges, copies, invoice-own charges, LCAs), refused at Post when a line would cost below 0; a cancel puts back no more than its posting took out; `fn_ContainerChargeSettlement` answers 'Deduction', nothing outstanding (4.21) |
+| `103_Reporting_ItemBalanceReport.sql` | The Item Balance Report: permission `reports.itembalance.view`, `reporting.ItemBalanceReportRuns` (the run log), `usp_ItemBalance_Warehouses` (the reader's warehouses), `usp_ItemBalance_Data` (items, warehouses with their top warehouse, the events oldest first without cancelled documents, the ledger's quantity), `usp_ItemBalance_Rates`, `usp_ItemBalance_LogRun`; the average is replayed by the API (4.22) |
+| `105_Reporting_ContainerChargesReport.sql` | The Container Charges report: permission `reports.containercharges.view` (Reports, 1520); `reporting.usp_ContainerChargeReport` (the containers of a period by offload or dispatch date with their items, final destination and current location as script 100, every Draft / Posted charge of the types asked with its posted payments, the types asked); the service adds them up per container and type (4.23) |
+| `106_Reporting_DispatchedItemsReport.sql` | The Dispatched Items report: permission `reports.dispatcheditems.view` (Reports, 1530); `logistics.usp_ContainerReport` re-created from script 100 with `@DispatchFrom` / `@DispatchTo` / `@LoadingCountry`, the oil, the item's family and top family, the loading country, the charge types' IsDeduction, and the typed dispatch / port arrival dates of a container without legs (4.24) |
+| `107_Purchase_InvoiceListPaymentFilter.sql` | `purchase.usp_PurchaseDocument_Search` re-created from script 65 with `@PaymentStatus` (Unpaid / Partial / Paid from `purchase.fn_InvoiceSettlement`): the Payment filter of the supplier invoice list |
+| `108_Logistics_ContainerPaymentStatus.sql` | `purchase.fn_Container_PaymentStatus` (a container's share of each posted supplier invoice and what is paid of it, from `fn_InvoiceContainerSettlement`: Unpaid / Partial / Paid / NotInvoiced); `logistics.usp_Container_Search` re-created from script 104 with `@PaymentStatus` and the row's PaymentStatus, InvoicedAmountBase, PaidAmountBase |
+| `109_Reporting_GoodsOnOrderReport.sql` | The Goods on Order report: permission `reports.goodsonorder.view` (Reports, 1540). Its rows are `logistics.usp_ContainerReport`'s without the received containers; the service makes one column per stage (StageLabel, the pending months in one) |
+| `110_Logistics_ContainerReportWithCharges.sql` | `logistics.usp_ContainerReport` re-created from script 106 with `@WithCharges` (default 1): 0 reads no charge - result sets 2 and 3 empty, the transport, charge and total expenses columns empty; the Container Report page sends 0 unless "With charges" is ticked, Dispatched Items and Goods on Order keep 1 |
+| `111_Logistics_ShipmentStages.sql` | Shipment stages: table `logistics.ShipmentStages` (Kind 1 Leg / 2 Arrive / 3 Offload, MovementTypeId, FromPlaceId NULL = port of loading, ToPlaceId), seeded once (step `111.ShipmentStages`) where Dar es Salaam and Lubumbashi exist; `logistics.fn_Container_Stage` (where a container stands), `usp_ShipmentStage_Preview / _MatchNumbers / _Check / _List / _Save / _Delete`; permissions `masterdata.shipmentstages.manage` (1475) and `containers.movements.advanced` (1409, the three hidden menus); `usp_Port_Delete`, `usp_MovementType_Delete` and `usp_Container_Search` (script 108 + `@StageId`, StageId / StageName / StageReceiptPending) re-created. The service (`ShipmentStageService`) moves containers with `usp_Movement_AddLeg`, Complete / Complete only some, and posts the goods receipt of an Offload stage |
+| `112_MasterData_MergeDuplicatePorts.sql` | One port per place: the data migration made Dar es Salaam and Lubumbashi as TZ-DAR and CD-LUB, script 24 seeds them as TZDAR and CDLUB, so both showed twice. When the seeded row is used nowhere it is deleted and the used row takes its code (same Id, nothing else changes); a used seeded row is left alone with a PRINT. Idempotent |
+| `113_Logistics_ChargePaymentType.sql` | A container charge paid Cash or On account: `ContainerCharges.PaymentType` (1 Cash, 2 On account, every earlier charge On account), `PaymentMethodId`, `PaymentAccountId`, `PaymentReference`; `purchase.Payments.FromChargePost`; `logistics.fn_ContainerCharge_PaymentProblem` (a cash charge needs its provider - an active supplier -, a method that is not a cheque, an active account in the charge's currency; a deduction is never paid); `logistics.usp_ContainerCharge_PayCash` (one Container Charge Payment per group of charges posted together, made and posted through `usp_Payment_Save` / `_Post` at the charge's rate and date). Re-created: `usp_ContainerCharge_Create` / `_Update` / `_CopyToContainers` / `_Post` (102), `_Cancel` / `_Get` (97), `_Search` (47), `purchase.usp_Payment_Reverse` (47: an automatic payment is reversed only by its charge's cancel, 73010), `purchase.usp_Payment_Get` (73). Idempotent |
+| `114_Fixes_TempTablesCollation.sql` | Temporary tables in the database's collation: every text column of a `CREATE TABLE #x` says `COLLATE DATABASE_DEFAULT`, in the twelve procedures that create such tables, each re-created from its current body with that one change: `sales.usp_Customer_Statement` (37), `purchase.usp_PurchaseOrder_DueReminders` / `_Resend` (42), `_RequestApproval` (44), `logistics.usp_Shipment_Board` (82), `inventory.usp_StockLevel_Search` / `_CompanySearch` (91), `usp_ItemWarehouseLevel_Import` (92), `reporting.usp_ItemBalance_Data` (103), `logistics.usp_Container_NextStepPreview` (104), `reporting.usp_ContainerChargeReport` (105), `logistics.usp_ContainerReport` (110). A database whose collation differs from its server's (testing's, restored from an Arabic SQL Server) failed with Msg 451 / 468; nothing changes where they match. Idempotent |
 
 **Two lines of work, one numbering (12 October 2026).** After script 62 the work on GitHub (63–67) and Ali's work on
 GitLab both numbered their next scripts from 63. At the merge Ali's 63–66 became **68–71**, with only the numbers they

@@ -18,6 +18,8 @@ CREATE TABLE [inventory].[TransferOrderFiles] (
 );
 
 
+
+
 GO
 
 CREATE NONCLUSTERED INDEX [IX_TransferOrderFiles_Order]
@@ -25,4 +27,7 @@ CREATE NONCLUSTERED INDEX [IX_TransferOrderFiles_Order]
 
 
 GO
+CREATE NONCLUSTERED INDEX [IX_TransferOrderFiles_Report]
+    ON [inventory].[TransferOrderFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
+    INCLUDE([TransferOrderId], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
 

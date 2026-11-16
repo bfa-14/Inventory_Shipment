@@ -1,14 +1,4 @@
-/* ================================================================== 2. logistics.usp_ContainerCharge_ApplyCost */
-
--- A charge that enters (@Sign = 1) or leaves (@Sign = -1) the cost of goods already offloaded:
--- the part still in stock changes the inventory value (moving average), the part already sold goes to COGS.
--- Then the item costs are replayed (exact average, last / FOB cost from the latest receipt).
--- Re-created (89) from the body of script 27: THE PART STILL IN STOCK IS CAPPED BY THE COMPANY'S STOCK of the item, every
--- warehouse, as the goods receipt true-up (GRNCOST) does - no longer by the receiving warehouse's: the average is
--- company-wide, and goods moved to another warehouse (an Inventory Out + In, a transfer) are still held. A CANCEL OF A
--- CHARGE POSTED AFTER THE RECEIPT NEVER TAKES MORE OUT OF STOCK THAN ITS POSTING PUT IN, per item. The rows keep the
--- receiving warehouse and the container's branch, for the reports.
-CREATE   PROCEDURE logistics.usp_ContainerCharge_ApplyCost
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_ApplyCost
     @ChargeId INT,
     @Sign     SMALLINT,
     @UserId   INT = NULL
@@ -83,6 +73,39 @@ BEGIN
                     FROM @Adj a
                     INNER JOIN @Cap c ON c.ItemId = a.ItemId
                     WHERE c.TakenOut > c.Posted)
+        UPDATE a SET Inv = ISNULL(a.Inv, 0) + d.Diff
+        FROM @Adj a
+        INNER JOIN d ON d.LineId = a.LineId
+        WHERE d.Rn = 1 AND d.Diff <> 0;
+    END
+
+    -- (102) THE MIRROR FOR A DEDUCTION: its cancel puts back into stock no more than its posting took out of it, per item
+    --       (pieces received since would otherwise get a share of it); the rest goes back to cost of sales. The cap above
+    --       does nothing for a deduction (what it took out is negative).
+    IF @Sign = -1 AND @AdjustedAfter = 1 AND EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @ChargeId AND AmountBase < 0)
+    BEGIN
+        DECLARE @Back TABLE (ItemId INT PRIMARY KEY, TookOut DECIMAL(18,2) NOT NULL, PutBack DECIMAL(18,2) NOT NULL);
+        INSERT INTO @Back (ItemId, TookOut, PutBack)
+        SELECT a.ItemId,
+               -ISNULL((SELECT SUM(c.AmountBase) FROM inventory.CostAdjustments c
+                        WHERE c.SourceKind = N'CNTCHARGE' AND c.SourceId = @ChargeId AND c.Kind = N'Inventory'
+                          AND c.ItemId = a.ItemId), 0),
+               SUM(ISNULL(a.Inv, 0))
+        FROM @Adj a
+        GROUP BY a.ItemId;
+        UPDATE @Back SET TookOut = 0 WHERE TookOut < 0;
+
+        UPDATE a
+        SET Inv = ROUND(ISNULL(a.Inv, 0) * b.TookOut / b.PutBack, 2)
+        FROM @Adj a
+        INNER JOIN @Back b ON b.ItemId = a.ItemId
+        WHERE b.PutBack > b.TookOut;                                     -- PutBack > TookOut >= 0: never a division by 0
+
+        ;WITH d AS (SELECT a.LineId, Diff = b.TookOut - SUM(ISNULL(a.Inv, 0)) OVER (PARTITION BY a.ItemId),
+                           Rn = ROW_NUMBER() OVER (PARTITION BY a.ItemId ORDER BY ABS(a.Delta) DESC, a.LineId)
+                    FROM @Adj a
+                    INNER JOIN @Back b ON b.ItemId = a.ItemId
+                    WHERE b.PutBack > b.TookOut)
         UPDATE a SET Inv = ISNULL(a.Inv, 0) + d.Diff
         FROM @Adj a
         INNER JOIN d ON d.LineId = a.LineId

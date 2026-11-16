@@ -46,6 +46,9 @@ deploy/                         Docker stack and server scripts (setup, update, 
      is granted once when it is created, to the roles named in the script, and never re-granted (scripts 64, 75, 90-94).
    - Every INSERT into `inventory.StockMovements` stamps `CreatedBy` with the acting user and never uses OUTPUT without
      INTO (the warehouse access trigger of script 92 reads it; OUTPUT without INTO fails on a table with a trigger).
+   - A `CREATE TABLE #x` gives every text column `COLLATE DATABASE_DEFAULT` (script 114): a #table takes the SERVER's
+     collation, a restored database keeps its own (testing's came from a PC whose SQL Server is Arabic,
+     SQL_Latin1_General_CP1256_CI_AS), and mixing the two fails with Msg 451 / 468 "Cannot resolve collation conflict".
    - `DatabaseProject` is refreshed only from a clean database built by the API of the commit being pushed (the way the
      servers get it): `tools/refresh-dbproject.sh` on that database, committed as "DatabaseProject refreshed (up to
      script NN)". Developer PCs only pull it; `tools/compare-dbproject.sh --diff` (read-only, `DB=` a connection string

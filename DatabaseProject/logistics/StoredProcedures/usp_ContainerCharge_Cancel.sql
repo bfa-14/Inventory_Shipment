@@ -1,7 +1,4 @@
-/* ================================================================== 9. Cancel */
-
--- Re-created (97) from the body of script 65: + the BIVAC Out of a BIVAC charge is cancelled with it. Nothing else changes.
-CREATE   PROCEDURE logistics.usp_ContainerCharge_Cancel
+﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
     @RowVersion BINARY(8) = NULL,
@@ -32,7 +29,7 @@ BEGIN
         IF @Status <> 2 THROW 70010, 'Only a posted charge can be cancelled (delete a draft instead).', 1;
         -- (47) Money paid against it would be left pointing at nothing: the payments are reversed (or de-allocated) first.
         IF EXISTS (SELECT 1 FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
-                   WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2)
+                   WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2 AND p.FromChargePost = 0)   -- (113) not its own
             THROW 70010, 'This charge cannot be cancelled: supplier payments are allocated to it. Reverse those payments (or remove the allocations) first.', 1;
         IF @CtStatus = 7 THROW 70010, 'The container is closed. Reopen it first.', 1;
         IF @RowVersion IS NOT NULL AND NOT EXISTS (SELECT 1 FROM logistics.ContainerCharges WHERE Id = @Id AND RowVersion = @RowVersion)
@@ -56,8 +53,25 @@ BEGIN
             EXEC inventory.usp_StockDocument_Cancel @Id = @BivacOut, @Reason = @BivacReason, @UserId = @UserId;
         END
 
+        -- (113) the payment a cash charge made goes with it; the other charges it paid are paid again on their own
+        DECLARE @AutoPay INT, @AutoNo NVARCHAR(30);
+        SELECT TOP (1) @AutoPay = p.Id, @AutoNo = p.PaymentNumber
+        FROM purchase.PaymentAllocations a INNER JOIN purchase.Payments p ON p.Id = a.PaymentId
+        WHERE a.ContainerChargeId = @Id AND a.RemovedAtUtc IS NULL AND p.Status = 2 AND p.FromChargePost = 1;
+        IF @AutoPay IS NOT NULL
+        BEGIN
+            DECLARE @Others logistics.tvp_IdList;
+            INSERT INTO @Others (Id)
+            SELECT ContainerChargeId FROM purchase.PaymentAllocations
+            WHERE PaymentId = @AutoPay AND ContainerChargeId <> @Id AND RemovedAtUtc IS NULL;
+            DECLARE @PayReason NVARCHAR(500) = LEFT(N'Container charge cancelled: ' + @Reason, 500);
+            EXEC purchase.usp_Payment_Reverse @Id = @AutoPay, @Reason = @PayReason, @UserId = @UserId, @FromCharge = 1;
+            IF EXISTS (SELECT 1 FROM @Others) EXEC logistics.usp_ContainerCharge_PayCash @Others, @UserId;
+        END
+
         INSERT INTO logistics.ContainerAudit (ContainerId, Action, Details, UserId)
         VALUES (@ContainerId, N'Updated', LEFT(N'Charge cancelled: ' + @Label + N' - ' + @Reason
+                                               + CASE WHEN @AutoPay IS NOT NULL THEN N' (payment ' + ISNULL(@AutoNo, N'') + N' reversed)' ELSE N'' END
                                                + CASE WHEN @InCost = 1 THEN N' (item costs adjusted back)' ELSE N'' END, 500), @UserId);
         COMMIT TRANSACTION;
     END TRY

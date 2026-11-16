@@ -100,6 +100,10 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
         parameters.Add("@Notes", request.Notes, DbType.String, size: 300);
         parameters.Add("@UserId", userId, DbType.Int32);
         parameters.Add("@BivacItemId", request.BivacItemId, DbType.Int32);   // (97)
+        parameters.Add("@PaymentType", request.PaymentType, DbType.Byte);                          // (113)
+        parameters.Add("@PaymentMethodId", request.PaymentMethodId, DbType.Int32);
+        parameters.Add("@PaymentAccountId", request.PaymentAccountId, DbType.Int32);
+        parameters.Add("@PaymentReference", request.PaymentReference, DbType.String, size: 100);
 
         try
         {
@@ -139,6 +143,11 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
         parameters.Add("@Manual", ToManualTable(request.Manual).AsTableValuedParameter(ManualTypeName));
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);
         parameters.Add("@UserId", userId, DbType.Int32);
+
+        parameters.Add("@PaymentType", request.PaymentType, DbType.Byte);                          // (113)
+        parameters.Add("@PaymentMethodId", request.PaymentMethodId, DbType.Int32);
+        parameters.Add("@PaymentAccountId", request.PaymentAccountId, DbType.Int32);
+        parameters.Add("@PaymentReference", request.PaymentReference, DbType.String, size: 100);
 
         return ExecuteAsync("logistics.usp_ContainerCharge_Update", parameters, cancellationToken);
     }
@@ -222,6 +231,18 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
     /// say "not found", "found twice", "closed" or "already has this charge" before anything is created. The
     /// keys are compared with the function the movement import uses, so both imports read a number alike.
     /// </summary>
+    /// <summary>(113) What logistics.fn_ContainerCharge_PaymentProblem says of a charge paid this way; null when it is payable.</summary>
+    public async Task<string?> PaymentProblemAsync(
+        byte paymentType, int? methodId, int? accountId, int? currencyId, int? providerPartyId, int? chargeTypeId,
+        CancellationToken cancellationToken = default)
+    {
+        await using var connection = _connectionFactory.Create();
+        return await connection.QuerySingleOrDefaultAsync<string?>(new CommandDefinition(
+            "SELECT p.Message FROM logistics.fn_ContainerCharge_PaymentProblem(@PaymentType, @MethodId, @AccountId, @CurrencyId, @ProviderPartyId, @ChargeTypeId) p;",
+            new { PaymentType = paymentType, MethodId = methodId, AccountId = accountId, CurrencyId = currencyId, ProviderPartyId = providerPartyId, ChargeTypeId = chargeTypeId },
+            cancellationToken: cancellationToken));
+    }
+
     public async Task<string?> ReferenceClashAsync(int? providerPartyId, string reference, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();

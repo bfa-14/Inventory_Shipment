@@ -1,11 +1,12 @@
-/* ================================================================== 3. The Containers list: the journey and the receive rule */
+﻿/* ================================================================== 6. The containers list by stage */
 
--- Re-created (95) from the body of script 81: + @Journey (the list's Journey filter, read in step 1 only when given),
--- the journey columns, CanReceive by fn_Container_ReceiveBlock and its reason. Nothing else changes.
+-- Re-created (111) from the body of script 108: + @StageId (a stage's Id, 0 Pending or followed by typed dates, -1 not
+-- on a stage) and the row's StageId, StageName, StageReceiptPending (fn_Container_Stage). Every other column, filter
+-- and sort is unchanged.
 CREATE   PROCEDURE logistics.usp_Container_Search
     @Search              NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel, PO / PI no., commercial invoice, supplier
     @ContainerRef        NVARCHAR(30)  = NULL,
-    @ContainerNo         NVARCHAR(20)  = NULL,
+    @ContainerNo         NVARCHAR(30)  = NULL,
     @SupplierId          INT           = NULL,
     @PurchaseDocumentId  INT           = NULL,   -- a purchase ORDER or a purchase INVOICE linked to the container
     @PurchaseOrderId     INT           = NULL,   -- containers carrying lines of this order
@@ -26,7 +27,9 @@ CREATE   PROCEDURE logistics.usp_Container_Search
     @PageSize            INT           = 10,
     @DeliveredNotReceived BIT          = 0,      -- (65) 1 = delivered (or with a draft receipt) and not received yet
     @NextStep            NVARCHAR(20)  = NULL,   -- (81) Ship | StartPlanned | Complete | NextLeg | Receive (the to-do list)
-    @Journey             NVARCHAR(20)  = NULL    -- (95) NotDispatched | OnTheWay | Arrived | Received (fn_Container_Journey)
+    @Journey             NVARCHAR(20)  = NULL,   -- (95) NotDispatched | OnTheWay | Arrived | Received (fn_Container_Journey)
+    @PaymentStatus       NVARCHAR(20)  = NULL,   -- (108) Unpaid | Partial | Paid | NotInvoiced (fn_Container_PaymentStatus)
+    @StageId             INT           = NULL    -- (111) a shipment stage; 0 Pending (never moved), -1 not on a stage
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -44,6 +47,7 @@ BEGIN
     SET @BlNo = NULLIF(LTRIM(RTRIM(@BlNo)), N'');
     SET @NextStep = NULLIF(LTRIM(RTRIM(@NextStep)), N'');
     SET @Journey = NULLIF(LTRIM(RTRIM(@Journey)), N'');
+    SET @PaymentStatus = NULLIF(LTRIM(RTRIM(@PaymentStatus)), N'');
     IF @SortColumn IS NULL OR @SortColumn NOT IN (N'ContainerRef', N'ContainerNo', N'OrderDate', N'DispatchDate', N'Eta', N'Status', N'CreatedAtUtc')
         SET @SortColumn = N'OrderDate';
     IF @SortDirection IS NULL OR UPPER(@SortDirection) NOT IN (N'ASC', N'DESC') SET @SortDirection = N'DESC';
@@ -77,6 +81,9 @@ BEGIN
     OUTER APPLY logistics.fn_Container_NextStepKind(c.Id, c.Status, ss.MovementCount, ss.ActiveMovementId, ss.PlannedMovementId,
                                                     NULL, ss.LastMovementId, dl.MovementId, rb.GoodsReceiptStatus) nk
     OUTER APPLY logistics.fn_Container_Journey(c.Id) jr                 -- (95) read only for @Journey
+    OUTER APPLY purchase.fn_Container_PaymentStatus(c.Id) pys           -- (108) read only for @PaymentStatus
+    OUTER APPLY (SELECT f.StageId, f.StageKind, f.FitsStages
+                 FROM logistics.fn_Container_Stage(c.Id) f WHERE @StageId IS NOT NULL) stf   -- (111) read only for @StageId
     WHERE (@Search IS NULL OR c.ContainerRef LIKE N'%' + @Search + N'%' OR c.ContainerNo LIKE N'%' + @Search + N'%'
            OR c.BlNo LIKE N'%' + @Search + N'%' OR c.VesselName LIKE N'%' + @Search + N'%'
            OR EXISTS (SELECT 1 FROM logistics.ContainerLines cl
@@ -121,6 +128,11 @@ BEGIN
       AND (@NextStep IS NULL OR nk.Kind = @NextStep                                     -- (81) the to-do list
            OR (@NextStep = N'Receive' AND nk.Kind = N'OpenReceipt'))
       AND (@Journey IS NULL OR jr.JourneyStatus = @Journey)                       -- (95)
+      AND (@PaymentStatus IS NULL OR pys.PaymentStatus = @PaymentStatus)          -- (108)
+      AND (@StageId IS NULL                                                       -- (111)
+           OR (@StageId > 0 AND stf.StageId = @StageId)
+           OR (@StageId = 0 AND stf.StageKind = 0)
+           OR (@StageId = -1 AND stf.FitsStages = 0))
     ORDER BY Ord
     OFFSET (@PageNumber - 1) * @PageSize ROWS FETCH NEXT @PageSize ROWS ONLY
     OPTION (RECOMPILE);
@@ -195,6 +207,10 @@ BEGIN
            ss.LastMovementId, ss.LastMovementNo, ss.LastMovementEndDate,
            -- (81) its next step (fn_Container_NextStepKind), and the planned movement's refusal for this page's rows
            NextStepKind = nk.Kind, NextStepBlockedReason = nk.BlockedReason,
+           -- (108) what its posted supplier invoices are paid, its share of them (fn_InvoiceContainerSettlement, 73)
+           PaymentStatus = pys.PaymentStatus, InvoicedAmountBase = pys.InvoicedAmountBase, PaidAmountBase = pys.PaidAmountBase,
+           -- (111) where it stands (fn_Container_Stage)
+           StageId = stg.StageId, StageName = stg.StageName, StageReceiptPending = stg.ReceiptPending,
            SortOrd = pg.Ord
     INTO #Page
     FROM #Pg pg
@@ -214,6 +230,8 @@ BEGIN
     LEFT  JOIN #Sb sb                       ON sb.MovementId = ss.PlannedMovementId          -- (81)
     CROSS APPLY logistics.fn_Container_ReceiveBlock(c.Id) rbk   -- (95)
     CROSS APPLY logistics.fn_Container_Journey(c.Id) jr         -- (95)
+    CROSS APPLY purchase.fn_Container_PaymentStatus(c.Id) pys   -- (108)
+    CROSS APPLY logistics.fn_Container_Stage(c.Id) stg          -- (111)
     CROSS APPLY logistics.fn_Container_NextStepKind(c.Id, c.Status, ss.MovementCount, ss.ActiveMovementId, ss.PlannedMovementId,
                                                     sb.Reason, ss.LastMovementId, dl.MovementId,
                                                     rb.GoodsReceiptStatus) nk   -- (81) its next step

@@ -139,6 +139,9 @@ public static class Permissions
         public const string AttachmentTypesManage = "masterdata.attachmenttypes.manage";
         public const string MovementTypesManage = "masterdata.movementtypes.manage";
 
+        /// <summary>(111) The shipment stages a container moves through (Backoffice › Master Data › Shipment Stages).</summary>
+        public const string ShipmentStagesManage = "masterdata.shipmentstages.manage";
+
         /* The two lists a customer receipt line picks from. One "manage" each, like the container lists;
            the lookups are open to any signed-in user because the receipt page reads from them. */
         public const string PaymentMethodsManage = "masterdata.paymentmethods.manage";
@@ -340,6 +343,12 @@ public static class Permissions
         public const string ShipmentsView = "containers.shipments.view";
 
         /// <summary>
+        /// (111) The Shipments, Movements and Tracking menus: hidden from everyone else (containers move by their stage).
+        /// The pages and their own permissions are unchanged, for an administrator's corrections.
+        /// </summary>
+        public const string MovementsAdvanced = "containers.movements.advanced";
+
+        /// <summary>
         /// Reports › Container Report (script 95): every container and order still to load with its order, invoices,
         /// payments, journey, charges and cost, by stage. Granted once, when first created, to the roles holding View
         /// Containers. Its charge figures also need View Container Charges, its payments View Supplier Payments.
@@ -352,6 +361,41 @@ public static class Permissions
         public const string AttachmentsManage = "containers.attachments.manage";
     }
 
+    /// <summary>
+    /// Reports that read across modules (script 101). The Attachment Report lists every module's files, but each reader
+    /// sees and downloads only the files of the documents they may open: this permission opens the page, it never
+    /// widens what the reader may see.
+    /// </summary>
+    public static class Reports
+    {
+        public const string AttachmentsView = "reports.attachments.view";
+
+        /// <summary>
+        /// Reports › Item Balance Report (script 103): each item's opening, movements and closing per warehouse over a
+        /// period. Its amounts also need <see cref="Inventory.CostsView"/>; its warehouses are the reader's own (script 92).
+        /// </summary>
+        public const string ItemBalanceView = "reports.itembalance.view";
+
+        /// <summary>
+        /// Reports › Container Charges (script 105): the containers of a period with each charge type entered or missing, its
+        /// amount and its payments. Its payment columns also need <see cref="Purchase.PaymentsView"/>.
+        /// </summary>
+        public const string ContainerChargesView = "reports.containercharges.view";
+
+        /// <summary>
+        /// Reports › Dispatched Items (script 106): the items dispatched in a period, per item and per container. Its oil
+        /// deduction also needs <see cref="Containers.ChargesView"/>, its payment columns <see cref="Purchase.PaymentsView"/>.
+        /// </summary>
+        public const string DispatchedItemsView = "reports.dispatcheditems.view";
+
+        /// <summary>
+        /// Reports › Goods on Order (script 109): everything ordered and not received yet, per item and per stage of the
+        /// journey (the columns are the stages the containers are at).
+        /// </summary>
+        public const string GoodsOnOrderView = "reports.goodsonorder.view";
+    }
+
+    private const string ReportsModule = "Reports";
     private const string DashboardModule = "Dashboard";
     private const string SecurityModule = "Security";
     private const string SalesModule = "Sales";
@@ -664,9 +708,26 @@ public static class Permissions
             "Logistics › Shipments: the containers on their way, by stage.", 1406),
         new(Containers.TrackingView, "View Tracking", ContainersModule,
             "Open the Tracking board (a container's own page shows its route with View Containers).", 1407),
+        // Names, descriptions and sort orders match script 111's MERGE, so the start-up sync changes nothing.
+        new(Containers.MovementsAdvanced, "Show Shipments, Movements and Tracking", ContainersModule,
+            "Show the Shipments, Movements and Tracking menus (hidden from everyone else: containers move by their stage).", 1409),
         // Name, description and sort order match script 95's MERGE, so the start-up sync changes nothing.
         new(Containers.ReportView, "View Container Report", ContainersModule,
             "Reports › Container Report: every container and order still to load with its order, invoices, payments, journey, charges and cost, by stage.", 1408),
+        // Name, description and sort order match script 101's MERGE, so the start-up sync changes nothing.
+        new(Reports.AttachmentsView, "View Attachment Report", ReportsModule,
+            "Reports › Attachment Report: find attachments by type and date and download them; each reader sees only the files of documents they may open.", 1500),
+        new(Reports.ItemBalanceView, "View Item Balance Report", ReportsModule,
+            "Reports › Item Balance Report: opening, movements and closing of each item per warehouse over a period; the amounts also need View item costs.", 1510),
+        // Name, description and sort order match script 105's MERGE, so the start-up sync changes nothing.
+        new(Reports.ContainerChargesView, "View Container Charges Report", ReportsModule,
+            "Reports › Container Charges: the containers offloaded or dispatched in a period with each charge type entered or missing, its amount and its payments.", 1520),
+        // Name, description and sort order match script 106's MERGE, so the start-up sync changes nothing.
+        new(Reports.DispatchedItemsView, "View Dispatched Items Report", ReportsModule,
+            "Reports › Dispatched Items: the items dispatched in a period, per item and per container, with their FOB, oil and where they are now.", 1530),
+        // Name, description and sort order match script 109's MERGE, so the start-up sync changes nothing.
+        new(Reports.GoodsOnOrderView, "View Goods on Order Report", ReportsModule,
+            "Reports › Goods on Order: everything ordered and not received yet, per item and per stage of the journey.", 1540),
         new(Containers.MovementsManage, "Manage Shipment Movements", ContainersModule,
             "Plan, start, complete and cancel movements of containers.", 1410),
         new(Containers.ChargesView, "View Container Charges", ContainersModule,
@@ -681,6 +742,8 @@ public static class Permissions
             "Add and remove documents on containers and movements.", 1460),
         new(MasterData.MovementTypesManage, "Manage movement types", MasterDataModule,
             "Define the movement types and the stage each one represents.", 1470),
+        new(MasterData.ShipmentStagesManage, "Manage shipment stages", MasterDataModule,
+            "Define the stages a container moves through (Update stage…, the import of stages) and the leg each one records.", 1475),
         new(MasterData.PaymentMethodsManage, "Manage payment methods", MasterDataModule,
             "Define the payment methods a receipt line can use.", 1480),
         new(MasterData.CashBankAccountsManage, "Manage cash / bank accounts", MasterDataModule,

@@ -28,6 +28,7 @@ public sealed class ChargeTypeRepository : IChargeTypeRepository
         public string AllocationMethod { get; init; } = string.Empty;
         public bool IncludeInLandedCost { get; init; }
         public bool IsRecoverableTax { get; init; }
+        public bool IsDeduction { get; init; }
         public string? Description { get; init; }
         public bool IsActive { get; init; }
         public int UsageCount { get; init; }
@@ -44,6 +45,7 @@ public sealed class ChargeTypeRepository : IChargeTypeRepository
             AllocationMethod = AllocationMethod,
             IncludeInLandedCost = IncludeInLandedCost,
             IsRecoverableTax = IsRecoverableTax,
+            IsDeduction = IsDeduction,
             Description = Description,
             IsActive = IsActive,
             UsageCount = UsageCount,
@@ -98,7 +100,7 @@ public sealed class ChargeTypeRepository : IChargeTypeRepository
     {
         const string sql = """
             SELECT c.Id, c.ChargeCode, c.ChargeName, c.AllocationMethod, c.IncludeInLandedCost, c.IsRecoverableTax,
-                   c.Description, c.IsActive,
+                   c.IsDeduction, c.Description, c.IsActive,
                    UsageCount = (SELECT COUNT(*) FROM purchase.PurchaseCharges pc WHERE pc.ChargeTypeId = c.Id),
                    c.CreatedAtUtc, c.UpdatedAtUtc, c.RowVersion
             FROM purchase.ChargeTypes c
@@ -120,6 +122,7 @@ public sealed class ChargeTypeRepository : IChargeTypeRepository
         parameters.Add("@AllocationMethod", ChargeAllocationMethods.Normalize(request.AllocationMethod) ?? request.AllocationMethod, DbType.String, size: 10);
         parameters.Add("@IncludeInLandedCost", request.IncludeInLandedCost, DbType.Boolean);
         parameters.Add("@IsRecoverableTax", request.IsRecoverableTax, DbType.Boolean);
+        parameters.Add("@IsDeduction", request.IsDeduction, DbType.Boolean);
         parameters.Add("@Description", request.Description, DbType.String, size: 500);
         parameters.Add("@IsActive", request.IsActive, DbType.Boolean);
         parameters.Add("@RowVersion", ToRowVersion(request.RowVersion), DbType.Binary, size: 8);

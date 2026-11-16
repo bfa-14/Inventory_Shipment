@@ -1,12 +1,13 @@
-/* The same for a container charge: only a POSTED charge owes anything. */
-CREATE   FUNCTION logistics.fn_ContainerChargeSettlement (@ChargeId INT)
+﻿CREATE   FUNCTION logistics.fn_ContainerChargeSettlement (@ChargeId INT)
 RETURNS TABLE
 AS
 RETURN
 (
     SELECT p.PaidAmount,
-           OutstandingAmount = CASE WHEN c.Status = 2 THEN c.Amount - p.PaidAmount END,
+           -- (102) a deduction is not paid: nothing outstanding, and its own status
+           OutstandingAmount = CASE WHEN c.Status = 2 THEN CASE WHEN c.Amount < 0 THEN 0 ELSE c.Amount - p.PaidAmount END END,
            PaymentStatus     = CASE WHEN c.Status <> 2 THEN NULL
+                                    WHEN c.Amount < 0 THEN N'Deduction'
                                     WHEN c.Amount - p.PaidAmount <= 0.005 THEN N'Paid'
                                     WHEN p.PaidAmount <= 0 THEN N'Unpaid'
                                     ELSE N'Partial' END

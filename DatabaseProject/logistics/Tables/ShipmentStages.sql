@@ -1,0 +1,26 @@
+﻿CREATE TABLE [logistics].[ShipmentStages] (
+    [Id]             INT            IDENTITY (1, 1) NOT NULL,
+    [StageName]      NVARCHAR (100) NOT NULL,
+    [Kind]           TINYINT        NOT NULL,
+    [MovementTypeId] INT            NULL,
+    [FromPlaceId]    INT            NULL,
+    [ToPlaceId]      INT            NOT NULL,
+    [SortOrder]      INT            CONSTRAINT [DF_ShipmentStages_Sort] DEFAULT ((0)) NOT NULL,
+    [IsActive]       BIT            CONSTRAINT [DF_ShipmentStages_IsActive] DEFAULT ((1)) NOT NULL,
+    [CreatedAtUtc]   DATETIME2 (3)  CONSTRAINT [DF_ShipmentStages_CreatedAtUtc] DEFAULT (sysutcdatetime()) NOT NULL,
+    [CreatedBy]      INT            NULL,
+    [UpdatedAtUtc]   DATETIME2 (3)  NULL,
+    [UpdatedBy]      INT            NULL,
+    [RowVersion]     ROWVERSION     NOT NULL,
+    CONSTRAINT [PK_ShipmentStages] PRIMARY KEY CLUSTERED ([Id] ASC),
+    CONSTRAINT [CK_ShipmentStages_From] CHECK ([Kind]=(1) OR [FromPlaceId] IS NULL),
+    CONSTRAINT [CK_ShipmentStages_Kind] CHECK ([Kind]=(3) OR [Kind]=(2) OR [Kind]=(1)),
+    CONSTRAINT [CK_ShipmentStages_Type] CHECK ([Kind]=(2) AND [MovementTypeId] IS NULL OR [Kind]<>(2) AND [MovementTypeId] IS NOT NULL),
+    CONSTRAINT [FK_ShipmentStages_CreatedBy] FOREIGN KEY ([CreatedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [FK_ShipmentStages_From] FOREIGN KEY ([FromPlaceId]) REFERENCES [masterdata].[Ports] ([Id]),
+    CONSTRAINT [FK_ShipmentStages_To] FOREIGN KEY ([ToPlaceId]) REFERENCES [masterdata].[Ports] ([Id]),
+    CONSTRAINT [FK_ShipmentStages_Type] FOREIGN KEY ([MovementTypeId]) REFERENCES [masterdata].[MovementTypes] ([Id]),
+    CONSTRAINT [FK_ShipmentStages_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]),
+    CONSTRAINT [UQ_ShipmentStages_Name] UNIQUE NONCLUSTERED ([StageName] ASC)
+);
+

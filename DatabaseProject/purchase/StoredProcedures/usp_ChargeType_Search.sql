@@ -1,4 +1,4 @@
-CREATE   PROCEDURE purchase.usp_ChargeType_Search
+﻿CREATE   PROCEDURE purchase.usp_ChargeType_Search
     @Search              NVARCHAR(100) = NULL,   -- code or name (contains)
     @AllocationMethod    NVARCHAR(10)  = NULL,
     @IncludeInLandedCost BIT           = NULL,   -- "Cost impact" filter
@@ -19,6 +19,7 @@ BEGIN
     SET @SortDirection = UPPER(@SortDirection);
 
     SELECT c.Id, c.ChargeCode, c.ChargeName, c.AllocationMethod, c.IncludeInLandedCost, c.IsRecoverableTax, c.Description, c.IsActive,
+           c.IsDeduction,                                                  -- (102)
            UsageCount = (SELECT COUNT(*) FROM purchase.PurchaseCharges pc WHERE pc.ChargeTypeId = c.Id)
                       + (SELECT COUNT(*) FROM logistics.ContainerCharges cc WHERE cc.ChargeTypeId = c.Id),
            c.CreatedAtUtc, c.UpdatedAtUtc, c.RowVersion,

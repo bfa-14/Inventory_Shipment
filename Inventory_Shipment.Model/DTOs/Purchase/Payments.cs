@@ -345,6 +345,9 @@ public sealed class PaymentDto
     public string? UpdatedByName { get; init; }
     public byte[] RowVersion { get; init; } = [];
 
+    /// <summary>(113) Made by posting a container charge paid cash: reversed only by cancelling the charge.</summary>
+    public bool FromChargePost { get; init; }
+
     public IReadOnlyList<PaymentLineDto> Lines { get; init; } = [];
     public IReadOnlyList<PaymentAllocationDto> Allocations { get; init; } = [];
     public IReadOnlyList<PaymentFileDto> Files { get; init; } = [];
