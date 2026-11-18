@@ -1,4 +1,4 @@
-﻿/* ================================================================== 2. What a cash charge needs */
+/* ================================================================== 2. What a cash charge needs */
 
 CREATE   FUNCTION logistics.fn_ContainerCharge_PaymentProblem
 (
@@ -37,3 +37,6 @@ RETURN
                    LEFT JOIN masterdata.Currencies cc      ON cc.Id = @CurrencyId)
         END
 );
+
+GO
+

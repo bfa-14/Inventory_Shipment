@@ -1,4 +1,3 @@
-﻿-- Re-created (114) from the body of script 105: COLLATE DATABASE_DEFAULT on the text columns of its #tables (8).
 CREATE   PROCEDURE reporting.usp_ContainerChargeReport
     @ChargeTypeIds NVARCHAR(MAX),                -- comma separated, in the order of the columns
     @DateBasis     NVARCHAR(10)  = N'Offload',   -- Offload | Dispatch
@@ -173,3 +172,6 @@ BEGIN
     FROM @Types t INNER JOIN purchase.ChargeTypes ct ON ct.Id = t.Id
     ORDER BY t.Seq;
 END
+
+GO
+

@@ -1,4 +1,3 @@
-﻿-- Re-created (114) from the body of script 110: COLLATE DATABASE_DEFAULT on the text columns of its #tables (14).
 CREATE   PROCEDURE logistics.usp_ContainerReport
     @Search          NVARCHAR(100) = NULL,   -- container ref or no., B/L, order number, PI no., invoice no.
     @SupplierId      INT           = NULL,
@@ -330,3 +329,6 @@ BEGIN
     WHERE @WithCharges = 1 AND (t.IsActive = 1 OR t.Id IN (SELECT ChargeTypeId FROM #Ch))
     ORDER BY t.Id;
 END
+
+GO
+

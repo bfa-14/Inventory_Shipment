@@ -1,4 +1,3 @@
-﻿-- Re-created (114) from the body of script 103: COLLATE DATABASE_DEFAULT on the text columns of its #tables (3).
 CREATE   PROCEDURE reporting.usp_ItemBalance_Data
     @UserId       INT,
     @WarehouseIds NVARCHAR(MAX) = NULL,    -- comma separated; a parent takes every warehouse under it; NULL / empty = all the user's
@@ -161,3 +160,6 @@ BEGIN
     WHERE m.MovementDate < @End
     GROUP BY m.ItemId, m.WarehouseId;
 END
+
+GO
+

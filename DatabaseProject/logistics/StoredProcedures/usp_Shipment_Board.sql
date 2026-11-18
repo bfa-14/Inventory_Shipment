@@ -1,4 +1,3 @@
--- Re-created (114) from the body of script 82: COLLATE DATABASE_DEFAULT on the text columns of its #tables (1).
 CREATE   PROCEDURE logistics.usp_Shipment_Board
     @Search          NVARCHAR(100) = NULL,   -- ref, container no., B/L, vessel or truck, purchase order number
     @SupplierId      INT           = NULL,

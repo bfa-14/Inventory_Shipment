@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. The payment of posted cash charges */
+/* ================================================================== 3. The payment of posted cash charges */
 
 CREATE   PROCEDURE logistics.usp_ContainerCharge_PayCash
     @Ids    logistics.tvp_IdList READONLY,
@@ -94,3 +94,6 @@ BEGIN
     CLOSE keys;
     DEALLOCATE keys;
 END
+
+GO
+

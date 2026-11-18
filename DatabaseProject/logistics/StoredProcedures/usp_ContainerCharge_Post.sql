@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
+CREATE   PROCEDURE logistics.usp_ContainerCharge_Post
     @Id         INT       = NULL,
     @Ids        logistics.tvp_IdList READONLY,
     @RowVersion BINARY(8) = NULL,     -- checked with @Id only

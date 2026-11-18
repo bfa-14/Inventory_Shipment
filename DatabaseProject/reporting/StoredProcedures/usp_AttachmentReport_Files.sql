@@ -1,4 +1,4 @@
-﻿/* ================================================================== 6. reporting.usp_AttachmentReport_Files */
+/* ================================================================== 6. reporting.usp_AttachmentReport_Files */
 
 CREATE   PROCEDURE reporting.usp_AttachmentReport_Files
     @Kinds       NVARCHAR(400),
@@ -42,3 +42,6 @@ BEGIN
            AND (@UploadToNext IS NULL OR a.UploadedAtUtc < @UploadToNext))
     ORDER BY a.Reference, ISNULL(a.DocumentDate, CAST(a.UploadedAtUtc AS DATE)), a.Source, a.Id;
 END
+
+GO
+

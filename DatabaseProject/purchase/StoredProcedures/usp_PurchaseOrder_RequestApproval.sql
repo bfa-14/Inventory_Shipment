@@ -1,4 +1,3 @@
--- Re-created (114) from the body of script 44: COLLATE DATABASE_DEFAULT on the text columns of its #tables (4).
 CREATE   PROCEDURE purchase.usp_PurchaseOrder_RequestApproval
     @Id         INT,
     @RowVersion BINARY(8) = NULL,

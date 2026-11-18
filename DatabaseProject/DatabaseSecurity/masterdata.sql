@@ -1,7 +1,5 @@
-﻿CREATE SCHEMA [masterdata]
+CREATE SCHEMA [masterdata]
     AUTHORIZATION [dbo];
-
-
 
 
 GO

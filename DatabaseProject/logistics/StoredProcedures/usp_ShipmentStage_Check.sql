@@ -1,4 +1,4 @@
-﻿-- not describe, with their legs ("Sea freight Chennai → Dar es Salaam (completed) | ..."), to decide on.
+-- not describe, with their legs ("Sea freight Chennai → Dar es Salaam (completed) | ..."), to decide on.
 CREATE   PROCEDURE logistics.usp_ShipmentStage_Check
 AS
 BEGIN
@@ -28,3 +28,6 @@ BEGIN
     WHERE c.Status <> 8 AND st.FitsStages = 0
     ORDER BY c.ContainerRef;
 END
+
+GO
+

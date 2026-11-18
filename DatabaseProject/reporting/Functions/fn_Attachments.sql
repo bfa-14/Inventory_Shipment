@@ -1,4 +1,4 @@
-﻿/* ================================================================== 4. reporting.fn_Attachments */
+/* ================================================================== 4. reporting.fn_Attachments */
 
 CREATE   FUNCTION reporting.fn_Attachments ()
 RETURNS TABLE
@@ -74,3 +74,6 @@ RETURN
     INNER JOIN inventory.Items i ON i.Id = x.ItemId
     WHERE x.IsItemImage = 0
 );
+
+GO
+

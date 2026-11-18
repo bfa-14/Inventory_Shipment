@@ -1,4 +1,4 @@
-﻿CREATE TABLE [purchase].[PurchaseCharges] (
+CREATE TABLE [purchase].[PurchaseCharges] (
     [Id]                        INT             IDENTITY (1, 1) NOT NULL,
     [DocumentKind]              NVARCHAR (10)   NOT NULL,
     [DocumentId]                INT             NOT NULL,
@@ -26,8 +26,6 @@
     CONSTRAINT [FK_PurchaseCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]),
     CONSTRAINT [UQ_PurchaseCharges_Line] UNIQUE NONCLUSTERED ([DocumentKind] ASC, [DocumentId] ASC, [LineNumber] ASC)
 );
-
-
 
 
 GO

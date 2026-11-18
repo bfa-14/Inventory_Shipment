@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Search
+CREATE   PROCEDURE logistics.usp_ContainerCharge_Search
     @Search          NVARCHAR(100) = NULL,   -- container ref / no., reference, description, provider
     @ContainerId     INT           = NULL,
     @MovementId      INT           = NULL,

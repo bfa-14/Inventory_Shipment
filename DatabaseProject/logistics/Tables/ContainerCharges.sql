@@ -1,4 +1,4 @@
-﻿CREATE TABLE [logistics].[ContainerCharges] (
+CREATE TABLE [logistics].[ContainerCharges] (
     [Id]                   INT              IDENTITY (1, 1) NOT NULL,
     [ContainerId]          INT              NOT NULL,
     [MovementId]           INT              NULL,
@@ -54,10 +54,6 @@
     CONSTRAINT [FK_ContainerCharges_Type] FOREIGN KEY ([ChargeTypeId]) REFERENCES [purchase].[ChargeTypes] ([Id]),
     CONSTRAINT [FK_ContainerCharges_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id])
 );
-
-
-
-
 
 
 GO

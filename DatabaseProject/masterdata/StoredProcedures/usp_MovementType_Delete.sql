@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE masterdata.usp_MovementType_Delete
+CREATE   PROCEDURE masterdata.usp_MovementType_Delete
     @Id INT, @UserId INT = NULL
 AS
 BEGIN

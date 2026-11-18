@@ -1,4 +1,4 @@
-﻿CREATE TABLE [logistics].[ShipmentStages] (
+CREATE TABLE [logistics].[ShipmentStages] (
     [Id]             INT            IDENTITY (1, 1) NOT NULL,
     [StageName]      NVARCHAR (100) NOT NULL,
     [Kind]           TINYINT        NOT NULL,
@@ -23,4 +23,7 @@
     CONSTRAINT [FK_ShipmentStages_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [UQ_ShipmentStages_Name] UNIQUE NONCLUSTERED ([StageName] ASC)
 );
+
+
+GO
 

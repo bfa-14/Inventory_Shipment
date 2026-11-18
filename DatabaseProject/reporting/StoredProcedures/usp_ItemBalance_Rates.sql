@@ -1,4 +1,4 @@
-﻿/* ================================================================== 5. reporting.usp_ItemBalance_Rates */
+/* ================================================================== 5. reporting.usp_ItemBalance_Rates */
 
 -- The currency and the rates of its rate type up to Date To (1 base currency = Rate x the currency), oldest first.
 CREATE   PROCEDURE reporting.usp_ItemBalance_Rates
@@ -18,3 +18,6 @@ BEGIN
     WHERE CurrencyId = @CurrencyId AND RateType = @RateType AND RateDate <= @DateTo
     ORDER BY RateDate;
 END
+
+GO
+

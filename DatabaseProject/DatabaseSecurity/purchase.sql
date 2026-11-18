@@ -1,13 +1,5 @@
-﻿CREATE SCHEMA [purchase]
+CREATE SCHEMA [purchase]
     AUTHORIZATION [dbo];
-
-
-
-
-
-
-
-
 
 
 GO

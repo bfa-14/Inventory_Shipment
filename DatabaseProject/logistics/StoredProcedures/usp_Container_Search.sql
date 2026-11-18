@@ -1,4 +1,4 @@
-﻿/* ================================================================== 6. The containers list by stage */
+/* ================================================================== 6. The containers list by stage */
 
 -- Re-created (111) from the body of script 108: + @StageId (a stage's Id, 0 Pending or followed by typed dates, -1 not
 -- on a stage) and the row's StageId, StageName, StageReceiptPending (fn_Container_Stage). Every other column, filter

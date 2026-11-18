@@ -1,4 +1,4 @@
-﻿/* ================================================================== 7. reporting.usp_AttachmentReport_Content */
+/* ================================================================== 7. reporting.usp_AttachmentReport_Content */
 
 -- The bytes of the chosen files, one row each: Source, Id, Content. The API asks only for keys usp_AttachmentReport_Files
 -- has just answered for the reader, and reads the content as a stream (one file at a time, never the whole set at once).
@@ -29,3 +29,6 @@ BEGIN
     LEFT JOIN inventory.ItemFiles it            ON c.Source = N'ITEM' AND it.Id = c.Id AND it.IsItemImage = 0
     ORDER BY c.Source, c.Id;
 END
+
+GO
+

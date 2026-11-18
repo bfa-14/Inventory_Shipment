@@ -1,4 +1,3 @@
-﻿-- Re-created (114) from the body of script 104: COLLATE DATABASE_DEFAULT on the text columns of its #tables (10).
 CREATE   PROCEDURE logistics.usp_Container_NextStepPreview
     @ContainerIds logistics.tvp_IdList READONLY,
     @CanConfirm   BIT = 1

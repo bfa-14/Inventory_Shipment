@@ -1,4 +1,3 @@
--- Re-created (114) from the body of script 92: COLLATE DATABASE_DEFAULT on the text columns of its #tables (4).
 CREATE   PROCEDURE inventory.usp_ItemWarehouseLevel_Import
     @Rows     inventory.tvp_ItemWarehouseLevelImport READONLY,
     @FileName NVARCHAR(260) = NULL,

@@ -18,8 +18,6 @@ CREATE TABLE [sales].[SalesDocumentFiles] (
 );
 
 
-
-
 GO
 
 CREATE NONCLUSTERED INDEX [IX_SalesDocumentFiles_Document]
@@ -27,7 +25,11 @@ CREATE NONCLUSTERED INDEX [IX_SalesDocumentFiles_Document]
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_SalesDocumentFiles_Report]
     ON [sales].[SalesDocumentFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
     INCLUDE([DocumentId], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
+
+
+GO
 

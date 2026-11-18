@@ -1,4 +1,3 @@
--- Re-created (114) from the body of script 91: COLLATE DATABASE_DEFAULT on the text columns of its #tables (1).
 CREATE   PROCEDURE inventory.usp_StockLevel_CompanySearch
     @Search          NVARCHAR(100) = NULL,
     @BranchId        INT           = NULL,

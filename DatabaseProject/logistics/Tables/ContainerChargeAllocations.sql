@@ -1,4 +1,4 @@
-﻿CREATE TABLE [logistics].[ContainerChargeAllocations] (
+CREATE TABLE [logistics].[ContainerChargeAllocations] (
     [Id]              INT             IDENTITY (1, 1) NOT NULL,
     [ChargeId]        INT             NOT NULL,
     [ContainerLineId] INT             NOT NULL,
@@ -10,8 +10,6 @@
     CONSTRAINT [FK_ContainerChargeAllocations_Line] FOREIGN KEY ([ContainerLineId]) REFERENCES [logistics].[ContainerLines] ([Id]),
     CONSTRAINT [UQ_ContainerChargeAllocations] UNIQUE NONCLUSTERED ([ChargeId] ASC, [ContainerLineId] ASC)
 );
-
-
 
 
 GO

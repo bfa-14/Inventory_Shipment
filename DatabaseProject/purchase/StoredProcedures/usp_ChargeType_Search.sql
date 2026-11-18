@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE purchase.usp_ChargeType_Search
+CREATE   PROCEDURE purchase.usp_ChargeType_Search
     @Search              NVARCHAR(100) = NULL,   -- code or name (contains)
     @AllocationMethod    NVARCHAR(10)  = NULL,
     @IncludeInLandedCost BIT           = NULL,   -- "Cost impact" filter

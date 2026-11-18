@@ -1,4 +1,4 @@
-﻿/* ================================================================== 1. A container's payment status */
+/* ================================================================== 1. A container's payment status */
 
 -- (108) What the posted supplier invoices of a container's goods are paid, from its share of each (script 73's split).
 -- Always one row, so a CROSS APPLY keeps the container.
@@ -28,3 +28,6 @@ RETURN
            InvoicedAmountBase = (SELECT CAST(SUM(ContainerAmount / NULLIF(ExchangeRate, 0)) AS DECIMAL(18,2)) FROM shares),
            PaidAmountBase = (SELECT CAST(SUM(PaidAmount / NULLIF(ExchangeRate, 0)) AS DECIMAL(18,2)) FROM shares)
 );
+
+GO
+

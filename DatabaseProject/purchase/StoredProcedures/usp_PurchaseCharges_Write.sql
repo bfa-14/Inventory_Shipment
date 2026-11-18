@@ -1,4 +1,4 @@
-﻿/* ================================================================== 5. An invoice's own charges and landed cost adjustments */
+/* ================================================================== 5. An invoice's own charges and landed cost adjustments */
 
 CREATE   PROCEDURE purchase.usp_PurchaseCharges_Write
     @DocumentKind      NVARCHAR(10),

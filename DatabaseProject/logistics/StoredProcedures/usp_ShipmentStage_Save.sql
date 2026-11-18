@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ShipmentStage_Save
+CREATE   PROCEDURE logistics.usp_ShipmentStage_Save
     @Id             INT           = NULL,
     @StageName      NVARCHAR(100),
     @Kind           TINYINT,
@@ -46,3 +46,6 @@ BEGIN
         SET @NewId = @Id;
     END
 END
+
+GO
+

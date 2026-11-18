@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Update
+CREATE   PROCEDURE logistics.usp_ContainerCharge_Update
     @Id               INT,
     @MovementId       INT            = NULL,
     @ChargeTypeId     INT,

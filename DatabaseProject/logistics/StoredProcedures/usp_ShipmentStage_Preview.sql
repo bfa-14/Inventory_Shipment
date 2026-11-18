@@ -1,4 +1,4 @@
-﻿/* ================================================================== 4. Moving containers to a stage: what it does */
+/* ================================================================== 4. Moving containers to a stage: what it does */
 
 -- (111) ONE ROW PER ID ASKED (an unknown one too, Found 0). Action, when the container can go to the stage:
 --   StartLeg              a Leg stage: the leg from where it stands
@@ -86,3 +86,6 @@ BEGIN
                      END AS NVARCHAR(400))) r
     ORDER BY c.ContainerRef, x.Id;
 END
+
+GO
+

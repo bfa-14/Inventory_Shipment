@@ -1,4 +1,4 @@
-﻿/* ================================================================== 8. reporting.usp_AttachmentReport_LogDownload */
+/* ================================================================== 8. reporting.usp_AttachmentReport_LogDownload */
 
 CREATE   PROCEDURE reporting.usp_AttachmentReport_LogDownload
     @UserId     INT,
@@ -12,3 +12,6 @@ BEGIN
     INSERT INTO reporting.AttachmentDownloads (UserId, Mode, FileCount, TotalBytes, Criteria)
     VALUES (@UserId, @Mode, @FileCount, @TotalBytes, @Criteria);
 END
+
+GO
+

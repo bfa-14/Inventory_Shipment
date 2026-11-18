@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_ApplyCost
+CREATE   PROCEDURE logistics.usp_ContainerCharge_ApplyCost
     @ChargeId INT,
     @Sign     SMALLINT,
     @UserId   INT = NULL

@@ -94,7 +94,9 @@
     <Folder Include="purchase\Tables\" />
     <Folder Include="purchase\UserDefinedTypes\" />
     <Folder Include="reporting\" />
+    <Folder Include="reporting\Functions\" />
     <Folder Include="reporting\StoredProcedures\" />
+    <Folder Include="reporting\Tables\" />
     <Folder Include="sales\" />
     <Folder Include="sales\Functions\" />
     <Folder Include="sales\StoredProcedures\" />
@@ -296,7 +298,9 @@
     <Build Include="logistics\Functions\fn_Container_ReceiveBlock.sql" />
     <Build Include="logistics\Functions\fn_Container_ReceivedBy.sql" />
     <Build Include="logistics\Functions\fn_Container_ShipState.sql" />
+    <Build Include="logistics\Functions\fn_Container_Stage.sql" />
     <Build Include="logistics\Functions\fn_ContainerCharge_BivacBlock.sql" />
+    <Build Include="logistics\Functions\fn_ContainerCharge_PaymentProblem.sql" />
     <Build Include="logistics\Functions\fn_ContainerCharge_ReferenceClash.sql" />
     <Build Include="logistics\Functions\fn_ContainerChargeSettlement.sql" />
     <Build Include="logistics\Functions\fn_ContainerFill.sql" />
@@ -350,10 +354,12 @@
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Create.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Delete.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Get.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ContainerCharge_PayCash.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Post.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_PostBivacOut.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Search.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Update.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ContainerReport.sql" />
     <Build Include="logistics\StoredProcedures\usp_Movement_AddLeg.sql" />
     <Build Include="logistics\StoredProcedures\usp_Movement_ContainerCandidates.sql" />
     <Build Include="logistics\StoredProcedures\usp_Movement_Delete.sql" />
@@ -366,6 +372,12 @@
     <Build Include="logistics\StoredProcedures\usp_Movement_ShipContainers.sql" />
     <Build Include="logistics\StoredProcedures\usp_Movement_SplitContainers.sql" />
     <Build Include="logistics\StoredProcedures\usp_Shipment_Board.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ShipmentStage_Check.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ShipmentStage_Delete.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ShipmentStage_List.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ShipmentStage_MatchNumbers.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ShipmentStage_Preview.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ShipmentStage_Save.sql" />
     <Build Include="logistics\Tables\ContainerAttachments.sql" />
     <Build Include="logistics\Tables\ContainerAudit.sql" />
     <Build Include="logistics\Tables\ContainerChargeAllocations.sql" />
@@ -379,6 +391,7 @@
     <Build Include="logistics\Tables\MovementAudit.sql" />
     <Build Include="logistics\Tables\MovementContainers.sql" />
     <Build Include="logistics\Tables\Movements.sql" />
+    <Build Include="logistics\Tables\ShipmentStages.sql" />
     <Build Include="logistics\UserDefinedTypes\tvp_ChargeManual.sql" />
     <Build Include="logistics\UserDefinedTypes\tvp_ContainerInvoice.sql" />
     <Build Include="logistics\UserDefinedTypes\tvp_ContainerLine.sql" />
@@ -550,6 +563,7 @@
     <Build Include="messaging\StoredProcedures\usp_EmailSettings_SetTestResult.sql" />
     <Build Include="messaging\Tables\EmailOutbox.sql" />
     <Build Include="messaging\Tables\EmailSettings.sql" />
+    <Build Include="purchase\Functions\fn_Container_PaymentStatus.sql" />
     <Build Include="purchase\Functions\fn_GoodsReceipt_Blocks.sql" />
     <Build Include="purchase\Functions\fn_GoodsReceipt_CancelCheck.sql" />
     <Build Include="purchase\Functions\fn_GoodsReceipt_GroupLines.sql" />
@@ -705,9 +719,22 @@
     <Build Include="purchase\UserDefinedTypes\tvp_PurchaseDocumentLine.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_ShippedLine.sql" />
     <Build Include="purchase\UserDefinedTypes\tvp_SourceLineSelection.sql" />
+    <Build Include="reporting\Functions\fn_Attachments.sql" />
+    <Build Include="reporting\StoredProcedures\usp_AttachmentReport_Content.sql" />
+    <Build Include="reporting\StoredProcedures\usp_AttachmentReport_Files.sql" />
+    <Build Include="reporting\StoredProcedures\usp_AttachmentReport_List.sql" />
+    <Build Include="reporting\StoredProcedures\usp_AttachmentReport_LogDownload.sql" />
+    <Build Include="reporting\StoredProcedures\usp_ContainerChargeReport.sql" />
+    <Build Include="reporting\StoredProcedures\usp_Dashboard_Cards.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_Charts.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_StockLevels.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_Summary.sql" />
+    <Build Include="reporting\StoredProcedures\usp_ItemBalance_Data.sql" />
+    <Build Include="reporting\StoredProcedures\usp_ItemBalance_LogRun.sql" />
+    <Build Include="reporting\StoredProcedures\usp_ItemBalance_Rates.sql" />
+    <Build Include="reporting\StoredProcedures\usp_ItemBalance_Warehouses.sql" />
+    <Build Include="reporting\Tables\AttachmentDownloads.sql" />
+    <Build Include="reporting\Tables\ItemBalanceReportRuns.sql" />
     <Build Include="sales\Functions\fn_InvoiceSettlement.sql" />
     <Build Include="sales\Functions\fn_OutOfStockPolicy.sql" />
     <Build Include="sales\StoredProcedures\usp_Customer_Statement.sql" />
@@ -788,35 +815,5 @@
     <Build Include="security\Tables\Users.sql" />
     <Build Include="security\Tables\UserWarehouseAudit.sql" />
     <Build Include="security\Tables\UserWarehouses.sql" />
-    <Folder Include="reporting\Tables\" />
-    <Folder Include="reporting\Functions\" />
-    <Folder Include="reporting\Stored Procedures\" />
-    <Folder Include="logistics\Stored Procedures\" />
-  </ItemGroup>
-  <ItemGroup>
-    <Build Include="reporting\Tables\AttachmentDownloads.sql" />
-    <Build Include="reporting\Functions\fn_Attachments.sql" />
-    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_LogDownload.sql" />
-    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_List.sql" />
-    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_Files.sql" />
-    <Build Include="reporting\Stored Procedures\usp_AttachmentReport_Content.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ContainerReport.sql" />
-    <Build Include="reporting\Tables\ItemBalanceReportRuns.sql" />
-    <Build Include="reporting\Stored Procedures\usp_ItemBalance_Warehouses.sql" />
-    <Build Include="reporting\Stored Procedures\usp_ItemBalance_Rates.sql" />
-    <Build Include="reporting\Stored Procedures\usp_ItemBalance_LogRun.sql" />
-    <Build Include="reporting\Stored Procedures\usp_ItemBalance_Data.sql" />
-    <Build Include="reporting\Stored Procedures\usp_ContainerChargeReport.sql" />
-    <Build Include="purchase\Functions\fn_Container_PaymentStatus.sql" />
-    <Build Include="logistics\Tables\ShipmentStages.sql" />
-    <Build Include="logistics\Functions\fn_Container_Stage.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Save.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Preview.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_MatchNumbers.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_List.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Delete.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ShipmentStage_Check.sql" />
-    <Build Include="logistics\Functions\fn_ContainerCharge_PaymentProblem.sql" />
-    <Build Include="logistics\Stored Procedures\usp_ContainerCharge_PayCash.sql" />
   </ItemGroup>
 </Project>
