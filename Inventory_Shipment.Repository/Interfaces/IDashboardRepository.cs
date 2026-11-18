@@ -10,8 +10,10 @@ public interface IDashboardRepository
     /// below Min"), only for a reader who may see it - the figure reads every level, so nobody else pays for it.
     /// (115) <paramref name="includeCards"/>: also read reporting.usp_Dashboard_Cards (containers by stage, payables and
     /// receivables in detail, purchases by month), only for a reader who may see at least one of them.
+    /// (116) <paramref name="includeInsights"/>: also read reporting.usp_Dashboard_Insights (top items and customers, sales
+    /// by branch, cash and bank, transfers on the way, slow stock, charges missing, lead times), on the same terms.
     /// </summary>
     Task<DashboardSummaryDto> GetSummaryAsync(
         int? branchId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
-        bool includeWarehouseLevels, bool includeCards, CancellationToken cancellationToken = default);
+        bool includeWarehouseLevels, bool includeCards, bool includeInsights, CancellationToken cancellationToken = default);
 }

@@ -70,6 +70,185 @@ public sealed class DashboardSummaryDto
 
     /// <summary>The twelve months to the period's end: invoiced, received, container charges. Null when none may be seen.</summary>
     public IReadOnlyList<DashboardPurchaseMonthDto>? PurchasesByMonth { get; set; }
+
+    /* (116) the insights: reporting.usp_Dashboard_Insights */
+    /// <summary>The ten items sold the most in the period. Null without View Sales Invoices.</summary>
+    public IReadOnlyList<DashboardTopItemDto>? TopItems { get; set; }
+
+    /// <summary>The ten customers who bought the most in the period. Null without View Sales Invoices.</summary>
+    public IReadOnlyList<DashboardTopCustomerDto>? TopCustomers { get; set; }
+
+    /// <summary>The period's sales of every branch. Null without View Sales Invoices.</summary>
+    public IReadOnlyList<DashboardBranchSalesDto>? SalesByBranch { get; set; }
+
+    /// <summary>What came into and went out of each cash / bank account. Null without View Receipts and View Supplier Payments.</summary>
+    public IReadOnlyList<DashboardCashAccountDto>? CashAccounts { get; set; }
+
+    /// <summary>Transfer dispatches with pieces still on the way. Null without View Transfer Orders.</summary>
+    public DashboardTransfersDto? Transfers { get; set; }
+
+    /// <summary>Stock that has not sold for 90 days. Null without View items.</summary>
+    public DashboardSlowStockDto? SlowStock { get; set; }
+
+    /// <summary>The containers received in the period and their charges. Null without View Container Charges.</summary>
+    public DashboardChargesMissingDto? ChargesMissing { get; set; }
+
+    /// <summary>How long suppliers take, order date to date received. Null without View Goods Receipts.</summary>
+    public DashboardLeadTimesDto? LeadTimes { get; set; }
+}
+
+/// <summary>(116) An item's net sales of the period (invoices less returns). Gross profit: null without View Sales Profit.</summary>
+public sealed class DashboardTopItemDto
+{
+    public int ItemId { get; set; }
+    public string ItemCode { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public int Pieces { get; set; }
+    public decimal SalesBase { get; set; }
+    public decimal? GrossProfitBase { get; set; }
+}
+
+/// <summary>(116) A customer's net purchases of the period, and what they still owe today.</summary>
+public sealed class DashboardTopCustomerDto
+{
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public decimal SalesBase { get; set; }
+    public int InvoiceCount { get; set; }
+    public decimal OutstandingBase { get; set; }
+}
+
+/// <summary>(116) A branch's net sales of the period. Gross profit: null without View Sales Profit.</summary>
+public sealed class DashboardBranchSalesDto
+{
+    public int BranchId { get; set; }
+    public string BranchName { get; set; } = string.Empty;
+    public decimal SalesBase { get; set; }
+    public decimal? GrossProfitBase { get; set; }
+    public int InvoiceCount { get; set; }
+}
+
+/// <summary>
+/// (116) A cash / bank account in the period (AccountId null: lines without an account). In: posted receipts (null
+/// without View Receipts); Out: posted supplier payments (null without View Supplier Payments). Base currency.
+/// </summary>
+public sealed class DashboardCashAccountDto
+{
+    public int? AccountId { get; set; }
+    public string? AccountCode { get; set; }
+    public string AccountName { get; set; } = string.Empty;
+    public string? AccountType { get; set; }
+    public string? CurrencyCode { get; set; }
+    public decimal? InBase { get; set; }
+    public int? InCount { get; set; }
+    public decimal? OutBase { get; set; }
+    public int? OutCount { get; set; }
+}
+
+/// <summary>(116) Posted transfer dispatches with pieces not yet received or written off; List: the ten due first.</summary>
+public sealed class DashboardTransfersDto
+{
+    public int Dispatches { get; set; }
+    public int Pieces { get; set; }
+    public int Late { get; set; }
+    public IReadOnlyList<DashboardTransferDto> List { get; set; } = [];
+}
+
+public sealed class DashboardTransferDto
+{
+    public int PostingId { get; set; }
+    public int TransferOrderId { get; set; }
+    public string? DispatchNumber { get; set; }
+    public string? OrderNumber { get; set; }
+    public string FromWarehouse { get; set; } = string.Empty;
+    public string ToWarehouse { get; set; } = string.Empty;
+    public DateTime PostingDate { get; set; }
+    public DateTime? Eta { get; set; }
+    public int Pieces { get; set; }
+    public bool IsLate { get; set; }
+}
+
+/// <summary>
+/// (116) Items in stock for SlowDays days or more without a posted sales invoice in the last SlowDays days. The values
+/// are null without View item costs; List is then the ten with the most pieces, else the ten worth the most.
+/// </summary>
+public sealed class DashboardSlowStockDto
+{
+    public int Items { get; set; }
+    public int Pieces { get; set; }
+    public decimal? ValueBase { get; set; }
+    public int SlowDays { get; set; }
+    public IReadOnlyList<DashboardSlowItemDto> List { get; set; } = [];
+}
+
+public sealed class DashboardSlowItemDto
+{
+    public int ItemId { get; set; }
+    public string ItemCode { get; set; } = string.Empty;
+    public string ItemName { get; set; } = string.Empty;
+    public int OnHand { get; set; }
+    public decimal? ValueBase { get; set; }
+    public DateTime? LastSaleDate { get; set; }
+
+    /// <summary>The row's rank by value and by pieces among the slow items. Server only: the service picks ten.</summary>
+    [JsonIgnore]
+    public int ByValue { get; set; }
+
+    [JsonIgnore]
+    public int ByPieces { get; set; }
+}
+
+/// <summary>
+/// (116) The containers received in the period (by offload date): those without any posted charge (DraftOnly of them
+/// have drafts), each charge type's containers with it posted, in draft only and without it, and the ten received
+/// first among those without a posted charge.
+/// </summary>
+public sealed class DashboardChargesMissingDto
+{
+    public int ReceivedContainers { get; set; }
+    public int WithoutCharge { get; set; }
+    public int DraftOnly { get; set; }
+    public IReadOnlyList<DashboardChargeTypeCoverDto> ByType { get; set; } = [];
+    public IReadOnlyList<DashboardUnchargedContainerDto> List { get; set; } = [];
+}
+
+public sealed class DashboardChargeTypeCoverDto
+{
+    public int ChargeTypeId { get; set; }
+    public string ChargeName { get; set; } = string.Empty;
+    public int EnteredContainers { get; set; }
+    public int DraftContainers { get; set; }
+    public int MissingContainers { get; set; }
+}
+
+public sealed class DashboardUnchargedContainerDto
+{
+    public int ContainerId { get; set; }
+    public string ContainerRef { get; set; } = string.Empty;
+    public string? ContainerNo { get; set; }
+    public DateTime? OffloadedDate { get; set; }
+    public int DraftCharges { get; set; }
+}
+
+/// <summary>
+/// (116) Goods received from purchase orders in the twelve months to the period's end: days from the order date to the
+/// date received, weighted by the pieces. Days is the company's; Suppliers the five who delivered the most.
+/// </summary>
+public sealed class DashboardLeadTimesDto
+{
+    public decimal? Days { get; set; }
+    public int Pieces { get; set; }
+    public int Receipts { get; set; }
+    public IReadOnlyList<DashboardSupplierLeadTimeDto> Suppliers { get; set; } = [];
+}
+
+public sealed class DashboardSupplierLeadTimeDto
+{
+    public int SupplierId { get; set; }
+    public string SupplierName { get; set; } = string.Empty;
+    public decimal Days { get; set; }
+    public int Pieces { get; set; }
+    public int Receipts { get; set; }
 }
 
 /// <summary>

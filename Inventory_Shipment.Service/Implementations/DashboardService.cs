@@ -76,8 +76,15 @@ public sealed class DashboardService : IDashboardService
             Permissions.Containers.ChargesView, Permissions.Sales.InvoicesView, Permissions.Sales.ReceiptsView,
             Permissions.Purchase.GoodsReceiptsView,
         }.Any(permissions.Contains);
+        // (116) And so are the insights.
+        var insights = new[]
+        {
+            Permissions.Sales.InvoicesView, Permissions.Sales.ReceiptsView, Permissions.Purchase.PaymentsView,
+            Permissions.Inventory.TransfersView, Permissions.Inventory.ItemsView, Permissions.Containers.ChargesView,
+            Permissions.Purchase.GoodsReceiptsView,
+        }.Any(permissions.Contains);
         var summary = await _dashboard.GetSummaryAsync(
-            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cards, cancellationToken);
+            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cards, insights, cancellationToken);
         Trim(summary, permissions);
         return Result<DashboardSummaryDto>.Success(summary);
     }
@@ -222,6 +229,99 @@ public sealed class DashboardService : IDashboardService
             .ToList();
 
         TrimCards(s, p);
+        TrimInsights(s, p);
+    }
+
+    /// <summary>
+    /// (116) The insights, by the rule of every part of the Dashboard - a figure only for a reader who may open the
+    /// screen it comes from: top items, top customers and sales by branch with View Sales Invoices (their gross profit
+    /// also View Sales Profit); cash and bank in two halves (in: View Receipts; out: View Supplier Payments); transfers
+    /// on the way with View Transfer Orders; slow stock with View items (its values also View item costs: without it
+    /// the ten items with the most pieces, not the ten worth the most); the received containers' charges with View
+    /// Container Charges (the containers named also View Containers); lead times with View Goods Receipts - the
+    /// company's figure over every supplier, then the five who delivered the most.
+    /// </summary>
+    private static void TrimInsights(DashboardSummaryDto s, IReadOnlySet<string> p)
+    {
+        bool Has(string permission) => p.Contains(permission);
+
+        if (!Has(Permissions.Sales.InvoicesView))
+        {
+            s.TopItems = null;
+            s.TopCustomers = null;
+            s.SalesByBranch = null;
+        }
+        else if (!Has(Permissions.Sales.ProfitView))
+        {
+            foreach (var item in s.TopItems ?? []) item.GrossProfitBase = null;
+            foreach (var branch in s.SalesByBranch ?? []) branch.GrossProfitBase = null;
+        }
+
+        var receipts = Has(Permissions.Sales.ReceiptsView);
+        var payments = Has(Permissions.Purchase.PaymentsView);
+        if (!receipts && !payments)
+        {
+            s.CashAccounts = null;
+        }
+        else if (s.CashAccounts is not null)
+        {
+            foreach (var account in s.CashAccounts)
+            {
+                if (!receipts) { account.InBase = null; account.InCount = null; }
+                if (!payments) { account.OutBase = null; account.OutCount = null; }
+            }
+
+            // "No account" only when the half the reader sees has such lines.
+            s.CashAccounts = s.CashAccounts
+                .Where(a => a.AccountId is not null || (a.InCount ?? 0) + (a.OutCount ?? 0) > 0)
+                .ToList();
+        }
+
+        if (!Has(Permissions.Inventory.TransfersView))
+        {
+            s.Transfers = null;
+        }
+
+        if (!Has(Permissions.Inventory.ItemsView))
+        {
+            s.SlowStock = null;
+        }
+        else if (s.SlowStock is not null)
+        {
+            var costs = Has(Permissions.Inventory.CostsView);
+            s.SlowStock.List = (costs
+                    ? s.SlowStock.List.Where(i => i.ByValue <= 10).OrderBy(i => i.ByValue)
+                    : s.SlowStock.List.Where(i => i.ByPieces <= 10).OrderBy(i => i.ByPieces))
+                .ToList();
+            if (!costs)
+            {
+                s.SlowStock.ValueBase = null;
+                foreach (var item in s.SlowStock.List) item.ValueBase = null;
+            }
+        }
+
+        if (!Has(Permissions.Containers.ChargesView))
+        {
+            s.ChargesMissing = null;
+        }
+        else if (s.ChargesMissing is not null && !Has(Permissions.Containers.View))
+        {
+            s.ChargesMissing.List = [];
+        }
+
+        if (!Has(Permissions.Purchase.GoodsReceiptsView))
+        {
+            s.LeadTimes = null;
+        }
+        else if (s.LeadTimes is not null)
+        {
+            var all = s.LeadTimes.Suppliers;
+            var pieces = all.Sum(x => (long)x.Pieces);
+            s.LeadTimes.Pieces = (int)Math.Min(pieces, int.MaxValue);
+            s.LeadTimes.Receipts = all.Sum(x => x.Receipts);
+            s.LeadTimes.Days = pieces > 0 ? Math.Round(all.Sum(x => x.Days * x.Pieces) / pieces, 1) : null;
+            s.LeadTimes.Suppliers = all.Take(5).ToList();
+        }
     }
 
     /// <summary>

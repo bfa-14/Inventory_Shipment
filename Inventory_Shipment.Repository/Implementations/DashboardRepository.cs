@@ -17,11 +17,11 @@ public sealed class DashboardRepository : IDashboardRepository
 
     /// <summary>
     /// The fourteen result sets of the procedure, read in its order (see the header of script 68), then the charts,
-    /// the warehouse levels (91) and the cards (115) when asked.
+    /// the warehouse levels (91), the cards (115) and the insights (116) when asked.
     /// </summary>
     public async Task<DashboardSummaryDto> GetSummaryAsync(
         int? branchId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
-        bool includeWarehouseLevels, bool includeCards, CancellationToken cancellationToken = default)
+        bool includeWarehouseLevels, bool includeCards, bool includeInsights, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
@@ -92,6 +92,31 @@ public sealed class DashboardRepository : IDashboardRepository
             summary.ReceivablesAging = await cards.ReadSingleAsync<DashboardReceivablesAgingDto>();
             summary.Debtors = (await cards.ReadAsync<DashboardDebtorDto>()).AsList();
             summary.PurchasesByMonth = (await cards.ReadAsync<DashboardPurchaseMonthDto>()).AsList();
+        }
+
+        // (116) The insights: a fifth procedure, its twelve result sets in its order, read only when the reader may see
+        // at least one of them (the service decides, and removes the others).
+        if (includeInsights)
+        {
+            using var insights = await connection.QueryMultipleAsync(new CommandDefinition(
+                "reporting.usp_Dashboard_Insights",
+                new { BranchId = branchId, From = from.Date, To = to.Date, Today = today.Date },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            summary.TopItems = (await insights.ReadAsync<DashboardTopItemDto>()).AsList();
+            summary.TopCustomers = (await insights.ReadAsync<DashboardTopCustomerDto>()).AsList();
+            summary.SalesByBranch = (await insights.ReadAsync<DashboardBranchSalesDto>()).AsList();
+            summary.CashAccounts = (await insights.ReadAsync<DashboardCashAccountDto>()).AsList();
+            summary.Transfers = await insights.ReadSingleAsync<DashboardTransfersDto>();
+            summary.Transfers.List = (await insights.ReadAsync<DashboardTransferDto>()).AsList();
+            summary.SlowStock = await insights.ReadSingleAsync<DashboardSlowStockDto>();
+            summary.SlowStock.List = (await insights.ReadAsync<DashboardSlowItemDto>()).AsList();
+            summary.ChargesMissing = await insights.ReadSingleAsync<DashboardChargesMissingDto>();
+            summary.ChargesMissing.ByType = (await insights.ReadAsync<DashboardChargeTypeCoverDto>()).AsList();
+            summary.ChargesMissing.List = (await insights.ReadAsync<DashboardUnchargedContainerDto>()).AsList();
+            summary.LeadTimes = new DashboardLeadTimesDto
+            {
+                Suppliers = (await insights.ReadAsync<DashboardSupplierLeadTimeDto>()).AsList(),
+            };
         }
 
         return summary;

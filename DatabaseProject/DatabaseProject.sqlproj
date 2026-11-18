@@ -727,6 +727,7 @@
     <Build Include="reporting\StoredProcedures\usp_ContainerChargeReport.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_Cards.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_Charts.sql" />
+    <Build Include="reporting\StoredProcedures\usp_Dashboard_Insights.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_StockLevels.sql" />
     <Build Include="reporting\StoredProcedures\usp_Dashboard_Summary.sql" />
     <Build Include="reporting\StoredProcedures\usp_ItemBalance_Data.sql" />
