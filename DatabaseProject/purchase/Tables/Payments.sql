@@ -1,4 +1,4 @@
-﻿CREATE TABLE [purchase].[Payments] (
+CREATE TABLE [purchase].[Payments] (
     [Id]             INT             IDENTITY (1, 1) NOT NULL,
     [PaymentNumber]  NVARCHAR (30)   NULL,
     [PaymentDate]    DATE            NOT NULL,
@@ -38,8 +38,6 @@
     CONSTRAINT [FK_Payments_ReversedBy] FOREIGN KEY ([ReversedBy]) REFERENCES [security].[Users] ([Id]),
     CONSTRAINT [FK_Payments_UpdatedBy] FOREIGN KEY ([UpdatedBy]) REFERENCES [security].[Users] ([Id])
 );
-
-
 
 
 GO

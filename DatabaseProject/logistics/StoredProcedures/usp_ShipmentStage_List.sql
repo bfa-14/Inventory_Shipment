@@ -1,4 +1,4 @@
-﻿/* ================================================================== 5. The stages: list, save, delete */
+/* ================================================================== 5. The stages: list, save, delete */
 
 CREATE   PROCEDURE logistics.usp_ShipmentStage_List
     @ActiveOnly BIT = 0
@@ -15,3 +15,6 @@ BEGIN
     WHERE @ActiveOnly = 0 OR s.IsActive = 1
     ORDER BY s.SortOrder, s.StageName;
 END
+
+GO
+

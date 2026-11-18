@@ -1,22 +1,6 @@
-/* ==================================================================================================
-   37: Customer statement (Receipts, Phase 4)
-   --------------------------------------------------------------------------------------------------
-   sales.usp_Customer_Statement: one customer's account as a ledger in the BASE currency.
+/* ================================================================== 1. The procedures re-created */
 
-     Debit  (customer owes more) : a posted sales invoice; a reversed receipt (on the reversal date)
-     Credit (customer owes less) : a posted receipt; a posted sales return; a cancelled invoice (on
-                                   the cancellation date)
-
-   Result set 1: the customer and the balance brought forward (everything before @DateFrom).
-   Result set 2: the entries in the period, each with a running balance that continues from the
-                 balance brought forward, so the last row is the closing balance.
-
-   The balance is built from the same documents the receipt rules use, valued at each document's own
-   stored base amount, so it agrees with the open invoices less unapplied credit.
-
-   Requires scripts 35-36. Idempotent.
-   ================================================================================================== */
-
+-- Re-created (114) from the body of script 37: COLLATE DATABASE_DEFAULT on the text columns of its #tables (3).
 CREATE   PROCEDURE sales.usp_Customer_Statement
     @ClientId INT,
     @DateFrom DATE = NULL,
@@ -31,8 +15,8 @@ BEGIN
     DECLARE @Base NVARCHAR(10) = (SELECT TOP (1) CurrencyCode FROM masterdata.Currencies WHERE IsBaseCurrency = 1 AND IsActive = 1);
 
     CREATE TABLE #E (
-        EntryDate DATE NOT NULL, SortGroup TINYINT NOT NULL, DocumentId INT NOT NULL, EntryType NVARCHAR(30) NOT NULL,
-        DocumentNumber NVARCHAR(50) NULL, CurrencyCode NVARCHAR(10) NULL, DecimalPlaces TINYINT NULL, DocAmount DECIMAL(18,2) NOT NULL,
+        EntryDate DATE NOT NULL, SortGroup TINYINT NOT NULL, DocumentId INT NOT NULL, EntryType NVARCHAR(30) COLLATE DATABASE_DEFAULT NOT NULL,
+        DocumentNumber NVARCHAR(50) COLLATE DATABASE_DEFAULT NULL, CurrencyCode NVARCHAR(10) COLLATE DATABASE_DEFAULT NULL, DecimalPlaces TINYINT NULL, DocAmount DECIMAL(18,2) NOT NULL,
         Debit DECIMAL(18,2) NOT NULL, Credit DECIMAL(18,2) NOT NULL, Balance DECIMAL(18,2) NULL);
 
     DECLARE @SINV INT = (SELECT Id FROM inventory.DocumentTypes WHERE Code = N'SINV');

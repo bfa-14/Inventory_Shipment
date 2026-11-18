@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. The procedures, from their current bodies */
+/* ================================================================== 3. The procedures, from their current bodies */
 
 CREATE   PROCEDURE logistics.usp_Container_SetNumbers
     @Items  logistics.tvp_ContainerNumber READONLY,

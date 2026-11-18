@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Cancel
+CREATE   PROCEDURE logistics.usp_ContainerCharge_Cancel
     @Id         INT,
     @Reason     NVARCHAR(300),
     @RowVersion BINARY(8) = NULL,

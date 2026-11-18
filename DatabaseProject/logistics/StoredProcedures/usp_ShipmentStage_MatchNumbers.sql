@@ -1,4 +1,4 @@
-﻿-- box of "MRSU8190808 , CAAU9368456" too) or by ref, spaces, dashes, dots and slashes ignored; an open container
+-- box of "MRSU8190808 , CAAU9368456" too) or by ref, spaces, dashes, dots and slashes ignored; an open container
 -- before a received or cancelled one. Matches > 1 among the open ones: found twice, none chosen.
 CREATE   PROCEDURE logistics.usp_ShipmentStage_MatchNumbers
     @Numbers logistics.tvp_TextList READONLY
@@ -36,3 +36,6 @@ BEGIN
     LEFT JOIN logistics.Containers c ON c.Id = b.ContainerId AND b.Cnt = 1
     ORDER BY r.RowNo;
 END
+
+GO
+

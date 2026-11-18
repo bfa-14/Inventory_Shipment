@@ -1,4 +1,4 @@
-﻿/* ================================================================== 6. reporting.usp_ItemBalance_LogRun */
+/* ================================================================== 6. reporting.usp_ItemBalance_LogRun */
 
 CREATE   PROCEDURE reporting.usp_ItemBalance_LogRun
     @UserId     INT,
@@ -16,3 +16,6 @@ BEGIN
     INSERT INTO reporting.ItemBalanceReportRuns (UserId, OutputKind, DateFrom, DateTo, CurrencyId, RateType, Criteria, RowsReturned, DurationMs)
     VALUES (@UserId, @OutputKind, @DateFrom, @DateTo, @CurrencyId, @RateType, @Criteria, @RowsReturned, @DurationMs);
 END
+
+GO
+

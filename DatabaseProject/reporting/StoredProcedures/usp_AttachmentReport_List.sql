@@ -1,4 +1,4 @@
-﻿/* ================================================================== 5. reporting.usp_AttachmentReport_List */
+/* ================================================================== 5. reporting.usp_AttachmentReport_List */
 
 CREATE   PROCEDURE reporting.usp_AttachmentReport_List
     @Kinds       NVARCHAR(400),            -- the document kinds the reader may open, comma separated (the API's)
@@ -49,3 +49,6 @@ BEGIN
 
     SELECT TotalCount = COUNT(*), TotalBytes = ISNULL(SUM(CAST(SizeBytes AS BIGINT)), 0) FROM #M;
 END
+
+GO
+

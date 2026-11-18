@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE purchase.usp_Payment_Reverse
+CREATE   PROCEDURE purchase.usp_Payment_Reverse
     @Id         INT,
     @Reason     NVARCHAR(500),
     @RowVersion BINARY(8) = NULL,

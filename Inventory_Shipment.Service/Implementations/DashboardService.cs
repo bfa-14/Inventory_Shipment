@@ -69,8 +69,15 @@ public sealed class DashboardService : IDashboardService
         // reads every level of the scope, and nobody should wait for a figure they are never shown.
         var warehouseLevels = permissions.Contains(Permissions.Inventory.ItemsView)
                               && permissions.Contains(Permissions.Inventory.StockLevelsView);
+        // (115) The cards are read only for a reader who may see at least one of them.
+        var cards = new[]
+        {
+            Permissions.Containers.View, Permissions.Purchase.PaymentsView, Permissions.Purchase.InvoicesView,
+            Permissions.Containers.ChargesView, Permissions.Sales.InvoicesView, Permissions.Sales.ReceiptsView,
+            Permissions.Purchase.GoodsReceiptsView,
+        }.Any(permissions.Contains);
         var summary = await _dashboard.GetSummaryAsync(
-            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cancellationToken);
+            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cards, cancellationToken);
         Trim(summary, permissions);
         return Result<DashboardSummaryDto>.Success(summary);
     }
@@ -213,5 +220,97 @@ public sealed class DashboardService : IDashboardService
         s.Drafts = s.Drafts
             .Where(d => DraftPermissions.TryGetValue(d.TypeCode, out var permission) && Has(permission))
             .ToList();
+
+        TrimCards(s, p);
+    }
+
+    /// <summary>
+    /// (115) The cards, by the same rules as the figures above: containers by stage with View Containers; what we owe in
+    /// two halves (supplier invoices: View Supplier Payments or View Purchase Invoices; container charges: View Supplier
+    /// Payments or View Container Charges), the creditors on the halves left and the five owed the most; what customers
+    /// owe as "Customers owe" (View Sales Invoices or View Receipts); purchases by month line by line (invoiced: View
+    /// Purchase Invoices; received: View Goods Receipts, its value also View item costs; charges: View Container
+    /// Charges).
+    /// </summary>
+    private static void TrimCards(DashboardSummaryDto s, IReadOnlySet<string> p)
+    {
+        bool Has(string permission) => p.Contains(permission);
+
+        if (!Has(Permissions.Containers.View))
+        {
+            s.ContainerStages = null;
+        }
+
+        var payments = Has(Permissions.Purchase.PaymentsView);
+        var invoices = payments || Has(Permissions.Purchase.InvoicesView);
+        var charges = payments || Has(Permissions.Containers.ChargesView);
+        if (s.PayablesDetail is not null)
+        {
+            if (!invoices)
+            {
+                s.PayablesDetail.UnpaidInvoiceCount = null;
+                s.PayablesDetail.UnpaidInvoicesBase = null;
+                s.PayablesDetail.PartialInvoiceCount = null;
+                s.PayablesDetail.PartialInvoicesBase = null;
+            }
+
+            if (!charges)
+            {
+                s.PayablesDetail.UnpaidChargeCount = null;
+                s.PayablesDetail.UnpaidChargesBase = null;
+                s.PayablesDetail.PartialChargeCount = null;
+                s.PayablesDetail.PartialChargesBase = null;
+            }
+        }
+
+        if (!invoices && !charges)
+        {
+            s.PayablesDetail = null;
+            s.Creditors = null;
+        }
+        else if (s.Creditors is not null)
+        {
+            // A creditor shown only on what the reader may see, then ranked again on that: the procedure sends them all.
+            s.Creditors = s.Creditors
+                .Select(c =>
+                {
+                    if (!invoices) { c.InvoicesBase = 0; c.InvoiceCount = 0; }
+                    if (!charges) { c.ChargesBase = 0; c.ChargeCount = 0; }
+                    return c;
+                })
+                .Where(c => c.InvoiceCount + c.ChargeCount > 0)
+                .OrderByDescending(c => c.InvoicesBase + c.ChargesBase)
+                .ThenBy(c => c.PartyName, StringComparer.CurrentCultureIgnoreCase)
+                .Take(5)
+                .ToList();
+        }
+
+        if (!Has(Permissions.Sales.InvoicesView) && !Has(Permissions.Sales.ReceiptsView))
+        {
+            s.ReceivablesAging = null;
+            s.Debtors = null;
+        }
+
+        var invoiced = Has(Permissions.Purchase.InvoicesView);
+        var received = Has(Permissions.Purchase.GoodsReceiptsView);
+        var receivedValue = received && Has(Permissions.Inventory.CostsView);
+        var chargesPosted = Has(Permissions.Containers.ChargesView);
+        if (s.PurchasesByMonth is not null)
+        {
+            if (!invoiced && !received && !chargesPosted)
+            {
+                s.PurchasesByMonth = null;
+            }
+            else
+            {
+                foreach (var month in s.PurchasesByMonth)
+                {
+                    if (!invoiced) month.InvoicedBase = null;
+                    if (!received) month.ReceivedPieces = null;
+                    if (!receivedValue) month.ReceivedBase = null;
+                    if (!chargesPosted) month.ChargesBase = null;
+                }
+            }
+        }
     }
 }

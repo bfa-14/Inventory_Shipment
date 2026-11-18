@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
+CREATE   PROCEDURE purchase.usp_PurchaseDocument_Search
     @DocumentTypeCode NVARCHAR(20) = NULL,     -- PO | PINV | PRET | NULL = whole family
     @Search           NVARCHAR(100) = NULL,    -- number, supplier / exporter reference, commercial invoice no., supplier code/name, notes,
                                                -- (45) the item code of a supplier invoice

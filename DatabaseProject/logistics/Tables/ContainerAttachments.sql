@@ -20,8 +20,6 @@ CREATE TABLE [logistics].[ContainerAttachments] (
 );
 
 
-
-
 GO
 
 CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Charge]
@@ -47,7 +45,11 @@ CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Movement]
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_ContainerAttachments_Report]
     ON [logistics].[ContainerAttachments]([DocumentDate] ASC, [CreatedAtUtc] ASC)
     INCLUDE([ContainerId], [FileId], [AttachmentTypeId], [CreatedBy]);
+
+
+GO
 

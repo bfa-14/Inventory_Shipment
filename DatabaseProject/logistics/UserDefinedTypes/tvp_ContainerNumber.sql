@@ -1,10 +1,8 @@
-﻿CREATE TYPE [logistics].[tvp_ContainerNumber] AS TABLE (
+CREATE TYPE [logistics].[tvp_ContainerNumber] AS TABLE (
     [ContainerId] INT           NOT NULL,
     [ContainerNo] NVARCHAR (30) NULL,
     [SealNo]      NVARCHAR (30) NULL,
     PRIMARY KEY CLUSTERED ([ContainerId] ASC));
-
-
 
 
 GO

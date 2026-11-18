@@ -1,4 +1,4 @@
-﻿CREATE   FUNCTION logistics.fn_ContainerChargeSettlement (@ChargeId INT)
+CREATE   FUNCTION logistics.fn_ContainerChargeSettlement (@ChargeId INT)
 RETURNS TABLE
 AS
 RETURN

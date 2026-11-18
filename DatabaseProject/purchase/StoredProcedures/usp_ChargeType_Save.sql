@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE purchase.usp_ChargeType_Save
+CREATE   PROCEDURE purchase.usp_ChargeType_Save
     @Id                  INT           = NULL,
     @ChargeCode          NVARCHAR(10),
     @ChargeName          NVARCHAR(100),

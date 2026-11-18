@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_CopyToContainers
+CREATE   PROCEDURE logistics.usp_ContainerCharge_CopyToContainers
     @ChargeId         INT,
     @ContainerIds     logistics.tvp_IdList READONLY,
     @Amount           DECIMAL(18,2) = NULL,

@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_Container_Save
+CREATE   PROCEDURE logistics.usp_Container_Save
     @Id                  INT            = NULL,   -- NULL = create (ContainerRef assigned now)
     @PurchaseOrderId     INT            = NULL,   -- required on create: the order the container is created from
     @ContainerNo         NVARCHAR(30)   = NULL,

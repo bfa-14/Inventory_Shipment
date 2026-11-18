@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
+CREATE   PROCEDURE logistics.usp_ContainerCharge_Get
     @Id INT
 AS
 BEGIN

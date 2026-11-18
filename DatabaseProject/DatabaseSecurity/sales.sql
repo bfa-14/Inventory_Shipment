@@ -1,7 +1,5 @@
-﻿CREATE SCHEMA [sales]
+CREATE SCHEMA [sales]
     AUTHORIZATION [dbo];
-
-
 
 
 GO

@@ -1,4 +1,4 @@
-﻿CREATE TABLE [purchase].[ChargeTypes] (
+CREATE TABLE [purchase].[ChargeTypes] (
     [Id]                  INT            IDENTITY (1, 1) NOT NULL,
     [ChargeCode]          NVARCHAR (10)  NOT NULL,
     [ChargeName]          NVARCHAR (100) NOT NULL,
@@ -22,8 +22,6 @@
     CONSTRAINT [UQ_ChargeTypes_Code] UNIQUE NONCLUSTERED ([ChargeCode] ASC),
     CONSTRAINT [UQ_ChargeTypes_Name] UNIQUE NONCLUSTERED ([ChargeName] ASC)
 );
-
-
 
 
 GO

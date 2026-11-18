@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. Where a container stands */
+/* ================================================================== 3. Where a container stands */
 
 -- (111) ONE ROW PER CONTAINER. Its legs are its movements started or completed (planned and cancelled ones do not
 -- count). The stage, the first that applies:
@@ -63,3 +63,6 @@ OUTER APPLY (SELECT TOP (1) st.Id, st.StageName, st.Kind
                       CASE WHEN st.FromPlaceId IS NOT NULL THEN 0 ELSE 1 END,
                       st.IsActive DESC, st.SortOrder, st.Id) s
 WHERE c.Id = @ContainerId;
+
+GO
+

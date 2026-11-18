@@ -18,8 +18,6 @@ CREATE TABLE [purchase].[PurchaseDocumentFiles] (
 );
 
 
-
-
 GO
 
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentFiles_Document]
@@ -27,7 +25,11 @@ CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentFiles_Document]
 
 
 GO
+
 CREATE NONCLUSTERED INDEX [IX_PurchaseDocumentFiles_Report]
     ON [purchase].[PurchaseDocumentFiles]([DocumentDate] ASC, [CreatedAtUtc] ASC)
     INCLUDE([DocumentId], [AttachmentTypeId], [FileName], [ContentType], [SizeBytes], [CreatedBy]);
+
+
+GO
 

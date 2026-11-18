@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. reporting.usp_ItemBalance_Warehouses */
+/* ================================================================== 3. reporting.usp_ItemBalance_Warehouses */
 
 -- The warehouses the filter offers, as a tree (ParentId, Level). A user with All warehouses (or a system role) gets
 -- every one, the On the way warehouses of transfers too; a restricted user only theirs. Inactive warehouses are offered
@@ -27,3 +27,6 @@ BEGIN
     INNER JOIN masterdata.Branches b   ON b.Id = w.BranchId
     ORDER BY w.IsTransit, b.BranchCode, w.WarehouseCode;
 END
+
+GO
+

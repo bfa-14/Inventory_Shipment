@@ -1,4 +1,4 @@
-﻿/* ================================================================== 4-6. The procedures re-created */
+/* ================================================================== 4-6. The procedures re-created */
 
 -- Re-created (113) from script 102's body: + PaymentType, PaymentMethodId, PaymentAccountId, PaymentReference. Nothing else changes.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_Create

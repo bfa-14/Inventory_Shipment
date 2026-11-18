@@ -51,6 +51,112 @@ public sealed class DashboardSummaryDto
     public IReadOnlyList<DashboardSliceDto>? SalesByFamily { get; set; }
     public IReadOnlyList<DashboardSliceDto>? StockByWarehouse { get; set; }
     public IReadOnlyList<DashboardWeekdayDto>? SalesByWeekday { get; set; }
+
+    /* (115) the cards: reporting.usp_Dashboard_Cards */
+    /// <summary>Containers by shipment stage. Null without View Containers.</summary>
+    public IReadOnlyList<DashboardStageDto>? ContainerStages { get; set; }
+
+    /// <summary>What we owe, by payment status. Null when the reader may see neither half.</summary>
+    public DashboardPayablesDetailDto? PayablesDetail { get; set; }
+
+    /// <summary>The five creditors owed the most, on the halves the reader may see.</summary>
+    public IReadOnlyList<DashboardCreditorDto>? Creditors { get; set; }
+
+    /// <summary>What customers owe, by how late it is. Null as <see cref="Receivables"/>.</summary>
+    public DashboardReceivablesAgingDto? ReceivablesAging { get; set; }
+
+    /// <summary>The five customers owing the most. Null as <see cref="Receivables"/>.</summary>
+    public IReadOnlyList<DashboardDebtorDto>? Debtors { get; set; }
+
+    /// <summary>The twelve months to the period's end: invoiced, received, container charges. Null when none may be seen.</summary>
+    public IReadOnlyList<DashboardPurchaseMonthDto>? PurchasesByMonth { get; set; }
+}
+
+/// <summary>
+/// (115) One shipment stage (script 111) and the containers at it. FilterId is the Containers list's Stage filter (a
+/// stage's Id, 0 Pending, -1 not on a stage; null: received without an Offload stage, no filter). Open = not delivered
+/// yet; ToReceive = delivered to its Offload stage, its goods receipt not posted; Received = received in the period.
+/// </summary>
+public sealed class DashboardStageDto
+{
+    public int? FilterId { get; set; }
+    public string StageName { get; set; } = string.Empty;
+    /// <summary>0 Pending, 1 Leg, 2 Arrive, 3 Offload; null: not on a stage.</summary>
+    public byte? StageKind { get; set; }
+    public int OpenContainers { get; set; }
+    public int OpenPieces { get; set; }
+    public int ToReceiveContainers { get; set; }
+    public int ToReceivePieces { get; set; }
+    public int ReceivedContainers { get; set; }
+    public int ReceivedPieces { get; set; }
+}
+
+/// <summary>
+/// (115) What we still owe, by payment status: posted supplier invoices (null without View Supplier Payments or View
+/// Purchase Invoices) and posted container charges (null without View Supplier Payments or View Container Charges).
+/// </summary>
+public sealed class DashboardPayablesDetailDto
+{
+    public int? UnpaidInvoiceCount { get; set; }
+    public decimal? UnpaidInvoicesBase { get; set; }
+    public int? PartialInvoiceCount { get; set; }
+    public decimal? PartialInvoicesBase { get; set; }
+    public int? UnpaidChargeCount { get; set; }
+    public decimal? UnpaidChargesBase { get; set; }
+    public int? PartialChargeCount { get; set; }
+    public decimal? PartialChargesBase { get; set; }
+}
+
+/// <summary>(115) A supplier or charge provider we owe (PartyId null: charges without a provider).</summary>
+public sealed class DashboardCreditorDto
+{
+    public int? PartyId { get; set; }
+    public string PartyName { get; set; } = string.Empty;
+    public decimal InvoicesBase { get; set; }
+    public int InvoiceCount { get; set; }
+    public decimal ChargesBase { get; set; }
+    public int ChargeCount { get; set; }
+}
+
+/// <summary>(115) Posted sales invoices still owed, by days past their due date on the reader's today.</summary>
+public sealed class DashboardReceivablesAgingDto
+{
+    public int NotDueCount { get; set; }
+    public decimal NotDueBase { get; set; }
+    public int Days1To30Count { get; set; }
+    public decimal Days1To30Base { get; set; }
+    public int Days31To60Count { get; set; }
+    public decimal Days31To60Base { get; set; }
+    public int Days61To90Count { get; set; }
+    public decimal Days61To90Base { get; set; }
+    public int Over90Count { get; set; }
+    public decimal Over90Base { get; set; }
+    public int DebtorCount { get; set; }
+}
+
+/// <summary>(115) A customer who owes.</summary>
+public sealed class DashboardDebtorDto
+{
+    public int ClientId { get; set; }
+    public string ClientName { get; set; } = string.Empty;
+    public decimal OutstandingBase { get; set; }
+    public decimal OverdueBase { get; set; }
+    public int InvoiceCount { get; set; }
+    public DateTime? OldestDueDate { get; set; }
+}
+
+/// <summary>
+/// (115) One month of purchases. Invoiced: supplier invoices less returns (View Purchase Invoices). Received: posted
+/// goods receipts - their pieces with View Goods Receipts, their value also with View item costs. Charges: container
+/// charges posted (View Container Charges). Each null when the reader may not see it.
+/// </summary>
+public sealed class DashboardPurchaseMonthDto
+{
+    public DateTime MonthStart { get; set; }
+    public decimal? InvoicedBase { get; set; }
+    public decimal? ReceivedBase { get; set; }
+    public int? ReceivedPieces { get; set; }
+    public decimal? ChargesBase { get; set; }
 }
 
 /// <summary>One month of the twelve-month trend. Each figure is NULL when the reader may not see it.</summary>

@@ -1,4 +1,4 @@
-﻿/* ================================================================== 3. Charge type procedures */
+/* ================================================================== 3. Charge type procedures */
 
 CREATE   PROCEDURE purchase.usp_ChargeType_Lookup
     @ActiveOnly BIT = 1, @IncludeId INT = NULL

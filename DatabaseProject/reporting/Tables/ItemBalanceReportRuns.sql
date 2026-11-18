@@ -1,4 +1,4 @@
-﻿CREATE TABLE [reporting].[ItemBalanceReportRuns] (
+CREATE TABLE [reporting].[ItemBalanceReportRuns] (
     [Id]           BIGINT         IDENTITY (1, 1) NOT NULL,
     [UserId]       INT            NOT NULL,
     [RunAtUtc]     DATETIME2 (3)  CONSTRAINT [DF_ItemBalanceReportRuns_At] DEFAULT (sysutcdatetime()) NOT NULL,
@@ -13,4 +13,7 @@
     CONSTRAINT [PK_ItemBalanceReportRuns] PRIMARY KEY CLUSTERED ([Id] ASC),
     CONSTRAINT [FK_ItemBalanceReportRuns_User] FOREIGN KEY ([UserId]) REFERENCES [security].[Users] ([Id])
 );
+
+
+GO
 

@@ -15,10 +15,13 @@ public sealed class DashboardRepository : IDashboardRepository
         _connectionFactory = connectionFactory;
     }
 
-    /// <summary>The fourteen result sets of the procedure, read in its order (see the header of script 68).</summary>
+    /// <summary>
+    /// The fourteen result sets of the procedure, read in its order (see the header of script 68), then the charts,
+    /// the warehouse levels (91) and the cards (115) when asked.
+    /// </summary>
     public async Task<DashboardSummaryDto> GetSummaryAsync(
         int? branchId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
-        bool includeWarehouseLevels, CancellationToken cancellationToken = default)
+        bool includeWarehouseLevels, bool includeCards, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
         using var multi = await connection.QueryMultipleAsync(new CommandDefinition(
@@ -74,6 +77,21 @@ public sealed class DashboardRepository : IDashboardRepository
             summary.StockAlerts.BelowWarehouseMin = await connection.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
                 "reporting.usp_Dashboard_StockLevels", new { BranchId = branchId },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)) ?? 0;
+        }
+
+        // (115) The cards: a fourth procedure, read only when the reader may see at least one of them (the service decides).
+        if (includeCards)
+        {
+            using var cards = await connection.QueryMultipleAsync(new CommandDefinition(
+                "reporting.usp_Dashboard_Cards",
+                new { BranchId = branchId, From = from.Date, To = to.Date, Today = today.Date },
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+            summary.ContainerStages = (await cards.ReadAsync<DashboardStageDto>()).AsList();
+            summary.PayablesDetail = await cards.ReadSingleAsync<DashboardPayablesDetailDto>();
+            summary.Creditors = (await cards.ReadAsync<DashboardCreditorDto>()).AsList();
+            summary.ReceivablesAging = await cards.ReadSingleAsync<DashboardReceivablesAgingDto>();
+            summary.Debtors = (await cards.ReadAsync<DashboardDebtorDto>()).AsList();
+            summary.PurchasesByMonth = (await cards.ReadAsync<DashboardPurchaseMonthDto>()).AsList();
         }
 
         return summary;

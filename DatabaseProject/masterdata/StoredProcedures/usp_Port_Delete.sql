@@ -1,4 +1,4 @@
-﻿CREATE   PROCEDURE masterdata.usp_Port_Delete
+CREATE   PROCEDURE masterdata.usp_Port_Delete
     @Id INT, @UserId INT = NULL
 AS
 BEGIN
