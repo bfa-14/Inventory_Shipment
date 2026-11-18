@@ -13,10 +13,23 @@ using Inventory_Shipment.Service.Interfaces;
 using Microsoft.AspNetCore.DataProtection;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.AspNetCore.Mvc.Formatters;
+using Microsoft.Extensions.Configuration.Json;
 using Microsoft.Extensions.Options;
 using Scalar.AspNetCore;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// ONE PC'S OWN SETTINGS stay off git: appsettings.{Environment}.Local.json (git-ignored, optional) - for example a
+// developer's own ConnectionStrings:DefaultConnection. It comes after the other appsettings files and before user
+// secrets, environment variables and the command line, so those still win.
+var lastSettingsFile = builder.Configuration.Sources.ToList()
+    .FindLastIndex(s => s is JsonConfigurationSource { Path: not null } j && j.Path.StartsWith("appsettings", StringComparison.OrdinalIgnoreCase));
+builder.Configuration.Sources.Insert(lastSettingsFile + 1, new JsonConfigurationSource
+{
+    Path = $"appsettings.{builder.Environment.EnvironmentName}.Local.json",
+    Optional = true,
+    ReloadOnChange = true,
+});
 
 // ----- Configuration (validated at start-up so misconfiguration fails fast) -----
 builder.Services.AddOptions<JwtOptions>()

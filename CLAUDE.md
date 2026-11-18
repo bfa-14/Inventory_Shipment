@@ -106,6 +106,9 @@ Conventions worth keeping:
   schema compare tool.
 - Never commit `deploy/.env` or `appsettings.Development.json`, and never ask for or repeat passwords, keys or server
   credentials.
+- Your own PC's settings (your `ConnectionStrings:DefaultConnection`: your SQL Server instance, your login) go in
+  `Inventory_Shipment.API/appsettings.Development.Local.json`, which git ignores and the API reads after the other
+  appsettings files; never put them in the shared `appsettings.json`.
 
 ## Working with the user
 
