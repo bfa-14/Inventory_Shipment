@@ -30,6 +30,10 @@ public interface IShortageDocumentService
     Task<Result<ShortageDocumentDto>> PostAsync(
         int id, string? rowVersion, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 
+    /// <summary>(119) Back to draft: a posted plan with no live purchase order, to change it or delete it. Needs Post Shortage Plans.</summary>
+    Task<Result<ShortageDocumentDto>> UnpostAsync(
+        int id, string? rowVersion, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     Task<Result> DeleteAsync(
         int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
 

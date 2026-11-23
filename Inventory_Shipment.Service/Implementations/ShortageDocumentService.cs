@@ -136,6 +136,11 @@ public sealed class ShortageDocumentService : IShortageDocumentService
         => ChangeAsync(id, Permissions.Inventory.ShortagesPost, permissions, userId, "posted", cancellationToken,
             () => _shortages.PostAsync(id, ToRowVersion(rowVersion), userId, cancellationToken));
 
+    public Task<Result<ShortageDocumentDto>> UnpostAsync(
+        int id, string? rowVersion, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+        => ChangeAsync(id, Permissions.Inventory.ShortagesPost, permissions, userId, "brought back to draft", cancellationToken,
+            () => _shortages.UnpostAsync(id, ToRowVersion(rowVersion), userId, cancellationToken));
+
     public async Task<Result> DeleteAsync(
         int id, int userId, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
     {

@@ -129,6 +129,20 @@ public sealed class ShortageDocumentsController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>(119) A posted plan back to draft, while no purchase order made from it is alive.</summary>
+    [HttpPost("{id:int}/back-to-draft")]
+    [HasPermission(Permissions.Inventory.ShortagesPost)]
+    [ProducesResponseType<ShortageDocumentDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ShortageDocumentDto>> BackToDraft(
+        int id, [FromBody] ShortageDocumentActionRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _shortages.UnpostAsync(
+            id, request?.RowVersion, User.GetUserId(), User.GetPermissions(), cancellationToken);
+
+        return result.ToActionResult(this);
+    }
+
     [HttpDelete("{id:int}")]
     [HasPermission(Permissions.Inventory.ShortagesDelete)]
     [ProducesResponseType(StatusCodes.Status204NoContent)]

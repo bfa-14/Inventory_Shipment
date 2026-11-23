@@ -260,6 +260,15 @@ public sealed class ShortageDocumentDto
     public bool CanPost => Status == ShortageDocumentStatus.Draft;
     public bool CanDelete => Status == ShortageDocumentStatus.Draft;
 
+    /// <summary>
+    /// (119) Why a posted plan cannot go back to draft now - a purchase order made from it is alive - in the database's
+    /// words (inventory.fn_ShortageDocument_UnpostBlock); null when it can, and on a draft.
+    /// </summary>
+    public string? UnpostBlockedReason { get; init; }
+
+    /// <summary>(119) Back to draft: a posted plan while no purchase order made from it is alive.</summary>
+    public bool CanUnpost => Status == ShortageDocumentStatus.Posted && UnpostBlockedReason is null;
+
     /// <summary>Only a posted plan becomes purchase orders: an order has to point at figures that no longer move.</summary>
     public bool CanCreatePurchaseOrder => Status == ShortageDocumentStatus.Posted;
 

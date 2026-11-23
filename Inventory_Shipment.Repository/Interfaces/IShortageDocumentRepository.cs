@@ -25,6 +25,9 @@ public interface IShortageDocumentRepository
 
     Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>(119) A posted plan back to draft, while no purchase order made from it is alive (66010 says which one is).</summary>
+    Task UnpostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+
     /// <summary>Drafts only.</summary>
     Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default);
 

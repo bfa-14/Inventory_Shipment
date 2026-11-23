@@ -179,6 +179,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
         public DateTime? PostedAtUtc { get; init; }
         public int? PostedBy { get; init; }
         public string? PostedByName { get; init; }
+        public string? UnpostBlockedReason { get; init; }
         public DateTime CreatedAtUtc { get; init; }
         public int? CreatedBy { get; init; }
         public string? CreatedByName { get; init; }
@@ -337,6 +338,7 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
             PostedAtUtc = header.PostedAtUtc,
             PostedBy = header.PostedBy,
             PostedByName = header.PostedByName,
+            UnpostBlockedReason = header.Status == 2 ? header.UnpostBlockedReason : null,
             CreatedAtUtc = header.CreatedAtUtc,
             CreatedBy = header.CreatedBy,
             CreatedByName = header.CreatedByName,
@@ -395,6 +397,10 @@ public sealed class ShortageDocumentRepository : IShortageDocumentRepository
 
     public Task PostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("inventory.usp_ShortageDocument_Post",
+            new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+
+    public Task UnpostAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("inventory.usp_ShortageDocument_Unpost",
             new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
     public Task DeleteAsync(int id, int userId, CancellationToken cancellationToken = default)
