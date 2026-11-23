@@ -1,3 +1,6 @@
+
+/* ================================================================== 3. inventory.usp_ShortageDocument_Get (from script 98) */
+
 CREATE   PROCEDURE inventory.usp_ShortageDocument_Get
     @Id INT
 AS
@@ -10,7 +13,8 @@ BEGIN
            d.LeadTimeMonths, d.MonthsOfHistory, d.Notes, d.Status,
            d.TotalLines, d.TotalShortageBase, d.TotalRequiredBase, d.TotalContainers, d.ContainersRounded, d.ContainerUtilizationPct,
            d.CalculatedAtUtc, d.PostedAtUtc, d.PostedBy, pu.FullName AS PostedByName,
-           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName, d.RowVersion
+           d.CreatedAtUtc, d.CreatedBy, cu.FullName AS CreatedByName, d.UpdatedAtUtc, d.UpdatedBy, uu.FullName AS UpdatedByName, d.RowVersion,
+           UnpostBlockedReason = inventory.fn_ShortageDocument_UnpostBlock(d.Id)   -- (119) NULL: it may go back to draft
     FROM inventory.ShortageDocuments d
     INNER JOIN masterdata.Branches b ON b.Id = d.BranchId
     INNER JOIN masterdata.Warehouses w ON w.Id = d.WarehouseId

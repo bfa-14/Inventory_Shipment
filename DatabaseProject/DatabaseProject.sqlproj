@@ -128,6 +128,7 @@
     <Build Include="inventory\Functions\fn_Item_LeadTimeHistory.sql" />
     <Build Include="inventory\Functions\fn_ItemWarehouseLevel_ImportJudge.sql" />
     <Build Include="inventory\Functions\fn_Shortage_Live.sql" />
+    <Build Include="inventory\Functions\fn_ShortageDocument_UnpostBlock.sql" />
     <Build Include="inventory\Functions\fn_StockLevelState.sql" />
     <Build Include="inventory\Functions\fn_StockOnHand.sql" />
     <Build Include="inventory\Functions\fn_StockPosition.sql" />
@@ -189,6 +190,7 @@
     <Build Include="inventory\StoredProcedures\usp_ShortageDocument_Recalculate.sql" />
     <Build Include="inventory\StoredProcedures\usp_ShortageDocument_Save.sql" />
     <Build Include="inventory\StoredProcedures\usp_ShortageDocument_Search.sql" />
+    <Build Include="inventory\StoredProcedures\usp_ShortageDocument_Unpost.sql" />
     <Build Include="inventory\StoredProcedures\usp_ShortageDocument_WriteLines.sql" />
     <Build Include="inventory\StoredProcedures\usp_StockDocument_Cancel.sql" />
     <Build Include="inventory\StoredProcedures\usp_StockDocument_Delete.sql" />
