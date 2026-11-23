@@ -20,7 +20,7 @@ public sealed class DashboardRepository : IDashboardRepository
     /// the warehouse levels (91), the cards (115) and the insights (116) when asked.
     /// </summary>
     public async Task<DashboardSummaryDto> GetSummaryAsync(
-        int? branchId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
+        int? branchId, int? warehouseId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
         bool includeWarehouseLevels, bool includeCards, bool includeInsights, CancellationToken cancellationToken = default)
     {
         await using var connection = _connectionFactory.Create();
@@ -28,7 +28,7 @@ public sealed class DashboardRepository : IDashboardRepository
             "reporting.usp_Dashboard_Summary",
             new
             {
-                BranchId = branchId,
+                BranchId = branchId, WarehouseId = warehouseId,
                 From = from.Date,
                 To = to.Date,
                 PrevFrom = prevFrom.Date,
@@ -63,7 +63,7 @@ public sealed class DashboardRepository : IDashboardRepository
         // The charts: a second procedure, so the figures above stay readable on their own.
         using var charts = await connection.QueryMultipleAsync(new CommandDefinition(
             "reporting.usp_Dashboard_Charts",
-            new { BranchId = branchId, From = from.Date, To = to.Date },
+            new { BranchId = branchId, WarehouseId = warehouseId, From = from.Date, To = to.Date },
             commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
         summary.Trend = (await charts.ReadAsync<DashboardTrendMonthDto>()).AsList();
         summary.SalesByFamily = (await charts.ReadAsync<DashboardSliceDto>()).AsList();
@@ -75,7 +75,7 @@ public sealed class DashboardRepository : IDashboardRepository
         if (includeWarehouseLevels && summary.StockAlerts is not null)
         {
             summary.StockAlerts.BelowWarehouseMin = await connection.QuerySingleOrDefaultAsync<int?>(new CommandDefinition(
-                "reporting.usp_Dashboard_StockLevels", new { BranchId = branchId },
+                "reporting.usp_Dashboard_StockLevels", new { BranchId = branchId, WarehouseId = warehouseId },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken)) ?? 0;
         }
 
@@ -84,7 +84,7 @@ public sealed class DashboardRepository : IDashboardRepository
         {
             using var cards = await connection.QueryMultipleAsync(new CommandDefinition(
                 "reporting.usp_Dashboard_Cards",
-                new { BranchId = branchId, From = from.Date, To = to.Date, Today = today.Date },
+                new { BranchId = branchId, WarehouseId = warehouseId, From = from.Date, To = to.Date, Today = today.Date },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             summary.ContainerStages = (await cards.ReadAsync<DashboardStageDto>()).AsList();
             summary.PayablesDetail = await cards.ReadSingleAsync<DashboardPayablesDetailDto>();
@@ -100,7 +100,7 @@ public sealed class DashboardRepository : IDashboardRepository
         {
             using var insights = await connection.QueryMultipleAsync(new CommandDefinition(
                 "reporting.usp_Dashboard_Insights",
-                new { BranchId = branchId, From = from.Date, To = to.Date, Today = today.Date },
+                new { BranchId = branchId, WarehouseId = warehouseId, From = from.Date, To = to.Date, Today = today.Date },
                 commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
             summary.TopItems = (await insights.ReadAsync<DashboardTopItemDto>()).AsList();
             summary.TopCustomers = (await insights.ReadAsync<DashboardTopCustomerDto>()).AsList();

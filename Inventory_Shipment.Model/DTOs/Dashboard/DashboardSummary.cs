@@ -10,6 +10,9 @@ namespace Inventory_Shipment.Model.DTOs.Dashboard;
 public sealed class DashboardSummaryQuery
 {
     public int? BranchId { get; init; }
+
+    /// <summary>(117) Only this warehouse and the warehouses under it; null: every warehouse of the branch.</summary>
+    public int? WarehouseId { get; init; }
     public DateTime? From { get; init; }
     public DateTime? To { get; init; }
     public DateTime? PrevFrom { get; init; }

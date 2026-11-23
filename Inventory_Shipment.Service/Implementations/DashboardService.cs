@@ -84,7 +84,7 @@ public sealed class DashboardService : IDashboardService
             Permissions.Purchase.GoodsReceiptsView,
         }.Any(permissions.Contains);
         var summary = await _dashboard.GetSummaryAsync(
-            query.BranchId, from, to, prevFrom, prevTo, today, warehouseLevels, cards, insights, cancellationToken);
+            query.BranchId, query.WarehouseId, from, to, prevFrom, prevTo, today, warehouseLevels, cards, insights, cancellationToken);
         Trim(summary, permissions);
         return Result<DashboardSummaryDto>.Success(summary);
     }

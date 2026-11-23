@@ -12,8 +12,10 @@ public interface IDashboardRepository
     /// receivables in detail, purchases by month), only for a reader who may see at least one of them.
     /// (116) <paramref name="includeInsights"/>: also read reporting.usp_Dashboard_Insights (top items and customers, sales
     /// by branch, cash and bank, transfers on the way, slow stock, charges missing, lead times), on the same terms.
+    /// (117) <paramref name="warehouseId"/>: only that warehouse and the warehouses under it, in each of the five procedures
+    /// (script 117 says what that means per figure; receipts, payments and the company minimum are not narrowed).
     /// </summary>
     Task<DashboardSummaryDto> GetSummaryAsync(
-        int? branchId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
+        int? branchId, int? warehouseId, DateTime from, DateTime to, DateTime prevFrom, DateTime prevTo, DateTime today,
         bool includeWarehouseLevels, bool includeCards, bool includeInsights, CancellationToken cancellationToken = default);
 }
