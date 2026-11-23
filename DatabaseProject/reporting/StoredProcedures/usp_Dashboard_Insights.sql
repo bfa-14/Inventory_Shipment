@@ -1,13 +1,19 @@
-/* ================================================================== 1. reporting.usp_Dashboard_Insights */
+/* ================================================================== 5. reporting.usp_Dashboard_Insights (from script 116) */
 
 CREATE   PROCEDURE reporting.usp_Dashboard_Insights
     @BranchId INT  = NULL,
     @From     DATE,
     @To       DATE,
-    @Today    DATE = NULL
+    @Today    DATE = NULL,
+    @WarehouseId INT = NULL   -- (117)
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (117) THE WAREHOUSE CHOSEN, AND THE WAREHOUSES UNDER IT (a parent is a group, not a place). Empty: no warehouse filter.
+    DECLARE @Wh TABLE (Id INT NOT NULL PRIMARY KEY);
+    IF @WarehouseId IS NOT NULL
+        INSERT INTO @Wh (Id) SELECT s.Id FROM masterdata.fn_Warehouse_Subtree(@WarehouseId) s;
     IF @Today IS NULL SET @Today = CAST(SYSUTCDATETIME() AS DATE);
     DECLARE @SlowDays INT = 90;
 
@@ -23,6 +29,7 @@ BEGIN
     INNER JOIN inventory.Items i ON i.Id = l.ItemId
     WHERE d.Status = 2 AND x.Sign <> 0 AND d.DocumentDate BETWEEN @From AND @To
       AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR l.WarehouseId IN (SELECT Id FROM @Wh))
     GROUP BY i.Id, i.ItemCode, i.ItemName
     HAVING SUM(x.Sign * l.NetSalesBase) > 0
     ORDER BY SUM(x.Sign * l.NetSalesBase) DESC, i.ItemCode;
@@ -37,6 +44,7 @@ BEGIN
         CROSS APPLY (SELECT Sign = CASE t.Code WHEN N'SINV' THEN 1 WHEN N'SRET' THEN -1 ELSE 0 END) x
         WHERE d.Status = 2 AND x.Sign <> 0 AND d.DocumentDate BETWEEN @From AND @To
           AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY d.ClientId
         HAVING SUM(x.Sign * d.TotalAmountBase) > 0
         ORDER BY SUM(x.Sign * d.TotalAmountBase) DESC
@@ -51,7 +59,8 @@ BEGIN
                  INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'SINV'
                  CROSS APPLY sales.fn_InvoiceSettlement(d.Id) s
                  WHERE d.ClientId = b.ClientId AND d.Status = 2 AND s.OutstandingAmount > 0.005
-                   AND (@BranchId IS NULL OR d.BranchId = @BranchId)) o
+                   AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                   AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))) o
     ORDER BY b.SalesBase DESC, p.PartyName;
 
     /* 3 ---------------------------------------------------------------------------- sales by branch (every branch) */
@@ -113,6 +122,7 @@ BEGIN
     INNER JOIN masterdata.Warehouses wt ON wt.Id = p.ToWarehouseId
     WHERE p.Kind = N'Dispatch' AND p.Status = 2
       AND (@BranchId IS NULL OR wf.BranchId = @BranchId OR wt.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR p.FromWarehouseId IN (SELECT Id FROM @Wh) OR p.ToWarehouseId IN (SELECT Id FROM @Wh))
     GROUP BY p.Id;
 
     SELECT Dispatches = COUNT(*),
@@ -142,6 +152,7 @@ BEGIN
           FROM inventory.StockMovements m
           INNER JOIN masterdata.Warehouses w ON w.Id = m.WarehouseId
           WHERE w.IsTransit = 0 AND (@BranchId IS NULL OR w.BranchId = @BranchId)
+                                AND (@WarehouseId IS NULL OR m.WarehouseId IN (SELECT Id FROM @Wh))
           GROUP BY m.ItemId) s
     INNER JOIN inventory.Items i ON i.Id = s.ItemId
     OUTER APPLY (SELECT LastSale = MAX(d.DocumentDate)
@@ -149,7 +160,8 @@ BEGIN
                  INNER JOIN sales.SalesDocuments d ON d.Id = l.DocumentId AND d.Status = 2
                  INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'SINV'
                  WHERE l.ItemId = s.ItemId
-                   AND (@BranchId IS NULL OR d.BranchId = @BranchId)) ls
+                   AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                   AND (@WarehouseId IS NULL OR l.WarehouseId IN (SELECT Id FROM @Wh))) ls
     WHERE s.OnHand > 0 AND i.IsActive = 1
       AND s.FirstIn <= @Since                                   -- in stock long enough to have sold
       AND (ls.LastSale IS NULL OR ls.LastSale < @Since);
@@ -177,7 +189,8 @@ BEGIN
            (SELECT COUNT(*) FROM logistics.ContainerCharges ch WHERE ch.ContainerId = c.Id AND ch.Status = 1)
     FROM logistics.Containers c
     WHERE c.Status IN (6, 7) AND c.OffloadedDate BETWEEN @From AND @To
-      AND (@BranchId IS NULL OR c.BranchId = @BranchId);
+      AND (@BranchId IS NULL OR c.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR c.WarehouseId IN (SELECT Id FROM @Wh));
 
     SELECT ReceivedContainers = COUNT(*),
            WithoutCharge      = ISNULL(SUM(CASE WHEN r.Posted = 0 THEN 1 END), 0),
@@ -221,6 +234,7 @@ BEGIN
       AND g.DocumentDate BETWEEN @LtFrom AND @To
       AND po.DocumentDate <= g.DocumentDate
       AND (@BranchId IS NULL OR g.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR ISNULL(l.WarehouseId, g.WarehouseId) IN (SELECT Id FROM @Wh))
     GROUP BY po.SupplierId, p.PartyName
     ORDER BY SUM(l.QuantityBase) DESC, p.PartyName;
 END

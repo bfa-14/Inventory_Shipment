@@ -1,15 +1,16 @@
-/* ================================================================== 9. Dashboard: warehouse levels below Min (L3) */
+/* ================================================================== 3. reporting.usp_Dashboard_StockLevels (from script 91) */
 
--- (91) THE DASHBOARD'S "WAREHOUSE LEVELS BELOW MIN": the levels of active items at active warehouses (of the branch, or
---      of the company) whose Projected stock is below their Min - the Stock Levels page's "Below Min" tile for the same
---      branch with its default filters (test g), worked out the same set-based way. Read by the API after the summary
---      and the charts, only for a reader who may see it (View Items and View Stock Levels); the summary procedure is not
---      touched.
 CREATE   PROCEDURE reporting.usp_Dashboard_StockLevels
-    @BranchId INT = NULL
+    @BranchId INT = NULL,
+    @WarehouseId INT = NULL   -- (117)
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (117) THE WAREHOUSE CHOSEN, AND THE WAREHOUSES UNDER IT (a parent is a group, not a place). Empty: no warehouse filter.
+    DECLARE @Wh TABLE (Id INT NOT NULL PRIMARY KEY);
+    IF @WarehouseId IS NOT NULL
+        INSERT INTO @Wh (Id) SELECT s.Id FROM masterdata.fn_Warehouse_Subtree(@WarehouseId) s;
 
     -- The levels counted: active items at active warehouses of the branch (or the company)
     CREATE TABLE #lv (ItemId INT NOT NULL, WarehouseId INT NOT NULL, MinQuantityBase INT NOT NULL, MaxQuantityBase INT NULL,
@@ -19,7 +20,8 @@ BEGIN
     FROM inventory.ItemWarehouseLevels lv
     INNER JOIN inventory.Items i       ON i.Id = lv.ItemId AND i.IsActive = 1
     INNER JOIN masterdata.Warehouses w ON w.Id = lv.WarehouseId AND w.IsActive = 1
-    WHERE @BranchId IS NULL OR w.BranchId = @BranchId;
+    WHERE (@BranchId IS NULL OR w.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR lv.WarehouseId IN (SELECT Id FROM @Wh));
 
     -- What released transfer orders bring and take, every pair at once (fn_TransferPositions, as Stock Levels reads it)
     CREATE TABLE #tp (ItemId INT NOT NULL, WarehouseId INT NOT NULL, InOnTheWayBase INT NOT NULL, InToDispatchBase INT NOT NULL,

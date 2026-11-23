@@ -1,18 +1,18 @@
-/* --------------------------------------------------------------------------------------------------
-   reporting.usp_Dashboard_Charts   @BranchId, @From, @To
-     1  trend          the twelve months ending with @To's month: sales and gross profit (posted
-                       invoices less returns) and purchases (posted supplier invoices less returns)
-     2  by family      sales in the period per item family, the five largest and "Other"
-     3  by warehouse   stock value now per warehouse, the five largest and "Other"
-     4  by weekday     invoices and sales in the period per day of the week (1 = Monday)
-   -------------------------------------------------------------------------------------------------- */
+/* ================================================================== 2. reporting.usp_Dashboard_Charts (from script 68) */
+
 CREATE   PROCEDURE reporting.usp_Dashboard_Charts
     @BranchId INT = NULL,
     @From     DATE,
-    @To       DATE
+    @To       DATE,
+    @WarehouseId INT = NULL   -- (117)
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (117) THE WAREHOUSE CHOSEN, AND THE WAREHOUSES UNDER IT (a parent is a group, not a place). Empty: no warehouse filter.
+    DECLARE @Wh TABLE (Id INT NOT NULL PRIMARY KEY);
+    IF @WarehouseId IS NOT NULL
+        INSERT INTO @Wh (Id) SELECT s.Id FROM masterdata.fn_Warehouse_Subtree(@WarehouseId) s;
     DECLARE @LastMonth DATE = DATEFROMPARTS(YEAR(@To), MONTH(@To), 1);
     DECLARE @FirstMonth DATE = DATEADD(MONTH, -11, @LastMonth);
 
@@ -29,6 +29,7 @@ BEGIN
         CROSS APPLY (SELECT Sign = CASE t.Code WHEN N'SINV' THEN 1 WHEN N'SRET' THEN -1 ELSE 0 END) x
         WHERE d.Status = 2 AND x.Sign <> 0 AND d.DocumentDate >= @FirstMonth AND d.DocumentDate < DATEADD(MONTH, 1, @LastMonth)
           AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY DATEFROMPARTS(YEAR(d.DocumentDate), MONTH(d.DocumentDate), 1)
     ),
     purchases AS (
@@ -39,6 +40,7 @@ BEGIN
         CROSS APPLY (SELECT Sign = CASE t.Code WHEN N'PINV' THEN 1 WHEN N'PRET' THEN -1 ELSE 0 END) x
         WHERE d.Status IN (2, 4) AND x.Sign <> 0 AND d.DocumentDate >= @FirstMonth AND d.DocumentDate < DATEADD(MONTH, 1, @LastMonth)
           AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY DATEFROMPARTS(YEAR(d.DocumentDate), MONTH(d.DocumentDate), 1)
     )
     SELECT m.MonthStart,
@@ -61,6 +63,7 @@ BEGIN
         LEFT JOIN masterdata.ItemFamilies f ON f.Id = i.ItemFamilyId
         WHERE d.Status = 2 AND d.DocumentDate BETWEEN @From AND @To
           AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR l.WarehouseId IN (SELECT Id FROM @Wh))
         GROUP BY ISNULL(f.FamilyName, N'No family')
     ),
     ranked AS (SELECT *, r = ROW_NUMBER() OVER (ORDER BY SalesBase DESC, FamilyName) FROM byFamily WHERE SalesBase > 0)
@@ -78,6 +81,7 @@ BEGIN
         INNER JOIN masterdata.Warehouses w ON w.Id = s.WarehouseId
         INNER JOIN inventory.Items i ON i.Id = s.ItemId
         WHERE s.OnHand > 0 AND (@BranchId IS NULL OR w.BranchId = @BranchId)
+                           AND (@WarehouseId IS NULL OR w.Id IN (SELECT Id FROM @Wh))
         GROUP BY w.WarehouseName
     ),
     ranked AS (SELECT *, r = ROW_NUMBER() OVER (ORDER BY ValueBase DESC, WarehouseName) FROM byWarehouse WHERE ValueBase > 0)
@@ -97,6 +101,7 @@ BEGIN
            ON DATEDIFF(DAY, '19000101', d.DocumentDate) % 7 + 1 = dd.DayNo
           AND d.Status = 2 AND d.DocumentDate BETWEEN @From AND @To
           AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
     LEFT JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code IN (N'SINV', N'SRET')
     GROUP BY dd.DayNo
     ORDER BY dd.DayNo;

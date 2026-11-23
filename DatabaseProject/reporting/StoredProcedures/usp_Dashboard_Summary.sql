@@ -1,20 +1,21 @@
-/* ================================================================== 13. Dashboard: what is still on order, and the goods receipt drafts */
+/* ================================================================== 1. reporting.usp_Dashboard_Summary (from script 72) */
 
--- Re-created (72) from the body of script 68 (Ali's dashboard, written before goods receipts): "on the way" counts
--- what the orders and the invoices without an order still have to RECEIVE (5), the drafts list counts the draft goods
--- receipts (6), and the free-time alarms stop at the Delivery (9, 10), since a delivered container now waits Cleared
--- for its goods receipt. Every other result set and column stays as it was; BIVAC Out drafts were already counted
--- (they are stock documents).
 CREATE   PROCEDURE reporting.usp_Dashboard_Summary
     @BranchId INT  = NULL,
     @From     DATE,
     @To       DATE,
     @PrevFrom DATE,
     @PrevTo   DATE,
-    @Today    DATE = NULL
+    @Today    DATE = NULL,
+    @WarehouseId INT = NULL   -- (117)
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (117) THE WAREHOUSE CHOSEN, AND THE WAREHOUSES UNDER IT (a parent is a group, not a place). Empty: no warehouse filter.
+    DECLARE @Wh TABLE (Id INT NOT NULL PRIMARY KEY);
+    IF @WarehouseId IS NOT NULL
+        INSERT INTO @Wh (Id) SELECT s.Id FROM masterdata.fn_Warehouse_Subtree(@WarehouseId) s;
     IF @Today IS NULL SET @Today = CAST(SYSUTCDATETIME() AS DATE);
 
     /* 1 ---------------------------------------------------------------------------- sales */
@@ -28,6 +29,7 @@ BEGIN
     CROSS APPLY (SELECT Sign = CASE t.Code WHEN N'SINV' THEN 1 WHEN N'SRET' THEN -1 ELSE 0 END) x
     WHERE d.Status = 2 AND x.Sign <> 0
       AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
       AND (d.DocumentDate BETWEEN @From AND @To OR d.DocumentDate BETWEEN @PrevFrom AND @PrevTo);
 
     /* 2 ---------------------------------------------------------------------------- receivables */
@@ -39,7 +41,8 @@ BEGIN
     INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'SINV'
     CROSS APPLY sales.fn_InvoiceSettlement(d.Id) s
     WHERE d.Status = 2 AND s.OutstandingAmount > 0.005
-      AND (@BranchId IS NULL OR d.BranchId = @BranchId);
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id));
 
     /* 3 ---------------------------------------------------------------------------- payables */
     SELECT InvoicesBase = (SELECT CONVERT(DECIMAL(18,2), ISNULL(SUM(s.OutstandingAmount / NULLIF(d.ExchangeRate, 0)), 0))
@@ -47,25 +50,29 @@ BEGIN
                            INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PINV'
                            CROSS APPLY purchase.fn_InvoiceSettlement(d.Id) s
                            WHERE d.Status = 2 AND s.OutstandingAmount > 0.005
-                             AND (@BranchId IS NULL OR d.BranchId = @BranchId)),
+                             AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                             AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))),
            InvoiceCount = (SELECT COUNT(*)
                            FROM purchase.PurchaseDocuments d
                            INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PINV'
                            CROSS APPLY purchase.fn_InvoiceSettlement(d.Id) s
                            WHERE d.Status = 2 AND s.OutstandingAmount > 0.005
-                             AND (@BranchId IS NULL OR d.BranchId = @BranchId)),
+                             AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                             AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))),
            ChargesBase  = (SELECT CONVERT(DECIMAL(18,2), ISNULL(SUM(s.OutstandingAmount / NULLIF(c.ExchangeRate, 0)), 0))
                            FROM logistics.ContainerCharges c
                            INNER JOIN logistics.Containers k ON k.Id = c.ContainerId
                            CROSS APPLY logistics.fn_ContainerChargeSettlement(c.Id) s
                            WHERE c.Status = 2 AND s.OutstandingAmount > 0.005
-                             AND (@BranchId IS NULL OR k.BranchId = @BranchId)),
+                             AND (@BranchId IS NULL OR k.BranchId = @BranchId)
+                             AND (@WarehouseId IS NULL OR k.WarehouseId IN (SELECT Id FROM @Wh))),
            ChargeCount  = (SELECT COUNT(*)
                            FROM logistics.ContainerCharges c
                            INNER JOIN logistics.Containers k ON k.Id = c.ContainerId
                            CROSS APPLY logistics.fn_ContainerChargeSettlement(c.Id) s
                            WHERE c.Status = 2 AND s.OutstandingAmount > 0.005
-                             AND (@BranchId IS NULL OR k.BranchId = @BranchId));
+                             AND (@BranchId IS NULL OR k.BranchId = @BranchId)
+                             AND (@WarehouseId IS NULL OR k.WarehouseId IN (SELECT Id FROM @Wh)));
 
     /* the stock of every item in every warehouse of the branch, used by 4 and 7 */
     DECLARE @Stock TABLE (ItemId INT NOT NULL, WarehouseId INT NOT NULL, OnHand INT NOT NULL, PRIMARY KEY (ItemId, WarehouseId));
@@ -73,14 +80,15 @@ BEGIN
     SELECT m.ItemId, m.WarehouseId, SUM(m.QuantityBase)
     FROM inventory.StockMovements m
     INNER JOIN masterdata.Warehouses w ON w.Id = m.WarehouseId
-    WHERE @BranchId IS NULL OR w.BranchId = @BranchId
+    WHERE (@BranchId IS NULL OR w.BranchId = @BranchId)
     GROUP BY m.ItemId, m.WarehouseId;
 
     /* 4 ---------------------------------------------------------------------------- inventory */
     SELECT ValueBase    = CONVERT(DECIMAL(18,2), ISNULL(SUM(CASE WHEN s.OnHand > 0 THEN s.OnHand * ISNULL(i.AverageCost, 0) END), 0)),
            ItemsInStock = COUNT(DISTINCT CASE WHEN s.OnHand > 0 THEN s.ItemId END)
     FROM @Stock s
-    INNER JOIN inventory.Items i ON i.Id = s.ItemId;
+    INNER JOIN inventory.Items i ON i.Id = s.ItemId
+    WHERE @WarehouseId IS NULL OR s.WarehouseId IN (SELECT Id FROM @Wh);   -- (117)
 
     /* 5 ---------------------------------------------------------------------------- on the way */
     -- (72) STILL TO RECEIVE, THE GOODS RECEIPTS' WAY (script 65), in the three parts of the "Outstanding order" and
@@ -110,7 +118,8 @@ BEGIN
                                              INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                                              WHERE cl.PoLineId = p.PoLineId AND c.Status IN (3, 4, 5)), 0)) tr
     WHERE d.Status IN (2, 4) AND p.OutstandingBase > 0   -- a closed order still brings what was invoiced and not received
-      AND (@BranchId IS NULL OR d.BranchId = @BranchId);
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.Id = p.PoLineId));
 
     SELECT OnOrderPieces = (SELECT ISNULL(SUM(o.Pieces), 0) FROM @OnOrder o),
            OpenOrders    = (SELECT COUNT(DISTINCT o.OrderId) FROM @OnOrder o),
@@ -121,14 +130,17 @@ BEGIN
                                         INNER JOIN inventory.DocumentTypes t    ON t.Id = d.DocumentTypeId AND t.Code = N'PINV'
                                         WHERE d.Status IN (2, 4) AND d.UsesGoodsReceipts = 1 AND l.SourceLineId IS NULL
                                           AND l.QuantityBase > l.ReceivedQuantityBase
-                                          AND (@BranchId IS NULL OR d.BranchId = @BranchId)),
+                                          AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                                          AND (@WarehouseId IS NULL OR l.WarehouseId IN (SELECT Id FROM @Wh))),
            InTransitPieces = (SELECT ISNULL(SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0)), 0)
                             FROM logistics.ContainerLines cl
                             INNER JOIN logistics.Containers c ON c.Id = cl.ContainerId
                             WHERE c.Status IN (3, 4, 5) AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
-                              AND (@BranchId IS NULL OR c.BranchId = @BranchId)),
+                              AND (@BranchId IS NULL OR c.BranchId = @BranchId)
+                              AND (@WarehouseId IS NULL OR c.WarehouseId IN (SELECT Id FROM @Wh))),
            ContainersInTransit = (SELECT COUNT(*) FROM logistics.Containers c
-                                  WHERE c.Status IN (3, 4, 5) AND (@BranchId IS NULL OR c.BranchId = @BranchId));
+                                  WHERE c.Status IN (3, 4, 5) AND (@BranchId IS NULL OR c.BranchId = @BranchId)
+                                                              AND (@WarehouseId IS NULL OR c.WarehouseId IN (SELECT Id FROM @Wh)));
 
     /* 6 ---------------------------------------------------------------------------- drafts */
     SELECT x.Kind, x.TypeCode, x.DraftCount
@@ -136,21 +148,26 @@ BEGIN
         SELECT Kind = N'Sales', TypeCode = t.Code, DraftCount = COUNT(*)
         FROM sales.SalesDocuments d INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId
         WHERE d.Status = 1 AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                           AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY t.Code
         UNION ALL
         SELECT N'Purchase', t.Code, COUNT(*)
         FROM purchase.PurchaseDocuments d INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId
         WHERE d.Status = 1 AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                           AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY t.Code
         UNION ALL
         SELECT N'Inventory', t.Code, COUNT(*)
         FROM inventory.StockDocuments d INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId
         WHERE d.Status = 1 AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                           AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM inventory.StockDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY t.Code
         UNION ALL
         -- (72) goods receipts (script 64): a draft holds goods not in stock yet
         SELECT N'Purchase', N'GRN', COUNT(*) FROM purchase.GoodsReceipts g
         WHERE g.Status = 1 AND (@BranchId IS NULL OR g.BranchId = @BranchId)
+                           AND (@WarehouseId IS NULL OR g.WarehouseId IN (SELECT Id FROM @Wh)
+                                OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.GoodsReceiptId = g.Id))
         UNION ALL
         SELECT N'Receipt', N'RCPT', COUNT(*) FROM sales.Receipts r
         WHERE r.Status = 1 AND (@BranchId IS NULL OR r.BranchId = @BranchId)
@@ -169,11 +186,13 @@ BEGIN
 
     /* 7 ---------------------------------------------------------------------------- stock alerts */
     SELECT BelowMinimum      = (SELECT COUNT(*) FROM @Item x INNER JOIN inventory.Items i ON i.Id = x.ItemId WHERE x.OnHand < i.MinQuantity),
-           NegativeStock     = (SELECT COUNT(*) FROM @Stock s WHERE s.OnHand < 0),
+           NegativeStock     = (SELECT COUNT(*) FROM @Stock s WHERE s.OnHand < 0
+                                  AND (@WarehouseId IS NULL OR s.WarehouseId IN (SELECT Id FROM @Wh))),
            OutOfStockSales   = (SELECT COUNT(*) FROM sales.OutOfStockSaleAudit a
                                 INNER JOIN sales.SalesDocuments d ON d.Id = a.SalesDocumentId
                                 WHERE CAST(a.SoldAtUtc AS DATE) BETWEEN @From AND @To
-                                  AND (@BranchId IS NULL OR d.BranchId = @BranchId));
+                                  AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+                                  AND (@WarehouseId IS NULL OR a.WarehouseId IN (SELECT Id FROM @Wh)));
 
     /* 8 ---------------------------------------------------------------------------- below minimum */
     SELECT TOP (5) i.Id AS ItemId, i.ItemCode, i.ItemName, x.OnHand, i.MinQuantity, Missing = i.MinQuantity - x.OnHand
@@ -196,7 +215,8 @@ BEGIN
                                              AND c.LastFreeDay < ISNULL(dl.EndDate, @Today) THEN 1 ELSE 0 END,
                         FreeNear = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND dl.MovementId IS NULL
                                              AND c.LastFreeDay BETWEEN @Today AND @FreeDayWarning THEN 1 ELSE 0 END) f
-    WHERE @BranchId IS NULL OR c.BranchId = @BranchId;
+    WHERE (@BranchId IS NULL OR c.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR c.WarehouseId IN (SELECT Id FROM @Wh));
 
     /* 10 --------------------------------------------------------------------------- container list */
     -- (72) the free-time reasons with the flags of 9
@@ -212,6 +232,7 @@ BEGIN
                         FreeNear = CASE WHEN c.Status IN (4, 5) AND c.LastFreeDay IS NOT NULL AND dl.MovementId IS NULL
                                              AND c.LastFreeDay BETWEEN @Today AND @FreeDayWarning THEN 1 ELSE 0 END) f
     WHERE (@BranchId IS NULL OR c.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR c.WarehouseId IN (SELECT Id FROM @Wh))
       AND ((c.Status IN (2, 3) AND c.Eta BETWEEN @Today AND @Soon)
         OR c.Status = 4
         OR f.FreeOver = 1 OR f.FreeNear = 1)
@@ -227,6 +248,7 @@ BEGIN
     CROSS APPLY sales.fn_InvoiceSettlement(d.Id) s
     WHERE d.Status = 2 AND s.OutstandingAmount > 0.005 AND d.DueDate < @Today
       AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
     ORDER BY s.OutstandingAmount / NULLIF(d.ExchangeRate, 0) DESC;
 
     /* 12 --------------------------------------------------------------------------- cheques */

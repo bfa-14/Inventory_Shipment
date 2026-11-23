@@ -1,13 +1,19 @@
-/* ================================================================== 1. reporting.usp_Dashboard_Cards */
+/* ================================================================== 4. reporting.usp_Dashboard_Cards (from script 115) */
 
 CREATE   PROCEDURE reporting.usp_Dashboard_Cards
     @BranchId INT  = NULL,
     @From     DATE,
     @To       DATE,
-    @Today    DATE = NULL
+    @Today    DATE = NULL,
+    @WarehouseId INT = NULL   -- (117)
 AS
 BEGIN
     SET NOCOUNT ON;
+
+    -- (117) THE WAREHOUSE CHOSEN, AND THE WAREHOUSES UNDER IT (a parent is a group, not a place). Empty: no warehouse filter.
+    DECLARE @Wh TABLE (Id INT NOT NULL PRIMARY KEY);
+    IF @WarehouseId IS NOT NULL
+        INSERT INTO @Wh (Id) SELECT s.Id FROM masterdata.fn_Warehouse_Subtree(@WarehouseId) s;
     IF @Today IS NULL SET @Today = CAST(SYSUTCDATETIME() AS DATE);
 
     /* 1 ---------------------------------------------------------------------------- stages */
@@ -28,6 +34,7 @@ BEGIN
     CROSS APPLY logistics.fn_Container_Stage(c.Id) st
     OUTER APPLY (SELECT Pieces = SUM(cl.QuantityBase) FROM logistics.ContainerLines cl WHERE cl.ContainerId = c.Id) p
     WHERE (@BranchId IS NULL OR c.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR c.WarehouseId IN (SELECT Id FROM @Wh))
       AND (c.Status BETWEEN 1 AND 5 OR (c.Status IN (6, 7) AND c.OffloadedDate BETWEEN @From AND @To));
 
     -- The groups: Pending first, every active stage (and an inactive one a container still stands on) in its order,
@@ -65,7 +72,8 @@ BEGIN
     INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'PINV'
     CROSS APPLY purchase.fn_InvoiceSettlement(d.Id) s
     WHERE d.Status = 2 AND s.OutstandingAmount > 0.005
-      AND (@BranchId IS NULL OR d.BranchId = @BranchId);
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id));
 
     INSERT INTO @Owed (Kind, PartyId, OutstandingBase, PaymentStatus)
     SELECT 'C', c.ProviderPartyId, CONVERT(DECIMAL(18,2), s.OutstandingAmount / NULLIF(c.ExchangeRate, 0)), s.PaymentStatus
@@ -73,7 +81,8 @@ BEGIN
     INNER JOIN logistics.Containers k ON k.Id = c.ContainerId
     CROSS APPLY logistics.fn_ContainerChargeSettlement(c.Id) s
     WHERE c.Status = 2 AND s.OutstandingAmount > 0.005
-      AND (@BranchId IS NULL OR k.BranchId = @BranchId);
+      AND (@BranchId IS NULL OR k.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR k.WarehouseId IN (SELECT Id FROM @Wh));
 
     SELECT UnpaidInvoiceCount   = COUNT(CASE WHEN o.Kind = 'I' AND o.PaymentStatus = N'Unpaid' THEN 1 END),
            UnpaidInvoicesBase   = ISNULL(SUM(CASE WHEN o.Kind = 'I' AND o.PaymentStatus = N'Unpaid' THEN o.OutstandingBase END), 0),
@@ -106,7 +115,8 @@ BEGIN
     INNER JOIN inventory.DocumentTypes t ON t.Id = d.DocumentTypeId AND t.Code = N'SINV'
     CROSS APPLY sales.fn_InvoiceSettlement(d.Id) s
     WHERE d.Status = 2 AND s.OutstandingAmount > 0.005
-      AND (@BranchId IS NULL OR d.BranchId = @BranchId);
+      AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+      AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM sales.SalesDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id));
 
     SELECT NotDueCount   = COUNT(CASE WHEN x.DaysLate = 0 THEN 1 END),
            NotDueBase    = ISNULL(SUM(CASE WHEN x.DaysLate = 0 THEN x.OutstandingBase END), 0),
@@ -148,6 +158,7 @@ BEGIN
         CROSS APPLY (SELECT Sign = CASE t.Code WHEN N'PINV' THEN 1 WHEN N'PRET' THEN -1 ELSE 0 END) x
         WHERE d.Status IN (2, 4) AND x.Sign <> 0 AND d.DocumentDate >= @FirstMonth AND d.DocumentDate < @End
           AND (@BranchId IS NULL OR d.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR EXISTS (SELECT 1 FROM purchase.PurchaseDocumentLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.DocumentId = d.Id))
         GROUP BY DATEFROMPARTS(YEAR(d.DocumentDate), MONTH(d.DocumentDate), 1)
     ),
     received AS (   -- posted goods receipts, at the value fixed when they were posted
@@ -156,6 +167,8 @@ BEGIN
         FROM purchase.GoodsReceipts g
         WHERE g.Status = 2 AND g.DocumentDate >= @FirstMonth AND g.DocumentDate < @End
           AND (@BranchId IS NULL OR g.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR g.WarehouseId IN (SELECT Id FROM @Wh)
+               OR EXISTS (SELECT 1 FROM purchase.GoodsReceiptLines wl INNER JOIN @Wh wh ON wh.Id = wl.WarehouseId WHERE wl.GoodsReceiptId = g.Id))
         GROUP BY DATEFROMPARTS(YEAR(g.DocumentDate), MONTH(g.DocumentDate), 1)
     ),
     charges AS (    -- container charges posted (a deduction is stored negative, script 102: it takes off)
@@ -165,6 +178,7 @@ BEGIN
         INNER JOIN logistics.Containers k ON k.Id = c.ContainerId
         WHERE c.Status = 2 AND c.ChargeDate >= @FirstMonth AND c.ChargeDate < @End
           AND (@BranchId IS NULL OR k.BranchId = @BranchId)
+          AND (@WarehouseId IS NULL OR k.WarehouseId IN (SELECT Id FROM @Wh))
         GROUP BY DATEFROMPARTS(YEAR(c.ChargeDate), MONTH(c.ChargeDate), 1)
     )
     SELECT m.MonthStart,
