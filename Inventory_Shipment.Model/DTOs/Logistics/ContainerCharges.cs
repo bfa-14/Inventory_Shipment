@@ -482,6 +482,31 @@ public sealed class PostChargesRequest
     public IReadOnlyList<int> Ids { get; init; } = [];
 }
 
+/// <summary>
+/// (118) What posting a charge will do (logistics.usp_ContainerCharge_PostPreview), read by the post confirmations
+/// before the click. <see cref="AfterReceipt"/> = a draft that enters the cost, on an Offloaded container: its post
+/// adjusts the cost of goods already received, and the split follows - the pieces the container brought
+/// (<see cref="ReceivedBase"/>), those the company still holds (<see cref="InStockBase"/>), the amount to their average
+/// cost (<see cref="ToStockBase"/>) and the amount to cost of sales (<see cref="ToCostOfSalesBase"/>), as the post will
+/// write them. <see cref="Problem"/> = the refusal its post would give instead, in the post's words (no split then).
+/// Amounts in the base currency; a deduction's are negative.
+/// </summary>
+public sealed class ChargePostPreviewDto
+{
+    public int ChargeId { get; init; }
+    public int ContainerId { get; init; }
+    public string ContainerRef { get; init; } = string.Empty;
+    public string ChargeCode { get; init; } = string.Empty;
+    public string ChargeName { get; init; } = string.Empty;
+    public decimal AmountBase { get; init; }
+    public bool AfterReceipt { get; init; }
+    public decimal? ReceivedBase { get; init; }
+    public decimal? InStockBase { get; init; }
+    public decimal? ToStockBase { get; init; }
+    public decimal? ToCostOfSalesBase { get; init; }
+    public string? Problem { get; init; }
+}
+
 /// <summary>Posting one charge carries the version the caller saw.</summary>
 public sealed class ChargeActionRequest
 {

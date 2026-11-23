@@ -32,6 +32,13 @@ public interface IContainerChargeService
         PostChargesRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>
+    /// (118) What posting these charges will do, before the click: for a late one (an Offloaded container) the amount to
+    /// stock and to cost of sales, or the refusal its post would give. Writes nothing. Needs containers.charges.post.
+    /// </summary>
+    Task<Result<IReadOnlyList<ChargePostPreviewDto>>> GetPostPreviewAsync(
+        PostChargesRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default);
+
     Task<Result<ContainerChargeDto>> CancelAsync(
         int id, CancelRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);

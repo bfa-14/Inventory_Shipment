@@ -302,6 +302,7 @@
     <Build Include="logistics\Functions\fn_ContainerCharge_BivacBlock.sql" />
     <Build Include="logistics\Functions\fn_ContainerCharge_PaymentProblem.sql" />
     <Build Include="logistics\Functions\fn_ContainerCharge_ReferenceClash.sql" />
+    <Build Include="logistics\Functions\fn_ContainerCharge_StockShare.sql" />
     <Build Include="logistics\Functions\fn_ContainerChargeSettlement.sql" />
     <Build Include="logistics\Functions\fn_ContainerFill.sql" />
     <Build Include="logistics\Functions\fn_ContainerFitForMovement.sql" />
@@ -357,6 +358,7 @@
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_PayCash.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Post.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_PostBivacOut.sql" />
+    <Build Include="logistics\StoredProcedures\usp_ContainerCharge_PostPreview.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Search.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerCharge_Update.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerReport.sql" />

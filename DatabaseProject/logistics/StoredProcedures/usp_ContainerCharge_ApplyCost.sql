@@ -1,3 +1,9 @@
+/* ================================================================== 2. usp_ContainerCharge_ApplyCost */
+
+-- A charge that enters (@Sign = 1) or leaves (@Sign = -1) the cost of goods already received: the part still in the
+-- company's stock changes the average cost, the part already sold goes to cost of sales; then the items' costs are
+-- replayed. Re-created (118) from the body of script 102: its lines and their stock parts come from
+-- logistics.fn_ContainerCharge_StockShare (the rule it held, moved there unchanged); the caps of a cancel stay here.
 CREATE   PROCEDURE logistics.usp_ContainerCharge_ApplyCost
     @ChargeId INT,
     @Sign     SMALLINT,
@@ -15,31 +21,13 @@ BEGIN
     IF @ContainerId IS NULL THROW 70006, 'Charge not found.', 1;
     IF @WarehouseId IS NULL THROW 70010, 'The container has no offloading warehouse.', 1;
 
+    -- (118) EACH LINE'S DELTA AND ITS STOCK PART FROM logistics.fn_ContainerCharge_StockShare: the rule that was written
+    --       here (89: the company's stock of the item, capped at what the container brought), in one place, which the
+    --       post preview (usp_ContainerCharge_PostPreview) reads too, so the confirmation says what the post will do.
     DECLARE @Adj TABLE (LineId INT PRIMARY KEY, ItemId INT, Delta DECIMAL(18,2), Inv DECIMAL(18,2) NULL);
-    INSERT INTO @Adj (LineId, ItemId, Delta)
-    SELECT cl.Id, cl.ItemId, @Sign * a.AmountBase
-    FROM logistics.ContainerChargeAllocations a
-    INNER JOIN logistics.ContainerLines cl ON cl.Id = a.ContainerLineId
-    WHERE a.ChargeId = @ChargeId AND a.AmountBase <> 0;
-
-    -- per item: what the container brought, and how much of it can still be in stock - (89) capped by the COMPANY's
-    -- stock of the item, every warehouse (was: the receiving warehouse's stock)
-    DECLARE @Items TABLE (ItemId INT PRIMARY KEY, Received DECIMAL(18,6), Remaining DECIMAL(18,6), CompanyOnHand DECIMAL(18,6));
-    INSERT INTO @Items (ItemId, Received, Remaining, CompanyOnHand)
-    SELECT x.ItemId, x.Received,
-           CASE WHEN oh.Q < x.Received THEN CASE WHEN oh.Q > 0 THEN oh.Q ELSE 0 END ELSE x.Received END,
-           oh.Q
-    FROM (SELECT cl.ItemId, Received = SUM(ISNULL(cl.ReceivedQuantityBase, 0))
-          FROM logistics.ContainerLines cl
-          WHERE cl.ContainerId = @ContainerId
-          GROUP BY cl.ItemId) x
-    CROSS APPLY (SELECT Q = inventory.fn_StockOnHand(x.ItemId, NULL)) oh                -- (89) NULL: every warehouse
-    WHERE x.ItemId IN (SELECT ItemId FROM @Adj);
-
-    UPDATE a
-    SET Inv = CASE WHEN i.CompanyOnHand <= 0 OR i.Received <= 0 THEN 0 ELSE ROUND(a.Delta * i.Remaining / i.Received, 2) END
-    FROM @Adj a
-    INNER JOIN @Items i ON i.ItemId = a.ItemId;
+    INSERT INTO @Adj (LineId, ItemId, Delta, Inv)
+    SELECT s.LineId, s.ItemId, s.Delta, s.Inv
+    FROM logistics.fn_ContainerCharge_StockShare(@ChargeId, @Sign) s;
 
     -- (89) A CANCEL NEVER TAKES MORE OUT OF STOCK THAN ITS POSTING PUT IN, per item. The stock part above is worked out
     --      again with today's stock - right when goods were sold since the posting (they took their share of the charge

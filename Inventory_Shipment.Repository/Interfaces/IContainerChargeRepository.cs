@@ -25,6 +25,9 @@ public interface IContainerChargeRepository
     /// <summary>One draft (id, with its row version) or several (ids): all or nothing.</summary>
     Task PostAsync(int? id, IReadOnlyList<int> ids, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>(118) What posting these charges will do (logistics.usp_ContainerCharge_PostPreview): nothing is written.</summary>
+    Task<IReadOnlyList<ChargePostPreviewDto>> GetPostPreviewAsync(IReadOnlyList<int> ids, CancellationToken cancellationToken = default);
+
     /// <summary>Posted only; the cost is reversed when the container is already offloaded.</summary>
     Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 

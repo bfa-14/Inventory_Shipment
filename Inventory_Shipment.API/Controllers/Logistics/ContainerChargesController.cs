@@ -101,6 +101,20 @@ public sealed class ContainerChargesController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>
+    /// (118) What posting these drafts will do, before the click: body { ids: [...] }. For a charge on an Offloaded
+    /// container (a late one) the amount to stock and to cost of sales; else the refusal its post would give. Writes nothing.
+    /// </summary>
+    [HttpPost("post-preview")]
+    [HasPermission(Permissions.Containers.ChargesPost)]
+    [ProducesResponseType<IReadOnlyList<ChargePostPreviewDto>>(StatusCodes.Status200OK)]
+    public async Task<ActionResult<IReadOnlyList<ChargePostPreviewDto>>> PostPreview(
+        [FromBody] PostChargesRequest request, CancellationToken cancellationToken)
+    {
+        var result = await _charges.GetPostPreviewAsync(request, User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpPost("{id:int}/post")]
     [HasPermission(Permissions.Containers.ChargesPost)]
     [ProducesResponseType<ContainerChargeDto>(StatusCodes.Status200OK)]

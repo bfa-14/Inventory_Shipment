@@ -141,6 +141,32 @@ public sealed class ContainerChargeService : IContainerChargeService
         return Result<IReadOnlyList<ContainerChargeDto>>.Success(posted);
     }
 
+    public async Task<Result<IReadOnlyList<ChargePostPreviewDto>>> GetPostPreviewAsync(
+        PostChargesRequest request, IReadOnlySet<string> permissions, CancellationToken cancellationToken = default)
+    {
+        if (!permissions.Contains(Permissions.Containers.ChargesPost))
+        {
+            return Forbidden<IReadOnlyList<ChargePostPreviewDto>>(Permissions.Containers.ChargesPost);
+        }
+
+        var ids = request.Ids.Distinct().ToList();
+        if (ids.Count == 0)
+        {
+            return Result<IReadOnlyList<ChargePostPreviewDto>>.Failure(
+                ErrorType.Validation, "Select at least one charge to post.", "VALIDATION");
+        }
+
+        try
+        {
+            return Result<IReadOnlyList<ChargePostPreviewDto>>.Success(
+                await _charges.GetPostPreviewAsync(ids, cancellationToken));
+        }
+        catch (BusinessRuleException ex)
+        {
+            return Failure<IReadOnlyList<ChargePostPreviewDto>>(ex);
+        }
+    }
+
     public Task<Result<ContainerChargeDto>> CancelAsync(
         int id, CancelRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)

@@ -163,6 +163,27 @@ public sealed class ContainerChargeRepository : IContainerChargeRepository
         return ExecuteAsync("logistics.usp_ContainerCharge_Post", parameters, cancellationToken);
     }
 
+    public async Task<IReadOnlyList<ChargePostPreviewDto>> GetPostPreviewAsync(
+        IReadOnlyList<int> ids, CancellationToken cancellationToken = default)
+    {
+        var parameters = new DynamicParameters();
+        parameters.Add("@Ids", MovementRepository.ToIdTable(ids).AsTableValuedParameter(IdListTypeName));
+
+        await using var connection = _connectionFactory.Create();
+        try
+        {
+            var rows = await connection.QueryAsync<ChargePostPreviewDto>(new CommandDefinition(
+                "logistics.usp_ContainerCharge_PostPreview", parameters,
+                commandType: CommandType.StoredProcedure, cancellationToken: cancellationToken));
+
+            return rows.AsList();
+        }
+        catch (SqlException ex) when (SqlErrors.IsBusinessRule(ex))
+        {
+            throw SqlErrors.Wrap(ex);
+        }
+    }
+
     public Task CancelAsync(int id, string reason, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
         => ExecuteAsync("logistics.usp_ContainerCharge_Cancel",
             new { Id = id, Reason = reason, RowVersion = rowVersion, UserId = userId }, cancellationToken);
