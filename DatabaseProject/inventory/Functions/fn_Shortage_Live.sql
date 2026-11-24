@@ -1,6 +1,5 @@
--- transfer orders to the plan's warehouse or a warehouse under it and neither received nor written off yet: they sit in
--- an On the way warehouse, which no tree holds, so CurrentInventoryBase does not count them. Transfers OUT of the tree
--- are not demand (decision D8). Every other column unchanged.
+/* ================================================================== 1. inventory.fn_Shortage_Live (from script 90) */
+
 CREATE   FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
 RETURNS TABLE
 AS
@@ -97,7 +96,7 @@ RETURN
     (
         SELECT TOP (1) u.Id AS ItemUnitId, u.PackingFormula, t.UnitTypeName
         FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
-        WHERE u.ItemId = i.Id ORDER BY u.IsPurchaseUnit DESC, u.IsBaseUnit DESC
+        WHERE u.ItemId = i.Id ORDER BY u.IsBaseUnit DESC, u.PackingFormula, u.Id     -- (122) the base unit: a plan orders in pieces
     ) pu
     OUTER APPLY
     (
