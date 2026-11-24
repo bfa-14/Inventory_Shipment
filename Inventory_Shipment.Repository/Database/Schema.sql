@@ -107125,3 +107125,179 @@ GO
 
 SET NOEXEC OFF;
 GO
+
+-- ===== 122: Inventory - a shortage plan's Required Qty in the base unit =====
+SET QUOTED_IDENTIFIER ON;
+SET ANSI_NULLS ON;
+GO
+
+/* =====================================================================================
+   Inventory_Shipment - 122: INVENTORY - A SHORTAGE PLAN'S REQUIRED QTY IN THE BASE UNIT
+
+   The owner: "In shortage in line grid (required qty) must be in base unit also", "In purchase order and shortage
+   must calc as base unit", the containers being the pieces divided by the item's pieces per container ("container ÷
+   180"). A plan's Required Qty was in the item's purchase unit (a box, a container...) while every other figure of
+   the line was in base units, and the purchase order made from the plan took that purchase unit.
+
+     inventory.fn_Shortage_Live (@WarehouseId, @MonthsOfHistory)      (from script 90)
+        The unit a plan orders in (PurchaseItemUnitId, PurchaseUnitName, PurchasePackingFormula) is the item's BASE
+        unit (packing 1; the purchase unit before). Everything that reads it follows without a change: the suggested
+        Required Qty is the shortage itself, in pieces (usp_Shortage_Calculate, usp_ShortageDocument_WriteLines), the
+        line's containers are its pieces / PC per container, and usp_ShortageDocument_CreatePurchaseOrder makes the
+        order's lines in the base unit. Every other column unchanged.
+
+     The lines already saved (draft and posted plans) are brought to the base unit: Required Qty x the packing they
+     were saved with, their unit the item's base unit (the unit flagged so, else its smallest), packing 1. Their pieces (RequiredBase), containers and the
+     plans' totals are computed from those and do not move. A second run finds nothing to change.
+
+   No table, column, permission or error number. Requires script 90. Idempotent.
+   ===================================================================================== */
+
+USE [Inventory_Shipment];
+GO
+
+IF OBJECT_ID(N'inventory.fn_Shortage_Live', N'IF') IS NULL
+   OR COL_LENGTH(N'inventory.ShortageDocumentLines', N'TransfersInBase') IS NULL
+    THROW 50000, 'Script 122 requires script 90: apply it first.', 1;
+GO
+
+/* ================================================================== 1. inventory.fn_Shortage_Live (from script 90) */
+
+CREATE OR ALTER FUNCTION inventory.fn_Shortage_Live (@WarehouseId INT, @MonthsOfHistory INT)
+RETURNS TABLE
+AS
+RETURN
+(
+    /* (62) THE WAREHOUSE AND EVERY WAREHOUSE UNDER IT. A plan for a parent counts the stock, sales,
+       orders and containers of its whole tree; a warehouse with nothing under it is just itself.
+       The depth guard stops a cycle left by older data instead of recursing for ever. */
+    WITH tree AS
+    (
+        SELECT w.Id, 0 AS Depth FROM masterdata.Warehouses w WHERE w.Id = @WarehouseId
+        UNION ALL
+        SELECT w.Id, t.Depth + 1 FROM masterdata.Warehouses w INNER JOIN tree t ON w.ParentId = t.Id WHERE t.Depth < 20
+    )
+    SELECT i.Id AS ItemId, i.ItemCode, i.ItemName, i.BrandId, i.ItemFamilyId, i.IsBivac,
+           i.DefaultSupplierId, i.LastSupplierId, i.MinQuantity, i.MaxQuantity, i.LastCost, i.AverageCost, i.LeadTimeDays,
+           ItemPcPerContainer = cnt.PackingFormula,                         -- the item's Container unit, NULL when none
+           PcPerContainerFromUnit = CAST(CASE WHEN cnt.PackingFormula IS NOT NULL THEN 1 ELSE 0 END AS BIT),
+           CurrentInventoryBase     = ISNULL((SELECT SUM(m.QuantityBase) FROM inventory.StockMovements m
+                                              WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)), 0),
+           TransitBase              = ISNULL(tr.Transit, 0),
+           TransfersInBase          = ISNULL(ti.TransfersIn, 0),            -- (90) goods on the way to the tree by transfers
+           OutstandingOrderBase     = CASE WHEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) > 0
+                                           THEN ISNULL(po.PoOpen, 0) + ISNULL(po.InvPending, 0) - ISNULL(tr.Transit, 0) ELSE 0 END,
+           -- (85) the HIGHEST month of the history, not the average: plan for the busiest month seen.
+           ExpectedMonthlySalesBase = CONVERT(DECIMAL(18,2), ISNULL(mx.MaxMonthSold, 0)),
+           SoldInPeriodBase         = ISNULL(s.Sold, 0),
+           PurchaseItemUnitId       = pu.ItemUnitId,
+           PurchaseUnitName         = pu.UnitTypeName,
+           PurchasePackingFormula   = pu.PackingFormula
+    FROM inventory.Items i
+    OUTER APPLY
+    (
+        -- (65) rule 25: open and closed orders still to receive + invoices without an order not received yet
+        SELECT PoOpen     = SUM(CASE WHEN dt.Code = N'PO'   THEN ISNULL(pp.OutstandingBase, 0) ELSE 0 END),
+               InvPending = SUM(CASE WHEN dt.Code = N'PINV' THEN l.QuantityBase - l.ReceivedQuantityBase ELSE 0 END)
+        FROM purchase.PurchaseDocumentLines l
+        INNER JOIN purchase.PurchaseDocuments d ON d.Id = l.DocumentId
+        INNER JOIN inventory.DocumentTypes dt   ON dt.Id = d.DocumentTypeId
+        OUTER APPLY (SELECT p.OutstandingBase FROM purchase.fn_PoLine_Progress(d.Id) p WHERE p.PoLineId = l.Id) pp
+        WHERE l.ItemId = i.Id AND l.WarehouseId IN (SELECT t.Id FROM tree t)
+          AND ((dt.Code = N'PO'   AND d.Status IN (2, 4))
+            OR (dt.Code = N'PINV' AND d.Status IN (2, 4) AND d.UsesGoodsReceipts = 1 AND l.SourceLineId IS NULL
+                AND l.QuantityBase > l.ReceivedQuantityBase))
+    ) po
+    OUTER APPLY
+    (
+        -- loaded into a container that has left the supplier and is not offloaded yet
+        SELECT Transit = SUM(cl.QuantityBase - ISNULL(cl.ReceivedQuantityBase, 0))
+        FROM logistics.ContainerLines cl
+        INNER JOIN logistics.Containers c             ON c.Id = cl.ContainerId
+        INNER JOIN purchase.PurchaseDocumentLines pl  ON pl.Id = cl.PoLineId
+        WHERE cl.ItemId = i.Id AND c.Status IN (3, 4, 5)
+          AND pl.WarehouseId IN (SELECT t.Id FROM tree t)                  -- the order's warehouse, like the open order / invoice quantities
+          AND cl.QuantityBase > ISNULL(cl.ReceivedQuantityBase, 0)
+    ) tr
+    OUTER APPLY
+    (
+        -- (90) GOODS ON THE WAY TO THE PLAN'S WAREHOUSE (its tree): dispatched by released transfer orders to it, not
+        --      received or written off yet. They sit in an On the way warehouse, which no tree holds. Transfers OUT
+        --      are not demand: the owner has not said the main warehouse buys for the branches (it would buy twice).
+        SELECT TransfersIn = SUM(l.DispatchedBase - l.ReceivedBase - l.LostBase)
+        FROM inventory.TransferOrderLines l
+        INNER JOIN inventory.TransferOrders o ON o.Id = l.TransferOrderId
+        WHERE l.ItemId = i.Id AND o.Status = 2 AND o.ToWarehouseId IN (SELECT t.Id FROM tree t)
+          AND l.DispatchedBase > l.ReceivedBase + l.LostBase
+    ) ti
+    OUTER APPLY
+    (
+        SELECT Sold = SUM(-m.QuantityBase)
+        FROM inventory.StockMovements m
+        WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t) AND m.DocumentFamily = N'Sales'
+          AND m.MovementDate >= DATEADD(MONTH, -@MonthsOfHistory, CAST(SYSUTCDATETIME() AS DATE))
+    ) s
+    OUTER APPLY
+    (
+        /* (85) THE BUSIEST MONTH. The same history, cut into @MonthsOfHistory blocks of one month counted
+           back from tonight (block 0 = the last month up to today included, block 1 = the month before it...),
+           each up to the same day of the next one, so no day counts twice; the
+           net sales of each (sales less returns), and the highest of them. A month without sales counts 0. */
+        SELECT MaxMonthSold = MAX(b.Sold)
+        FROM (SELECT k.n, Sold = ISNULL((SELECT SUM(-m.QuantityBase)
+                                         FROM inventory.StockMovements m
+                                         WHERE m.ItemId = i.Id AND m.WarehouseId IN (SELECT t.Id FROM tree t)
+                                           AND m.DocumentFamily = N'Sales'
+                                           AND m.MovementDate >= DATEADD(MONTH, -(k.n + 1), DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE)))
+                                           AND m.MovementDate <  DATEADD(MONTH, -k.n, DATEADD(DAY, 1, CAST(SYSUTCDATETIME() AS DATE)))), 0)
+              FROM (SELECT TOP (CASE WHEN @MonthsOfHistory > 0 THEN @MonthsOfHistory ELSE 1 END)
+                           n = ROW_NUMBER() OVER (ORDER BY (SELECT NULL)) - 1
+                    FROM (VALUES (0),(0),(0),(0),(0),(0)) a (x) CROSS JOIN (VALUES (0),(0),(0),(0),(0),(0)) b (x)) k
+        ) b
+    ) mx
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.Id AS ItemUnitId, u.PackingFormula, t.UnitTypeName
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id ORDER BY u.IsBaseUnit DESC, u.PackingFormula, u.Id     -- (122) the base unit: a plan orders in pieces
+    ) pu
+    OUTER APPLY
+    (
+        SELECT TOP (1) u.PackingFormula
+        FROM inventory.ItemUnits u INNER JOIN masterdata.UnitTypes t ON t.Id = u.UnitTypeId
+        WHERE u.ItemId = i.Id AND t.IsContainer = 1
+    ) cnt
+    WHERE i.IsActive = 1
+);
+GO
+
+/* ================================================================== 2. The saved lines, in the base unit */
+
+-- The base unit as every other reader takes it: the unit flagged so, else the item's smallest one. A line of an item
+-- with no unit of 1 piece (none should exist) is left as it is.
+UPDATE l
+SET RequiredQty            = l.RequiredQty * l.PurchasePackingFormula,
+    PurchaseItemUnitId     = bu.Id,
+    PurchasePackingFormula = 1
+FROM inventory.ShortageDocumentLines l
+CROSS APPLY (SELECT TOP (1) u.Id, u.PackingFormula FROM inventory.ItemUnits u
+             WHERE u.ItemId = l.ItemId ORDER BY u.IsBaseUnit DESC, u.PackingFormula, u.Id) bu
+WHERE bu.PackingFormula = 1 AND (l.PurchaseItemUnitId <> bu.Id OR l.PurchasePackingFormula <> 1);
+
+PRINT 'Script 122: ' + CAST(@@ROWCOUNT AS VARCHAR(10)) + ' shortage line(s) brought to the base unit.';
+GO
+
+/* ================================================================== 3. Check */
+
+-- Expected 0: lines of a plan still in another unit than their item's base unit.
+SELECT LinesNotInBaseUnit = COUNT(*)
+FROM inventory.ShortageDocumentLines l
+CROSS APPLY (SELECT TOP (1) u.Id, u.PackingFormula FROM inventory.ItemUnits u
+             WHERE u.ItemId = l.ItemId ORDER BY u.IsBaseUnit DESC, u.PackingFormula, u.Id) bu
+WHERE bu.PackingFormula = 1 AND (l.PurchaseItemUnitId <> bu.Id OR l.PurchasePackingFormula <> 1);
+
+PRINT 'Script 122 applied: a shortage plan''s Required Qty, and the purchase order made from it, are in the base unit (fn_Shortage_Live).';
+GO
+
+SET NOEXEC OFF;
+GO
