@@ -1,4 +1,3 @@
-
 /* ================================================================== 3. inventory.usp_ShortageDocument_Get (from script 98) */
 
 CREATE   PROCEDURE inventory.usp_ShortageDocument_Get

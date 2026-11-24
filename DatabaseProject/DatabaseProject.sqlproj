@@ -342,6 +342,7 @@
     <Build Include="logistics\StoredProcedures\usp_Container_Save.sql" />
     <Build Include="logistics\StoredProcedures\usp_Container_Search.sql" />
     <Build Include="logistics\StoredProcedures\usp_Container_SetNumbers.sql" />
+    <Build Include="logistics\StoredProcedures\usp_Container_SetRef.sql" />
     <Build Include="logistics\StoredProcedures\usp_Container_Tracking.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerAttachment_Add.sql" />
     <Build Include="logistics\StoredProcedures\usp_ContainerAttachment_Delete.sql" />

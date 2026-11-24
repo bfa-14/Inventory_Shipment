@@ -1,4 +1,3 @@
-
 /* ================================================================== 2. Back to draft */
 
 CREATE   PROCEDURE inventory.usp_ShortageDocument_Unpost

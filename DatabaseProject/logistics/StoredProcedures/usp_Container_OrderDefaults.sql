@@ -1,12 +1,5 @@
-/* ================================================================== 6. What the container dialogs fill in by themselves */
+/* ================================================================== 1. logistics.usp_Container_OrderDefaults (from script 78) */
 
--- (78) NEW. One row for a purchase order: what Auto-plan containers... and Add Container... start with.
---   Supplier*        the order's supplier, shown read-only: a container's goods come from its order lines, so its
---                    supplier is never typed.
---   Forwarder*       the forwarder of the order's most recent container (not cancelled) that has an active one, else
---                    the order's supplier (ForwarderSource LastContainer | Supplier). The dialog keeps it editable.
---   CountryOfOrigin  the supplier's country (ISO 3166-1 alpha-2), NULL when the supplier has none.
--- No row when the id is not a purchase order.
 CREATE   PROCEDURE logistics.usp_Container_OrderDefaults
     @PurchaseOrderId INT
 AS
@@ -15,6 +8,7 @@ BEGIN
 
     SELECT PurchaseOrderId     = d.Id,
            PurchaseOrderNumber = d.DocumentNumber,
+           OrderDate           = d.DocumentDate,                    -- (121) what the containers' Order date starts as
            SupplierId          = s.Id,
            SupplierCode        = s.PartyCode,
            SupplierName        = s.PartyName,

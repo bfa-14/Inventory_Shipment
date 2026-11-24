@@ -1,4 +1,3 @@
-
 /* ================================================================== 1. Why a plan cannot go back to draft */
 
 CREATE   FUNCTION inventory.fn_ShortageDocument_UnpostBlock (@Id INT)
