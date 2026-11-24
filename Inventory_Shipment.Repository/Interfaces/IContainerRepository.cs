@@ -23,6 +23,9 @@ public interface IContainerRepository
 
     Task ConfirmAsync(int id, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 
+    /// <summary>(120) logistics.usp_Container_SetRef: the container's ref changed (69000 / 69013 say why not).</summary>
+    Task SetRefAsync(int id, string? containerRef, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
+
     /// <summary>Stock in at the real cost (FOB of the posted invoices + posted charges). An empty line list = everything received as loaded.</summary>
     Task OffloadAsync(int id, OffloadRequest request, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default);
 

@@ -1322,6 +1322,13 @@ public sealed class ContainerActionRequest
     public string? RowVersion { get; init; }
 }
 
+/// <summary>(120) POST api/logistics/containers/{id}/ref: the container's new ref (trimmed and kept in capitals by the database).</summary>
+public sealed class ContainerRefRequest
+{
+    public string? ContainerRef { get; init; }
+    public string? RowVersion { get; init; }
+}
+
 public sealed class ContainerQuery
 {
     /// <summary>Ref, container no., B/L, vessel, PO / PI no., commercial invoice no., exporter ref. or supplier (contains).</summary>

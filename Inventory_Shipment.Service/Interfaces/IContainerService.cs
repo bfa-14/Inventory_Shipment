@@ -24,6 +24,11 @@ public interface IContainerService
         int? id, SaveContainerRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);
 
+    /// <summary>(120) The container's ref changed, in any status but Cancelled. Needs Create Containers, like any edit.</summary>
+    Task<Result<ContainerDto>> SetRefAsync(
+        int id, ContainerRefRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default);
+
     Task<Result<ContainerDto>> ConfirmAsync(
         int id, ContainerActionRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default);

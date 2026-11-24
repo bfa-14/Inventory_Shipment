@@ -134,6 +134,20 @@ public sealed class ContainersController : ControllerBase
         return result.ToActionResult(this);
     }
 
+    /// <summary>(120) Changes the container's ref (any status but Cancelled); the database says why a ref is refused.</summary>
+    [HttpPost("{id:int}/ref")]
+    [HasPermission(Permissions.Containers.Create)]
+    [ProducesResponseType<ContainerDto>(StatusCodes.Status200OK)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status400BadRequest)]
+    [ProducesResponseType<ProblemDetails>(StatusCodes.Status409Conflict)]
+    public async Task<ActionResult<ContainerDto>> SetRef(
+        int id, [FromBody] ContainerRefRequest? request, CancellationToken cancellationToken)
+    {
+        var result = await _containers.SetRefAsync(
+            id, request ?? new ContainerRefRequest(), User.GetUserId(), User.GetPermissions(), cancellationToken);
+        return result.ToActionResult(this);
+    }
+
     [HttpPost("{id:int}/confirm")]
     [HasPermission(Permissions.Containers.Confirm)]
     [ProducesResponseType<ContainerDto>(StatusCodes.Status200OK)]

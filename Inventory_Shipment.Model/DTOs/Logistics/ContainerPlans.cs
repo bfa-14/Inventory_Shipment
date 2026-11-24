@@ -15,6 +15,9 @@ public sealed class ContainerOrderDefaultsDto
 {
     public int PurchaseOrderId { get; init; }
     public string? PurchaseOrderNumber { get; init; }
+
+    /// <summary>(121) The purchase order's date: what Auto-plan starts the containers' Order date at.</summary>
+    public DateTime? OrderDate { get; init; }
     public int SupplierId { get; init; }
     public string SupplierCode { get; init; } = string.Empty;
     public string SupplierName { get; init; } = string.Empty;

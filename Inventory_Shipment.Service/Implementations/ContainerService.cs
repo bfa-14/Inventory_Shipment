@@ -203,6 +203,12 @@ public sealed class ContainerService : IContainerService
         return await ReadAsync(savedId, cancellationToken);
     }
 
+    public Task<Result<ContainerDto>> SetRefAsync(
+        int id, ContainerRefRequest request, int userId, IReadOnlySet<string> permissions,
+        CancellationToken cancellationToken = default)
+        => ChangeAsync(id, Permissions.Containers.Create, permissions, userId, "given a new ref", cancellationToken,
+            () => _containers.SetRefAsync(id, request.ContainerRef, ToRowVersion(request.RowVersion), userId, cancellationToken));
+
     public Task<Result<ContainerDto>> ConfirmAsync(
         int id, ContainerActionRequest request, int userId, IReadOnlySet<string> permissions,
         CancellationToken cancellationToken = default)

@@ -293,6 +293,10 @@ public sealed class ContainerRepository : IContainerRepository
         => ExecuteAsync("logistics.usp_Container_Confirm",
             new { Id = id, RowVersion = rowVersion, UserId = userId }, cancellationToken);
 
+    public Task SetRefAsync(int id, string? containerRef, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
+        => ExecuteAsync("logistics.usp_Container_SetRef",
+            new { Id = id, ContainerRef = containerRef, RowVersion = rowVersion, UserId = userId }, cancellationToken);
+
     /// <summary>An EMPTY table is the procedure's "everything received as loaded"; the table is sent either way, never null.</summary>
     public Task OffloadAsync(
         int id, OffloadRequest request, byte[]? rowVersion, int userId, CancellationToken cancellationToken = default)
