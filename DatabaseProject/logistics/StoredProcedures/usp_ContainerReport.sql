@@ -1,3 +1,5 @@
+/* ================================================================== 1. logistics.usp_ContainerReport (from script 114) */
+
 CREATE   PROCEDURE logistics.usp_ContainerReport
     @Search          NVARCHAR(100) = NULL,   -- container ref or no., B/L, order number, PI no., invoice no.
     @SupplierId      INT           = NULL,
@@ -197,6 +199,7 @@ BEGIN
     SELECT r.RowKey, r.IsPending,
            st.StageSort, st.StageLabel,
            OrderDate = po.DocumentDate, PurchaseOrderId = po.Id, PoNumber = po.DocumentNumber,
+           ShortageId = sh.Id, ShortageNumber = sh.DocumentNumber, ShortageDescription = sh.Description,   -- (123)
            OrderMonth = CASE WHEN c.OrderMonthKey IS NOT NULL
                              THEN LEFT(DATENAME(MONTH, DATEFROMPARTS(c.OrderMonthKey / 100, c.OrderMonthKey % 100, 1)), 3)
                                   + N'-' + RIGHT(CAST(c.OrderMonthKey / 100 AS NVARCHAR(4)), 2)
@@ -243,6 +246,7 @@ BEGIN
     FROM #R r
     INNER JOIN purchase.PurchaseDocuments po ON po.Id = r.PoId
     INNER JOIN masterdata.Parties sp ON sp.Id = po.SupplierId
+    LEFT JOIN inventory.ShortageDocuments sh ON sh.Id = po.SourceShortageId                          -- (123)
     INNER JOIN inventory.Items i ON i.Id = r.ItemId
     LEFT JOIN logistics.ContainerLines cl ON cl.Id = r.ContainerLineId
     LEFT JOIN logistics.Containers c ON c.Id = r.ContainerId
