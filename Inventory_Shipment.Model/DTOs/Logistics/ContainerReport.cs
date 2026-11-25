@@ -25,6 +25,11 @@ public sealed class ContainerReportRowDto
     public int PurchaseOrderId { get; init; }
     public string? PoNumber { get; init; }
 
+    /// <summary>(123) The shortage plan the purchase order was created from; null for an order typed by hand.</summary>
+    public int? ShortageId { get; init; }
+    public string? ShortageNumber { get; init; }
+    public string? ShortageDescription { get; init; }
+
     /// <summary>"Sep-25": the container's order month, else the order date's.</summary>
     public string? OrderMonth { get; init; }
 

@@ -198,6 +198,8 @@ public sealed class ContainerReportService : IContainerReportService
         columns.AddRange(
         [
             new("PO N°", r => r.PoNumber),
+            new("SHORTAGE N°", r => r.ShortageNumber),
+            new("SHORTAGE DESCRIPTION", r => r.ShortageDescription),
             new("SYSTEM INVOICE N°", r => r.InvoiceNumbers),
             new("GOODS RECEIPT N°", r => r.GoodsReceiptNumbers),
             new("SUPPLIER", r => r.SupplierName),
