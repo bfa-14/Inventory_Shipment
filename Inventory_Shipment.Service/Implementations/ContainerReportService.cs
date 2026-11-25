@@ -61,9 +61,16 @@ public sealed class ContainerReportService : IContainerReportService
 
         foreach (var row in rows)
         {
+            // ON THE ROAD READS "In Transit". A container that reached the port keeps the status At Port while its inland
+            // leg runs (a status never goes back: script 27), so the report said "At Port" beside "Dar es Salaam →
+            // Lubumbashi". The report words the status from where the row stands: a road leg in progress (stage 40
+            // from a sea port, 55 from a border or inland place) is In Transit.
+            var onTheRoad = row.StageSort is 40m or 55m;
             row.StatusName = row.IsPending
                 ? "Not loaded"
-                : row.ContainerStatus is { } s && StatusNames.TryGetValue(s, out var name) ? name : string.Empty;
+                : onTheRoad && row.ContainerStatus is 4
+                    ? "In Transit"
+                    : row.ContainerStatus is { } s && StatusNames.TryGetValue(s, out var name) ? name : string.Empty;
             row.Alerts = AlertsOf(row);
 
             if (!seesCharges)
